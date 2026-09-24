@@ -18,3 +18,15 @@ accounts:
     broker: ccxt
     fixed_quantity: 0.01     # always trade a flat 0.01, ignoring source size
     enabled: false
+
+  ibkr_main:
+    # SignalStack does the actual broker connection on its side (IBKR here);
+    # this service just forwards the sized/mapped signal to its webhook.
+    broker: signalstack
+    multiplier: 1.0
+    enabled: false
+
+  bybit_main:
+    broker: signalstack
+    multiplier: 0.25
+    enabled: false

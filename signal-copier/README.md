@@ -50,6 +50,7 @@ commit.
 | Generic JSON / TradingView webhook source | ✅ Working, tested |
 | Paper (mock) broker | ✅ Working, tested |
 | ccxt broker (Binance/Bybit/etc crypto exchanges) | ✅ Working (needs `pip install ccxt` + API keys) |
+| SignalStack broker (relays to IBKR, Schwab, Alpaca, Tradier, TradeStation, Bybit, Coinbase Pro, Oanda, etc. via signalstack.com) | ✅ Working (needs a SignalStack account + a webhook URL per connected broker) |
 | Telegram, Discord, Slack, SMS (Twilio), Twitter sources | 🚧 Stub — each needs its own bot/API credentials and a message-format parser tailored to the actual channel you're copying |
 | MT4/MT5 source & broker | 🚧 Stub — MetaTrader has no native API; needs an EA bridge (ZeroMQ or file-based) or the same-host `MetaTrader5` package for MT5 |
 | NinjaTrader source & broker | 🚧 Stub — needs a custom NinjaScript AddOn bridge |
@@ -58,6 +59,12 @@ commit.
 
 Every stub file's docstring spells out exactly what's needed to finish it.
 Start with whichever source/broker pair you actually have accounts for.
+
+Note: the direct `alpaca` and `ibkr` broker stubs above are only needed if
+you want this service talking to those brokers itself. If you already have
+(or set up) a SignalStack account, the `signalstack` broker reaches IBKR,
+Alpaca, and several others through one already-working adapter — no need
+to also build the direct integration for those specific brokers.
 
 ## Quickstart
 
