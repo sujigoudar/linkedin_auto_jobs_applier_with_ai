@@ -1,0 +1,20 @@
+# Destination accounts. No secrets here — broker credentials live in
+# environment variables (see .env.example), referenced by account_id.
+accounts:
+  paper_main:
+    broker: paper
+    multiplier: 1.0
+    enabled: true
+
+  binance_sub1:
+    broker: ccxt
+    multiplier: 0.5          # trade half the source signal's size
+    enabled: true
+    symbol_map:
+      BTCUSDT: BTC/USDT      # TradingView-style symbol -> ccxt unified symbol
+      ETHUSDT: ETH/USDT
+
+  binance_sub2:
+    broker: ccxt
+    fixed_quantity: 0.01     # always trade a flat 0.01, ignoring source size
+    enabled: false

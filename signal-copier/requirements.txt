@@ -1,0 +1,20 @@
+fastapi>=0.111
+uvicorn[standard]>=0.30
+pyyaml>=6.0
+pydantic>=2.7
+
+# Optional, needed only for adapters you actually enable:
+# ccxt>=4.3                    # crypto exchange execution (CCXTBroker)
+# python-telegram-bot>=21.0    # Telegram source
+# discord.py>=2.4              # Discord source
+# slack-bolt>=1.19             # Slack source
+# twilio>=9.0                  # SMS source
+# tweepy>=4.14                 # Twitter/X source
+# MetaTrader5>=5.0.45          # MT5 broker, same-host only
+# pyzmq>=26.0                  # MT4/MT5 EA bridge
+# alpaca-py>=0.28               # Alpaca broker
+# ib_insync>=0.9.86             # IBKR broker
+
+pytest>=8.2
+pytest-asyncio>=0.23
+httpx>=0.27
