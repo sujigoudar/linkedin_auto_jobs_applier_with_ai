@@ -48,6 +48,7 @@ def load_routing_config(routing_path: Path, accounts_path: Path) -> RoutingConfi
                 fixed_quantity=spec.get("fixed_quantity"),
                 symbol_map=spec.get("symbol_map", {}) or {},
                 enabled=spec.get("enabled", True),
+                managed_lifecycle=spec.get("managed_lifecycle", False),
             )
 
     rules: list[RoutingRule] = []

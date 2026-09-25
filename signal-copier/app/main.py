@@ -25,6 +25,7 @@ from app.brokers.signalstack import SignalStackBroker
 from app.db import SignalStore
 from app.engine import SignalCopierEngine
 from app.errors import SignalValidationError
+from app.lifecycle.manager import PositionLifecycleManager
 from app.reconciliation import OrderReconciler
 from app.routing import load_routing_config
 from app.sources.discord import DiscordSource
@@ -67,7 +68,8 @@ for broker_name, broker_factory in _optional_brokers:
     except RuntimeError as exc:
         logger.info("%s broker not registered: %s", broker_name, exc)
 
-engine = SignalCopierEngine(routing=routing_config, brokers=brokers, store=store)
+lifecycle_manager = PositionLifecycleManager(brokers=brokers)
+engine = SignalCopierEngine(routing=routing_config, brokers=brokers, store=store, lifecycle_manager=lifecycle_manager)
 webhook_source = WebhookSource(on_signal=engine.handle_signal)
 sms_source = TwilioSMSSource(on_signal=engine.handle_signal)
 reconciler = OrderReconciler(store=store, brokers=brokers, interval_seconds=config.RECONCILE_INTERVAL_SECONDS)

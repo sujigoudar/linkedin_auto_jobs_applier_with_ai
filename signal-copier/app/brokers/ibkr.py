@@ -34,6 +34,9 @@ from app.models import DestinationAccount, OrderResult, OrderStatus, Signal
 
 class IBKRBroker(BrokerAdapter):
     name = "ibkr"
+    # IB's own native parent/child/transmit bracket mechanism (not a synthetic
+    # app-side workaround) — see module docstring and _build_bracket below.
+    supports_native_bracket = True
 
     def __init__(self, host: str = "127.0.0.1", port: int = 7497, client_id: int = 1):
         try:

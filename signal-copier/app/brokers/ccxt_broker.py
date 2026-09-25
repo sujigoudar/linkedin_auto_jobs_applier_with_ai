@@ -15,17 +15,41 @@ and Bybit, not exchange-specific despite the "unified" API sometimes
 varying in practice). If the configured exchange doesn't support it, ccxt
 raises `NotSupported`, which is reported as an ERROR result rather than
 silently placing the entry without its exit.
+
+## Managed-lifecycle capabilities (app/lifecycle/)
+
+- `place_protective_stop` — a standalone `market` order carrying only
+  `stopLossPrice` (the same unified param above, used alone rather than
+  paired with `takeProfitPrice` — confirmed against ccxt's source that
+  each is checked independently, not required together).
+- `cancel_order` — ccxt's unified `cancel_order(id, symbol)`, one of its
+  oldest and most broadly implemented methods (unlike the order-type
+  params above, this one really is close to universal across exchanges).
+- `replace_stop_quantity` — **not implemented.** ccxt's `edit_order` isn't
+  consistently supported/verified across exchanges the way `cancel_order`
+  is; returning `None` here makes the caller fall back to cancel +
+  resubmit, which only needs the two methods above.
+- `get_broker_position` — `fetch_positions([symbol])`. This is a
+  derivatives/margin concept; on a spot market (this project's example
+  config: Binance spot) there is no "position" to fetch, and ccxt raises
+  `NotSupported` — caught and reported as `None` (unknown), never `0.0`,
+  since spot holdings clearly aren't zero just because "position" doesn't
+  apply.
 """
 from __future__ import annotations
 
 import os
 
-from app.models import DestinationAccount, OrderResult, OrderStatus, Signal
+from app.models import DestinationAccount, OrderResult, OrderStatus, Side, Signal
 from app.brokers.base import BrokerAdapter
 
 
 class CCXTBroker(BrokerAdapter):
     name = "ccxt"
+    # stopLossPrice/takeProfitPrice ride on the same create_order call as the
+    # entry — genuinely atomic where the exchange supports it (see module
+    # docstring: ~90 of ccxt's implementations do; unverified elsewhere).
+    supports_native_bracket = True
 
     def __init__(self, exchange_id: str = "binance"):
         try:
@@ -101,6 +125,53 @@ class CCXTBroker(BrokerAdapter):
             filled_price=order.get("average") or order.get("price"),
             message="filled by ccxt",
         )
+
+    async def place_protective_stop(
+        self, account: DestinationAccount, symbol: str, quantity: float, stop_price: float, exit_side: Side
+    ) -> OrderResult | None:
+        exchange = self._exchange_for(account)
+        try:
+            order = await exchange.create_order(
+                symbol=symbol,
+                type="market",
+                side=exit_side.value,
+                amount=quantity,
+                params={"stopLossPrice": stop_price},
+            )
+        except Exception as exc:  # noqa: BLE001 - includes ccxt's NotSupported for this exchange
+            return OrderResult(account_id=account.account_id, status=OrderStatus.ERROR, signal_id="", message=str(exc))
+
+        return OrderResult(
+            account_id=account.account_id,
+            status=OrderStatus.PENDING,
+            signal_id="",
+            broker_order_id=str(order.get("id")),
+            message="ccxt stop resting",
+        )
+
+    async def cancel_order(self, account: DestinationAccount, broker_order_id: str) -> bool:
+        exchange = self._exchange_for(account)
+        try:
+            await exchange.cancel_order(broker_order_id)
+        except Exception:  # noqa: BLE001 - already filled/gone, or genuinely unsupported — either way, not a confirmed cancel
+            return False
+        return True
+
+    async def get_broker_position(self, account: DestinationAccount, symbol: str) -> float | None:
+        exchange = self._exchange_for(account)
+        try:
+            positions = await exchange.fetch_positions([symbol])
+        except Exception:  # noqa: BLE001 - e.g. NotSupported on spot markets — genuinely unknown, not zero
+            return None
+
+        for position in positions:
+            if position.get("symbol") != symbol:
+                continue
+            contracts = position.get("contracts")
+            if contracts is None:
+                continue
+            return -contracts if position.get("side") == "short" else contracts
+        return 0.0  # no open position found for this symbol
 
     async def close(self) -> None:
         for exchange in self._exchanges.values():

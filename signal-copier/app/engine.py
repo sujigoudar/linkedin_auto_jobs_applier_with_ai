@@ -32,6 +32,23 @@ tracked positions on those brokers can drift from the real book if an
 order is later rejected or partially filled after reporting PENDING — this
 is a known limitation of not having a fill-confirmation feedback path from
 those brokers back into this service yet.
+
+## Managed-lifecycle accounts
+
+An account with `DestinationAccount.managed_lifecycle = True` skips the
+plain path above entirely and routes through
+`app/lifecycle/manager.py`'s `PositionLifecycleManager` instead — see that
+module's docstring for why (protect-the-actual-fill-first, logical
+targets, one serialized close arbiter, never two independent full-position
+sells racing each other). BUY/SELL signals become a `PositionPlan`
+(stop_loss -> `initial_stop`, a single take_profit -> one SELL target for
+the full planned quantity); an entry with no resolved stop is refused
+outright (design section 11) rather than sent to the broker unprotected.
+CLOSE signals are resolved against the lifecycle manager's own tracked
+owned quantity (via `CloseArbiter`), not `SignalStore.get_position`, since
+the arbiter is the source of truth for what's actually still open once
+targets/trailing have been firing. `SignalStore` still records every fill
+for `/positions` observability, same as the plain path.
 """
 from __future__ import annotations
 
@@ -39,6 +56,8 @@ import logging
 
 from app.brokers.base import BrokerAdapter
 from app.db import SignalStore
+from app.lifecycle.manager import PositionLifecycleManager
+from app.lifecycle.models import PositionPlan, Target, TargetAction
 from app.models import DestinationAccount, OrderResult, OrderStatus, Side, Signal
 from app.risk import size_for_account, symbol_for_account
 from app.routing import RoutingConfig
@@ -47,10 +66,17 @@ logger = logging.getLogger(__name__)
 
 
 class SignalCopierEngine:
-    def __init__(self, routing: RoutingConfig, brokers: dict[str, BrokerAdapter], store: SignalStore):
+    def __init__(
+        self,
+        routing: RoutingConfig,
+        brokers: dict[str, BrokerAdapter],
+        store: SignalStore,
+        lifecycle_manager: PositionLifecycleManager | None = None,
+    ):
         self.routing = routing
         self.brokers = brokers
         self.store = store
+        self.lifecycle_manager = lifecycle_manager or PositionLifecycleManager(brokers)
 
     async def handle_signal(self, signal: Signal) -> list[OrderResult]:
         self.store.save_signal(signal)
@@ -75,6 +101,14 @@ class SignalCopierEngine:
                 continue
 
             symbol = symbol_for_account(signal, account)
+
+            if account.managed_lifecycle:
+                result = await self._handle_managed_signal(signal, account, symbol)
+                self.store.save_order_result(
+                    result, broker=account.broker, symbol=symbol, side=signal.side, requested_quantity=None
+                )
+                results.append(result)
+                continue
 
             if signal.side == Side.CLOSE:
                 resolved = self._resolve_close(signal, account, symbol)
@@ -141,3 +175,113 @@ class SignalCopierEngine:
             raw=signal.raw,
         )
         return resolved_signal, quantity
+
+    async def _handle_managed_signal(
+        self, signal: Signal, account: DestinationAccount, symbol: str
+    ) -> OrderResult:
+        """Route a BUY/SELL/CLOSE signal for a `managed_lifecycle` account through
+        `PositionLifecycleManager` instead of the plain broker.place_order path."""
+        if signal.side == Side.CLOSE:
+            return await self._handle_managed_close(signal, account, symbol)
+        return await self._handle_managed_entry(signal, account, symbol)
+
+    async def _handle_managed_entry(
+        self, signal: Signal, account: DestinationAccount, symbol: str
+    ) -> OrderResult:
+        broker = self.brokers.get(account.broker)
+        if broker is None:
+            return OrderResult(
+                account_id=account.account_id,
+                status=OrderStatus.ERROR,
+                signal_id=signal.id,
+                message=f"no broker adapter registered for '{account.broker}'",
+            )
+
+        quantity = size_for_account(signal, account)
+        targets = []
+        if signal.take_profit is not None:
+            targets.append(Target(trigger_price=signal.take_profit, action=TargetAction.SELL, reduce_fraction=1.0))
+
+        plan = PositionPlan(
+            account_id=account.account_id,
+            symbol=symbol,
+            side=signal.side,
+            planned_quantity=quantity,
+            asset_class=signal.asset_class,
+            initial_stop=signal.stop_loss,
+            targets=targets,
+        )
+
+        error = self.lifecycle_manager.validate_plan(plan)
+        if error is not None:
+            return OrderResult(
+                account_id=account.account_id, status=OrderStatus.REJECTED, signal_id=signal.id, message=error
+            )
+
+        self.lifecycle_manager.start_plan(plan)
+
+        # Entry order only — stop_loss/take_profit are managed by the lifecycle
+        # manager from here on, not embedded in the broker order.
+        entry_signal = Signal(
+            source=signal.source,
+            symbol=signal.symbol,
+            side=signal.side,
+            asset_class=signal.asset_class,
+            id=signal.id,
+            received_at=signal.received_at,
+            raw=signal.raw,
+        )
+
+        try:
+            result = await broker.place_order(entry_signal, account, quantity, symbol)
+        except Exception as exc:  # noqa: BLE001 - one account's failure must not block others
+            logger.exception("managed entry failed for account=%s", account.account_id)
+            return OrderResult(
+                account_id=account.account_id, status=OrderStatus.ERROR, signal_id=signal.id, message=str(exc)
+            )
+
+        if result.status == OrderStatus.FILLED:
+            filled_quantity = result.filled_quantity if result.filled_quantity is not None else quantity
+            self.store.record_fill(account.account_id, symbol, signal.side, filled_quantity)
+            await self.lifecycle_manager.on_entry_fill(account, symbol, filled_quantity)
+        elif result.status == OrderStatus.PENDING:
+            # Fill confirmation for async-confirming brokers doesn't feed back into
+            # the lifecycle manager yet (same documented gap app/reconciliation.py
+            # has for the plain path) — the position is entered but left
+            # unprotected by this manager until that's wired up.
+            logger.warning(
+                "managed entry for account=%s symbol=%s is PENDING; protective stop not yet placed "
+                "(no fill-confirmation feed into PositionLifecycleManager)",
+                account.account_id,
+                symbol,
+            )
+            self.store.record_fill(account.account_id, symbol, signal.side, quantity)
+
+        return result
+
+    async def _handle_managed_close(
+        self, signal: Signal, account: DestinationAccount, symbol: str
+    ) -> OrderResult:
+        lifecycle = self.lifecycle_manager.get_lifecycle(account.account_id, symbol)
+        if lifecycle is None or lifecycle.closed:
+            return OrderResult(
+                account_id=account.account_id,
+                status=OrderStatus.REJECTED,
+                signal_id=signal.id,
+                message="no open position to close",
+            )
+
+        available = self.lifecycle_manager.arbiter.available_to_sell(account.account_id, symbol)
+        if available <= 0:
+            return OrderResult(
+                account_id=account.account_id,
+                status=OrderStatus.REJECTED,
+                signal_id=signal.id,
+                message="no shares available to sell",
+            )
+
+        result = await self.lifecycle_manager.request_exit(account, symbol, available, source="provider_exit")
+        if result.status in (OrderStatus.FILLED, OrderStatus.PENDING):
+            filled_quantity = result.filled_quantity if result.filled_quantity is not None else available
+            self.store.record_fill(account.account_id, symbol, lifecycle.exit_side, filled_quantity)
+        return result

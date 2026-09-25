@@ -46,6 +46,7 @@ from app.models import DestinationAccount, OrderResult, OrderStatus, Signal
 
 class MT5Broker(BrokerAdapter):
     name = "mt4_mt5"
+    supports_native_bracket = True  # sl/tp are fields on the same order_send request
 
     def __init__(self):
         try:
@@ -161,6 +162,7 @@ class MetaApiBroker(BrokerAdapter):
     """
 
     name = "mt4_mt5_metaapi"
+    supports_native_bracket = True  # stop_loss/take_profit params on the same order call
 
     def __init__(self):
         try:

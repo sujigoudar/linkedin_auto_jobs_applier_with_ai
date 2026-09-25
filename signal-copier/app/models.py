@@ -81,3 +81,11 @@ class DestinationAccount:
     fixed_quantity: Optional[float] = None
     symbol_map: dict[str, str] = field(default_factory=dict)
     enabled: bool = True
+    #: Route entries/exits for this account through
+    #: app/lifecycle/manager.py's PositionLifecycleManager (protect-first,
+    #: logical targets, a serialized close arbiter) instead of embedding
+    #: stop_loss/take_profit directly into the entry order. See
+    #: app/lifecycle/manager.py's module docstring for why/when this
+    #: matters. Off by default — existing accounts behave exactly as
+    #: before unless explicitly opted in.
+    managed_lifecycle: bool = False

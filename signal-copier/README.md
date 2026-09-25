@@ -118,6 +118,64 @@ confirmed SL/TP fields — inventing one risks a silently wrong or ignored
 exit order on real money). If you need SL/TP on one of those, say which
 and I'll research and verify it properly rather than guess.
 
+## Managed lifecycle (protect-first position management)
+
+For a broker/exchange that can't submit entry + stop-loss + take-profit as
+one atomic bracket/OCO order, embedding stop_loss/take_profit straight
+into the entry (as the "Stop-loss / take-profit" section above describes)
+means firing independent orders that a naive implementation could let
+both fill — an oversell. Any `DestinationAccount` can opt into a
+different path instead by setting `managed_lifecycle: true` in
+`config/accounts.yaml`:
+
+    ENTRY -> actual fill observed -> protect the filled quantity FIRST
+    -> manage targets/trailing as logical (app-side) instructions
+    -> coordinate every exit through one CloseArbiter
+
+- **`app/lifecycle/models.py`** — `PositionPlan`, `Target`,
+  `TrailingPolicy`: the account-agnostic description of an entry, its
+  stop, and its profit-taking/trailing behavior.
+- **`app/lifecycle/close_arbiter.py`** — `CloseArbiter`: the single
+  serialization point per (account, symbol) enforcing `available_to_sell
+  = confirmed_owned_quantity - reserved_quantity`. Every exit — a target
+  firing, a trailing ratchet, the stop itself filling, a provider CLOSE
+  signal — reserves its quantity here before touching the broker, so two
+  exits can never both claim the same shares. A violation of that
+  invariant self-halts the position (further exits are rejected) rather
+  than risk a silent oversell.
+- **`app/lifecycle/manager.py`** — `PositionLifecycleManager`: submits the
+  entry, places the protective stop on the *actual* confirmed fill
+  (design's core rule), evaluates logical targets/trailing on price
+  updates, and performs the stop-resize transition (cancel the existing
+  stop -> confirm the cancel -> submit the exit -> observe what actually
+  filled -> resize a replacement stop to the true remainder) so a partial
+  fill on a target never leaves the stop covering more than what's left.
+- **`app/engine.py`**'s `handle_signal` routes a `managed_lifecycle`
+  account's BUY/SELL signals into a `PositionPlan` (`stop_loss` becomes
+  `initial_stop`; a `take_profit` becomes one logical SELL target for the
+  full planned quantity) and its CLOSE signals into
+  `PositionLifecycleManager.request_exit()` against that manager's own
+  tracked owned quantity — not `SignalStore`'s plain position table, which
+  the non-managed path uses.
+- **An entry with no resolved stop-loss is refused outright** ("no
+  stop-loss resolved for this entry ... refusing to enter unprotected"),
+  never sent to the broker unprotected.
+
+What's still a documented gap, not implemented: a live price feed driving
+`on_price_update()` in production (nothing calls it outside tests —
+wiring a real feed per broker is future work), fill confirmation for
+brokers that only report `PENDING` on the entry (the position is opened
+but left unprotected by this manager until a fill-confirmation path feeds
+back into it — mirrors the same gap `app/reconciliation.py` documents for
+the plain path), and startup reconciliation against a broker's live
+position/order state after a process restart (this manager's bookkeeping
+is in-memory, seeded only by `on_entry_fill`).
+
+See `app/lifecycle/manager.py`'s module docstring for the full design
+rationale, and `tests/test_close_arbiter.py` /
+`tests/test_lifecycle_manager.py` for the oversell-prevention and
+partial-fill-arithmetic proofs.
+
 ## Monitoring
 
 ```

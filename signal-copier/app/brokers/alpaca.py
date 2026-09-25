@@ -18,6 +18,23 @@ A Signal carrying `stop_loss` and/or `take_profit` is sent as an Alpaca
 bracket (`order_class: "bracket"`, both legs) or one-triggers-other
 (`order_class: "oto"`, a single leg) order — Alpaca manages the exit once
 the parent fills; this service doesn't need to watch for it separately.
+
+## Managed-lifecycle capabilities (app/lifecycle/)
+
+For accounts that opt into the managed-lifecycle path instead (see
+app/lifecycle/manager.py), this implements the real endpoints:
+
+- `place_protective_stop` — a standalone `type: "stop"` order (not attached
+  to anything else).
+- `cancel_order` — `DELETE /v2/orders/{id}`; Alpaca returns 204 on success,
+  404 if the order is already filled/gone (treated as "can't confirm
+  cancellation," per this class's contract — see BrokerAdapter.cancel_order).
+- `replace_stop_quantity` — `PATCH /v2/orders/{id}`. Alpaca's replace
+  **cancels the original order and creates a new one** with a new id; the
+  returned `OrderResult.broker_order_id` carries that new id, and
+  callers (app/lifecycle/manager.py) must track it instead of the old one.
+- `get_broker_position` — `GET /v2/positions/{symbol}`; a 404 means flat
+  (returns 0.0), not an error.
 """
 from __future__ import annotations
 
@@ -26,11 +43,12 @@ import os
 import httpx
 
 from app.brokers.base import BrokerAdapter
-from app.models import DestinationAccount, OrderResult, OrderStatus, Signal
+from app.models import DestinationAccount, OrderResult, OrderStatus, Side, Signal
 
 
 class AlpacaBroker(BrokerAdapter):
     name = "alpaca"
+    supports_native_bracket = True  # bracket/OTO order_class, see place_order below
 
     def __init__(self, timeout: float = 10.0):
         self._client = httpx.AsyncClient(timeout=timeout)
@@ -150,6 +168,117 @@ class AlpacaBroker(BrokerAdapter):
             filled_price=float(filled_price) if filled_price else None,
             message=f"Alpaca order status: {status}",
         )
+
+    async def place_protective_stop(
+        self, account: DestinationAccount, symbol: str, quantity: float, stop_price: float, exit_side: Side
+    ) -> OrderResult | None:
+        try:
+            api_key, api_secret, base_url = self._credentials_for(account)
+        except RuntimeError as exc:
+            return OrderResult(account_id=account.account_id, status=OrderStatus.ERROR, signal_id="", message=str(exc))
+
+        try:
+            response = await self._client.post(
+                f"{base_url}/v2/orders",
+                headers={"APCA-API-KEY-ID": api_key, "APCA-API-SECRET-KEY": api_secret},
+                json={
+                    "symbol": symbol,
+                    "qty": str(quantity),
+                    "side": exit_side.value,
+                    "type": "stop",
+                    "stop_price": str(stop_price),
+                    "time_in_force": "gtc",
+                },
+            )
+            response.raise_for_status()
+        except httpx.HTTPError as exc:
+            return OrderResult(account_id=account.account_id, status=OrderStatus.ERROR, signal_id="", message=f"Alpaca stop order request failed: {exc}")
+
+        order = response.json()
+        return OrderResult(
+            account_id=account.account_id,
+            status=OrderStatus.PENDING,
+            signal_id="",
+            broker_order_id=order.get("id"),
+            message=f"Alpaca stop resting (status: {order.get('status')})",
+        )
+
+    async def cancel_order(self, account: DestinationAccount, broker_order_id: str) -> bool:
+        try:
+            api_key, api_secret, base_url = self._credentials_for(account)
+        except RuntimeError:
+            return False
+
+        try:
+            response = await self._client.delete(
+                f"{base_url}/v2/orders/{broker_order_id}",
+                headers={"APCA-API-KEY-ID": api_key, "APCA-API-SECRET-KEY": api_secret},
+            )
+        except httpx.HTTPError:
+            return False
+
+        # 204: cancelled. Anything else (404 = already filled/gone, 422 = can't be
+        # cancelled in its current state, ...) is NOT a confirmed cancellation.
+        return response.status_code == 204
+
+    async def replace_stop_quantity(
+        self,
+        account: DestinationAccount,
+        broker_order_id: str,
+        new_quantity: float,
+        new_price: float | None = None,
+    ) -> OrderResult | None:
+        try:
+            api_key, api_secret, base_url = self._credentials_for(account)
+        except RuntimeError:
+            return None
+
+        payload = {"qty": str(new_quantity)}
+        if new_price is not None:
+            payload["stop_price"] = str(new_price)
+
+        try:
+            response = await self._client.patch(
+                f"{base_url}/v2/orders/{broker_order_id}",
+                headers={"APCA-API-KEY-ID": api_key, "APCA-API-SECRET-KEY": api_secret},
+                json=payload,
+            )
+            response.raise_for_status()
+        except httpx.HTTPError:
+            return None  # no confirmed replace — caller falls back to cancel + resubmit
+
+        order = response.json()
+        return OrderResult(
+            account_id=account.account_id,
+            status=OrderStatus.PENDING,
+            signal_id="",
+            # Alpaca's replace creates a new order id — see module docstring.
+            broker_order_id=order.get("id"),
+            message=f"Alpaca stop replaced (status: {order.get('status')})",
+        )
+
+    async def get_broker_position(self, account: DestinationAccount, symbol: str) -> float | None:
+        try:
+            api_key, api_secret, base_url = self._credentials_for(account)
+        except RuntimeError:
+            return None
+
+        try:
+            response = await self._client.get(
+                f"{base_url}/v2/positions/{symbol}",
+                headers={"APCA-API-KEY-ID": api_key, "APCA-API-SECRET-KEY": api_secret},
+            )
+        except httpx.HTTPError:
+            return None
+
+        if response.status_code == 404:
+            return 0.0  # flat — no open position for this symbol
+        if response.status_code != 200:
+            return None
+
+        position = response.json()
+        qty = position.get("qty")
+        return float(qty) if qty is not None else None
 
     async def close(self) -> None:
         await self._client.aclose()

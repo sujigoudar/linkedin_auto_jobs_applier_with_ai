@@ -19,6 +19,21 @@ accounts:
     fixed_quantity: 0.01     # always trade a flat 0.01, ignoring source size
     enabled: false
 
+  binance_managed:
+    # Same ccxt/Binance destination as binance_sub1, but opted into the
+    # managed-lifecycle path (app/lifecycle/) instead of embedding
+    # stop_loss/take_profit into the entry order: the entry's actual fill
+    # gets a protective stop first, targets/trailing are handled as
+    # app-managed logic, and every exit is serialized through one close
+    # arbiter so it can never oversell. See README.md's "Managed lifecycle"
+    # section for when to use this.
+    broker: ccxt
+    multiplier: 1.0
+    enabled: false
+    managed_lifecycle: true
+    symbol_map:
+      BTCUSDT: BTC/USDT
+
   ibkr_main:
     # SignalStack does the actual broker connection on its side (IBKR here);
     # this service just forwards the sized/mapped signal to its webhook.
