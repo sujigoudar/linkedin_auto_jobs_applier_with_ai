@@ -208,6 +208,7 @@ class SignalCopierEngine:
             side=signal.side,
             planned_quantity=quantity,
             asset_class=signal.asset_class,
+            broker=account.broker,
             initial_stop=signal.stop_loss,
             targets=targets,
         )
@@ -236,11 +237,16 @@ class SignalCopierEngine:
             result = await broker.place_order(entry_signal, account, quantity, symbol)
         except Exception as exc:  # noqa: BLE001 - one account's failure must not block others
             logger.exception("managed entry failed for account=%s", account.account_id)
+            self.lifecycle_manager.unregister_plan(account.account_id, symbol)
             return OrderResult(
                 account_id=account.account_id, status=OrderStatus.ERROR, signal_id=signal.id, message=str(exc)
             )
 
-        if result.status == OrderStatus.FILLED:
+        if result.status in (OrderStatus.ERROR, OrderStatus.REJECTED):
+            # The entry never happened — don't leave a plan registered with nothing
+            # protecting it (and nothing to protect).
+            self.lifecycle_manager.unregister_plan(account.account_id, symbol)
+        elif result.status == OrderStatus.FILLED:
             filled_quantity = result.filled_quantity if result.filled_quantity is not None else quantity
             self.store.record_fill(account.account_id, symbol, signal.side, filled_quantity)
             await self.lifecycle_manager.on_entry_fill(account, symbol, filled_quantity)

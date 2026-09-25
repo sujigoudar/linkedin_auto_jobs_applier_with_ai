@@ -58,29 +58,92 @@ pass is the natural next step, not done in this pass.
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 
 from app.brokers.base import BrokerAdapter
 from app.lifecycle.close_arbiter import CloseArbiter
 from app.lifecycle.models import (
+    PendingExit,
     PositionLifecycle,
     PositionPlan,
     ProtectionStatus,
+    StopRecord,
     Target,
     TargetAction,
+    TrailingPolicy,
+    TransferPhase,
 )
-from app.models import DestinationAccount, OrderResult, OrderStatus, Signal, Side
+from app.models import AssetClass, DestinationAccount, OrderResult, OrderStatus, Signal, Side
 
 logger = logging.getLogger(__name__)
 
 
 class PositionLifecycleManager:
-    def __init__(self, brokers: dict[str, BrokerAdapter], arbiter: CloseArbiter | None = None):
+    def __init__(self, brokers: dict[str, BrokerAdapter], arbiter: CloseArbiter | None = None, store=None):
         self.brokers = brokers
         self.arbiter = arbiter or CloseArbiter()
+        self.store = store  # app.db.SignalStore, optional — enables crash-resumable persistence
         self._lifecycles: dict[tuple[str, str], PositionLifecycle] = {}
 
     def get_lifecycle(self, account_id: str, symbol: str) -> PositionLifecycle | None:
         return self._lifecycles.get((account_id, symbol))
+
+    def list_open_lifecycles(self) -> list[PositionLifecycle]:
+        """Every managed-lifecycle position not yet closed — for monitoring
+        (see app/main.py's `/positions`), not for mutation."""
+        return [lifecycle for lifecycle in self._lifecycles.values() if not lifecycle.closed]
+
+    def list_pending_exits(self) -> list[tuple[str, str, str, PendingExit]]:
+        """Every (account_id, symbol, broker, PendingExit) whose remainder
+        hasn't resolved yet — what app/reconciliation.py polls to eventually
+        call `resolve_pending_exit`."""
+        return [
+            (lifecycle.plan.account_id, lifecycle.plan.symbol, lifecycle.plan.broker, lifecycle.pending_exit)
+            for lifecycle in self._lifecycles.values()
+            if lifecycle.pending_exit is not None and not lifecycle.pending_exit.remainder_resolved
+        ]
+
+    def restore_from_store(self) -> None:
+        """Rebuild in-memory lifecycles + arbiter ledgers from persisted
+        state — call once at startup, before any signal is handled. Answers
+        design section 3's "resume the existing episode after a restart":
+        without this, `PositionLifecycleManager` starts with no memory of
+        what it was protecting, which app/lifecycle/manager.py's module
+        docstring used to list as an open gap."""
+        if self.store is None:
+            return
+        for row in self.store.load_lifecycle_states():
+            if row.get("closed"):
+                continue
+            account_id, symbol = row["account_id"], row["symbol"]
+            lifecycle = _lifecycle_from_state(row)
+            self._lifecycles[(account_id, symbol)] = lifecycle
+            ledger = row["ledger"]
+            self.arbiter.restore(
+                account_id,
+                symbol,
+                owned=ledger["owned"],
+                reserved=ledger["reserved"],
+                halted=ledger["halted"],
+                halt_reason=ledger["halt_reason"],
+            )
+            logger.info(
+                "resumed managed lifecycle for account=%s symbol=%s owned=%s pending_exit=%s",
+                account_id,
+                symbol,
+                lifecycle.confirmed_owned_quantity,
+                lifecycle.pending_exit is not None,
+            )
+
+    def _persist(self, lifecycle: PositionLifecycle) -> None:
+        if self.store is None:
+            return
+        account_id, symbol = lifecycle.key
+        if lifecycle.closed:
+            self.store.delete_lifecycle_state(account_id, symbol)
+            return
+        state = _lifecycle_to_state(lifecycle, self.arbiter.snapshot(account_id, symbol))
+        self.store.save_lifecycle_state(account_id, symbol, state)
 
     @staticmethod
     def validate_plan(plan: PositionPlan) -> str | None:
@@ -104,6 +167,14 @@ class PositionLifecycleManager:
         self._lifecycles[(plan.account_id, plan.symbol)] = lifecycle
         return lifecycle
 
+    def unregister_plan(self, account_id: str, symbol: str) -> None:
+        """Drop a plan that was registered but never entered (e.g. the entry
+        order itself failed after `start_plan`) — otherwise a stale,
+        never-filled lifecycle sits around forever."""
+        self._lifecycles.pop((account_id, symbol), None)
+        if self.store is not None:
+            self.store.delete_lifecycle_state(account_id, symbol)
+
     async def on_entry_fill(
         self, account: DestinationAccount, symbol: str, filled_quantity: float
     ) -> PositionLifecycle:
@@ -121,6 +192,7 @@ class PositionLifecycleManager:
                 lifecycle.stop.desired_price = lifecycle.plan.initial_stop
                 await self._place_stop_locked(lifecycle, account, broker, filled_quantity, lifecycle.plan.initial_stop)
 
+        self._persist(lifecycle)
         return lifecycle
 
     async def on_stop_filled(
@@ -136,8 +208,10 @@ class PositionLifecycleManager:
             lifecycle.stop.protected_quantity = 0.0
             lifecycle.stop.status = ProtectionStatus.UNPROTECTED
             lifecycle.stop.broker_order_id = None
+            lifecycle.confirmed_owned_quantity = tx.owned
             if tx.owned <= 0:
                 lifecycle.closed = True
+        self._persist(lifecycle)
 
     async def on_price_update(self, account: DestinationAccount, symbol: str, price: float) -> list[OrderResult]:
         """Evaluate logical targets and trailing against a new price. Call this
@@ -186,6 +260,23 @@ class PositionLifecycleManager:
                 return OrderResult(account_id=account.account_id, status=OrderStatus.REJECTED, signal_id="", message="no active lifecycle for this position")
             if tx.is_halted:
                 return OrderResult(account_id=account.account_id, status=OrderStatus.REJECTED, signal_id="", message=f"halted: {tx.halt_reason}")
+            if lifecycle.pending_exit is not None and not lifecycle.pending_exit.remainder_resolved:
+                # A prior exit's own remainder is still unknown — its shares are
+                # already correctly excluded from `tx.available`, but submitting
+                # a second broker write on top of an unresolved first one is
+                # exactly the "don't send another sell while the first sell's
+                # outcome is unknown" case: refuse rather than pile up more
+                # untracked uncertainty.
+                return OrderResult(
+                    account_id=account.account_id,
+                    status=OrderStatus.REJECTED,
+                    signal_id="",
+                    message=(
+                        f"a prior {lifecycle.pending_exit.source or 'exit'} order "
+                        f"({lifecycle.pending_exit.broker_order_id}) for this position hasn't resolved "
+                        "yet; refusing to submit another exit until its remainder is confirmed done"
+                    ),
+                )
 
             requested = min(quantity, tx.available)
             if requested <= 0:
@@ -213,16 +304,84 @@ class PositionLifecycleManager:
                 return OrderResult(account_id=account.account_id, status=OrderStatus.ERROR, signal_id="", message="reservation failed unexpectedly")
 
             exit_result = await self._submit_exit_order(broker, account, lifecycle, requested, reason or source)
+
+            if exit_result.status == OrderStatus.PENDING:
+                # The broker hasn't given a final word yet: how much of `requested`
+                # will actually leave the position is still unknown, so the
+                # reservation stays open (tx.available correctly still excludes
+                # it) and the stop stays un-restored. See resolve_pending_exit —
+                # only that call, once the broker's outcome is final, is allowed
+                # to settle this and touch the stop (design's worked partial-fill
+                # example: don't resize on the requested quantity, only on what's
+                # actually confirmed done).
+                lifecycle.pending_exit = PendingExit(
+                    broker_order_id=exit_result.broker_order_id,
+                    requested_quantity=requested,
+                    phase=TransferPhase.AWAITING_REMAINDER_RESOLUTION,
+                    source=source,
+                    reason=reason or source,
+                )
+                self._persist(lifecycle)
+                return exit_result
+
             actual_filled = exit_result.filled_quantity if exit_result.filled_quantity is not None else 0.0
             tx.settle(reserved_quantity=requested, filled_quantity=actual_filled)
             remaining = tx.owned
+            lifecycle.confirmed_owned_quantity = remaining
 
             if remaining <= 0:
                 lifecycle.closed = True
             elif had_stop and lifecycle.stop.desired_price is not None:
                 await self._place_stop_locked(lifecycle, account, broker, remaining, lifecycle.stop.desired_price)
 
+            self._persist(lifecycle)
             return exit_result
+
+    async def resolve_pending_exit(
+        self, account: DestinationAccount, symbol: str, confirmed_filled_quantity: float, remainder_cancelled: bool
+    ) -> None:
+        """Call once the broker's final word on a PENDING exit (from
+        `request_exit`) is known: how much of it actually filled, and whether
+        the rest can no longer execute (fully filled itself, or its
+        cancellation/expiry is confirmed — `remainder_cancelled=True` covers
+        both, since either way nothing more of `requested_quantity` can fill).
+
+        Only then is it safe to settle the reservation and restore the stop
+        to the TRUE remaining owned quantity — using what actually filled,
+        not what was requested (the design's worked partial-fill example: a
+        15-share target that only fills 8 restores the stop against a
+        54-share remainder, not 47; if 3 more fill while cancellation was in
+        flight, the restore target is 51, not 54).
+
+        If the remainder isn't resolved yet, this just records progress
+        (`confirmed_filled_quantity`) and leaves the deficit open — it does
+        NOT restore anything early."""
+        broker = self.brokers.get(account.broker)
+        async with self.arbiter.transition(account.account_id, symbol) as tx:
+            lifecycle = self._lifecycles.get((account.account_id, symbol))
+            if lifecycle is None or lifecycle.pending_exit is None:
+                return
+            pending = lifecycle.pending_exit
+
+            if not remainder_cancelled and confirmed_filled_quantity < pending.requested_quantity:
+                pending.confirmed_filled_quantity = confirmed_filled_quantity
+                self._persist(lifecycle)
+                return
+
+            tx.settle(reserved_quantity=pending.requested_quantity, filled_quantity=confirmed_filled_quantity)
+            pending.confirmed_filled_quantity = confirmed_filled_quantity
+            pending.remainder_resolved = True
+            pending.phase = TransferPhase.RESTORING
+            remaining = tx.owned
+            lifecycle.confirmed_owned_quantity = remaining
+            lifecycle.pending_exit = None
+
+            if remaining <= 0:
+                lifecycle.closed = True
+            elif lifecycle.stop.desired_price is not None and broker is not None:
+                await self._place_stop_locked(lifecycle, account, broker, remaining, lifecycle.stop.desired_price)
+
+        self._persist(lifecycle)
 
     # --- internals ---
 
@@ -305,6 +464,23 @@ class PositionLifecycleManager:
         broker = self.brokers.get(account.broker)
         if broker is None or lifecycle.stop.desired_price is None:
             return
+        if lifecycle.pending_exit is not None and not lifecycle.pending_exit.remainder_resolved:
+            # A prior exit already cancelled the old stop and freed shares that
+            # may still sell (see PendingExit's docstring). Resizing/rearming
+            # now — even to `tx.owned`, which still includes those uncertain
+            # shares — would re-cover quantity that request_exit already
+            # accounted for as "may leave via that pending order," recreating
+            # the exact double-claim this subsystem exists to prevent.
+            logger.info(
+                "skipping stop replacement for account=%s symbol=%s: pending exit %s "
+                "(%.6f of %.6f requested) hasn't resolved yet",
+                account.account_id,
+                lifecycle.plan.symbol,
+                lifecycle.pending_exit.broker_order_id,
+                lifecycle.pending_exit.unresolved_remainder,
+                lifecycle.pending_exit.requested_quantity,
+            )
+            return
 
         async with self.arbiter.transition(account.account_id, lifecycle.plan.symbol) as tx:
             quantity = tx.owned
@@ -325,6 +501,7 @@ class PositionLifecycleManager:
                     lifecycle.stop.submitted_price = lifecycle.stop.desired_price
                     lifecycle.stop.broker_confirmed_price = lifecycle.stop.desired_price
                     lifecycle.stop.protected_quantity = quantity
+                    self._persist(lifecycle)
                     return
 
                 # No atomic in-place replace — cancel then resubmit. If cancellation can't be
@@ -337,3 +514,130 @@ class PositionLifecycleManager:
                 lifecycle.stop.broker_order_id = None
 
             await self._place_stop_locked(lifecycle, account, broker, quantity, lifecycle.stop.desired_price)
+        self._persist(lifecycle)
+
+
+# --- state (de)serialization, for PositionLifecycleManager's store-backed persist/restore ---
+
+
+def _lifecycle_to_state(lifecycle: PositionLifecycle, ledger: dict) -> dict:
+    plan = lifecycle.plan
+    return {
+        "closed": lifecycle.closed,
+        "confirmed_owned_quantity": lifecycle.confirmed_owned_quantity,
+        "plan": {
+            "account_id": plan.account_id,
+            "symbol": plan.symbol,
+            "side": plan.side.value,
+            "planned_quantity": plan.planned_quantity,
+            "asset_class": plan.asset_class.value,
+            "broker": plan.broker,
+            "initial_stop": plan.initial_stop,
+            "targets": [
+                {
+                    "trigger_price": t.trigger_price,
+                    "action": t.action.value,
+                    "reduce_fraction": t.reduce_fraction,
+                    "fired": t.fired,
+                }
+                for t in plan.targets
+            ],
+            "trailing": None
+            if plan.trailing is None
+            else {
+                "activate_at_price": plan.trailing.activate_at_price,
+                "trail_distance": plan.trailing.trail_distance,
+                "active": plan.trailing.active,
+                "floor_price": plan.trailing.floor_price,
+            },
+            "time_exit": plan.time_exit.isoformat() if plan.time_exit else None,
+            "max_risk": plan.max_risk,
+        },
+        "stop": {
+            "desired_price": lifecycle.stop.desired_price,
+            "submitted_price": lifecycle.stop.submitted_price,
+            "broker_confirmed_price": lifecycle.stop.broker_confirmed_price,
+            "broker_order_id": lifecycle.stop.broker_order_id,
+            "protected_quantity": lifecycle.stop.protected_quantity,
+            "status": lifecycle.stop.status.value,
+        },
+        "pending_exit": None
+        if lifecycle.pending_exit is None
+        else {
+            "broker_order_id": lifecycle.pending_exit.broker_order_id,
+            "requested_quantity": lifecycle.pending_exit.requested_quantity,
+            "confirmed_filled_quantity": lifecycle.pending_exit.confirmed_filled_quantity,
+            "remainder_resolved": lifecycle.pending_exit.remainder_resolved,
+            "phase": lifecycle.pending_exit.phase.value,
+            "source": lifecycle.pending_exit.source,
+            "reason": lifecycle.pending_exit.reason,
+        },
+        "ledger": ledger,
+    }
+
+
+def _lifecycle_from_state(row: dict) -> PositionLifecycle:
+    plan_row = row["plan"]
+    trailing_row = plan_row.get("trailing")
+    time_exit = datetime.fromisoformat(plan_row["time_exit"]) if plan_row.get("time_exit") else None
+    plan = PositionPlan(
+        account_id=plan_row["account_id"],
+        symbol=plan_row["symbol"],
+        side=Side(plan_row["side"]),
+        planned_quantity=plan_row["planned_quantity"],
+        asset_class=AssetClass(plan_row["asset_class"]),
+        broker=plan_row.get("broker", ""),
+        initial_stop=plan_row.get("initial_stop"),
+        targets=[
+            Target(
+                trigger_price=t["trigger_price"],
+                action=TargetAction(t["action"]),
+                reduce_fraction=t.get("reduce_fraction"),
+                fired=t.get("fired", False),
+            )
+            for t in plan_row.get("targets", [])
+        ],
+        trailing=None
+        if trailing_row is None
+        else TrailingPolicy(
+            activate_at_price=trailing_row.get("activate_at_price"),
+            trail_distance=trailing_row.get("trail_distance", 0.0),
+            active=trailing_row.get("active", False),
+            floor_price=trailing_row.get("floor_price"),
+        ),
+        time_exit=time_exit,
+        max_risk=plan_row.get("max_risk"),
+    )
+
+    stop_row = row["stop"]
+    stop = StopRecord(
+        desired_price=stop_row.get("desired_price"),
+        submitted_price=stop_row.get("submitted_price"),
+        broker_confirmed_price=stop_row.get("broker_confirmed_price"),
+        broker_order_id=stop_row.get("broker_order_id"),
+        protected_quantity=stop_row.get("protected_quantity", 0.0),
+        status=ProtectionStatus(stop_row.get("status", ProtectionStatus.UNPROTECTED.value)),
+    )
+
+    pending_row = row.get("pending_exit")
+    pending_exit = (
+        None
+        if pending_row is None
+        else PendingExit(
+            broker_order_id=pending_row.get("broker_order_id"),
+            requested_quantity=pending_row["requested_quantity"],
+            confirmed_filled_quantity=pending_row.get("confirmed_filled_quantity", 0.0),
+            remainder_resolved=pending_row.get("remainder_resolved", False),
+            phase=TransferPhase(pending_row.get("phase", TransferPhase.AWAITING_REMAINDER_RESOLUTION.value)),
+            source=pending_row.get("source", ""),
+            reason=pending_row.get("reason", ""),
+        )
+    )
+
+    return PositionLifecycle(
+        plan=plan,
+        confirmed_owned_quantity=row.get("confirmed_owned_quantity", 0.0),
+        stop=stop,
+        closed=row.get("closed", False),
+        pending_exit=pending_exit,
+    )

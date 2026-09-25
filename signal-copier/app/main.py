@@ -68,11 +68,17 @@ for broker_name, broker_factory in _optional_brokers:
     except RuntimeError as exc:
         logger.info("%s broker not registered: %s", broker_name, exc)
 
-lifecycle_manager = PositionLifecycleManager(brokers=brokers)
+lifecycle_manager = PositionLifecycleManager(brokers=brokers, store=store)
+lifecycle_manager.restore_from_store()  # resume any managed-lifecycle positions from before a restart
 engine = SignalCopierEngine(routing=routing_config, brokers=brokers, store=store, lifecycle_manager=lifecycle_manager)
 webhook_source = WebhookSource(on_signal=engine.handle_signal)
 sms_source = TwilioSMSSource(on_signal=engine.handle_signal)
-reconciler = OrderReconciler(store=store, brokers=brokers, interval_seconds=config.RECONCILE_INTERVAL_SECONDS)
+reconciler = OrderReconciler(
+    store=store,
+    brokers=brokers,
+    interval_seconds=config.RECONCILE_INTERVAL_SECONDS,
+    lifecycle_manager=lifecycle_manager,
+)
 
 # Pull-based sources only start if fully configured via env vars.
 _background_sources = []
@@ -190,7 +196,43 @@ async def list_positions() -> dict:
     the broker's real book on brokers that only confirm fills
     asynchronously), not a live read of any broker's account state.
     """
-    return {"positions": store.list_open_positions()}
+    return {"positions": store.list_open_positions(), "managed_lifecycles": _managed_lifecycle_snapshot()}
+
+
+def _managed_lifecycle_snapshot() -> list[dict]:
+    """Coverage/deficit detail for every open `managed_lifecycle` position —
+    the quantity-by-quantity picture app/lifecycle/manager.py's module
+    docstring calls for (e.g. "54 shares remain, 47 have a confirmed
+    working stop, a 7-share target remainder is cancellation-pending"),
+    not just a protected/unprotected flag."""
+    snapshot = []
+    for lifecycle in lifecycle_manager.list_open_lifecycles():
+        account_id, symbol = lifecycle.key
+        pending = lifecycle.pending_exit
+        snapshot.append(
+            {
+                "account_id": account_id,
+                "symbol": symbol,
+                "owned_quantity": lifecycle.confirmed_owned_quantity,
+                "covered_quantity": lifecycle.covered_quantity,
+                "uncovered_quantity": lifecycle.uncovered_quantity,
+                "stop_status": lifecycle.stop.status.value,
+                "stop_price": lifecycle.stop.broker_confirmed_price,
+                "halted": lifecycle_manager.arbiter.is_halted(account_id, symbol),
+                "halt_reason": lifecycle_manager.arbiter.halt_reason(account_id, symbol) or None,
+                "pending_exit": None
+                if pending is None
+                else {
+                    "broker_order_id": pending.broker_order_id,
+                    "requested_quantity": pending.requested_quantity,
+                    "confirmed_filled_quantity": pending.confirmed_filled_quantity,
+                    "unresolved_remainder": pending.unresolved_remainder,
+                    "phase": pending.phase.value,
+                    "source": pending.source,
+                },
+            }
+        )
+    return snapshot
 
 
 @app.get("/signals")

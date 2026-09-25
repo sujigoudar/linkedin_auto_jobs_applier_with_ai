@@ -101,6 +101,26 @@ class CloseArbiter:
             ledger.halted = True
             ledger.halt_reason = reason
 
+    def snapshot(self, account_id: str, symbol: str) -> dict:
+        """Lock-free read of this position's raw ledger, for persistence
+        (see PositionLifecycleManager's store-backed save/restore)."""
+        ledger = self._ledgers[(account_id, symbol)]
+        return {
+            "owned": ledger.owned,
+            "reserved": ledger.reserved,
+            "halted": ledger.halted,
+            "halt_reason": ledger.halt_reason,
+        }
+
+    def restore(self, account_id: str, symbol: str, *, owned: float, reserved: float, halted: bool, halt_reason: str) -> None:
+        """Seed this position's ledger from persisted state. Startup-only,
+        before any concurrent access begins — not lock-protected."""
+        ledger = self._ledgers[(account_id, symbol)]
+        ledger.owned = owned
+        ledger.reserved = reserved
+        ledger.halted = halted
+        ledger.halt_reason = halt_reason
+
     @asynccontextmanager
     async def transition(self, account_id: str, symbol: str) -> AsyncIterator["_TransactionOps"]:
         """Hold this position's lock across a multi-step operation (the

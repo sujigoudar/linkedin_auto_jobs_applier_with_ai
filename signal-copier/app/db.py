@@ -57,6 +57,19 @@ CREATE TABLE IF NOT EXISTS positions (
     updated_at TEXT NOT NULL,
     PRIMARY KEY (account_id, symbol)
 );
+
+-- Crash-resumable state for app/lifecycle/manager.py's PositionLifecycleManager:
+-- one row per open managed-lifecycle position, holding its whole
+-- PositionLifecycle (plan, stop, pending_exit) plus its CloseArbiter ledger
+-- snapshot as one JSON blob. Written after every state-changing transition;
+-- deleted once the position closes. See PositionLifecycleManager.restore_from_store.
+CREATE TABLE IF NOT EXISTS lifecycle_state (
+    account_id TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    state TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (account_id, symbol)
+);
 """
 
 
@@ -241,6 +254,30 @@ class SignalStore:
             }
             for r in rows
         ]
+
+    def save_lifecycle_state(self, account_id: str, symbol: str, state: dict) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """INSERT INTO lifecycle_state (account_id, symbol, state, updated_at)
+                   VALUES (?, ?, ?, ?)
+                   ON CONFLICT (account_id, symbol)
+                   DO UPDATE SET state = excluded.state, updated_at = excluded.updated_at""",
+                (account_id, symbol, json.dumps(state), datetime.now(timezone.utc).isoformat()),
+            )
+
+    def load_lifecycle_states(self) -> list[dict]:
+        """Every persisted managed-lifecycle state, for
+        PositionLifecycleManager.restore_from_store to resume after a
+        restart. Each dict is `{"account_id": ..., "symbol": ..., **state}`."""
+        with self._connect() as conn:
+            rows = conn.execute("SELECT account_id, symbol, state FROM lifecycle_state").fetchall()
+        return [{"account_id": r[0], "symbol": r[1], **json.loads(r[2])} for r in rows]
+
+    def delete_lifecycle_state(self, account_id: str, symbol: str) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "DELETE FROM lifecycle_state WHERE account_id = ? AND symbol = ?", (account_id, symbol)
+            )
 
     def list_recent_orders(self, limit: int = 50, account_id: str | None = None) -> list[dict]:
         query = """SELECT id, account_id, broker, symbol, side, requested_quantity, signal_id,

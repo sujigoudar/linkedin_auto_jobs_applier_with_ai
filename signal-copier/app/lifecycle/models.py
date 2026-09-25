@@ -18,6 +18,22 @@ class ProtectionStatus(str, enum.Enum):
     STOP_CONFIRMED = "stop_confirmed"
 
 
+class TransferPhase(str, enum.Enum):
+    """Where a single exit (a logical target, trailing ratchet, or provider
+    close) currently stands in the protection-transfer sequence. Modeled
+    explicitly — not inferred from a couple of unrelated booleans — because
+    the point where the stop was reduced/cancelled but the exit's own
+    remainder hasn't been confirmed done is exactly where a naive
+    implementation either leaves shares uncovered indefinitely or restores
+    the stop too early (see PendingExit's docstring)."""
+
+    STOP_REDUCED = "stop_reduced"  # old protective stop cancelled/confirmed gone
+    EXIT_SUBMITTED = "exit_submitted"  # the reducing sell order is with the broker
+    AWAITING_REMAINDER_RESOLUTION = "awaiting_remainder_resolution"  # broker reported PENDING; some of the requested quantity may still fill
+    RESTORING = "restoring"  # remainder resolved (filled or confirmed cancelled); resizing the stop to the true remaining owned quantity
+    COMPLETE = "complete"
+
+
 class TargetAction(str, enum.Enum):
     SELL = "sell"
     TIGHTEN_STOP = "tighten_stop"
@@ -57,6 +73,11 @@ class PositionPlan:
     side: Side  # the entry side: BUY for long, SELL for short
     planned_quantity: float
     asset_class: AssetClass = AssetClass.CRYPTO
+    #: Which broker adapter (app/brokers/*.py's `name`) this plan trades
+    #: against — needed by app/reconciliation.py to poll a pending exit's
+    #: order status, since a persisted/resumed lifecycle has no live
+    #: DestinationAccount to read it from otherwise.
+    broker: str = ""
     initial_stop: float | None = None
     targets: list[Target] = field(default_factory=list)
     trailing: TrailingPolicy | None = None
@@ -75,11 +96,52 @@ class StopRecord:
 
 
 @dataclass
+class PendingExit:
+    """An exit (target fill, trailing ratchet, provider close) whose broker
+    order reported PENDING rather than a synchronous, final fill — so the
+    old protective stop has already been cancelled to free these shares,
+    but how many of them will actually leave the position is still
+    unknown.
+
+    This is deliberately not folded into `StopRecord`: the deficit it
+    describes ("N shares have no covering stop, up to `requested_quantity
+    - confirmed_filled_quantity` of them may still sell") is a distinct,
+    separately-trackable fact from the stop's own state, per the design's
+    requirement to track coverage by quantity rather than a single
+    protected=true flag.
+
+    The stop is NOT resized/restored while this is open (`phase !=
+    COMPLETE`, i.e. `remainder_resolved` is False) — see
+    PositionLifecycleManager.resolve_pending_exit for why: restoring against
+    `confirmed_owned_quantity - confirmed_filled_quantity` while some of
+    `requested_quantity` might still fill would recreate exactly the
+    multi-order oversell this whole subsystem exists to prevent.
+    """
+
+    broker_order_id: str | None
+    requested_quantity: float
+    confirmed_filled_quantity: float = 0.0
+    remainder_resolved: bool = False  # True once the broker confirms no more of `requested_quantity` can fill (fully filled, or the remainder's cancellation is confirmed)
+    phase: TransferPhase = TransferPhase.EXIT_SUBMITTED
+    source: str = ""
+    reason: str = ""
+
+    @property
+    def unresolved_remainder(self) -> float:
+        """How much of this exit could still fill — the uncertainty a
+        restore must not ignore."""
+        if self.remainder_resolved:
+            return 0.0
+        return max(0.0, self.requested_quantity - self.confirmed_filled_quantity)
+
+
+@dataclass
 class PositionLifecycle:
     plan: PositionPlan
     confirmed_owned_quantity: float = 0.0
     stop: StopRecord = field(default_factory=StopRecord)
     closed: bool = False
+    pending_exit: PendingExit | None = None
     # Halt state lives on CloseArbiter, not here — it's the single source of
     # truth (app/lifecycle/close_arbiter.py's is_halted()/halt_reason()), so
     # this lifecycle and the arbiter's ledger can never disagree about it.
@@ -91,3 +153,17 @@ class PositionLifecycle:
     @property
     def key(self) -> tuple[str, str]:
         return (self.plan.account_id, self.plan.symbol)
+
+    @property
+    def covered_quantity(self) -> float:
+        """How much of the position currently sits behind a broker-confirmed
+        stop — distinct from `confirmed_owned_quantity` whenever a
+        `pending_exit` has freed shares from the old stop that aren't
+        resolved yet (see PendingExit's docstring)."""
+        if self.stop.status == ProtectionStatus.STOP_CONFIRMED:
+            return self.stop.protected_quantity
+        return 0.0
+
+    @property
+    def uncovered_quantity(self) -> float:
+        return max(0.0, self.confirmed_owned_quantity - self.covered_quantity)

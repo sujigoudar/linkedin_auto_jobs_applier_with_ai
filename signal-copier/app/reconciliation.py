@@ -14,6 +14,18 @@ Only brokers that implement `get_order_status()` are checked (currently
 Alpaca and IBKR — see their modules for how). Brokers without it are
 silently skipped on every pass; their PENDING orders just stay PENDING and
 optimistic in the position tracker, same as before this module existed.
+
+## Managed-lifecycle pending exits
+
+When a `PositionLifecycleManager` is wired in (`lifecycle_manager=`), this
+loop also polls every unresolved `PendingExit` it's tracking (see
+app/lifecycle/manager.py's `request_exit`/`resolve_pending_exit`) the same
+way — via `get_order_status()` — and, once that exit order reaches a
+terminal state, hands the result to `resolve_pending_exit`. That's the only
+thing that settles the reservation and restores the protective stop after
+a target/trailing exit that didn't fill synchronously; until this fires,
+the position stays with those shares deliberately uncovered rather than
+guessing at what the broker will still do with them.
 """
 from __future__ import annotations
 
@@ -22,16 +34,24 @@ import logging
 
 from app.brokers.base import BrokerAdapter
 from app.db import SignalStore
+from app.lifecycle.manager import PositionLifecycleManager
 from app.models import DestinationAccount, OrderStatus, Side
 
 logger = logging.getLogger(__name__)
 
 
 class OrderReconciler:
-    def __init__(self, store: SignalStore, brokers: dict[str, BrokerAdapter], interval_seconds: float = 30.0):
+    def __init__(
+        self,
+        store: SignalStore,
+        brokers: dict[str, BrokerAdapter],
+        interval_seconds: float = 30.0,
+        lifecycle_manager: PositionLifecycleManager | None = None,
+    ):
         self.store = store
         self.brokers = brokers
         self.interval_seconds = interval_seconds
+        self.lifecycle_manager = lifecycle_manager
         self._task: asyncio.Task | None = None
 
     async def start(self) -> None:
@@ -73,7 +93,49 @@ class OrderReconciler:
             self.store.update_order_status(order["id"], result)
             corrected += 1
 
+        corrected += await self._reconcile_pending_exits()
         return corrected
+
+    async def _reconcile_pending_exits(self) -> int:
+        """Poll every managed-lifecycle position's unresolved exit (see
+        app/lifecycle/manager.py's PendingExit) and, once the broker gives a
+        final word, hand it to `resolve_pending_exit` — the only thing
+        allowed to settle that reservation and restore the protective stop.
+        A no-op if no `PositionLifecycleManager` was wired in."""
+        if self.lifecycle_manager is None:
+            return 0
+
+        resolved = 0
+        for account_id, symbol, broker_name, pending in self.lifecycle_manager.list_pending_exits():
+            broker = self.brokers.get(broker_name)
+            if broker is None or pending.broker_order_id is None:
+                continue
+
+            account = DestinationAccount(account_id=account_id, broker=broker_name)
+            try:
+                result = await broker.get_order_status(account, pending.broker_order_id)
+            except Exception:  # noqa: BLE001 - one broker's failure must not block the rest
+                logger.exception(
+                    "get_order_status failed for pending exit account=%s symbol=%s order=%s",
+                    account_id,
+                    symbol,
+                    pending.broker_order_id,
+                )
+                continue
+
+            if result is None or result.status not in (OrderStatus.FILLED, OrderStatus.REJECTED):
+                continue  # still open on the broker's side — more of it may yet fill
+
+            # FILLED or REJECTED are both terminal for this order: either everything
+            # requested filled, or nothing more of it can (rejected/canceled/expired).
+            # Either way the remainder is resolved, so this order's own filled_qty
+            # (which brokers report even on a canceled-after-partial-fill order — see
+            # e.g. AlpacaBroker.get_order_status) is the true, final fill.
+            filled = result.filled_quantity if result.filled_quantity is not None else 0.0
+            await self.lifecycle_manager.resolve_pending_exit(account, symbol, filled, remainder_cancelled=True)
+            resolved += 1
+
+        return resolved
 
     def _correct_position(self, order: dict, new_status: OrderStatus, confirmed_quantity: float | None) -> None:
         if not order["symbol"] or not order["side"]:

@@ -161,20 +161,102 @@ different path instead by setting `managed_lifecycle: true` in
   stop-loss resolved for this entry ... refusing to enter unprotected"),
   never sent to the broker unprotected.
 
-What's still a documented gap, not implemented: a live price feed driving
-`on_price_update()` in production (nothing calls it outside tests —
-wiring a real feed per broker is future work), fill confirmation for
-brokers that only report `PENDING` on the entry (the position is opened
-but left unprotected by this manager until a fill-confirmation path feeds
-back into it — mirrors the same gap `app/reconciliation.py` documents for
-the plain path), and startup reconciliation against a broker's live
-position/order state after a process restart (this manager's bookkeeping
-is in-memory, seeded only by `on_entry_fill`).
+### Partial-fill-during-a-transfer correctness (protection transfers)
+
+Reducing a stop to free shares for an exit creates a real, non-instantaneous
+protection gap for those shares — and if that exit only *partially* fills
+(the normal case on any broker that confirms fills asynchronously, e.g.
+Alpaca), the stop must not be restored against what was *requested*, only
+against what's *actually confirmed done*. `app/lifecycle/models.py`'s
+`PendingExit` and `TransferPhase` track this explicitly, and
+`PositionLifecycleManager` enforces it:
+
+- If `broker.place_order()` for an exit reports `PENDING` (not a
+  synchronous final fill), the manager does **not** resize/restore the
+  stop yet. It records a `PendingExit` (requested quantity, broker order
+  id) and leaves the freed shares genuinely uncovered — `covered_quantity`
+  / `uncovered_quantity` on the lifecycle reflect that honestly, not a
+  single `protected=true/false` flag.
+- **No second exit is accepted while one is unresolved** — `request_exit`
+  refuses with "hasn't resolved yet" rather than submitting another
+  broker write on top of an unknown outcome.
+- **No trailing/tighten update touches the stop while unresolved** either
+  (`_replace_stop_price` skips and logs) — re-arming a stop sized off
+  current owned quantity would re-cover shares that might still leave via
+  the pending order, recreating the same oversell risk.
+- Once the outcome is final — `PositionLifecycleManager.resolve_pending_exit()`,
+  called by `app/reconciliation.py` polling `get_order_status()` the same
+  way it already does for pending entries — the stop is resized to
+  `confirmed_owned_quantity - confirmed_filled_quantity`, using whatever
+  actually filled. A 15-share target that only fills 8 before its
+  remainder is confirmed cancelled restores the stop to 54 (62 − 8), not
+  47 (62 − 15); if 3 more fill while that cancellation was in flight, the
+  restore target is 51, not 54. See `tests/test_protection_transfer.py`,
+  which reproduces this exact sequence.
+
+### Crash-resumable persistence
+
+`PositionLifecycleManager` accepts an optional `store=` (the same
+`SignalStore`) and, when given one, persists every lifecycle transition
+(entry fill, stop resize, pending-exit open/resolve) to a `lifecycle_state`
+table as one JSON blob per (account, symbol) — including the `CloseArbiter`
+ledger's `owned`/`reserved`/`halted` snapshot. `app/main.py` calls
+`restore_from_store()` once at startup, before any signal is handled, to
+rebuild in-memory lifecycles and arbiter ledgers from that table — a
+process restart no longer loses what a managed-lifecycle position was
+mid-transfer doing (`tests/test_protection_transfer.py`'s
+`test_persisted_lifecycle_resumes_after_restart_with_deficit_intact`
+exercises this, including resuming an in-flight `PendingExit`). The
+position closes the row is deleted (`store.delete_lifecycle_state`), so
+the table only ever holds what's actually still open.
+
+### What's still open, not implemented
+
+Being explicit about what this round did *not* close, rather than
+implying broader coverage than exists:
+
+- **A live price feed driving `on_price_update()` in production.**
+  Nothing calls it outside tests — wiring a real feed per broker (or per
+  exchange) is future work, and profitability claims for a trailing/target
+  strategy shouldn't be trusted until they account for real feed latency
+  and the cancel/replace delays above, not an idealized instant-fill
+  assumption.
+- **Fill confirmation for an entry that reports `PENDING`.** The position
+  is opened but left unprotected by this manager until a fill-confirmation
+  path feeds the entry's actual fill back in (the pending-*exit* half of
+  this problem is now handled via `resolve_pending_exit`/reconciliation
+  above; the pending-*entry* half is not).
+- **Per-order-family accounting for genuinely independent broker orders**
+  (as opposed to this manager's own cancel-then-exit sequence). Everything
+  routed through `PositionLifecycleManager` goes through the single
+  `CloseArbiter` lock, so it can't itself submit two competing sells —
+  but this doesn't model a broker's own OCO/bracket group's execution
+  guarantees (or lack of them: Alpaca's own OCO docs note both legs can
+  fill before a cancellation lands in a fast market), doesn't distinguish
+  a venue-enforced quantity cap from independent orders that merely look
+  related, and doesn't track cancel-on-disconnect / dead-man-switch
+  settings that could cancel a protective stop out from under a held
+  position. Treat `supports_native_bracket = True` as "this broker/route
+  accepts one atomic order for entry+stop+target," not as a guarantee
+  about what the venue's matching engine can still do to two already-
+  accepted orders afterward.
+- **A GUI.** This project has no UI; the position-level detail described
+  above ("47 covered, 7 pending-exit-uncovered, restoring once resolved")
+  is exposed as data via `GET /positions`' `managed_lifecycles` field (see
+  "Monitoring" below), for a caller to render however it needs to.
+- **Broker/route capability certification as one combined check**
+  (entry type + attached protection + amendment method + trigger basis +
+  session + account mode, all together, not evaluated independently) and
+  **operation-specific trading-window handling** (create/amend/cancel/
+  trigger/execute don't all share one "market is open" window on every
+  broker). Neither is modeled here; `supports_native_bracket` and the
+  optional capability methods on `BrokerAdapter` are per-operation, not a
+  certified combination.
 
 See `app/lifecycle/manager.py`'s module docstring for the full design
-rationale, and `tests/test_close_arbiter.py` /
-`tests/test_lifecycle_manager.py` for the oversell-prevention and
-partial-fill-arithmetic proofs.
+rationale, and `tests/test_close_arbiter.py` / `tests/test_lifecycle_manager.py`
+/ `tests/test_protection_transfer.py` for the oversell-prevention,
+partial-fill-arithmetic, and pending-exit-transfer proofs.
 
 ## Monitoring
 
@@ -189,6 +271,14 @@ record, not a live broker read. Positions self-correct in the background
 for Alpaca/IBKR via `OrderReconciler` (see "Close signals" above); on
 brokers without a wired-up order-status read, a PENDING order stays
 optimistic until you check that broker's own account state directly.
+
+`GET /positions` also returns a `managed_lifecycles` array — one entry per
+open `managed_lifecycle` position, with `owned_quantity`,
+`covered_quantity` (behind a broker-confirmed stop right now),
+`uncovered_quantity`, `stop_status`/`stop_price`, `halted`/`halt_reason`,
+and `pending_exit` (non-null while an exit's remainder hasn't resolved —
+see "Managed lifecycle" above). This is the quantity-by-quantity picture
+a naive `protected: true/false` flag can't give you.
 
 ## What's real vs. stubbed
 
