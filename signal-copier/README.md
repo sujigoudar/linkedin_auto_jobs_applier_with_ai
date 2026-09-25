@@ -38,8 +38,9 @@ Source adapter --(Signal)--> SignalCopierEngine --(per destination account)--> B
   looks up which destination accounts should receive it (`app/routing.py`),
   sizes and symbol-maps it per account (`app/risk.py`), and calls the
   right broker.
-- **`app/db.py`** — SQLite log of every signal received and every order
-  result, for audit/debugging.
+- **`app/db.py`** — SQLite log of every signal received, every order
+  result, and this service's own tracked net position per
+  (account, symbol) — see "Close signals" below.
 - **`app/main.py`** — FastAPI app. Push-based sources (webhooks) get an
   HTTP route; pull-based sources (bots, pollers) would be started as
   background tasks in the `lifespan` handler.
@@ -49,6 +50,31 @@ copy from the `.example.yaml` files). **Credentials are never stored in
 YAML** — they're read from environment variables per account
 (`CCXT_{ACCOUNT_ID}_API_KEY`, etc.), so the config files stay safe to
 commit.
+
+## Close signals
+
+A `close` signal doesn't carry a size — closing means flattening whatever
+is currently open, not scaling a new trade. `SignalCopierEngine` resolves
+this per destination account before calling any broker:
+
+1. Look up this service's own tracked net position for that account +
+   mapped symbol (`app/db.py`'s `positions` table — its own record of what
+   it has sent, not a live read of the broker's actual book).
+2. Flat (zero)? Report `REJECTED` — "no open position to close" — without
+   calling the broker.
+3. Otherwise resolve to the opposing `buy`/`sell` at the full open
+   quantity and call the broker with that. Brokers never see `Side.CLOSE`
+   from the engine; each broker's own close handling (where present) is
+   only a defensive fallback for direct/standalone use.
+
+Position tracking updates from `OrderResult.filled_quantity` on `FILLED`,
+or optimistically from the requested quantity on `PENDING` (SignalStack,
+Alpaca, IBKR, NinjaTrader, and Rithmic all confirm fills asynchronously,
+outside the `place_order` call). That means tracked positions on those
+brokers can drift from the real book if an order is later rejected or
+partially filled — there's no fill-confirmation feedback path from those
+brokers back into this service yet. Paper, ccxt, and MT5 report real fills
+synchronously, so their tracked positions stay accurate.
 
 ## What's real vs. stubbed
 
@@ -125,6 +151,28 @@ layer are adapter-agnostic.
 ```bash
 pytest -q
 ```
+
+CI runs this automatically on every push/PR that touches `signal-copier/**`
+(`.github/workflows/signal-copier-ci.yml`, scoped separately from the
+parent repo's own CI so it doesn't run against unrelated changes).
+
+## Running with Docker
+
+```bash
+cp .env.example .env
+cp config/routing.example.yaml config/routing.yaml
+cp config/accounts.example.yaml config/accounts.yaml
+
+docker compose up --build
+```
+
+The database lives in a named volume (`signal_copier_db`) so it survives
+container recreation; `config/` is bind-mounted so routing/account changes
+don't need a rebuild. To bake in an optional adapter's dependency (e.g.
+`ccxt`), uncomment and edit the `build.args.EXTRAS` line in
+`docker-compose.yml`, or `docker build --build-arg EXTRAS="ccxt tweepy" .`
+directly. (The Docker setup hasn't been run against a live Docker daemon
+in this environment — verify it builds and starts before relying on it.)
 
 ## Security notes for when this goes live
 

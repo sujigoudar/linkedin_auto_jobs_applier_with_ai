@@ -1,0 +1,35 @@
+name: signal-copier CI
+
+on:
+  push:
+    paths:
+      - 'signal-copier/**'
+      - '.github/workflows/signal-copier-ci.yml'
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - 'signal-copier/**'
+      - '.github/workflows/signal-copier-ci.yml'
+
+defaults:
+  run:
+    working-directory: signal-copier
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run tests
+        run: pytest -q

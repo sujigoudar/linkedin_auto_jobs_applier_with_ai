@@ -59,13 +59,14 @@ class NinjaTraderBroker(BrokerAdapter):
 
         if signal.side.value == "close":
             # TradeRouter's flatten mapping (buy+flat closes a short, sell+flat closes
-            # a long) depends on which side is currently open, which this service
-            # doesn't track — so "close" is rejected rather than guessed at.
+            # a long) depends on which side is currently open. The engine already
+            # resolves that via SignalCopierEngine._resolve_close before calling
+            # place_order, so this is just a defensive fallback for direct use.
             return OrderResult(
                 account_id=account.account_id,
                 status=OrderStatus.REJECTED,
                 signal_id=signal.id,
-                message="'close' side requires position-aware close logic; not yet implemented",
+                message="'close' side reached the broker directly without engine-level resolution (see SignalCopierEngine._resolve_close); this broker only accepts buy/sell",
             )
 
         payload = {

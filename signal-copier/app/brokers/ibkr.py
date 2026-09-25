@@ -54,7 +54,7 @@ class IBKRBroker(BrokerAdapter):
                 account_id=account.account_id,
                 status=OrderStatus.REJECTED,
                 signal_id=signal.id,
-                message="'close' side requires position-aware close logic; not yet implemented",
+                message="'close' side reached the broker directly without engine-level resolution (see SignalCopierEngine._resolve_close); this broker only accepts buy/sell",
             )
 
         try:
