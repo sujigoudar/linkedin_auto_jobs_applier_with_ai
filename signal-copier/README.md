@@ -5,13 +5,18 @@ symbol-mapped per account, to one or more execution destinations.
 
 This is a scaffold, not a finished product: the core pipeline (ingestion →
 routing → risk sizing → execution → persistence) is fully working and
-tested, and so is every source/broker integration that only needs API
-credentials to run (Telegram, Discord, Slack, SMS, Twitter, Alpaca, IBKR,
-same-host MT5). A few integrations remain stubs with detailed setup notes
-in their docstrings, because finishing them means writing and compiling
-platform-specific bridge code (an MQL5 EA, a C# NinjaScript AddOn) or
-requires a licensed SDK this project has no access to — see "What's real
-vs. stubbed" below for exactly which and why.
+tested. Every source/broker integration is now working code — either
+built directly (Telegram, Discord, Slack, SMS, Twitter, Alpaca, IBKR,
+same-host MT5, SignalStack), or by wiring up an established open-source
+project instead of reimplementing a platform bridge from scratch:
+MT4/MT5 via [MetaApi](https://github.com/metaapi/metaapi-python-sdk),
+Rithmic via [async_rithmic](https://github.com/rundef/async_rithmic), and
+NinjaTrader execution via
+[TradeRouter](https://github.com/roydufek/traderouter)'s NinjaScript
+strategy. One gap remains genuinely open — NinjaTrader as a signal
+*source* — because no existing open-source project reads trade events back
+out of NinjaTrader (everything found is one-way, TradingView-in only); see
+"What's real vs. stubbed" below.
 
 ## Architecture
 
@@ -60,8 +65,10 @@ commit.
 | Twitter/X source | ✅ Working, but needs X API v2 filtered-stream access (a paid tier as of X's current pricing — verify current terms) and is the least reliable parser of the bunch since tweets are free text |
 | IBKR broker | ✅ Working (needs `pip install ib_insync` + a running IB Gateway/TWS with the API enabled; reports PENDING, not a confirmed fill, since IBKR confirms asynchronously) |
 | MT5 broker (same-host only) | ✅ Working (needs `pip install MetaTrader5`, Windows, and the service running on the same host as a logged-in MT5 terminal — one terminal process per account) |
-| MT4/MT5 as a signal *source*, NinjaTrader source & broker | 🚧 Stub — these need platform-side bridge code (an MQL5 Expert Advisor, a C# NinjaScript AddOn) that has to be written, compiled, and run inside that platform. This project can't verify code like that works without the actual platform, so it's left as detailed setup notes rather than unverifiable code. See each file's docstring. |
-| Rithmic source & broker | 🚧 Stub — needs licensed R\|API access from Rithmic/your broker before any code can be written against it at all |
+| MT4/MT5 source & broker, via [MetaApi](https://github.com/metaapi/metaapi-python-sdk) | ✅ Working (needs `pip install metaapi-cloud-sdk` + a MetaApi account — free tier covers 1 MT4/MT5 account; no local terminal needed at all). Preferred over the same-host MT5 broker above unless you specifically want to avoid the cloud dependency. The source polls deal history on an interval rather than a real-time push callback — see its docstring for why. |
+| Rithmic source & broker, via [async_rithmic](https://github.com/rundef/async_rithmic) | ✅ Working (needs `pip install async_rithmic` + licensed Rithmic credentials from your broker — there's no self-serve signup, this is a paid/licensed service regardless of which library talks to it) |
+| NinjaTrader broker, via [TradeRouter](https://github.com/roydufek/traderouter)'s `WebhookOrderStrategy.cs` | ✅ Working (needs TradeRouter's NinjaScript strategy file installed and compiled inside NinjaTrader itself — this service just POSTs to its local HTTP listener; see the broker's docstring) |
+| NinjaTrader signal *source* | 🚧 Stub — every open-source NinjaTrader bridge found (TradeRouter, ninja-webhook, tv-ninjatrader-bridge) is one-way (external signal → NinjaTrader order); none reads trade/fill events back out. Doing that needs a custom NinjaScript AddOn this project can't write and verify without the actual platform. See the file's docstring. |
 
 The Telegram/Discord/Slack/SMS/Twitter parsers all share one generic
 free-text parser (`app/sources/text_parser.py`) that handles the common

@@ -41,3 +41,12 @@ TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN", "")
 # Full public URL Twilio POSTs to, required for signature validation (Twilio
 # signs the exact URL it called, including scheme/host).
 TWILIO_WEBHOOK_URL = os.getenv("TWILIO_WEBHOOK_URL", "")
+
+MT4_MT5_METAAPI_TOKEN = os.getenv("MT4_MT5_METAAPI_TOKEN", "")
+MT4_MT5_METAAPI_SOURCE_ACCOUNT_ID = os.getenv("MT4_MT5_METAAPI_SOURCE_ACCOUNT_ID", "")
+
+RITHMIC_USER = os.getenv("RITHMIC_USER", "")
+RITHMIC_PASSWORD = os.getenv("RITHMIC_PASSWORD", "")
+RITHMIC_SYSTEM_NAME = os.getenv("RITHMIC_SYSTEM_NAME", "")
+RITHMIC_GATEWAY_URL = os.getenv("RITHMIC_GATEWAY_URL", "")
+RITHMIC_SOURCE_ACCOUNT_ID = os.getenv("RITHMIC_SOURCE_ACCOUNT_ID", "")  # optional filter

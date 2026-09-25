@@ -30,3 +30,25 @@ accounts:
     broker: signalstack
     multiplier: 0.25
     enabled: false
+
+  main:
+    # MT4/MT5 via MetaApi (broker: mt4_mt5_metaapi) or same-host MT5
+    # (broker: mt4_mt5) — env vars are read using this account_id, e.g.
+    # MT4_MT5_METAAPI_MAIN_ID or MT5_MAIN_LOGIN. See .env.example.
+    broker: mt4_mt5_metaapi
+    multiplier: 1.0
+    enabled: false
+    symbol_map:
+      EURUSD: EURUSD
+
+  ninjatrader_main:
+    broker: ninjatrader
+    multiplier: 1.0
+    enabled: false
+
+  rithmic_main:
+    broker: rithmic
+    multiplier: 1.0
+    enabled: false
+    symbol_map:
+      ES: ESZ5   # source symbol -> Rithmic's actual contract code (update each roll)

@@ -17,14 +17,18 @@ from app import config
 from app.brokers.alpaca import AlpacaBroker
 from app.brokers.ccxt_broker import CCXTBroker
 from app.brokers.ibkr import IBKRBroker
-from app.brokers.mt4_mt5 import MT5Broker
+from app.brokers.mt4_mt5 import MetaApiBroker, MT5Broker
+from app.brokers.ninjatrader import NinjaTraderBroker
 from app.brokers.paper import PaperBroker
+from app.brokers.rithmic import RithmicBroker
 from app.brokers.signalstack import SignalStackBroker
 from app.db import SignalStore
 from app.engine import SignalCopierEngine
 from app.errors import SignalValidationError
 from app.routing import load_routing_config
 from app.sources.discord import DiscordSource
+from app.sources.mt4_mt5 import MetaApiSource
+from app.sources.rithmic import RithmicSource
 from app.sources.slack import SlackSource
 from app.sources.sms_twilio import TwilioSMSSource
 from app.sources.telegram import TelegramSource
@@ -41,12 +45,24 @@ brokers = {
     "paper": PaperBroker(),
     "signalstack": SignalStackBroker(),
     "alpaca": AlpacaBroker(),
+    "ninjatrader": NinjaTraderBroker(),
 }
-# These brokers need optional packages installed; only register them if
-# available so the paper-only quickstart doesn't need every dependency.
-for broker_name, broker_cls in [("ccxt", CCXTBroker), ("ibkr", IBKRBroker), ("mt4_mt5", MT5Broker)]:
+# These brokers need optional packages installed (and, for Rithmic, connection
+# credentials up front); only register them if available so the paper-only
+# quickstart doesn't need every dependency.
+_optional_brokers = [("ccxt", CCXTBroker), ("ibkr", IBKRBroker), ("mt4_mt5", MT5Broker), ("mt4_mt5_metaapi", MetaApiBroker)]
+if config.RITHMIC_USER:
+    _optional_brokers.append(
+        (
+            "rithmic",
+            lambda: RithmicBroker(
+                config.RITHMIC_USER, config.RITHMIC_PASSWORD, config.RITHMIC_SYSTEM_NAME, config.RITHMIC_GATEWAY_URL
+            ),
+        )
+    )
+for broker_name, broker_factory in _optional_brokers:
     try:
-        brokers[broker_name] = broker_cls()
+        brokers[broker_name] = broker_factory()
     except RuntimeError as exc:
         logger.info("%s broker not registered: %s", broker_name, exc)
 
@@ -72,6 +88,21 @@ if config.TWITTER_BEARER_TOKEN:
     _background_sources.append(
         TwitterSource(engine.handle_signal, config.TWITTER_BEARER_TOKEN, config.TWITTER_RULES)
     )
+if config.MT4_MT5_METAAPI_TOKEN and config.MT4_MT5_METAAPI_SOURCE_ACCOUNT_ID:
+    _background_sources.append(
+        MetaApiSource(engine.handle_signal, config.MT4_MT5_METAAPI_TOKEN, config.MT4_MT5_METAAPI_SOURCE_ACCOUNT_ID)
+    )
+if config.RITHMIC_USER and config.RITHMIC_SYSTEM_NAME and config.RITHMIC_GATEWAY_URL:
+    _background_sources.append(
+        RithmicSource(
+            engine.handle_signal,
+            config.RITHMIC_USER,
+            config.RITHMIC_PASSWORD,
+            config.RITHMIC_SYSTEM_NAME,
+            config.RITHMIC_GATEWAY_URL,
+            account_id=config.RITHMIC_SOURCE_ACCOUNT_ID or None,
+        )
+    )
 
 
 @asynccontextmanager
@@ -87,7 +118,7 @@ async def lifespan(app: FastAPI):
 
     for source in _background_sources:
         await source.stop()
-    for broker_name in ("signalstack", "alpaca", "ccxt", "ibkr"):
+    for broker_name in ("signalstack", "alpaca", "ninjatrader", "ccxt", "ibkr", "mt4_mt5_metaapi", "rithmic"):
         if broker_name in brokers:
             await brokers[broker_name].close()
 

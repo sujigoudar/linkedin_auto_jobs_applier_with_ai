@@ -1,7 +1,16 @@
-"""MT5 execution destination, via the official `MetaTrader5` Python package
-(Windows only, same host as a running MT5 terminal).
+"""MT4/MT5 execution destinations. Two independent implementations live in
+this file — pick whichever fits your setup:
 
-Setup:
+- `MT5Broker`: the official `MetaTrader5` Python package, same-host only,
+  MT5 only. Simplest if this service already runs on the MT5 terminal's
+  own Windows box.
+- `MetaApiBroker`: the MetaApi cloud SDK (see app/sources/mt4_mt5.py's
+  docstring), works for both MT4 and MT5, and needs no local terminal at
+  all since MetaApi hosts the terminal connection in the cloud. Prefer
+  this unless you specifically want to avoid a third-party cloud
+  dependency and already have a same-host MT5 setup.
+
+## MT5Broker setup:
     pip install MetaTrader5
     1. This service must run on the same Windows host as the MT5 terminal
        (the package talks to it via local IPC — it cannot reach a remote
@@ -135,3 +144,106 @@ class MT5Broker(BrokerAdapter):
             filled_price=result["price"],
             message="filled by MT5",
         )
+
+
+class MetaApiBroker(BrokerAdapter):
+    """MT4/MT5 execution via the MetaApi cloud SDK. See this file's module
+    docstring and app/sources/mt4_mt5.py for setup steps and API notes.
+
+    Per-account config, read from env vars:
+        MT4_MT5_METAAPI_TOKEN               # shared across accounts
+        MT4_MT5_METAAPI_{ACCOUNT_ID}_ID      # this account's MetaApi account id
+    """
+
+    name = "mt4_mt5_metaapi"
+
+    def __init__(self):
+        try:
+            import metaapi_cloud_sdk  # noqa: F401 - import check only; MetaApi() itself needs a running event loop
+        except ImportError as exc:  # pragma: no cover
+            raise RuntimeError(
+                "metaapi-cloud-sdk is not installed; run `pip install metaapi-cloud-sdk`"
+            ) from exc
+
+        self._token = os.getenv("MT4_MT5_METAAPI_TOKEN")
+        if not self._token:
+            raise RuntimeError("missing MT4_MT5_METAAPI_TOKEN environment variable")
+
+        # MetaApi() schedules an internal background task on construction, so it
+        # can only be built once there's a running event loop (i.e. not here in
+        # __init__, which runs at module import time) — built lazily below instead.
+        self._api = None
+        self._connections: dict[str, object] = {}
+
+    async def _connection_for(self, account: DestinationAccount):
+        if account.account_id in self._connections:
+            return self._connections[account.account_id]
+
+        if self._api is None:
+            from metaapi_cloud_sdk import MetaApi
+
+            self._api = MetaApi(self._token)
+
+        metaapi_account_id = os.getenv(f"MT4_MT5_METAAPI_{account.account_id.upper()}_ID")
+        if not metaapi_account_id:
+            raise RuntimeError(
+                f"missing MT4_MT5_METAAPI_{account.account_id.upper()}_ID environment variable "
+                f"for account '{account.account_id}'"
+            )
+
+        metaapi_account = await self._api.metatrader_account_api.get_account(metaapi_account_id)
+        if metaapi_account.state != "DEPLOYED":
+            await metaapi_account.deploy()
+        if metaapi_account.connection_status != "CONNECTED":
+            await metaapi_account.wait_connected()
+
+        connection = metaapi_account.get_streaming_connection()
+        await connection.connect()
+        await connection.wait_synchronized()
+        self._connections[account.account_id] = connection
+        return connection
+
+    async def place_order(
+        self, signal: Signal, account: DestinationAccount, quantity: float, symbol: str
+    ) -> OrderResult:
+        try:
+            connection = await self._connection_for(account)
+        except RuntimeError as exc:
+            return OrderResult(
+                account_id=account.account_id,
+                status=OrderStatus.ERROR,
+                signal_id=signal.id,
+                message=str(exc),
+            )
+
+        try:
+            if signal.side.value == "buy":
+                result = await connection.create_market_buy_order(symbol=symbol, volume=quantity)
+            elif signal.side.value == "sell":
+                result = await connection.create_market_sell_order(symbol=symbol, volume=quantity)
+            else:
+                return OrderResult(
+                    account_id=account.account_id,
+                    status=OrderStatus.REJECTED,
+                    signal_id=signal.id,
+                    message="'close' side requires position-aware close logic; not yet implemented",
+                )
+        except Exception as exc:  # noqa: BLE001 - surface any MetaApi error as a failed order
+            return OrderResult(
+                account_id=account.account_id,
+                status=OrderStatus.ERROR,
+                signal_id=signal.id,
+                message=str(exc),
+            )
+
+        return OrderResult(
+            account_id=account.account_id,
+            status=OrderStatus.FILLED if result.get("stringCode") == "TRADE_RETCODE_DONE" else OrderStatus.PENDING,
+            signal_id=signal.id,
+            broker_order_id=str(result.get("orderId") or result.get("positionId") or ""),
+            message=f"MetaApi order result: {result.get('stringCode')}",
+        )
+
+    async def close(self) -> None:
+        for connection in self._connections.values():
+            await connection.close()
