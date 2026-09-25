@@ -70,34 +70,53 @@ this per destination account before calling any broker:
 Position tracking updates from `OrderResult.filled_quantity` on `FILLED`,
 or optimistically from the requested quantity on `PENDING` (SignalStack,
 Alpaca, IBKR, NinjaTrader, and Rithmic all confirm fills asynchronously,
-outside the `place_order` call). That means tracked positions on those
-brokers can drift from the real book if an order is later rejected or
-partially filled — there's no fill-confirmation feedback path from those
-brokers back into this service yet. Paper, ccxt, and MT5 report real fills
-synchronously, so their tracked positions stay accurate.
+outside the `place_order` call). Paper, ccxt, and MT5 report real fills
+synchronously, so their tracked positions are accurate immediately.
+
+For the PENDING brokers, `app/reconciliation.py`'s `OrderReconciler`
+background task periodically re-checks each PENDING order via the
+broker's optional `get_order_status()` and corrects the tracked position:
+reverses it if the order was actually rejected, or trues it up if the
+confirmed fill quantity differs from the optimistic guess. Only brokers
+that implement `get_order_status()` are covered this way — currently
+**Alpaca** (a REST GET on the order) and **IBKR** (reads the locally
+cached `Trade` object, which ib_insync keeps live-updated via its own
+event stream). SignalStack, NinjaTrader, and Rithmic have no confirmed
+order-status-read API wired up yet, so their PENDING orders stay
+optimistic until that's added. The reconciler's poll interval is
+`RECONCILE_INTERVAL_SECONDS` (default 30s).
 
 ## Stop-loss / take-profit
 
 A `Signal`'s `stop_loss`/`take_profit` are sent as native exit orders on
-brokers where that's a confirmed, safe API to use:
+every broker where that's a confirmed, safe API to use (verified against
+each library/API's real source or docs, not guessed):
 
-- **MT5** (`sl`/`tp` request fields) and **MetaApi** (`stop_loss`/
-  `take_profit` params) — sent directly with the entry order.
-- **Alpaca** — sent as a bracket (`order_class: "bracket"`, both legs) or
+- **MT5** — `sl`/`tp` request fields, sent with the entry order.
+- **MetaApi** — `stop_loss`/`take_profit` params on
+  `create_market_buy_order`/`create_market_sell_order`.
+- **Alpaca** — a bracket (`order_class: "bracket"`, both legs) or
   one-triggers-other (`order_class: "oto"`, a single leg) order; Alpaca
   manages the exit once the parent fills.
+- **ccxt** — the unified `stopLossPrice`/`takeProfitPrice` order params
+  (verified against ccxt's source: used by 90+ of its exchange
+  implementations, including Binance and Bybit). If the configured
+  exchange doesn't support it, ccxt raises `NotSupported`, reported as an
+  ERROR rather than silently placing the entry without its exit.
+- **IBKR** — a market parent order plus one or two child exit orders
+  linked via `parentId`, only the last `transmit=True` so the whole group
+  submits together — the same parent/child/transmit pattern
+  `IB.bracketOrder()` uses, just with a market rather than limit parent
+  (verified against ib_insync's source).
 
-Everywhere else (ccxt, IBKR, Rithmic, NinjaTrader, SignalStack), SL/TP are
-still captured on the `Signal` and logged, but **not forwarded** to the
-broker — each of those needs either a separate stop/limit order placed
-after the fill (ccxt), a multi-order bracket construction (IBKR), a
-tick-distance conversion (Rithmic, which takes ticks not prices), or an
-unconfirmed field on a third-party bridge's payload (NinjaTrader,
-SignalStack) — none of which I could verify was correct without live
-access to test against, so implementing them speculatively would risk
-silently wrong exit orders on real money. If you need this on one of
-those brokers, say which one and I'll build and verify it properly rather
-than guess.
+Still not forwarded: **Rithmic** (its `submit_order` takes stop/target
+distance in *ticks*, not the prices a `Signal` carries — converting
+needs the instrument's tick size, which isn't wired up yet) and
+**NinjaTrader**/**SignalStack** (their bridge payload schemas, as
+documented by TradeRouter and SignalStack respectively, don't have
+confirmed SL/TP fields — inventing one risks a silently wrong or ignored
+exit order on real money). If you need SL/TP on one of those, say which
+and I'll research and verify it properly rather than guess.
 
 ## Monitoring
 
@@ -108,8 +127,10 @@ GET /orders?limit=50&account_id=...   # most recent order results, optionally fi
 ```
 
 All three read from `SignalStore` (`app/db.py`) — this service's own
-record, not a live broker read. See "Close signals" above for the
-accuracy caveat on brokers that only confirm fills asynchronously.
+record, not a live broker read. Positions self-correct in the background
+for Alpaca/IBKR via `OrderReconciler` (see "Close signals" above); on
+brokers without a wired-up order-status read, a PENDING order stays
+optimistic until you check that broker's own account state directly.
 
 ## What's real vs. stubbed
 
@@ -118,13 +139,13 @@ accuracy caveat on brokers that only confirm fills asynchronously.
 | Core engine, routing, risk sizing, SQLite log | ✅ Working, tested |
 | Generic JSON / TradingView webhook source | ✅ Working, tested |
 | Paper (mock) broker | ✅ Working, tested |
-| ccxt broker (Binance/Bybit/etc crypto exchanges) | ✅ Working (needs `pip install ccxt` + API keys) |
+| ccxt broker (Binance/Bybit/etc crypto exchanges) | ✅ Working, tested (needs `pip install ccxt` + API keys). Native stop-loss/take-profit via unified `stopLossPrice`/`takeProfitPrice` params. |
 | SignalStack broker (relays to IBKR, Schwab, Alpaca, Tradier, TradeStation, Bybit, Coinbase Pro, Oanda, etc. via signalstack.com) | ✅ Working, tested (needs a SignalStack account + a webhook URL per connected broker) |
 | Alpaca broker (plain REST, no SDK) | ✅ Working, tested (needs API key/secret; defaults to the paper-trading endpoint). Native stop-loss/take-profit via bracket/OTO orders. |
 | Telegram, Discord, Slack sources | ✅ Working (needs `pip install python-telegram-bot` / `discord.py` / `slack-bolt` + a bot token; only starts if its env vars are set) |
 | SMS source (Twilio) | ✅ Working (needs a public URL + `TWILIO_AUTH_TOKEN`/`TWILIO_WEBHOOK_URL` for signature validation; route is always mounted at `/sms/twilio`) |
 | Twitter/X source | ✅ Working, but needs X API v2 filtered-stream access (a paid tier as of X's current pricing — verify current terms) and is the least reliable parser of the bunch since tweets are free text |
-| IBKR broker | ✅ Working (needs `pip install ib_insync` + a running IB Gateway/TWS with the API enabled; reports PENDING, not a confirmed fill, since IBKR confirms asynchronously) |
+| IBKR broker | ✅ Working, tested (needs `pip install ib_insync` + a running IB Gateway/TWS with the API enabled; reports PENDING, not a confirmed fill, since IBKR confirms asynchronously — but see "Monitoring" for how PENDING gets reconciled). Native stop-loss/take-profit via bracket orders. |
 | MT5 broker (same-host only) | ✅ Working (needs `pip install MetaTrader5`, Windows, and the service running on the same host as a logged-in MT5 terminal — one terminal process per account). Native stop-loss/take-profit via `sl`/`tp` request fields. |
 | MT4/MT5 source & broker, via [MetaApi](https://github.com/metaapi/metaapi-python-sdk) | ✅ Working (needs `pip install metaapi-cloud-sdk` + a MetaApi account — free tier covers 1 MT4/MT5 account; no local terminal needed at all). Preferred over the same-host MT5 broker above unless you specifically want to avoid the cloud dependency. The source polls deal history on an interval rather than a real-time push callback — see its docstring for why. Native stop-loss/take-profit via `stop_loss`/`take_profit` params. |
 | Rithmic source & broker, via [async_rithmic](https://github.com/rundef/async_rithmic) | ✅ Working (needs `pip install async_rithmic` + licensed Rithmic credentials from your broker — there's no self-serve signup, this is a paid/licensed service regardless of which library talks to it) |
@@ -206,8 +227,11 @@ container recreation; `config/` is bind-mounted so routing/account changes
 don't need a rebuild. To bake in an optional adapter's dependency (e.g.
 `ccxt`), uncomment and edit the `build.args.EXTRAS` line in
 `docker-compose.yml`, or `docker build --build-arg EXTRAS="ccxt tweepy" .`
-directly. (The Docker setup hasn't been run against a live Docker daemon
-in this environment — verify it builds and starts before relying on it.)
+directly.
+
+Verified: the image builds and runs, `/health` responds, and a webhook
+signal correctly routes through to the paper broker and updates
+`/positions` inside the running container.
 
 ## Security notes for when this goes live
 

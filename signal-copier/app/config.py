@@ -50,3 +50,7 @@ RITHMIC_PASSWORD = os.getenv("RITHMIC_PASSWORD", "")
 RITHMIC_SYSTEM_NAME = os.getenv("RITHMIC_SYSTEM_NAME", "")
 RITHMIC_GATEWAY_URL = os.getenv("RITHMIC_GATEWAY_URL", "")
 RITHMIC_SOURCE_ACCOUNT_ID = os.getenv("RITHMIC_SOURCE_ACCOUNT_ID", "")  # optional filter
+
+# How often app/reconciliation.py re-checks PENDING orders on brokers that
+# support get_order_status() (currently Alpaca and IBKR).
+RECONCILE_INTERVAL_SECONDS = float(os.getenv("RECONCILE_INTERVAL_SECONDS", "30"))

@@ -28,7 +28,12 @@ CREATE TABLE IF NOT EXISTS signals (
 );
 
 CREATE TABLE IF NOT EXISTS orders (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
     account_id TEXT NOT NULL,
+    broker TEXT,
+    symbol TEXT,
+    side TEXT,
+    requested_quantity REAL,
     signal_id TEXT NOT NULL,
     status TEXT NOT NULL,
     broker_order_id TEXT,
@@ -89,15 +94,35 @@ class SignalStore:
                 ),
             )
 
-    def save_order_result(self, result: OrderResult) -> None:
+    def save_order_result(
+        self,
+        result: OrderResult,
+        *,
+        broker: str | None = None,
+        symbol: str | None = None,
+        side: Side | None = None,
+        requested_quantity: float | None = None,
+    ) -> int:
+        """Persist an order result and return its row id.
+
+        `broker`/`symbol`/`side`/`requested_quantity` are what was actually
+        sent to the broker for this order (not just the original signal —
+        for a resolved close, `side` is the opposing buy/sell, not
+        Side.CLOSE). app/reconciliation.py needs these to re-check and
+        correct a PENDING order's tracked position later.
+        """
         with self._connect() as conn:
-            conn.execute(
+            cursor = conn.execute(
                 """INSERT INTO orders
-                   (account_id, signal_id, status, broker_order_id, filled_quantity,
-                    filled_price, message, executed_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                   (account_id, broker, symbol, side, requested_quantity, signal_id, status,
+                    broker_order_id, filled_quantity, filled_price, message, executed_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     result.account_id,
+                    broker,
+                    symbol,
+                    side.value if side else None,
+                    requested_quantity,
                     result.signal_id,
                     result.status.value,
                     result.broker_order_id,
@@ -105,6 +130,45 @@ class SignalStore:
                     result.filled_price,
                     result.message,
                     result.executed_at.isoformat(),
+                ),
+            )
+            return cursor.lastrowid
+
+    def list_pending_orders(self) -> list[dict]:
+        """Orders still PENDING with a broker_order_id to re-check (see
+        app/reconciliation.py)."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT id, account_id, broker, symbol, side, requested_quantity,
+                          filled_quantity, broker_order_id
+                   FROM orders WHERE status = 'pending' AND broker_order_id IS NOT NULL"""
+            ).fetchall()
+        return [
+            {
+                "id": r[0],
+                "account_id": r[1],
+                "broker": r[2],
+                "symbol": r[3],
+                "side": r[4],
+                "requested_quantity": r[5],
+                "filled_quantity": r[6],
+                "broker_order_id": r[7],
+            }
+            for r in rows
+        ]
+
+    def update_order_status(self, order_row_id: int, result: OrderResult) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """UPDATE orders SET status = ?, filled_quantity = ?, filled_price = ?,
+                          message = ?, executed_at = ? WHERE id = ?""",
+                (
+                    result.status.value,
+                    result.filled_quantity,
+                    result.filled_price,
+                    result.message,
+                    result.executed_at.isoformat(),
+                    order_row_id,
                 ),
             )
 
@@ -124,6 +188,13 @@ class SignalStore:
         this is reached (see app/engine.py).
         """
         delta = quantity if side == Side.BUY else -quantity
+        return self.adjust_position(account_id, symbol, delta)
+
+    def adjust_position(self, account_id: str, symbol: str, delta: float) -> float:
+        """Apply a raw signed adjustment to a tracked position and return the new net
+        quantity. Used directly by app/reconciliation.py to correct an optimistic fill
+        (e.g. reverse it if the order actually got rejected, or true it up to the real
+        filled quantity)."""
         with self._connect() as conn:
             current = conn.execute(
                 "SELECT net_quantity FROM positions WHERE account_id = ? AND symbol = ?",
@@ -172,8 +243,8 @@ class SignalStore:
         ]
 
     def list_recent_orders(self, limit: int = 50, account_id: str | None = None) -> list[dict]:
-        query = """SELECT account_id, signal_id, status, broker_order_id, filled_quantity,
-                          filled_price, message, executed_at
+        query = """SELECT id, account_id, broker, symbol, side, requested_quantity, signal_id,
+                          status, broker_order_id, filled_quantity, filled_price, message, executed_at
                    FROM orders"""
         params: list = []
         if account_id:
@@ -186,14 +257,19 @@ class SignalStore:
             rows = conn.execute(query, params).fetchall()
         return [
             {
-                "account_id": r[0],
-                "signal_id": r[1],
-                "status": r[2],
-                "broker_order_id": r[3],
-                "filled_quantity": r[4],
-                "filled_price": r[5],
-                "message": r[6],
-                "executed_at": r[7],
+                "id": r[0],
+                "account_id": r[1],
+                "broker": r[2],
+                "symbol": r[3],
+                "side": r[4],
+                "requested_quantity": r[5],
+                "signal_id": r[6],
+                "status": r[7],
+                "broker_order_id": r[8],
+                "filled_quantity": r[9],
+                "filled_price": r[10],
+                "message": r[11],
+                "executed_at": r[12],
             }
             for r in rows
         ]

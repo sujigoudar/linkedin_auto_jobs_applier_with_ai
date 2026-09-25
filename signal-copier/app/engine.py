@@ -107,7 +107,13 @@ class SignalCopierEngine:
                 filled_quantity = result.filled_quantity or quantity
                 self.store.record_fill(account.account_id, symbol, order_signal.side, filled_quantity)
 
-            self.store.save_order_result(result)
+            self.store.save_order_result(
+                result,
+                broker=account.broker,
+                symbol=symbol,
+                side=order_signal.side,
+                requested_quantity=quantity,
+            )
             results.append(result)
 
         return results

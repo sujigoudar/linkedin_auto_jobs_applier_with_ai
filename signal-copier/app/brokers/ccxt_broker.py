@@ -7,6 +7,14 @@ account in accounts.yaml, each pointing at its own API key pair.
 Credentials are read from environment variables named
 `CCXT_{ACCOUNT_ID}_API_KEY` / `CCXT_{ACCOUNT_ID}_API_SECRET` — never from
 the YAML config — so accounts.yaml stays safe to commit.
+
+A Signal carrying `stop_loss`/`take_profit` is sent via ccxt's unified
+`stopLossPrice`/`takeProfitPrice` order params (verified against ccxt's
+source — used by 90+ of its exchange implementations, including Binance
+and Bybit, not exchange-specific despite the "unified" API sometimes
+varying in practice). If the configured exchange doesn't support it, ccxt
+raises `NotSupported`, which is reported as an ERROR result rather than
+silently placing the entry without its exit.
 """
 from __future__ import annotations
 
@@ -62,12 +70,19 @@ class CCXTBroker(BrokerAdapter):
                 message="'close' side reached the broker directly without engine-level resolution (see SignalCopierEngine._resolve_close); this broker only accepts buy/sell",
             )
 
+        params = {}
+        if signal.stop_loss:
+            params["stopLossPrice"] = signal.stop_loss
+        if signal.take_profit:
+            params["takeProfitPrice"] = signal.take_profit
+
         try:
             order = await exchange.create_order(
                 symbol=symbol,
                 type="market",
                 side=signal.side.value,
                 amount=quantity,
+                params=params,
             )
         except Exception as exc:  # noqa: BLE001 - surface any ccxt/network error as a failed order
             return OrderResult(

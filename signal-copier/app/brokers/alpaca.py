@@ -112,5 +112,44 @@ class AlpacaBroker(BrokerAdapter):
             message=f"submitted to Alpaca (status: {order.get('status')})",
         )
 
+    async def get_order_status(
+        self, account: DestinationAccount, broker_order_id: str
+    ) -> OrderResult | None:
+        try:
+            api_key, api_secret, base_url = self._credentials_for(account)
+        except RuntimeError:
+            return None
+
+        try:
+            response = await self._client.get(
+                f"{base_url}/v2/orders/{broker_order_id}",
+                headers={"APCA-API-KEY-ID": api_key, "APCA-API-SECRET-KEY": api_secret},
+            )
+            response.raise_for_status()
+        except httpx.HTTPError:
+            return None
+
+        order = response.json()
+        status = order.get("status")
+
+        if status == "filled":
+            new_status = OrderStatus.FILLED
+        elif status in ("canceled", "rejected", "expired"):
+            new_status = OrderStatus.REJECTED
+        else:
+            return None  # still open/pending — nothing new to report
+
+        filled_qty = order.get("filled_qty")
+        filled_price = order.get("filled_avg_price")
+        return OrderResult(
+            account_id=account.account_id,
+            status=new_status,
+            signal_id="",  # filled in by the reconciler from its own stored order row
+            broker_order_id=broker_order_id,
+            filled_quantity=float(filled_qty) if filled_qty else None,
+            filled_price=float(filled_price) if filled_price else None,
+            message=f"Alpaca order status: {status}",
+        )
+
     async def close(self) -> None:
         await self._client.aclose()

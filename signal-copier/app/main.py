@@ -25,6 +25,7 @@ from app.brokers.signalstack import SignalStackBroker
 from app.db import SignalStore
 from app.engine import SignalCopierEngine
 from app.errors import SignalValidationError
+from app.reconciliation import OrderReconciler
 from app.routing import load_routing_config
 from app.sources.discord import DiscordSource
 from app.sources.mt4_mt5 import MetaApiSource
@@ -69,6 +70,7 @@ for broker_name, broker_factory in _optional_brokers:
 engine = SignalCopierEngine(routing=routing_config, brokers=brokers, store=store)
 webhook_source = WebhookSource(on_signal=engine.handle_signal)
 sms_source = TwilioSMSSource(on_signal=engine.handle_signal)
+reconciler = OrderReconciler(store=store, brokers=brokers, interval_seconds=config.RECONCILE_INTERVAL_SECONDS)
 
 # Pull-based sources only start if fully configured via env vars.
 _background_sources = []
@@ -113,9 +115,11 @@ async def lifespan(app: FastAPI):
             await source.start()
         except Exception:  # noqa: BLE001 - one misconfigured source must not block the app
             logger.exception("failed to start source '%s'", source.name)
+    await reconciler.start()
 
     yield
 
+    await reconciler.stop()
     for source in _background_sources:
         await source.stop()
     for broker_name in ("signalstack", "alpaca", "ninjatrader", "ccxt", "ibkr", "mt4_mt5_metaapi", "rithmic"):
