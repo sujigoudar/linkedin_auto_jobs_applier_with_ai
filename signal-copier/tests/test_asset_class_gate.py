@@ -26,6 +26,7 @@ def test_alpaca_declares_equity_only():
 
 
 def test_ibkr_declares_equity_only():
+    pytest.importorskip("ib_insync")
     broker = IBKRBroker()
     assert broker.can_trade_asset_class(AssetClass.EQUITY) is True
     assert broker.can_trade_asset_class(AssetClass.FUTURE) is False
