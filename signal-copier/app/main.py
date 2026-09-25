@@ -26,6 +26,7 @@ from app.db import SignalStore
 from app.engine import SignalCopierEngine
 from app.errors import SignalValidationError
 from app.lifecycle.manager import PositionLifecycleManager
+from app.providers import SettingsOverride, load_provider_registry
 from app.reconciliation import OrderReconciler
 from app.routing import load_routing_config
 from app.sources.discord import DiscordSource
@@ -41,6 +42,7 @@ logging.basicConfig(level=config.LOG_LEVEL)
 logger = logging.getLogger(__name__)
 
 routing_config = load_routing_config(config.ROUTING_CONFIG_PATH, config.ACCOUNTS_CONFIG_PATH)
+provider_registry = load_provider_registry(config.PROVIDERS_CONFIG_PATH)
 store = SignalStore(config.DATABASE_PATH)
 
 brokers = {
@@ -70,7 +72,13 @@ for broker_name, broker_factory in _optional_brokers:
 
 lifecycle_manager = PositionLifecycleManager(brokers=brokers, store=store)
 lifecycle_manager.restore_from_store()  # resume any managed-lifecycle positions from before a restart
-engine = SignalCopierEngine(routing=routing_config, brokers=brokers, store=store, lifecycle_manager=lifecycle_manager)
+engine = SignalCopierEngine(
+    routing=routing_config,
+    brokers=brokers,
+    store=store,
+    lifecycle_manager=lifecycle_manager,
+    provider_registry=provider_registry,
+)
 webhook_source = WebhookSource(on_signal=engine.handle_signal)
 sms_source = TwilioSMSSource(on_signal=engine.handle_signal)
 reconciler = OrderReconciler(
@@ -225,6 +233,39 @@ async def list_broker_capabilities() -> dict:
             for broker in brokers.values()
         ]
     }
+
+
+@app.get("/providers")
+async def list_provider_overrides() -> dict:
+    """Every configured provider/analyst settings override (`config/providers.yaml`)
+    and the effective settings it would resolve to for each of this
+    service's destination accounts — so "what does this analyst's signal
+    actually do to my sizing/protection here" is answerable without
+    reading YAML and doing the account->provider->analyst merge by hand.
+    See app/providers.py for the precedence rules."""
+    result = []
+    for provider in provider_registry.providers.values():
+        entry = {
+            "provider_id": provider.provider_id,
+            "display_name": provider.display_name,
+            "settings": vars(provider.settings),
+            "analysts": [
+                {"analyst_id": a.analyst_id, "display_name": a.display_name, "settings": vars(a.settings)}
+                for a in provider.analysts.values()
+            ],
+            "effective_by_account": {},
+        }
+        for account_id, account in routing_config.accounts.items():
+            account_defaults = SettingsOverride(
+                multiplier=account.multiplier,
+                fixed_quantity=account.fixed_quantity,
+                managed_lifecycle=account.managed_lifecycle,
+                enabled=account.enabled,
+            )
+            effective = provider_registry.effective_settings(account_defaults, provider.provider_id, None)
+            entry["effective_by_account"][account_id] = vars(effective)
+        result.append(entry)
+    return {"providers": result}
 
 
 def _managed_lifecycle_snapshot() -> list[dict]:

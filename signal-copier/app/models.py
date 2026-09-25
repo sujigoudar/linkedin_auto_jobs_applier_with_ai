@@ -35,6 +35,12 @@ class Signal:
     symbol: str
     side: Side
     asset_class: AssetClass = AssetClass.CRYPTO
+    #: Who *within* `source` posted this (e.g. one trader in a shared
+    #: Discord server) — optional. Used by app/providers.py to resolve
+    #: per-analyst settings overrides; a source parser that can identify
+    #: the poster sets this, others leave it None and only provider-level
+    #: (not analyst-level) overrides apply.
+    analyst: Optional[str] = None
     quantity: Optional[float] = None
     price: Optional[float] = None
     stop_loss: Optional[float] = None

@@ -13,6 +13,9 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 
 ROUTING_CONFIG_PATH = Path(os.getenv("ROUTING_CONFIG_PATH", BASE_DIR / "config" / "routing.yaml"))
 ACCOUNTS_CONFIG_PATH = Path(os.getenv("ACCOUNTS_CONFIG_PATH", BASE_DIR / "config" / "accounts.yaml"))
+#: Optional per-provider/per-analyst settings overrides — see app/providers.py.
+#: Missing file (the default if never created) means no overrides apply.
+PROVIDERS_CONFIG_PATH = Path(os.getenv("PROVIDERS_CONFIG_PATH", BASE_DIR / "config" / "providers.yaml"))
 DATABASE_PATH = Path(os.getenv("DATABASE_PATH", BASE_DIR / "signal_copier.db"))
 
 # Shared secret the webhook source checks against a header/query param so

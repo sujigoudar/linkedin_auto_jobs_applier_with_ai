@@ -51,6 +51,34 @@ YAML** — they're read from environment variables per account
 (`CCXT_{ACCOUNT_ID}_API_KEY`, etc.), so the config files stay safe to
 commit.
 
+## Providers and analysts
+
+Multiple named sources — or several traders posting into one shared
+channel — often need to be treated differently even when they route to
+the same destination account: a provider you trust more at full size, an
+analyst inside a channel you want muted, a provider whose signals should
+always go through the managed-lifecycle protect-first path regardless of
+what the account's own default is. `app/providers.py`'s `ProviderRegistry`
+handles this as a settings-inheritance layer, entirely optional:
+
+    account (accounts.yaml) -> provider (Signal.source) -> analyst (Signal.analyst)
+
+Any field left unset at a level inherits from the next broader one;
+`enabled: false` at any level (account, provider, or analyst) skips that
+destination for that signal without touching the others. Configure it in
+`config/providers.yaml` (copy from `config/providers.example.yaml` — see
+that file for the exact shape); no file at all means every signal uses
+its destination account's own settings, completely unchanged from before
+this existed. `Signal.analyst` is optional and only set by a source
+parser that can actually identify who within that source posted a
+signal — most currently can't, and provider-level (not analyst-level)
+overrides still apply either way.
+
+`GET /providers` returns every configured provider/analyst override
+alongside the effective settings it resolves to for each destination
+account, so "what does this analyst's signal actually do here" is
+answerable without doing the account->provider->analyst merge by hand.
+
 ## Close signals
 
 A `close` signal doesn't carry a size — closing means flattening whatever
@@ -300,6 +328,7 @@ GET /positions              # every non-flat tracked position, across all accoun
 GET /signals?limit=50       # most recently received signals, newest first
 GET /orders?limit=50&account_id=...   # most recent order results, optionally filtered to one account
 GET /brokers                # every registered broker's actual, code-verified capability matrix
+GET /providers              # configured provider/analyst overrides and their effective settings per account
 ```
 
 All three read from `SignalStore` (`app/db.py`) — this service's own

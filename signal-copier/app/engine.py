@@ -24,6 +24,19 @@ resolves it here, per account, before calling the broker at all:
        defensive fallback for direct/standalone use, not something the
        engine relies on.)
 
+## Provider/analyst settings overrides
+
+Before sizing or routing, each destination account's own
+multiplier/fixed_quantity/managed_lifecycle/enabled are narrowed by
+`app/providers.py`'s `ProviderRegistry` using `signal.source` (provider)
+and `signal.analyst`, if either has a `config/providers.yaml` entry — see
+that module's docstring for the account -> provider -> analyst precedence.
+An account with no matching provider/analyst config is completely
+unaffected (this is an additive, opt-in layer, same pattern as
+`managed_lifecycle` itself). `enabled=False` at any level (account,
+provider, or analyst) skips that destination the same way a disabled
+account already does.
+
 Position tracking itself updates from `OrderResult.filled_quantity` when a
 broker confirms FILLED, or optimistically from the requested quantity when
 a broker only reports PENDING (SignalStack, Alpaca, IBKR, NinjaTrader,
@@ -53,12 +66,14 @@ for `/positions` observability, same as the plain path.
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 
 from app.brokers.base import BrokerAdapter
 from app.db import SignalStore
 from app.lifecycle.manager import PositionLifecycleManager
 from app.lifecycle.models import PositionPlan, Target, TargetAction
 from app.models import DestinationAccount, OrderResult, OrderStatus, Side, Signal
+from app.providers import ProviderRegistry, SettingsOverride
 from app.risk import size_for_account, symbol_for_account
 from app.routing import RoutingConfig
 
@@ -72,11 +87,22 @@ class SignalCopierEngine:
         brokers: dict[str, BrokerAdapter],
         store: SignalStore,
         lifecycle_manager: PositionLifecycleManager | None = None,
+        provider_registry: ProviderRegistry | None = None,
     ):
         self.routing = routing
         self.brokers = brokers
         self.store = store
         self.lifecycle_manager = lifecycle_manager or PositionLifecycleManager(brokers)
+        self.provider_registry = provider_registry or ProviderRegistry()
+
+    def _effective_settings(self, signal: Signal, account: DestinationAccount) -> SettingsOverride:
+        account_defaults = SettingsOverride(
+            multiplier=account.multiplier,
+            fixed_quantity=account.fixed_quantity,
+            managed_lifecycle=account.managed_lifecycle,
+            enabled=account.enabled,
+        )
+        return self.provider_registry.effective_settings(account_defaults, signal.source, signal.analyst)
 
     async def handle_signal(self, signal: Signal) -> list[OrderResult]:
         self.store.save_signal(signal)
@@ -87,7 +113,28 @@ class SignalCopierEngine:
             return []
 
         results: list[OrderResult] = []
-        for account in destinations:
+        for raw_account in destinations:
+            effective = self._effective_settings(signal, raw_account)
+            if effective.enabled is False:
+                logger.info(
+                    "account=%s disabled for source=%s analyst=%s by provider/analyst settings override",
+                    raw_account.account_id,
+                    signal.source,
+                    signal.analyst,
+                )
+                continue
+            # A per-(signal, account) view with provider/analyst overrides applied —
+            # every downstream call reads sizing/managed_lifecycle from this, not
+            # raw_account, without needing its own copy of the resolution logic.
+            account = replace(
+                raw_account,
+                multiplier=effective.multiplier if effective.multiplier is not None else raw_account.multiplier,
+                fixed_quantity=effective.fixed_quantity,
+                managed_lifecycle=(
+                    effective.managed_lifecycle if effective.managed_lifecycle is not None else raw_account.managed_lifecycle
+                ),
+            )
+
             broker = self.brokers.get(account.broker)
             if broker is None:
                 result = OrderResult(
