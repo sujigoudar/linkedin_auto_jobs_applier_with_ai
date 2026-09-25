@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Form, Header, HTTPException, Request
+from fastapi import FastAPI, Form, Header, HTTPException, Query, Request
 
 from app import config
 from app.brokers.alpaca import AlpacaBroker
@@ -173,6 +173,32 @@ async def receive_sms(request: Request, body: str = Form(alias="Body")) -> dict:
 
     results = await engine.handle_signal(signal)
     return _orders_response(signal.id, results)
+
+
+@app.get("/positions")
+async def list_positions() -> dict:
+    """Every non-flat tracked position, across all accounts.
+
+    This is this service's own record of what it has sent (see
+    app/engine.py's "Close signals" docstring on why that can drift from
+    the broker's real book on brokers that only confirm fills
+    asynchronously), not a live read of any broker's account state.
+    """
+    return {"positions": store.list_open_positions()}
+
+
+@app.get("/signals")
+async def list_signals(limit: int = Query(default=50, le=500)) -> dict:
+    """Most recently received signals, newest first."""
+    return {"signals": store.list_recent_signals(limit=limit)}
+
+
+@app.get("/orders")
+async def list_orders(
+    limit: int = Query(default=50, le=500), account_id: str | None = Query(default=None)
+) -> dict:
+    """Most recent order results, newest first — optionally filtered to one account."""
+    return {"orders": store.list_recent_orders(limit=limit, account_id=account_id)}
 
 
 def _orders_response(signal_id: str, results) -> dict:

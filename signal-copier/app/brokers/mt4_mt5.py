@@ -95,6 +95,11 @@ class MT5Broker(BrokerAdapter):
                 "type_time": mt5.ORDER_TIME_GTC,
                 "type_filling": mt5.ORDER_FILLING_IOC,
             }
+            if signal.stop_loss:
+                request["sl"] = signal.stop_loss
+            if signal.take_profit:
+                request["tp"] = signal.take_profit
+
             result = mt5.order_send(request)
             return {
                 "retcode": result.retcode,
@@ -216,11 +221,17 @@ class MetaApiBroker(BrokerAdapter):
                 message=str(exc),
             )
 
+        sl_tp_kwargs = {}
+        if signal.stop_loss:
+            sl_tp_kwargs["stop_loss"] = signal.stop_loss
+        if signal.take_profit:
+            sl_tp_kwargs["take_profit"] = signal.take_profit
+
         try:
             if signal.side.value == "buy":
-                result = await connection.create_market_buy_order(symbol=symbol, volume=quantity)
+                result = await connection.create_market_buy_order(symbol=symbol, volume=quantity, **sl_tp_kwargs)
             elif signal.side.value == "sell":
-                result = await connection.create_market_sell_order(symbol=symbol, volume=quantity)
+                result = await connection.create_market_sell_order(symbol=symbol, volume=quantity, **sl_tp_kwargs)
             else:
                 return OrderResult(
                     account_id=account.account_id,

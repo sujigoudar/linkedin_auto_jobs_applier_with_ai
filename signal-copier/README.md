@@ -76,6 +76,41 @@ partially filled — there's no fill-confirmation feedback path from those
 brokers back into this service yet. Paper, ccxt, and MT5 report real fills
 synchronously, so their tracked positions stay accurate.
 
+## Stop-loss / take-profit
+
+A `Signal`'s `stop_loss`/`take_profit` are sent as native exit orders on
+brokers where that's a confirmed, safe API to use:
+
+- **MT5** (`sl`/`tp` request fields) and **MetaApi** (`stop_loss`/
+  `take_profit` params) — sent directly with the entry order.
+- **Alpaca** — sent as a bracket (`order_class: "bracket"`, both legs) or
+  one-triggers-other (`order_class: "oto"`, a single leg) order; Alpaca
+  manages the exit once the parent fills.
+
+Everywhere else (ccxt, IBKR, Rithmic, NinjaTrader, SignalStack), SL/TP are
+still captured on the `Signal` and logged, but **not forwarded** to the
+broker — each of those needs either a separate stop/limit order placed
+after the fill (ccxt), a multi-order bracket construction (IBKR), a
+tick-distance conversion (Rithmic, which takes ticks not prices), or an
+unconfirmed field on a third-party bridge's payload (NinjaTrader,
+SignalStack) — none of which I could verify was correct without live
+access to test against, so implementing them speculatively would risk
+silently wrong exit orders on real money. If you need this on one of
+those brokers, say which one and I'll build and verify it properly rather
+than guess.
+
+## Monitoring
+
+```
+GET /positions              # every non-flat tracked position, across all accounts
+GET /signals?limit=50       # most recently received signals, newest first
+GET /orders?limit=50&account_id=...   # most recent order results, optionally filtered to one account
+```
+
+All three read from `SignalStore` (`app/db.py`) — this service's own
+record, not a live broker read. See "Close signals" above for the
+accuracy caveat on brokers that only confirm fills asynchronously.
+
 ## What's real vs. stubbed
 
 | Component | Status |
@@ -85,13 +120,13 @@ synchronously, so their tracked positions stay accurate.
 | Paper (mock) broker | ✅ Working, tested |
 | ccxt broker (Binance/Bybit/etc crypto exchanges) | ✅ Working (needs `pip install ccxt` + API keys) |
 | SignalStack broker (relays to IBKR, Schwab, Alpaca, Tradier, TradeStation, Bybit, Coinbase Pro, Oanda, etc. via signalstack.com) | ✅ Working, tested (needs a SignalStack account + a webhook URL per connected broker) |
-| Alpaca broker (plain REST, no SDK) | ✅ Working, tested (needs API key/secret; defaults to the paper-trading endpoint) |
+| Alpaca broker (plain REST, no SDK) | ✅ Working, tested (needs API key/secret; defaults to the paper-trading endpoint). Native stop-loss/take-profit via bracket/OTO orders. |
 | Telegram, Discord, Slack sources | ✅ Working (needs `pip install python-telegram-bot` / `discord.py` / `slack-bolt` + a bot token; only starts if its env vars are set) |
 | SMS source (Twilio) | ✅ Working (needs a public URL + `TWILIO_AUTH_TOKEN`/`TWILIO_WEBHOOK_URL` for signature validation; route is always mounted at `/sms/twilio`) |
 | Twitter/X source | ✅ Working, but needs X API v2 filtered-stream access (a paid tier as of X's current pricing — verify current terms) and is the least reliable parser of the bunch since tweets are free text |
 | IBKR broker | ✅ Working (needs `pip install ib_insync` + a running IB Gateway/TWS with the API enabled; reports PENDING, not a confirmed fill, since IBKR confirms asynchronously) |
-| MT5 broker (same-host only) | ✅ Working (needs `pip install MetaTrader5`, Windows, and the service running on the same host as a logged-in MT5 terminal — one terminal process per account) |
-| MT4/MT5 source & broker, via [MetaApi](https://github.com/metaapi/metaapi-python-sdk) | ✅ Working (needs `pip install metaapi-cloud-sdk` + a MetaApi account — free tier covers 1 MT4/MT5 account; no local terminal needed at all). Preferred over the same-host MT5 broker above unless you specifically want to avoid the cloud dependency. The source polls deal history on an interval rather than a real-time push callback — see its docstring for why. |
+| MT5 broker (same-host only) | ✅ Working (needs `pip install MetaTrader5`, Windows, and the service running on the same host as a logged-in MT5 terminal — one terminal process per account). Native stop-loss/take-profit via `sl`/`tp` request fields. |
+| MT4/MT5 source & broker, via [MetaApi](https://github.com/metaapi/metaapi-python-sdk) | ✅ Working (needs `pip install metaapi-cloud-sdk` + a MetaApi account — free tier covers 1 MT4/MT5 account; no local terminal needed at all). Preferred over the same-host MT5 broker above unless you specifically want to avoid the cloud dependency. The source polls deal history on an interval rather than a real-time push callback — see its docstring for why. Native stop-loss/take-profit via `stop_loss`/`take_profit` params. |
 | Rithmic source & broker, via [async_rithmic](https://github.com/rundef/async_rithmic) | ✅ Working (needs `pip install async_rithmic` + licensed Rithmic credentials from your broker — there's no self-serve signup, this is a paid/licensed service regardless of which library talks to it) |
 | NinjaTrader broker, via [TradeRouter](https://github.com/roydufek/traderouter)'s `WebhookOrderStrategy.cs` | ✅ Working (needs TradeRouter's NinjaScript strategy file installed and compiled inside NinjaTrader itself — this service just POSTs to its local HTTP listener; see the broker's docstring) |
 | NinjaTrader signal *source* | 🚧 Stub — every open-source NinjaTrader bridge found (TradeRouter, ninja-webhook, tv-ninjatrader-bridge) is one-way (external signal → NinjaTrader order); none reads trade/fill events back out. Doing that needs a custom NinjaScript AddOn this project can't write and verify without the actual platform. See the file's docstring. |

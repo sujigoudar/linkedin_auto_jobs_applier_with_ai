@@ -13,6 +13,11 @@ https://api.alpaca.markets.
 Options trading needs Alpaca's options-specific contract symbols and
 requires options trading enabled on the account; this adapter sends plain
 equity market orders and doesn't attempt options-specific order shaping.
+
+A Signal carrying `stop_loss` and/or `take_profit` is sent as an Alpaca
+bracket (`order_class: "bracket"`, both legs) or one-triggers-other
+(`order_class: "oto"`, a single leg) order — Alpaca manages the exit once
+the parent fills; this service doesn't need to watch for it separately.
 """
 from __future__ import annotations
 
@@ -63,17 +68,31 @@ class AlpacaBroker(BrokerAdapter):
                 message=str(exc),
             )
 
+        order_payload = {
+            "symbol": symbol,
+            "qty": str(quantity),
+            "side": signal.side.value,
+            "type": "market",
+            "time_in_force": "day",
+        }
+        if signal.stop_loss and signal.take_profit:
+            # Both legs present: OTOCO bracket order.
+            order_payload["order_class"] = "bracket"
+            order_payload["take_profit"] = {"limit_price": signal.take_profit}
+            order_payload["stop_loss"] = {"stop_price": signal.stop_loss}
+        elif signal.take_profit:
+            # One-triggers-other: a single exit leg attached to the parent.
+            order_payload["order_class"] = "oto"
+            order_payload["take_profit"] = {"limit_price": signal.take_profit}
+        elif signal.stop_loss:
+            order_payload["order_class"] = "oto"
+            order_payload["stop_loss"] = {"stop_price": signal.stop_loss}
+
         try:
             response = await self._client.post(
                 f"{base_url}/v2/orders",
                 headers={"APCA-API-KEY-ID": api_key, "APCA-API-SECRET-KEY": api_secret},
-                json={
-                    "symbol": symbol,
-                    "qty": str(quantity),
-                    "side": signal.side.value,
-                    "type": "market",
-                    "time_in_force": "day",
-                },
+                json=order_payload,
             )
             response.raise_for_status()
         except httpx.HTTPError as exc:

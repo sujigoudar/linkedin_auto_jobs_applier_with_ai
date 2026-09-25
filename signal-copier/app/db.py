@@ -138,3 +138,62 @@ class SignalStore:
                 (account_id, symbol, new_quantity, datetime.now(timezone.utc).isoformat()),
             )
         return new_quantity
+
+    def list_open_positions(self) -> list[dict]:
+        """All non-flat tracked positions, across every account/symbol."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT account_id, symbol, net_quantity, updated_at FROM positions
+                   WHERE net_quantity != 0 ORDER BY updated_at DESC"""
+            ).fetchall()
+        return [
+            {"account_id": r[0], "symbol": r[1], "net_quantity": r[2], "updated_at": r[3]} for r in rows
+        ]
+
+    def list_recent_signals(self, limit: int = 50) -> list[dict]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT id, source, symbol, side, asset_class, quantity, price, received_at
+                   FROM signals ORDER BY received_at DESC LIMIT ?""",
+                (limit,),
+            ).fetchall()
+        return [
+            {
+                "id": r[0],
+                "source": r[1],
+                "symbol": r[2],
+                "side": r[3],
+                "asset_class": r[4],
+                "quantity": r[5],
+                "price": r[6],
+                "received_at": r[7],
+            }
+            for r in rows
+        ]
+
+    def list_recent_orders(self, limit: int = 50, account_id: str | None = None) -> list[dict]:
+        query = """SELECT account_id, signal_id, status, broker_order_id, filled_quantity,
+                          filled_price, message, executed_at
+                   FROM orders"""
+        params: list = []
+        if account_id:
+            query += " WHERE account_id = ?"
+            params.append(account_id)
+        query += " ORDER BY executed_at DESC LIMIT ?"
+        params.append(limit)
+
+        with self._connect() as conn:
+            rows = conn.execute(query, params).fetchall()
+        return [
+            {
+                "account_id": r[0],
+                "signal_id": r[1],
+                "status": r[2],
+                "broker_order_id": r[3],
+                "filled_quantity": r[4],
+                "filled_price": r[5],
+                "message": r[6],
+                "executed_at": r[7],
+            }
+            for r in rows
+        ]

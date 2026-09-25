@@ -58,6 +58,64 @@ async def test_successful_order_reports_pending(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_both_sl_and_tp_sends_bracket_order(monkeypatch):
+    monkeypatch.setenv("ALPACA_ACCT1_API_KEY", "key123")
+    monkeypatch.setenv("ALPACA_ACCT1_API_SECRET", "secret456")
+    broker = AlpacaBroker()
+
+    captured = {}
+
+    async def fake_post(self, url, headers, json):
+        captured["json"] = json
+        request = httpx.Request("POST", url)
+        return httpx.Response(200, json={"id": "order-1", "status": "accepted"}, request=request)
+
+    broker._client.post = fake_post.__get__(broker._client)
+
+    account = DestinationAccount(account_id="acct1", broker="alpaca")
+    await broker.place_order(
+        Signal(source="test", symbol="AAPL", side=Side.BUY, stop_loss=185.0, take_profit=200.0),
+        account,
+        quantity=1.0,
+        symbol="AAPL",
+    )
+
+    assert captured["json"]["order_class"] == "bracket"
+    assert captured["json"]["take_profit"] == {"limit_price": 200.0}
+    assert captured["json"]["stop_loss"] == {"stop_price": 185.0}
+    await broker.close()
+
+
+@pytest.mark.asyncio
+async def test_only_take_profit_sends_oto_order(monkeypatch):
+    monkeypatch.setenv("ALPACA_ACCT1_API_KEY", "key123")
+    monkeypatch.setenv("ALPACA_ACCT1_API_SECRET", "secret456")
+    broker = AlpacaBroker()
+
+    captured = {}
+
+    async def fake_post(self, url, headers, json):
+        captured["json"] = json
+        request = httpx.Request("POST", url)
+        return httpx.Response(200, json={"id": "order-1", "status": "accepted"}, request=request)
+
+    broker._client.post = fake_post.__get__(broker._client)
+
+    account = DestinationAccount(account_id="acct1", broker="alpaca")
+    await broker.place_order(
+        Signal(source="test", symbol="AAPL", side=Side.BUY, take_profit=200.0),
+        account,
+        quantity=1.0,
+        symbol="AAPL",
+    )
+
+    assert captured["json"]["order_class"] == "oto"
+    assert captured["json"]["take_profit"] == {"limit_price": 200.0}
+    assert "stop_loss" not in captured["json"]
+    await broker.close()
+
+
+@pytest.mark.asyncio
 async def test_close_side_is_rejected(monkeypatch):
     monkeypatch.setenv("ALPACA_ACCT1_API_KEY", "key123")
     monkeypatch.setenv("ALPACA_ACCT1_API_SECRET", "secret456")
