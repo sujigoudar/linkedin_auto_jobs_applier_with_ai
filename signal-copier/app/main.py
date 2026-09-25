@@ -10,14 +10,15 @@ from __future__ import annotations
 
 import logging
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from fastapi import FastAPI, Form, Header, HTTPException, Query, Request
+from fastapi import Cookie, Depends, FastAPI, Form, Header, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from app import config
+from app.auth import SESSION_COOKIE_NAME, RequireOwner, create_session, verify_password
 from app.backtest.models import CsvPriceHistoryProvider
 from app.backtest.replay import BacktestEngine
 from app.brokers.alpaca import AlpacaBroker
@@ -163,9 +164,62 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Trading Signal Copier", lifespan=lifespan)
 
+require_owner = RequireOwner(lambda: store)
+require_owner_read = RequireOwner(lambda: store, require_csrf=False)  # GET-only routes: session, no CSRF needed
+
 
 @app.get("/health")
 async def health() -> dict:
+    """Public, minimal, and truthful: liveness (this response happened at
+    all) plus whether the background workers that actually keep positions
+    protected are making progress -- no account IDs, balances, or other
+    private data belongs here (see docs on why this stays unauthenticated).
+    `*_ok` is False both when a worker hasn't completed a pass recently
+    (stuck/dead task) and before its very first pass after startup."""
+    now = datetime.now(timezone.utc)
+
+    def _fresh(last_success: datetime | None, interval_seconds: float) -> bool:
+        if last_success is None:
+            return False
+        return (now - last_success).total_seconds() < max(interval_seconds * 3, interval_seconds + 30)
+
+    try:
+        store.get_position("__healthcheck__", "__healthcheck__")
+        db_ok = True
+    except Exception:  # noqa: BLE001 - health check must never raise
+        db_ok = False
+
+    return {
+        "status": "ok",
+        "database_ok": db_ok,
+        "price_monitor_ok": _fresh(price_monitor.last_success_at, config.PRICE_MONITOR_INTERVAL_SECONDS),
+        "reconciler_ok": _fresh(reconciler.last_success_at, config.RECONCILE_INTERVAL_SECONDS),
+    }
+
+
+@app.post("/auth/login")
+async def login(request: Request, response: Response) -> dict:
+    body = await request.json()
+    password = body.get("password", "")
+    if not verify_password(password):
+        raise HTTPException(status_code=401, detail="invalid password")
+    session_id, csrf_token = create_session(store)
+    response.set_cookie(
+        SESSION_COOKIE_NAME,
+        session_id,
+        httponly=True,
+        samesite="strict",
+        secure=request.url.scheme == "https",
+        max_age=int(config.SESSION_TTL_SECONDS),
+    )
+    return {"status": "ok", "csrf_token": csrf_token}
+
+
+@app.post("/auth/logout")
+async def logout(response: Response, scr_session: str | None = Cookie(default=None)) -> dict:
+    if scr_session:
+        store.delete_session(scr_session)
+    response.delete_cookie(SESSION_COOKIE_NAME)
     return {"status": "ok"}
 
 
@@ -199,7 +253,11 @@ async def receive_webhook(
     request: Request,
     x_webhook_secret: str | None = Header(default=None),
 ) -> dict:
-    if config.WEBHOOK_SHARED_SECRET and x_webhook_secret != config.WEBHOOK_SHARED_SECRET:
+    if not config.WEBHOOK_SHARED_SECRET:
+        # Fail closed: an unconfigured secret disables this ingress, it does
+        # not make it public. Set WEBHOOK_SHARED_SECRET to accept signals here.
+        raise HTTPException(status_code=503, detail="webhook ingress is not configured (set WEBHOOK_SHARED_SECRET)")
+    if x_webhook_secret != config.WEBHOOK_SHARED_SECRET:
         raise HTTPException(status_code=401, detail="invalid webhook secret")
 
     payload = await request.json()
@@ -216,19 +274,22 @@ async def receive_webhook(
 async def receive_sms(
     request: Request, body: str = Form(alias="Body"), from_number: str = Form(alias="From", default="")
 ) -> dict:
-    if config.TWILIO_AUTH_TOKEN:
-        try:
-            from twilio.request_validator import RequestValidator
-        except ImportError as exc:  # pragma: no cover
-            raise HTTPException(
-                status_code=500, detail="twilio package not installed; cannot validate request"
-            ) from exc
+    if not config.TWILIO_AUTH_TOKEN:
+        # Fail closed: an unconfigured token disables this ingress, it does
+        # not make it public. Set TWILIO_AUTH_TOKEN (and TWILIO_WEBHOOK_URL) to
+        # accept SMS signals here.
+        raise HTTPException(status_code=503, detail="SMS ingress is not configured (set TWILIO_AUTH_TOKEN)")
 
-        signature = request.headers.get("X-Twilio-Signature", "")
-        form = await request.form()
-        validator = RequestValidator(config.TWILIO_AUTH_TOKEN)
-        if not validator.validate(config.TWILIO_WEBHOOK_URL, dict(form), signature):
-            raise HTTPException(status_code=401, detail="invalid Twilio signature")
+    try:
+        from twilio.request_validator import RequestValidator
+    except ImportError as exc:  # pragma: no cover
+        raise HTTPException(status_code=500, detail="twilio package not installed; cannot validate request") from exc
+
+    signature = request.headers.get("X-Twilio-Signature", "")
+    form = await request.form()
+    validator = RequestValidator(config.TWILIO_AUTH_TOKEN)
+    if not validator.validate(config.TWILIO_WEBHOOK_URL, dict(form), signature):
+        raise HTTPException(status_code=401, detail="invalid Twilio signature")
 
     try:
         signal = sms_source.parse(body, analyst=from_number or None)
@@ -240,7 +301,7 @@ async def receive_sms(
 
 
 @app.get("/positions")
-async def list_positions() -> dict:
+async def list_positions(_owner: dict = Depends(require_owner_read)) -> dict:
     """Every non-flat tracked position, across all accounts.
 
     This is this service's own record of what it has sent (see
@@ -252,7 +313,12 @@ async def list_positions() -> dict:
 
 
 @app.post("/positions/{account_id}/{symbol}/close")
-async def close_single_position(account_id: str, symbol: str) -> dict:
+async def close_single_position(
+    account_id: str,
+    symbol: str,
+    _owner: dict = Depends(require_owner),
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> dict:
     """Immediately exit one open position — the dashboard's per-position
     "Exit now" button. Bypasses routing entirely (this targets exactly the
     named account, not "every account subscribed to some source") and goes
@@ -261,31 +327,61 @@ async def close_single_position(account_id: str, symbol: str) -> dict:
     accounts through `PositionLifecycleManager.request_exit` (respecting
     the protection-transfer rules — see README.md's "Managed lifecycle"
     section), plain accounts against the tracked position at
-    `SignalStore.get_position`."""
+    `SignalStore.get_position` (serialized per (account, symbol) —
+    see `SignalCopierEngine._resolve_and_submit_plain_close`).
+
+    An optional `Idempotency-Key` header makes a retried request (e.g. a
+    client that timed out waiting for the first response and retries)
+    replay the original result instead of submitting a second close — this
+    is on top of, not instead of, the engine's own per-(account, symbol)
+    lock, which already prevents two genuinely concurrent requests from
+    both executing."""
+    if idempotency_key:
+        cached = store.get_idempotent_response(idempotency_key)
+        if cached is not None:
+            return cached
+
     account = routing_config.accounts.get(account_id)
     if account is None:
         raise HTTPException(status_code=404, detail=f"no account '{account_id}'")
 
     result = await engine.close_position(account, symbol, reason="dashboard_manual_exit")
-    return {
+    response = {
         "account_id": account_id,
         "symbol": symbol,
         "status": result.status.value,
         "filled_quantity": result.filled_quantity,
         "message": result.message,
     }
+    if idempotency_key:
+        store.save_idempotent_response(idempotency_key, response)
+    return response
 
 
 @app.post("/accounts/{account_id}/flatten")
-async def flatten_account(account_id: str) -> dict:
+async def flatten_account(
+    account_id: str,
+    _owner: dict = Depends(require_owner),
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> dict:
     """Exit every open position tracked for this account — the dashboard's
-    account-level "Flatten account" action. Closes positions one at a time
-    (not concurrently): each `close_position` call for a managed-lifecycle
+    account-level "Flatten account" action. Only positions this service
+    itself is tracking (`SignalStore.list_open_positions`, filtered to this
+    account) are touched — this is never a broker-wide "flatten everything
+    in the account" call, so a manually-held position this copier never
+    opened is left alone. Closes positions one at a time (not
+    concurrently): each `close_position` call for a managed-lifecycle
     account holds that position's own `CloseArbiter` lock for its full
     duration anyway, so nothing is gained by parallelizing across symbols,
     and doing it sequentially keeps `SignalStore`'s recorded order simple
     to read. One symbol failing to close does not stop the rest — the
-    response reports each symbol's own outcome."""
+    response reports each symbol's own outcome. See the per-position
+    endpoint's docstring for what `Idempotency-Key` does."""
+    if idempotency_key:
+        cached = store.get_idempotent_response(idempotency_key)
+        if cached is not None:
+            return cached
+
     account = routing_config.accounts.get(account_id)
     if account is None:
         raise HTTPException(status_code=404, detail=f"no account '{account_id}'")
@@ -302,11 +398,14 @@ async def flatten_account(account_id: str) -> dict:
                 "message": result.message,
             }
         )
-    return {"account_id": account_id, "closed": closed}
+    response = {"account_id": account_id, "closed": closed}
+    if idempotency_key:
+        store.save_idempotent_response(idempotency_key, response)
+    return response
 
 
 @app.get("/brokers")
-async def list_broker_capabilities() -> dict:
+async def list_broker_capabilities(_owner: dict = Depends(require_owner_read)) -> dict:
     """Every registered broker's actual, code-verified capabilities — not a
     broker name or an imported SDK, which prove nothing on their own. Each
     flag is computed from whether the adapter overrides the base no-op
@@ -340,7 +439,7 @@ async def list_broker_capabilities() -> dict:
 
 
 @app.get("/providers")
-async def list_provider_overrides() -> dict:
+async def list_provider_overrides(_owner: dict = Depends(require_owner_read)) -> dict:
     """Every configured provider/analyst settings override (`config/providers.yaml`)
     and the effective settings it would resolve to for each of this
     service's destination accounts — so "what does this analyst's signal
@@ -409,7 +508,7 @@ class AccountRequest(BaseModel):
 
 
 @app.get("/accounts")
-async def list_accounts() -> dict:
+async def list_accounts(_owner: dict = Depends(require_owner_read)) -> dict:
     """Every live-managed destination account. `broker` values not currently
     in `GET /brokers`' list will error at signal time ("no broker adapter
     registered") — creating the account here doesn't itself register a
@@ -419,7 +518,7 @@ async def list_accounts() -> dict:
 
 
 @app.post("/accounts")
-async def create_or_update_account(request: AccountRequest) -> dict:
+async def create_or_update_account(request: AccountRequest, _owner: dict = Depends(require_owner)) -> dict:
     """Create or update (by `account_id`) a destination account. Takes
     effect on the very next signal — no restart. This does NOT set broker
     credentials: those remain environment variables per the project's
@@ -440,7 +539,7 @@ async def create_or_update_account(request: AccountRequest) -> dict:
 
 
 @app.delete("/accounts/{account_id}")
-async def delete_account(account_id: str) -> dict:
+async def delete_account(account_id: str, _owner: dict = Depends(require_owner)) -> dict:
     store.delete_config_account(account_id)
     _reload_routing_config()
     return {"account_id": account_id, "status": "deleted"}
@@ -453,26 +552,26 @@ class RoutingRuleRequest(BaseModel):
 
 
 @app.get("/routing-rules")
-async def list_routing_rules() -> dict:
+async def list_routing_rules(_owner: dict = Depends(require_owner_read)) -> dict:
     return {"routing_rules": store.list_config_routing_rules()}
 
 
 @app.post("/routing-rules")
-async def create_routing_rule(request: RoutingRuleRequest) -> dict:
+async def create_routing_rule(request: RoutingRuleRequest, _owner: dict = Depends(require_owner)) -> dict:
     rule_id = store.insert_config_routing_rule(request.source, request.destinations, request.symbol_filter)
     _reload_routing_config()
     return {"id": rule_id, "status": "created"}
 
 
 @app.put("/routing-rules/{rule_id}")
-async def update_routing_rule(rule_id: int, request: RoutingRuleRequest) -> dict:
+async def update_routing_rule(rule_id: int, request: RoutingRuleRequest, _owner: dict = Depends(require_owner)) -> dict:
     store.update_config_routing_rule(rule_id, request.source, request.destinations, request.symbol_filter)
     _reload_routing_config()
     return {"id": rule_id, "status": "updated"}
 
 
 @app.delete("/routing-rules/{rule_id}")
-async def delete_routing_rule(rule_id: int) -> dict:
+async def delete_routing_rule(rule_id: int, _owner: dict = Depends(require_owner)) -> dict:
     store.delete_config_routing_rule(rule_id)
     _reload_routing_config()
     return {"id": rule_id, "status": "deleted"}
@@ -487,7 +586,7 @@ class ProviderRequest(BaseModel):
 
 
 @app.post("/providers/{provider_id}")
-async def create_or_update_provider(provider_id: str, request: ProviderRequest) -> dict:
+async def create_or_update_provider(provider_id: str, request: ProviderRequest, _owner: dict = Depends(require_owner)) -> dict:
     store.upsert_config_provider(
         provider_id,
         request.display_name,
@@ -501,7 +600,7 @@ async def create_or_update_provider(provider_id: str, request: ProviderRequest) 
 
 
 @app.delete("/providers/{provider_id}")
-async def delete_provider(provider_id: str) -> dict:
+async def delete_provider(provider_id: str, _owner: dict = Depends(require_owner)) -> dict:
     store.delete_config_provider(provider_id)
     _reload_provider_registry()
     return {"provider_id": provider_id, "status": "deleted"}
@@ -516,7 +615,7 @@ class AnalystRequest(BaseModel):
 
 
 @app.post("/providers/{provider_id}/analysts/{analyst_id}")
-async def create_or_update_analyst(provider_id: str, analyst_id: str, request: AnalystRequest) -> dict:
+async def create_or_update_analyst(provider_id: str, analyst_id: str, request: AnalystRequest, _owner: dict = Depends(require_owner)) -> dict:
     store.upsert_config_analyst(
         provider_id,
         analyst_id,
@@ -531,7 +630,7 @@ async def create_or_update_analyst(provider_id: str, analyst_id: str, request: A
 
 
 @app.delete("/providers/{provider_id}/analysts/{analyst_id}")
-async def delete_analyst(provider_id: str, analyst_id: str) -> dict:
+async def delete_analyst(provider_id: str, analyst_id: str, _owner: dict = Depends(require_owner)) -> dict:
     store.delete_config_analyst(provider_id, analyst_id)
     _reload_provider_registry()
     return {"provider_id": provider_id, "analyst_id": analyst_id, "status": "deleted"}
@@ -574,7 +673,7 @@ def _managed_lifecycle_snapshot() -> list[dict]:
 
 
 @app.get("/signals")
-async def list_signals(limit: int = Query(default=50, le=500)) -> dict:
+async def list_signals(limit: int = Query(default=50, le=500), _owner: dict = Depends(require_owner_read)) -> dict:
     """Most recently received signals, newest first."""
     return {"signals": store.list_recent_signals(limit=limit)}
 
@@ -582,7 +681,7 @@ async def list_signals(limit: int = Query(default=50, le=500)) -> dict:
 @app.get("/orders")
 async def list_orders(
     limit: int = Query(default=50, le=500), account_id: str | None = Query(default=None)
-) -> dict:
+, _owner: dict = Depends(require_owner_read)) -> dict:
     """Most recent order results, newest first — optionally filtered to one account."""
     return {"orders": store.list_recent_orders(limit=limit, account_id=account_id)}
 
@@ -603,7 +702,7 @@ class BacktestRequest(BaseModel):
 
 
 @app.post("/backtest")
-async def run_backtest(request: BacktestRequest) -> dict:
+async def run_backtest(request: BacktestRequest, _owner: dict = Depends(require_owner)) -> dict:
     """Replays historical signals (from `SignalStore`) against locally
     supplied OHLC data. Only signals SAVED AFTER the stop_loss/take_profit/
     analyst columns were added (see app/db.py's `_COLUMN_MIGRATIONS`) carry

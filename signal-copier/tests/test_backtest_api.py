@@ -70,7 +70,10 @@ def test_list_signals_in_range_orders_ascending_by_time(store):
 
 def test_backtest_endpoint_runs_a_real_replay_end_to_end(store, tmp_path, monkeypatch):
     import app.main as main_module
+    from app import config as app_config
 
+    monkeypatch.setattr(app_config, "OWNER_PASSWORD", "test-owner-password")
+    monkeypatch.setattr(app_config, "SESSION_SECRET", "test-session-secret")
     monkeypatch.setattr(main_module, "store", store)
     store.save_signal(
         _signal(source="tradingview", symbol="AAPL", received_at=datetime(2024, 1, 1, tzinfo=timezone.utc))
@@ -84,6 +87,9 @@ def test_backtest_endpoint_runs_a_real_replay_end_to_end(store, tmp_path, monkey
 
     client = TestClient(main_module.app)
     with client:
+        login = client.post("/auth/login", json={"password": "test-owner-password"})
+        assert login.status_code == 200
+        client.headers["X-CSRF-Token"] = login.json()["csrf_token"]
         response = client.post(
             "/backtest",
             json={

@@ -218,6 +218,15 @@ this per destination account before calling any broker:
    from the engine; each broker's own close handling (where present) is
    only a defensive fallback for direct/standalone use.
 
+On a plain (non-`managed_lifecycle`) account, steps 1–3 are serialized per
+`(account_id, symbol)` (`SignalCopierEngine._resolve_and_submit_plain_close`)
+— without this, two close attempts landing close together (a duplicate
+dashboard click, a retried HTTP request, a provider `EXIT` signal racing a
+manual "Exit now") could both read the same tracked position and both
+submit a full-quantity sell, overselling. `managed_lifecycle` accounts
+already get the same guarantee from `CloseArbiter` (see "Managed
+lifecycle" below); this closes the equivalent gap for plain accounts.
+
 Position tracking updates from `OrderResult.filled_quantity` on `FILLED`,
 or optimistically from the requested quantity on `PENDING` (SignalStack,
 Alpaca, IBKR, NinjaTrader, and Rithmic all confirm fills asynchronously,
@@ -471,6 +480,10 @@ websocket/tick stream.** ccxt's own websocket ("pro") support, Alpaca's
 market-data websocket, an MT5 terminal's tick feed, and IBKR's
 `reqMktData` would all be real, lower-latency options for the brokers
 that have them, and are a documented next step, not implemented yet.
+Each pass runs its lookups with bounded concurrency (at most 10 in
+flight at once, not fully sequential and not unbounded) so the pass
+doesn't take longer, position by position, as the number of tracked
+positions grows.
 `GET /brokers`' `has_last_price_capability` field shows exactly which
 brokers are actually being polled today (currently: ccxt only) — a
 managed-lifecycle position on any other broker is correctly protected on
@@ -576,8 +589,14 @@ Three kinds of panels:
   `PositionLifecycleManager.request_exit` (respecting `CloseArbiter` and
   the pending-exit protection-transfer rules, same as an automatic
   target/stop exit); on a plain account it's the tracked position
-  reversed at market. Both require an explicit confirm dialog before
-  submitting.
+  reversed at market, serialized per `(account_id, symbol)` so a second
+  close attempt can't race the first (see "Close signals" above). Both
+  require an explicit confirm dialog before submitting.
+
+The dashboard itself sits behind a sign-in gate (see "Owner
+authentication" above) — it's the same session/CSRF-token flow every
+other protected endpoint uses, just wired into the page's own JS rather
+than a separate client.
 
 This is the one deliberate exception to "the dashboard can't submit an
 order": manual exit only ever *reduces* risk (it can't open a new
@@ -590,14 +609,26 @@ task, unchanged.
 ## Monitoring
 
 ```
-GET /positions              # every non-flat tracked position, across all accounts
-GET /signals?limit=50       # most recently received signals, newest first
+GET /health                  # public, no auth: process liveness + worker progress
+GET /positions               # every non-flat tracked position, across all accounts
+GET /signals?limit=50        # most recently received signals, newest first
 GET /orders?limit=50&account_id=...   # most recent order results, optionally filtered to one account
-GET /brokers                # every registered broker's actual, code-verified capability matrix
-GET /providers              # configured provider/analyst overrides and their effective settings per account
+GET /brokers                 # every registered broker's actual, code-verified capability matrix
+GET /providers               # configured provider/analyst overrides and their effective settings per account
 POST /positions/{account_id}/{symbol}/close   # immediately exit one open position at market
 POST /accounts/{account_id}/flatten           # exit every open position on that account, one at a time
 ```
+
+Every route above except `/health` requires an owner session (see "Owner
+authentication" above). `/health` is deliberately public and minimal —
+`{"status": "ok", "database_ok": ..., "price_monitor_ok": ..., "reconciler_ok": ...}`
+— no account IDs or balances, so it's safe to point an uptime checker at
+directly. `price_monitor_ok`/`reconciler_ok` reflect whether that
+background loop (`app/pricing.py`'s `PriceMonitor`, `app/reconciliation.py`'s
+`OrderReconciler`) has completed a pass recently, not just whether the
+process is running — a task that's alive but stuck (every broker call
+failing, or the loop itself dead) reports `false` here, where a bare
+"is the process up" check would say everything's fine.
 
 The dashboard above is built entirely on these — nothing it shows isn't
 already available as JSON here too. `/positions`, `/signals`, and
@@ -734,10 +765,49 @@ signal correctly routes through to the paper broker and updates
 
 ## Security notes for when this goes live
 
-- Set `WEBHOOK_SHARED_SECRET` before exposing `/webhook/*` publicly —
-  otherwise anyone who finds the URL can inject fake signals.
+- **Owner authentication is mandatory, not optional, once you set `OWNER_PASSWORD`
+  and `SESSION_SECRET`.** Every account/routing/provider/position/close/
+  flatten/backtest/signals/orders endpoint requires a valid owner session
+  (see "Owner authentication" below) — and if either env var is unset,
+  those endpoints fail closed with `503`, they do **not** silently become
+  public. Generate both with e.g.
+  `python -c "import secrets; print(secrets.token_urlsafe(32))"`.
+- Set `WEBHOOK_SHARED_SECRET` before exposing `/webhook/*` publicly — an
+  unset secret now makes that route `503` (disabled), not open; the same
+  applies to `/sms/twilio` and `TWILIO_AUTH_TOKEN`.
 - Never commit `.env` or real `config/routing.yaml` /
   `config/accounts.yaml` if they end up containing anything
   account-identifying (they're gitignored by default).
 - Every broker adapter should fail loudly (as the ccxt one does) rather
   than silently skip an order when credentials are missing.
+
+## Owner authentication
+
+```
+POST /auth/login    {"password": "..."}   -> {"status": "ok", "csrf_token": "..."}
+POST /auth/logout
+```
+
+Single-owner design (see `app/auth.py`) — there's no user database, just
+one shared `OWNER_PASSWORD` compared with a constant-time check, the same
+trust level every other secret in this project already gets from an env
+var. `POST /auth/login` sets a server-side session (`SignalStore.sessions`
+— revocable, survives a restart) as an httponly, samesite=strict cookie,
+and returns a separate CSRF token in the response body. Every mutating
+request (anything but `GET`) must carry both the session cookie (the
+browser attaches this automatically) **and** the `X-CSRF-Token` header set
+to that token — a classic double-submit defense: a cross-site page can
+make the browser send the cookie, but it has no way to read the token to
+put in a custom header. `dashboard.html` does this for you (a login
+screen gates the whole page; the token lives in `sessionStorage` for the
+tab's lifetime, never the session credential itself). `GET` requests only
+need the session cookie, no CSRF token.
+
+`POST /positions/{account_id}/{symbol}/close` and
+`POST /accounts/{account_id}/flatten` additionally accept an optional
+`Idempotency-Key` header — a retried request with the same key replays
+the original result instead of executing the close again. This is
+defense in depth on top of, not instead of, the engine's own
+per-`(account_id, symbol)` lock (see "Close signals" below), which
+already stops two genuinely concurrent close attempts from both
+succeeding.

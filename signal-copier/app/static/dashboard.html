@@ -122,9 +122,40 @@
   .form-error { color: var(--bad); font-size: 0.78rem; margin: -8px 0 10px; }
   .section-note { color: var(--muted); font-size: 0.78rem; margin: -4px 0 10px; }
   td button { margin-right: 4px; }
+  #login-overlay {
+    max-width: 360px;
+    margin: 15vh auto;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 24px;
+  }
+  #login-overlay h1 { margin-bottom: 4px; }
+  #login-overlay input[type="password"] {
+    width: 100%;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 5px;
+    padding: 8px 10px;
+    font-size: 0.9rem;
+    margin: 12px 0;
+  }
+  #login-overlay button { width: 100%; padding: 8px; font-size: 0.85rem; }
 </style>
 </head>
 <body>
+  <div id="login-overlay" hidden>
+    <h1>Signal Copier</h1>
+    <div class="subtitle">Owner sign-in required.</div>
+    <form id="login-form">
+      <input type="password" id="login-password" name="password" placeholder="Owner password" autocomplete="current-password" required>
+      <button type="submit">Sign in</button>
+    </form>
+    <div class="form-error" id="login-error"></div>
+  </div>
+
+  <div id="app" hidden>
   <h1>Signal Copier</h1>
   <div class="subtitle">Live view of this service's own tracked state (not a live broker read) — and, below, live management of accounts, routing rules, and provider/analyst overrides. See README.md's "Managing config through the GUI/API" section for exactly what is and isn't covered here (pull-based bot sources like Telegram/Discord still need env vars + a restart).</div>
 
@@ -133,6 +164,7 @@
     <span id="health-text">checking…</span>
     <span class="last-updated" id="last-updated"></span>
     <button onclick="refreshAll()">Refresh now</button>
+    <button class="ghost" onclick="logout()">Sign out</button>
   </div>
 
   <div class="grid">
@@ -228,9 +260,92 @@
       <div id="orders-table"><div class="empty">Loading…</div></div>
     </section>
   </div>
+  </div><!-- #app -->
 
 <script>
 const $ = (id) => document.getElementById(id);
+
+// --- Auth: session cookie (httponly, set by the server) + a CSRF token this
+// script must attach to every mutating request itself (see app/auth.py's
+// module docstring for why a cookie alone isn't enough). The token is kept
+// in sessionStorage only for convenience across a reload of the same tab
+// -- it is not the credential (the httponly cookie is, and JS can't read
+// that), so a leaked token is useless without also having that cookie.
+let csrfToken = sessionStorage.getItem("scr_csrf_token") || null;
+let pollTimer = null;
+
+function showLogin(message) {
+  if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+  $("app").hidden = true;
+  $("login-overlay").hidden = false;
+  $("login-error").textContent = message || "";
+  csrfToken = null;
+  sessionStorage.removeItem("scr_csrf_token");
+}
+
+function showApp() {
+  $("login-overlay").hidden = true;
+  $("app").hidden = false;
+  refreshAll();
+  if (!pollTimer) pollTimer = setInterval(refreshAll, 10000);
+}
+
+async function attemptLogin(password) {
+  const res = await fetch("/auth/login", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ password }),
+  });
+  if (!res.ok) {
+    throw new Error(res.status === 401 ? "Incorrect password." : `Login failed (HTTP ${res.status}).`);
+  }
+  const body = await res.json();
+  csrfToken = body.csrf_token;
+  sessionStorage.setItem("scr_csrf_token", csrfToken);
+}
+
+async function logout() {
+  try {
+    await fetch("/auth/logout", { method: "POST", headers: { "X-CSRF-Token": csrfToken || "" } });
+  } catch (e) {
+    // best-effort -- still clear local state and show the login screen
+  }
+  showLogin();
+}
+
+$("login-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const password = $("login-password").value;
+  try {
+    await attemptLogin(password);
+    $("login-password").value = "";
+    showApp();
+  } catch (err) {
+    $("login-error").textContent = err.message;
+  }
+});
+
+// A fresh page load might still have a valid session cookie (browsers send
+// it automatically) even though this tab's sessionStorage csrf_token was
+// cleared -- checkSession() finds out with one cheap authenticated GET
+// before deciding whether to show the login form.
+async function checkSession() {
+  try {
+    const res = await fetch("/health");
+    if (!res.ok) { showLogin("Cannot reach the service."); return; }
+    const body = await res.json();
+    if (body.status !== "ok") { showLogin("Service reports an unhealthy status."); return; }
+  } catch (e) {
+    showLogin("Cannot reach the service.");
+    return;
+  }
+  if (!csrfToken) { showLogin(); return; }
+  // Confirm the session cookie itself is still valid server-side (it may
+  // have expired since this tab last used it) before assuming showApp() is safe.
+  const probe = await fetch("/accounts");
+  if (probe.status === 401) { showLogin("Your session expired -- please sign in again."); return; }
+  showApp();
+}
 
 function pill(text, kind) {
   return `<span class="pill ${kind}">${text}</span>`;
@@ -255,6 +370,7 @@ function table(headers, rows, emptyMessage) {
 
 async function fetchJSON(path) {
   const res = await fetch(path);
+  if (res.status === 401) { showLogin("Your session expired -- please sign in again."); throw new Error("not authenticated"); }
   if (!res.ok) throw new Error(`${path} -> HTTP ${res.status}`);
   return res.json();
 }
@@ -409,23 +525,34 @@ function escapeAttr(s) {
   return String(s ?? "").replace(/'/g, "\\'");
 }
 
-async function postJSON(path, body) {
-  const res = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+// Every mutating call attaches X-CSRF-Token (see this file's top-of-script
+// comment) -- required alongside the session cookie the browser already
+// sends automatically. A 401/403 here means the session expired or the
+// CSRF token is stale; show the login form again rather than a confusing
+// raw error.
+async function _mutate(path, options) {
+  const res = await fetch(path, {
+    ...options,
+    headers: { ...(options.headers || {}), "X-CSRF-Token": csrfToken || "" },
+  });
+  if (res.status === 401 || res.status === 403) {
+    showLogin("Your session expired -- please sign in again.");
+    throw new Error("not authenticated");
+  }
   if (!res.ok) {
     const detail = await res.text();
     throw new Error(`${path} -> HTTP ${res.status}: ${detail}`);
   }
   return res.json();
 }
+async function postJSON(path, body) {
+  return _mutate(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+}
 async function putJSON(path, body) {
-  const res = await fetch(path, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-  if (!res.ok) throw new Error(`${path} -> HTTP ${res.status}: ${await res.text()}`);
-  return res.json();
+  return _mutate(path, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
 }
 async function deleteJSON(path) {
-  const res = await fetch(path, { method: "DELETE" });
-  if (!res.ok) throw new Error(`${path} -> HTTP ${res.status}: ${await res.text()}`);
-  return res.json();
+  return _mutate(path, { method: "DELETE" });
 }
 function tristate(value) {
   return value === "" || value === undefined ? null : value === "true";
@@ -659,8 +786,7 @@ async function refreshAll() {
   $("last-updated").textContent = `last updated ${new Date().toLocaleTimeString()}`;
 }
 
-refreshAll();
-setInterval(refreshAll, 10000);
+checkSession();
 </script>
 </body>
 </html>

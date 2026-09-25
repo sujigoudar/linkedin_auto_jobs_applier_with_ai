@@ -123,3 +123,81 @@ async def test_closed_lifecycles_are_never_polled(account, broker):
     updated = await monitor.poll_once()
 
     assert updated == 0
+
+
+@pytest.mark.asyncio
+async def test_poll_once_runs_lookups_with_bounded_concurrency_not_sequentially(account, broker):
+    """With N open positions, a bounded-concurrency pass should take roughly
+    one lookup's worth of wall-clock time (up to the concurrency cap), not
+    N lookups' worth -- proving this isn't secretly still a sequential loop
+    under a new name."""
+    import asyncio
+
+    class _SlowFeedBroker(PaperBroker):
+        def __init__(self):
+            super().__init__()
+            self.name = "paper"
+            self.concurrent_calls = 0
+            self.max_concurrent_calls = 0
+
+        async def get_last_price(self, account, symbol):
+            self.concurrent_calls += 1
+            self.max_concurrent_calls = max(self.max_concurrent_calls, self.concurrent_calls)
+            await asyncio.sleep(0.05)
+            self.concurrent_calls -= 1
+            return 100.0
+
+    slow_broker = _SlowFeedBroker()
+    manager = PositionLifecycleManager(brokers={"paper": slow_broker})
+    for i in range(5):
+        plan = PositionPlan(
+            account_id="acct1", symbol=f"SYM{i}", side=Side.BUY, planned_quantity=10.0, broker="paper", initial_stop=90.0
+        )
+        await _enter(manager, slow_broker, account, plan, 10.0)
+
+    monitor = PriceMonitor(lifecycle_manager=manager, brokers={"paper": slow_broker})
+
+    start = asyncio.get_event_loop().time()
+    updated = await monitor.poll_once()
+    elapsed = asyncio.get_event_loop().time() - start
+
+    assert updated == 5
+    # sequential would take ~0.25s (5 * 0.05s); concurrent should be close to one sleep.
+    assert elapsed < 0.15
+    assert slow_broker.max_concurrent_calls > 1
+
+
+@pytest.mark.asyncio
+async def test_one_position_failing_does_not_block_others_in_the_same_pass(account, broker):
+    class _PartiallyBrokenFeedBroker(PaperBroker):
+        def __init__(self):
+            super().__init__()
+            self.name = "paper"
+
+        async def get_last_price(self, account, symbol):
+            if symbol == "BAD":
+                raise RuntimeError("feed exploded")
+            return 100.0
+
+    flaky = _PartiallyBrokenFeedBroker()
+    manager = PositionLifecycleManager(brokers={"paper": flaky})
+    for symbol in ("GOOD1", "BAD", "GOOD2"):
+        plan = PositionPlan(
+            account_id="acct1", symbol=symbol, side=Side.BUY, planned_quantity=10.0, broker="paper", initial_stop=90.0
+        )
+        await _enter(manager, flaky, account, plan, 10.0)
+
+    monitor = PriceMonitor(lifecycle_manager=manager, brokers={"paper": flaky})
+    updated = await monitor.poll_once()
+
+    assert updated == 2  # both GOOD positions still got updated despite BAD's exception
+
+
+@pytest.mark.asyncio
+async def test_stop_cancels_the_running_loop_task():
+    manager = PositionLifecycleManager(brokers={})
+    monitor = PriceMonitor(lifecycle_manager=manager, brokers={}, interval_seconds=60.0)
+    await monitor.start()
+    assert monitor._task is not None
+    await monitor.stop()
+    assert monitor._task.cancelled() or monitor._task.done()

@@ -15,6 +15,11 @@ from app.models import OrderStatus, Signal, Side
 @pytest.fixture
 def client(tmp_path, monkeypatch):
     import app.main as main_module
+    from app import config as app_config
+
+    monkeypatch.setattr(app_config, "OWNER_PASSWORD", "test-owner-password")
+    monkeypatch.setattr(app_config, "SESSION_SECRET", "test-session-secret")
+    monkeypatch.setattr(app_config, "WEBHOOK_SHARED_SECRET", "test-webhook-secret")
 
     store = SignalStore(tmp_path / "test.db")
     monkeypatch.setattr(main_module, "store", store)
@@ -28,7 +33,17 @@ def client(tmp_path, monkeypatch):
     main_module.routing_config.accounts.clear()
     main_module.routing_config.rules.clear()
     main_module.provider_registry.providers.clear()
-    return TestClient(main_module.app)
+
+    test_client = TestClient(main_module.app)
+    login = test_client.post("/auth/login", json={"password": "test-owner-password"})
+    assert login.status_code == 200
+    # Real browsers send the session cookie automatically and attach the CSRF
+    # token themselves (see dashboard.html); a default header here does the
+    # same for every call this client makes, matching how a real client
+    # behaves rather than special-casing each request in this file.
+    test_client.headers["X-CSRF-Token"] = login.json()["csrf_token"]
+    test_client.headers["X-Webhook-Secret"] = "test-webhook-secret"
+    return test_client
 
 
 def test_account_created_via_api_is_immediately_usable_no_restart(client):

@@ -65,7 +65,9 @@ for `/positions` observability, same as the plain path.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
+from collections import defaultdict
 from dataclasses import replace
 
 from app.brokers.base import BrokerAdapter
@@ -94,6 +96,14 @@ class SignalCopierEngine:
         self.store = store
         self.lifecycle_manager = lifecycle_manager or PositionLifecycleManager(brokers)
         self.provider_registry = provider_registry or ProviderRegistry()
+        # Serializes a plain (non-managed_lifecycle) account's close resolution +
+        # submission per (account_id, symbol) -- see _resolve_and_submit_plain_close.
+        # managed_lifecycle accounts already get this from CloseArbiter; plain
+        # accounts had no equivalent, so two near-simultaneous closes (a retried
+        # request, a duplicate button click, a provider EXIT signal racing a
+        # manual dashboard close) could both read the same tracked position and
+        # both submit a full-quantity sell.
+        self._plain_close_locks: dict[tuple[str, str], asyncio.Lock] = defaultdict(asyncio.Lock)
 
     def _effective_settings(self, signal: Signal, account: DestinationAccount) -> SettingsOverride:
         account_defaults = SettingsOverride(
@@ -178,20 +188,11 @@ class SignalCopierEngine:
                 continue
 
             if signal.side == Side.CLOSE:
-                resolved = self._resolve_close(signal, account, symbol)
-                if resolved is None:
-                    result = OrderResult(
-                        account_id=account.account_id,
-                        status=OrderStatus.REJECTED,
-                        signal_id=signal.id,
-                        message="no open position to close",
-                    )
-                    self.store.save_order_result(result)
-                    results.append(result)
-                    continue
-                order_signal, quantity = resolved
-            else:
-                order_signal, quantity = signal, size_for_account(signal, account)
+                result = await self._resolve_and_submit_plain_close(signal, account, symbol, broker)
+                results.append(result)
+                continue
+
+            order_signal, quantity = signal, size_for_account(signal, account)
 
             if (order_signal.stop_loss is not None or order_signal.take_profit is not None) and not broker.supports_native_bracket:
                 # This account isn't managed_lifecycle, so nothing will submit a
@@ -268,6 +269,51 @@ class SignalCopierEngine:
             raw=signal.raw,
         )
         return resolved_signal, quantity
+
+    async def _submit_order(
+        self, order_signal: Signal, quantity: float, account: DestinationAccount, symbol: str, broker: BrokerAdapter
+    ) -> OrderResult:
+        try:
+            result = await broker.place_order(order_signal, account, quantity, symbol)
+        except Exception as exc:  # noqa: BLE001 - one account's failure must not block others
+            logger.exception("order failed for account=%s", account.account_id)
+            result = OrderResult(
+                account_id=account.account_id, status=OrderStatus.ERROR, signal_id=order_signal.id, message=str(exc)
+            )
+        if result.status in (OrderStatus.FILLED, OrderStatus.PENDING):
+            filled_quantity = result.filled_quantity or quantity
+            self.store.record_fill(account.account_id, symbol, order_signal.side, filled_quantity)
+        return result
+
+    async def _resolve_and_submit_plain_close(
+        self, signal: Signal, account: DestinationAccount, symbol: str, broker: BrokerAdapter
+    ) -> OrderResult:
+        """The plain-account (non-managed_lifecycle) equivalent of
+        `PositionLifecycleManager.request_exit`'s serialization: reading the
+        tracked position, resolving it to an opposing order, submitting it,
+        and recording the fill all happen under this (account_id, symbol)'s
+        own lock, so a second close attempt arriving while the first is still
+        in flight sees the position *after* the first one's fill is recorded,
+        not the same stale value the first one read."""
+        lock = self._plain_close_locks[(account.account_id, symbol)]
+        async with lock:
+            resolved = self._resolve_close(signal, account, symbol)
+            if resolved is None:
+                result = OrderResult(
+                    account_id=account.account_id,
+                    status=OrderStatus.REJECTED,
+                    signal_id=signal.id,
+                    message="no open position to close",
+                )
+                self.store.save_order_result(result)
+                return result
+
+            order_signal, quantity = resolved
+            result = await self._submit_order(order_signal, quantity, account, symbol, broker)
+            self.store.save_order_result(
+                result, broker=account.broker, symbol=symbol, side=order_signal.side, requested_quantity=quantity
+            )
+            return result
 
     async def _handle_managed_signal(
         self, signal: Signal, account: DestinationAccount, symbol: str
@@ -420,30 +466,12 @@ class SignalCopierEngine:
 
         if account.managed_lifecycle:
             result = await self._handle_managed_close(close_signal, account, symbol, source=reason)
+            self.store.save_order_result(result, broker=account.broker, symbol=symbol, side=Side.CLOSE)
         else:
-            resolved = self._resolve_close(close_signal, account, symbol)
-            if resolved is None:
-                result = OrderResult(
-                    account_id=account.account_id,
-                    status=OrderStatus.REJECTED,
-                    signal_id=close_signal.id,
-                    message="no open position to close",
-                )
-            else:
-                order_signal, quantity = resolved
-                try:
-                    result = await broker.place_order(order_signal, account, quantity, symbol)
-                except Exception as exc:  # noqa: BLE001 - report, don't crash the request
-                    logger.exception("manual close failed for account=%s symbol=%s", account.account_id, symbol)
-                    result = OrderResult(
-                        account_id=account.account_id,
-                        status=OrderStatus.ERROR,
-                        signal_id=close_signal.id,
-                        message=str(exc),
-                    )
-                if result.status in (OrderStatus.FILLED, OrderStatus.PENDING):
-                    filled_quantity = result.filled_quantity or quantity
-                    self.store.record_fill(account.account_id, symbol, order_signal.side, filled_quantity)
-
-        self.store.save_order_result(result, broker=account.broker, symbol=symbol, side=Side.CLOSE)
+            # Goes through the same (account_id, symbol) lock as a provider-driven
+            # CLOSE signal (see _resolve_and_submit_plain_close) -- a dashboard
+            # "Exit now"/"Flatten" click can't race a concurrent provider EXIT
+            # signal, or a second click, into a double-sell. This also persists
+            # its own order-result row, so no separate save here.
+            result = await self._resolve_and_submit_plain_close(close_signal, account, symbol, broker)
         return result

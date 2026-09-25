@@ -113,6 +113,10 @@ async def test_close_position_missing_broker_reports_error(store, broker):
 @pytest.fixture
 def client(tmp_path, monkeypatch):
     import app.main as main_module
+    from app import config as app_config
+
+    monkeypatch.setattr(app_config, "OWNER_PASSWORD", "test-owner-password")
+    monkeypatch.setattr(app_config, "SESSION_SECRET", "test-session-secret")
 
     store = SignalStore(tmp_path / "test_http.db")
     monkeypatch.setattr(main_module, "store", store)
@@ -120,7 +124,12 @@ def client(tmp_path, monkeypatch):
     main_module.routing_config.accounts.clear()
     main_module.routing_config.rules.clear()
     main_module.routing_config.accounts["acct1"] = DestinationAccount(account_id="acct1", broker="paper")
-    return TestClient(main_module.app), store
+
+    test_client = TestClient(main_module.app)
+    login = test_client.post("/auth/login", json={"password": "test-owner-password"})
+    assert login.status_code == 200
+    test_client.headers["X-CSRF-Token"] = login.json()["csrf_token"]
+    return test_client, store
 
 
 def test_close_single_position_endpoint(client):

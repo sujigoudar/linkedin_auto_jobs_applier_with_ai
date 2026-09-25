@@ -29,12 +29,20 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import datetime, timezone
 
 from app.brokers.base import BrokerAdapter
 from app.lifecycle.manager import PositionLifecycleManager
 from app.models import DestinationAccount
 
 logger = logging.getLogger(__name__)
+
+#: How many `get_last_price` calls run concurrently in one pass. Bounded so a
+#: growing number of tracked positions can't turn into an unbounded burst of
+#: simultaneous requests against a broker/exchange's rate limits -- each
+#: position's own call is still independent (one slow/failing symbol doesn't
+#: block another), but at most this many are ever in flight at once.
+_MAX_CONCURRENT_PRICE_LOOKUPS = 10
 
 
 class PriceMonitor:
@@ -48,6 +56,11 @@ class PriceMonitor:
         self.brokers = brokers
         self.interval_seconds = interval_seconds
         self._task: asyncio.Task | None = None
+        #: Set at the end of every pass that completes without the whole loop
+        #: itself dying -- a pass where every single position's price lookup
+        #: failed still updates this (see app/main.py's /health: "did a cycle
+        #: complete" is a different question from "did every lookup succeed").
+        self.last_success_at: datetime | None = None
 
     async def start(self) -> None:
         self._task = asyncio.create_task(self._loop())
@@ -55,12 +68,23 @@ class PriceMonitor:
     async def stop(self) -> None:
         if self._task is not None:
             self._task.cancel()
+            try:
+                await self._task
+            except asyncio.CancelledError:
+                pass
 
     async def _loop(self) -> None:
         while True:
             await asyncio.sleep(self.interval_seconds)
             try:
                 await self.poll_once()
+                self.last_success_at = datetime.now(timezone.utc)
+            except asyncio.CancelledError:
+                # Structured concurrency: a cancellation is `stop()` asking this
+                # task to end, not a failed pass -- swallowing it here (like the
+                # broad except below does for ordinary errors) would leave the
+                # task silently un-cancellable. Let it propagate.
+                raise
             except Exception:  # noqa: BLE001 - one bad pass must not kill the loop
                 logger.exception("error during price monitor pass")
 
@@ -69,26 +93,41 @@ class PriceMonitor:
         price is available into `on_price_update()`. Returns how many
         positions actually got a fresh price this pass — positions on a
         broker with no `get_last_price` implementation are silently
-        skipped (not an error; see this module's docstring)."""
-        updated = 0
-        for lifecycle in self.lifecycle_manager.list_open_lifecycles():
+        skipped (not an error; see this module's docstring).
+
+        Lookups run with bounded concurrency (see `_MAX_CONCURRENT_PRICE_LOOKUPS`)
+        rather than one at a time -- with N open positions, a fully sequential
+        pass costs N broker round-trips end to end, which means the *effective*
+        polling interval for the Nth position grows with the position count;
+        `on_price_update()` itself is still called one result at a time, in
+        whatever order the lookups complete, since it does its own per-
+        (account, symbol) locking (see app/lifecycle/manager.py)."""
+        semaphore = asyncio.Semaphore(_MAX_CONCURRENT_PRICE_LOOKUPS)
+
+        async def _poll_one(lifecycle) -> bool:
             account_id, symbol = lifecycle.key
             broker_name = lifecycle.plan.broker
             broker = self.brokers.get(broker_name)
             if broker is None or not broker.has_last_price_capability:
-                continue
+                return False
 
             account = DestinationAccount(account_id=account_id, broker=broker_name)
-            try:
-                price = await broker.get_last_price(account, symbol)
-            except Exception:  # noqa: BLE001 - one broker's failure must not block the rest
-                logger.exception(
-                    "get_last_price failed for account=%s symbol=%s broker=%s", account_id, symbol, broker_name
-                )
-                continue
+            async with semaphore:
+                try:
+                    price = await broker.get_last_price(account, symbol)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:  # noqa: BLE001 - one broker's failure must not block the rest
+                    logger.exception(
+                        "get_last_price failed for account=%s symbol=%s broker=%s", account_id, symbol, broker_name
+                    )
+                    return False
             if price is None:
-                continue
+                return False
 
             await self.lifecycle_manager.on_price_update(account, symbol, price)
-            updated += 1
-        return updated
+            return True
+
+        lifecycles = self.lifecycle_manager.list_open_lifecycles()
+        results = await asyncio.gather(*(_poll_one(lifecycle) for lifecycle in lifecycles))
+        return sum(results)

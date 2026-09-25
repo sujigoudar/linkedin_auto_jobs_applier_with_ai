@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import datetime, timezone
 
 from app.brokers.base import BrokerAdapter
 from app.db import SignalStore
@@ -53,6 +54,9 @@ class OrderReconciler:
         self.interval_seconds = interval_seconds
         self.lifecycle_manager = lifecycle_manager
         self._task: asyncio.Task | None = None
+        #: See PriceMonitor.last_success_at (app/pricing.py) -- same contract,
+        #: surfaced by app/main.py's /health.
+        self.last_success_at: datetime | None = None
 
     async def start(self) -> None:
         self._task = asyncio.create_task(self._loop())
@@ -60,12 +64,19 @@ class OrderReconciler:
     async def stop(self) -> None:
         if self._task is not None:
             self._task.cancel()
+            try:
+                await self._task
+            except asyncio.CancelledError:
+                pass
 
     async def _loop(self) -> None:
         while True:
             await asyncio.sleep(self.interval_seconds)
             try:
                 await self.reconcile_once()
+                self.last_success_at = datetime.now(timezone.utc)
+            except asyncio.CancelledError:
+                raise  # see PriceMonitor._loop's identical comment
             except Exception:  # noqa: BLE001 - one bad pass must not kill the loop
                 logger.exception("error during order reconciliation pass")
 

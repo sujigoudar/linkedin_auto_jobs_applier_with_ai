@@ -117,6 +117,33 @@ CREATE TABLE IF NOT EXISTS config_analysts (
     enabled INTEGER,
     PRIMARY KEY (provider_id, analyst_id)
 );
+
+-- Server-side owner sessions (see app/auth.py). `session_id` is the opaque
+-- value carried in the session cookie; `csrf_token` is returned once at
+-- login and must be echoed back as the X-CSRF-Token header on every
+-- mutating request (double-submit defense). Deleting a row revokes that
+-- session immediately (logout, or an owner-initiated "sign out everywhere").
+CREATE TABLE IF NOT EXISTS sessions (
+    session_id TEXT PRIMARY KEY,
+    csrf_token TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL
+);
+
+-- Recent financial-command results, keyed by an idempotency key the caller
+-- supplies (see app/main.py's close/flatten endpoints): a retried or
+-- duplicated request with the same key replays the stored result instead
+-- of executing the command again.
+CREATE TABLE IF NOT EXISTS idempotency_records (
+    idempotency_key TEXT PRIMARY KEY,
+    response_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_orders_executed_at ON orders (executed_at);
+CREATE INDEX IF NOT EXISTS idx_orders_account_id ON orders (account_id);
+CREATE INDEX IF NOT EXISTS idx_signals_received_at ON signals (received_at);
+CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions (expires_at);
 """
 
 
@@ -639,3 +666,46 @@ class SignalStore:
             }
             for r in rows
         ]
+
+    # --- owner sessions (app/auth.py) ---
+
+    def create_session(self, session_id: str, csrf_token: str, expires_at: datetime) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO sessions (session_id, csrf_token, created_at, expires_at) VALUES (?, ?, ?, ?)",
+                (session_id, csrf_token, datetime.now(timezone.utc).isoformat(), expires_at.isoformat()),
+            )
+
+    def get_session(self, session_id: str) -> dict | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT session_id, csrf_token, expires_at FROM sessions WHERE session_id = ?", (session_id,)
+            ).fetchone()
+        if row is None:
+            return None
+        return {"session_id": row[0], "csrf_token": row[1], "expires_at": row[2]}
+
+    def delete_session(self, session_id: str) -> None:
+        with self._connect() as conn:
+            conn.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
+
+    def delete_expired_sessions(self) -> None:
+        with self._connect() as conn:
+            conn.execute("DELETE FROM sessions WHERE expires_at < ?", (datetime.now(timezone.utc).isoformat(),))
+
+    # --- idempotent financial commands (app/main.py's close/flatten routes) ---
+
+    def get_idempotent_response(self, idempotency_key: str) -> dict | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT response_json FROM idempotency_records WHERE idempotency_key = ?", (idempotency_key,)
+            ).fetchone()
+        return json.loads(row[0]) if row else None
+
+    def save_idempotent_response(self, idempotency_key: str, response: dict) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """INSERT OR IGNORE INTO idempotency_records (idempotency_key, response_json, created_at)
+                   VALUES (?, ?, ?)""",
+                (idempotency_key, json.dumps(response), datetime.now(timezone.utc).isoformat()),
+            )

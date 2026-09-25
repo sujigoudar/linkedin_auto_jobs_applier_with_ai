@@ -22,6 +22,18 @@ DATABASE_PATH = Path(os.getenv("DATABASE_PATH", BASE_DIR / "signal_copier.db"))
 # random requests on the public endpoint can't inject fake signals.
 WEBHOOK_SHARED_SECRET = os.getenv("WEBHOOK_SHARED_SECRET", "")
 
+# Owner authentication (see app/auth.py). Every account/routing/position/
+# close/flatten/backtest endpoint requires a valid owner session; both of
+# these must be set or every one of those endpoints fails closed (503),
+# never silently open. OWNER_PASSWORD is compared with a constant-time
+# check, same trust level as every other secret this project keeps in an
+# env var (see README's Security notes) -- there is no user database,
+# this is a single-owner app. SESSION_SECRET signs/derives session data;
+# generate both with e.g. `python -c "import secrets; print(secrets.token_urlsafe(32))"`.
+OWNER_PASSWORD = os.getenv("OWNER_PASSWORD", "")
+SESSION_SECRET = os.getenv("SESSION_SECRET", "")
+SESSION_TTL_SECONDS = float(os.getenv("SESSION_TTL_SECONDS", str(60 * 60 * 12)))  # 12h
+
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 
 # Optional pull-based sources: each only starts if its required env vars are
