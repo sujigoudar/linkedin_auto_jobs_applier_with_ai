@@ -145,17 +145,34 @@ class PositionLifecycleManager:
         state = _lifecycle_to_state(lifecycle, self.arbiter.snapshot(account_id, symbol))
         self.store.save_lifecycle_state(account_id, symbol, state)
 
-    @staticmethod
-    def validate_plan(plan: PositionPlan) -> str | None:
+    def validate_plan(self, plan: PositionPlan) -> str | None:
         """Design section 11: no provider stop, no released fallback -> NO ENTRY.
         The caller resolves fallbacks (provider -> strategy -> asset-level) and
         sets `plan.initial_stop` *before* calling this; this only enforces that
         something ended up there. Returns an error message if the plan must not
-        be entered, or None if it's fine to proceed."""
+        be entered, or None if it's fine to proceed.
+
+        Also refuses a plan whose broker has no real way to keep the position
+        protected at all (`BrokerAdapter.can_protect_a_managed_position()` is
+        False) — e.g. `initial_stop` is set, but the broker has neither a
+        native bracket nor a verified `place_protective_stop`. Admitting that
+        entry would let `on_entry_fill` silently log a warning and leave the
+        position open with nothing actually covering it (see this method's
+        BLOCKED_CAPABILITY-style rejection here, not a log line after the
+        fact — "a warning or None from protection placement is not success")."""
         if plan.initial_stop is None:
             return (
                 "no stop-loss resolved for this entry (no provider stop and no "
                 "released fallback) — refusing to enter unprotected"
+            )
+        broker = self.brokers.get(plan.broker)
+        if broker is None:
+            return f"no broker adapter registered for '{plan.broker}' — refusing to enter"
+        if not broker.can_protect_a_managed_position():
+            return (
+                f"broker '{plan.broker}' has no verified way to keep this position protected "
+                "(no native bracket, no place_protective_stop implementation) — refusing to "
+                "enter under managed_lifecycle rather than admit it unprotected"
             )
         return None
 

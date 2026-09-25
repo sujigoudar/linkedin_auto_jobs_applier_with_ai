@@ -93,3 +93,43 @@ class BrokerAdapter(abc.ABC):
         this broker has no verified way to read that back — the caller must
         not treat None as zero."""
         return None
+
+    # --- Capability introspection (computed, not declared) ---
+    #
+    # These answer "does this adapter have a REAL implementation of X" by
+    # checking whether the subclass actually overrides the base no-op —
+    # not from a separately maintained boolean flag. A flag nobody updates
+    # when a method changes is just as false as a missing method: "method
+    # existence is not capability evidence" cuts both ways. Used to gate
+    # live admission (app/engine.py, app/lifecycle/manager.py) and to
+    # report real capability to a caller (GET /brokers in app/main.py)
+    # instead of a broker name/class being treated as proof of anything.
+
+    @property
+    def has_protective_stop_capability(self) -> bool:
+        return type(self).place_protective_stop is not BrokerAdapter.place_protective_stop
+
+    @property
+    def has_cancel_capability(self) -> bool:
+        return type(self).cancel_order is not BrokerAdapter.cancel_order
+
+    @property
+    def has_replace_stop_capability(self) -> bool:
+        return type(self).replace_stop_quantity is not BrokerAdapter.replace_stop_quantity
+
+    @property
+    def has_position_readback_capability(self) -> bool:
+        return type(self).get_broker_position is not BrokerAdapter.get_broker_position
+
+    @property
+    def has_order_status_capability(self) -> bool:
+        return type(self).get_order_status is not BrokerAdapter.get_order_status
+
+    def can_protect_a_managed_position(self) -> bool:
+        """Whether `PositionLifecycleManager` can actually keep a position
+        protected on this broker: either the entry itself brackets
+        atomically (`supports_native_bracket`), or a real standalone
+        protective stop can be placed after the fact. A broker with
+        neither must not be admitted into managed-lifecycle live trading —
+        see app/lifecycle/manager.py's `validate_plan`."""
+        return self.supports_native_bracket or self.has_protective_stop_capability

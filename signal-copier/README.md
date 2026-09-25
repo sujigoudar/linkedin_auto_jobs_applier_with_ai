@@ -118,6 +118,41 @@ confirmed SL/TP fields — inventing one risks a silently wrong or ignored
 exit order on real money). If you need SL/TP on one of those, say which
 and I'll research and verify it properly rather than guess.
 
+### The entry is refused, not silently unprotected
+
+The four brokers above that can't forward `stop_loss`/`take_profit`
+(`paper`, `signalstack`, `ninjatrader`, `rithmic`) used to just ignore
+those fields on a plain (non-`managed_lifecycle`) account — the entry
+went through, the position opened, and nothing protecting it was ever
+submitted, with no error anywhere. That's now a release-blocking defect
+class this project treats as fixed, not documented-and-left: if a signal
+carries `stop_loss`/`take_profit` and the destination account isn't
+`managed_lifecycle`, `SignalCopierEngine.handle_signal` checks
+`broker.supports_native_bracket` **before** calling `place_order` — if
+it's `False`, the entry is `REJECTED` outright ("refusing to submit an
+entry that would silently open unprotected") instead of being sent. The
+same check exists on the `managed_lifecycle` path too: `PositionLifecycleManager.validate_plan`
+refuses an entry whenever the target broker has neither a native bracket
+nor a *verified* `place_protective_stop` implementation
+(`BrokerAdapter.can_protect_a_managed_position()`), rather than admitting
+the plan and letting `on_entry_fill` discover the gap after the fact and
+just log a warning.
+
+Both checks are computed from whether the broker subclass actually
+overrides the relevant base-class no-op (`has_protective_stop_capability`,
+`has_cancel_capability`, `has_replace_stop_capability`,
+`has_position_readback_capability`, `has_order_status_capability` — see
+`app/brokers/base.py`'s "Capability introspection" section) — not from a
+separately maintained boolean that could silently drift out of sync with
+the code. `GET /brokers` exposes this same matrix for every registered
+broker, so "is this route actually safe to trade unattended" is a fact
+you can query, not something to infer from a broker's name or an imported
+SDK.
+
+A signal with **no** `stop_loss`/`take_profit` at all is unaffected —
+this only blocks the specific case of requesting protection a broker
+would silently drop.
+
 ## Managed lifecycle (protect-first position management)
 
 For a broker/exchange that can't submit entry + stop-loss + take-profit as
@@ -264,6 +299,7 @@ partial-fill-arithmetic, and pending-exit-transfer proofs.
 GET /positions              # every non-flat tracked position, across all accounts
 GET /signals?limit=50       # most recently received signals, newest first
 GET /orders?limit=50&account_id=...   # most recent order results, optionally filtered to one account
+GET /brokers                # every registered broker's actual, code-verified capability matrix
 ```
 
 All three read from `SignalStore` (`app/db.py`) — this service's own

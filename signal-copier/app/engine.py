@@ -126,6 +126,32 @@ class SignalCopierEngine:
             else:
                 order_signal, quantity = signal, size_for_account(signal, account)
 
+            if (order_signal.stop_loss is not None or order_signal.take_profit is not None) and not broker.supports_native_bracket:
+                # This account isn't managed_lifecycle, so nothing will submit a
+                # standalone protective order after the fact either — sending this
+                # signal's stop_loss/take_profit to a broker that can't embed it in
+                # the entry means it's silently dropped and the position opens
+                # unprotected (see app/brokers/*.py's supports_native_bracket=False
+                # adapters, none of which read stop_loss/take_profit at all).
+                # Refuse rather than admit that silently; the fix is either a
+                # broker that supports it or opting the account into
+                # managed_lifecycle so PositionLifecycleManager manages protection.
+                result = OrderResult(
+                    account_id=account.account_id,
+                    status=OrderStatus.REJECTED,
+                    signal_id=signal.id,
+                    message=(
+                        f"broker '{account.broker}' cannot embed stop_loss/take_profit into the entry "
+                        "order (no native bracket) and this account is not managed_lifecycle — refusing "
+                        "to submit an entry that would silently open unprotected"
+                    ),
+                )
+                self.store.save_order_result(
+                    result, broker=account.broker, symbol=symbol, side=order_signal.side, requested_quantity=quantity
+                )
+                results.append(result)
+                continue
+
             try:
                 result = await broker.place_order(order_signal, account, quantity, symbol)
             except Exception as exc:  # noqa: BLE001 - one account's failure must not block others

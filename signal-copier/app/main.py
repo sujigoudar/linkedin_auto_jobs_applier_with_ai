@@ -199,6 +199,34 @@ async def list_positions() -> dict:
     return {"positions": store.list_open_positions(), "managed_lifecycles": _managed_lifecycle_snapshot()}
 
 
+@app.get("/brokers")
+async def list_broker_capabilities() -> dict:
+    """Every registered broker's actual, code-verified capabilities — not a
+    broker name or an imported SDK, which prove nothing on their own. Each
+    flag is computed from whether the adapter overrides the base no-op
+    (see app/brokers/base.py's "Capability introspection" section), so it
+    can't silently drift out of sync with the code the way a separately
+    maintained boolean could. Any account whose `broker` doesn't appear
+    here, or whose entry there is `False` for what it needs, will be
+    refused live admission by app/engine.py / app/lifecycle/manager.py
+    rather than admitted with silently missing protection."""
+    return {
+        "brokers": [
+            {
+                "name": broker.name,
+                "supports_native_bracket": broker.supports_native_bracket,
+                "has_protective_stop_capability": broker.has_protective_stop_capability,
+                "has_cancel_capability": broker.has_cancel_capability,
+                "has_replace_stop_capability": broker.has_replace_stop_capability,
+                "has_position_readback_capability": broker.has_position_readback_capability,
+                "has_order_status_capability": broker.has_order_status_capability,
+                "can_protect_a_managed_position": broker.can_protect_a_managed_position(),
+            }
+            for broker in brokers.values()
+        ]
+    }
+
+
 def _managed_lifecycle_snapshot() -> list[dict]:
     """Coverage/deficit detail for every open `managed_lifecycle` position —
     the quantity-by-quantity picture app/lifecycle/manager.py's module

@@ -38,6 +38,7 @@ def _plan(**overrides) -> PositionPlan:
         symbol="AAPL",
         side=Side.BUY,
         planned_quantity=100.0,
+        broker="paper",
         initial_stop=48.50,
     )
     defaults.update(overrides)
@@ -45,16 +46,36 @@ def _plan(**overrides) -> PositionPlan:
 
 
 @pytest.mark.asyncio
-async def test_no_stop_resolved_refuses_entry():
+async def test_no_stop_resolved_refuses_entry(manager):
     plan = _plan(initial_stop=None)
-    error = PositionLifecycleManager.validate_plan(plan)
+    error = manager.validate_plan(plan)
     assert error is not None
     assert "refusing to enter unprotected" in error
 
 
 @pytest.mark.asyncio
-async def test_valid_plan_passes_validation():
-    assert PositionLifecycleManager.validate_plan(_plan()) is None
+async def test_valid_plan_passes_validation(manager):
+    assert manager.validate_plan(_plan()) is None
+
+
+@pytest.mark.asyncio
+async def test_plan_refused_when_broker_cannot_protect_position():
+    from app.brokers.signalstack import SignalStackBroker
+
+    unprotectable_broker = SignalStackBroker()
+    manager_without_protection = PositionLifecycleManager(brokers={"signalstack": unprotectable_broker})
+
+    error = manager_without_protection.validate_plan(_plan(broker="signalstack"))
+
+    assert error is not None
+    assert "no verified way to keep this position protected" in error
+
+
+@pytest.mark.asyncio
+async def test_plan_refused_when_broker_is_not_registered(manager):
+    error = manager.validate_plan(_plan(broker="nonexistent"))
+    assert error is not None
+    assert "no broker adapter registered" in error
 
 
 @pytest.mark.asyncio
