@@ -143,7 +143,9 @@
 
     <section class="panel full">
       <h2>Positions <span class="count" id="positions-count"></span></h2>
+      <div class="section-note">"Exit now" submits an immediate market close for that one position. "Flatten" exits every open position on that account, one at a time. Both bypass routing rules and go straight to that specific account's broker.</div>
       <div id="positions-table"><div class="empty">Loading…</div></div>
+      <div style="margin-top:10px; display:flex; gap:8px; flex-wrap:wrap;" id="flatten-buttons"></div>
     </section>
 
     <section class="panel full">
@@ -294,16 +296,27 @@ async function loadPositions() {
   const positions = data.positions || [];
   $("positions-count").textContent = positions.length;
   const rows = positions.map((p) => [
-    `<span class="mono">${p.account_id}</span>`,
-    `<span class="mono">${p.symbol}</span>`,
+    `<span class="mono">${escapeHtml(p.account_id)}</span>`,
+    `<span class="mono">${escapeHtml(p.symbol)}</span>`,
     `<span class="num">${fmtNum(p.net_quantity)}</span>`,
     p.updated_at || "—",
+    `<button class="danger" onclick="exitPosition('${escapeAttr(p.account_id)}', '${escapeAttr(p.symbol)}')">Exit now</button>`,
   ]);
   $("positions-table").innerHTML = table(
-    ["Account", "Symbol", "Net qty", "Updated at"],
+    ["Account", "Symbol", "Net qty", "Updated at", ""],
     rows,
     "No open positions tracked."
   );
+
+  const accountIds = [...new Set(positions.map((p) => p.account_id))];
+  $("flatten-buttons").innerHTML = accountIds.length
+    ? accountIds
+        .map(
+          (id) =>
+            `<button class="danger" onclick="flattenAccount('${escapeAttr(id)}')">Flatten ${escapeHtml(id)} (exit all)</button>`
+        )
+        .join(" ")
+    : `<span class="empty">No accounts with open positions.</span>`;
 
   const lifecycles = data.managed_lifecycles || [];
   $("lifecycles-count").textContent = lifecycles.length;
@@ -312,21 +325,51 @@ async function loadPositions() {
       ? `${fmtNum(l.pending_exit.unresolved_remainder)} unresolved (${l.pending_exit.phase}, order ${l.pending_exit.broker_order_id || "—"})`
       : `<span class="pill ok">none</span>`;
     return [
-      `<span class="mono">${l.account_id}</span>`,
-      `<span class="mono">${l.symbol}</span>`,
+      `<span class="mono">${escapeHtml(l.account_id)}</span>`,
+      `<span class="mono">${escapeHtml(l.symbol)}</span>`,
       `<span class="num">${fmtNum(l.owned_quantity)}</span>`,
       `<span class="num">${fmtNum(l.covered_quantity)}</span>`,
       `<span class="num">${l.uncovered_quantity > 0 ? pill(fmtNum(l.uncovered_quantity), "warn") : fmtNum(l.uncovered_quantity)}</span>`,
       l.stop_status || "—",
       l.halted ? pill(l.halt_reason || "halted", "bad") : pill("ok", "ok"),
       pending,
+      `<button class="danger" onclick="exitPosition('${escapeAttr(l.account_id)}', '${escapeAttr(l.symbol)}')">Exit now</button>`,
     ];
   });
   $("lifecycles-table").innerHTML = table(
-    ["Account", "Symbol", "Owned", "Covered", "Uncovered", "Stop status", "Halt state", "Pending exit"],
+    ["Account", "Symbol", "Owned", "Covered", "Uncovered", "Stop status", "Halt state", "Pending exit", ""],
     lcRows,
     "No open managed-lifecycle positions."
   );
+}
+
+async function exitPosition(accountId, symbol) {
+  if (!confirm(`Exit the ${symbol} position on account "${accountId}" immediately at market?`)) return;
+  try {
+    const result = await postJSON(`/positions/${encodeURIComponent(accountId)}/${encodeURIComponent(symbol)}/close`, {});
+    if (result.status === "filled" || result.status === "pending") {
+      alert(`${symbol} on ${accountId}: ${result.status} (filled ${result.filled_quantity ?? "?"})`);
+    } else {
+      alert(`${symbol} on ${accountId}: ${result.status} — ${result.message}`);
+    }
+  } catch (err) {
+    alert(`Exit failed: ${err.message}`);
+  }
+  await loadPositions();
+}
+
+async function flattenAccount(accountId) {
+  if (!confirm(`Flatten ALL open positions on account "${accountId}"? This exits every symbol currently open there, one at a time.`)) return;
+  try {
+    const result = await postJSON(`/accounts/${encodeURIComponent(accountId)}/flatten`, {});
+    const summary = (result.closed || [])
+      .map((c) => `${c.symbol}: ${c.status}`)
+      .join("\n");
+    alert(summary ? `Flatten "${accountId}" results:\n${summary}` : `No open positions on "${accountId}".`);
+  } catch (err) {
+    alert(`Flatten failed: ${err.message}`);
+  }
+  await loadPositions();
 }
 
 async function loadProviders() {

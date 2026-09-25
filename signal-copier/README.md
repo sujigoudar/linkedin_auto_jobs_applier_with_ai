@@ -556,7 +556,7 @@ GET /   # the web dashboard
 
 One static HTML page (`app/static/dashboard.html`, served directly — no
 build step, no frontend framework, no new dependency) with vanilla JS.
-Two kinds of panels:
+Three kinds of panels:
 
 - **Read-only, polled every 10s**: broker capabilities, open positions,
   managed-lifecycle coverage/deficit detail, recent signals, recent
@@ -565,13 +565,27 @@ Two kinds of panels:
   analysts — add/edit/delete, taking effect on the very next signal (see
   "Managing config through the GUI/API" above for exactly what this
   does and doesn't cover).
+- **Manual exit controls**: an "Exit now" button on every row of the
+  Positions and Managed-lifecycle tables submits an immediate market
+  close for that one position (`POST /positions/{account_id}/{symbol}/close`);
+  a "Flatten `<account>` (exit all)" button per account with open
+  positions exits every symbol on that account, one at a time
+  (`POST /accounts/{account_id}/flatten`). Both go through
+  `SignalCopierEngine.close_position`, the exact same resolution a real
+  provider CLOSE signal uses — on a `managed_lifecycle` account that's
+  `PositionLifecycleManager.request_exit` (respecting `CloseArbiter` and
+  the pending-exit protection-transfer rules, same as an automatic
+  target/stop exit); on a plain account it's the tracked position
+  reversed at market. Both require an explicit confirm dialog before
+  submitting.
 
-What it still can NOT do, on purpose: submit, cancel, or modify a live
-*order* or *position* — every trade-affecting mutation only happens
-through a source's own push (a webhook, SMS) or a pull-based source's
-background task, exactly as before config management existed. Config
-management and trade execution are deliberately different trust
-boundaries.
+This is the one deliberate exception to "the dashboard can't submit an
+order": manual exit only ever *reduces* risk (it can't open a new
+position or resize an existing one upward), so it doesn't cross the same
+trust boundary a new entry would. Everything that adds risk — an entry,
+a target/trailing exit firing automatically — still only comes from a
+source's own push (a webhook, SMS) or a pull-based source's background
+task, unchanged.
 
 ## Monitoring
 
@@ -581,6 +595,8 @@ GET /signals?limit=50       # most recently received signals, newest first
 GET /orders?limit=50&account_id=...   # most recent order results, optionally filtered to one account
 GET /brokers                # every registered broker's actual, code-verified capability matrix
 GET /providers              # configured provider/analyst overrides and their effective settings per account
+POST /positions/{account_id}/{symbol}/close   # immediately exit one open position at market
+POST /accounts/{account_id}/flatten           # exit every open position on that account, one at a time
 ```
 
 The dashboard above is built entirely on these — nothing it shows isn't

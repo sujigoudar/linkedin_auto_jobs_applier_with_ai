@@ -174,15 +174,22 @@ async def dashboard() -> FileResponse:
     """One static HTML page with vanilla JS — no build step, no frontend
     framework, no new dependency. It polls the read-only JSON endpoints
     (/positions, /brokers, /signals, /orders) and renders them as tables,
-    AND has forms for the live config-management endpoints below
-    (/accounts, /routing-rules, /providers) — add/edit/delete an account,
-    a routing rule, or a provider/analyst override, taking effect on the
-    very next signal. It still cannot submit, cancel, or modify a live
-    order — that stays exclusively through a source's own push (webhook/
-    SMS route) or a pull-based source's background task. See README.md's
-    "Managing config through the GUI/API" section for exactly what this
-    does and doesn't cover (pull-based bot sources like Telegram/Discord
-    still need env vars + a restart to add)."""
+    has forms for the live config-management endpoints (/accounts,
+    /routing-rules, /providers) — add/edit/delete an account, a routing
+    rule, or a provider/analyst override, taking effect on the very next
+    signal — AND has "Exit now" (per position) and "Flatten account"
+    buttons that DO submit a live market close via
+    `POST /positions/{account}/{symbol}/close` /
+    `POST /accounts/{account}/flatten` (see `SignalCopierEngine.close_position`).
+    Every other order (an entry, a target/trailing exit) still only comes
+    from a source's own push (webhook/SMS route) or a pull-based source's
+    background task — manual exit is the one deliberate exception to
+    "the dashboard can't submit an order," because letting an account
+    owner immediately flatten a position they're watching is a safety
+    feature, not new risk. See README.md's "Managing config through the
+    GUI/API" section for what's still NOT covered (pull-based bot
+    sources like Telegram/Discord still need env vars + a restart to
+    add)."""
     return FileResponse(STATIC_DIR / "dashboard.html")
 
 
@@ -242,6 +249,60 @@ async def list_positions() -> dict:
     asynchronously), not a live read of any broker's account state.
     """
     return {"positions": store.list_open_positions(), "managed_lifecycles": _managed_lifecycle_snapshot()}
+
+
+@app.post("/positions/{account_id}/{symbol}/close")
+async def close_single_position(account_id: str, symbol: str) -> dict:
+    """Immediately exit one open position — the dashboard's per-position
+    "Exit now" button. Bypasses routing entirely (this targets exactly the
+    named account, not "every account subscribed to some source") and goes
+    through `SignalCopierEngine.close_position`, which reuses the same
+    resolution a real provider CLOSE signal would use: managed-lifecycle
+    accounts through `PositionLifecycleManager.request_exit` (respecting
+    the protection-transfer rules — see README.md's "Managed lifecycle"
+    section), plain accounts against the tracked position at
+    `SignalStore.get_position`."""
+    account = routing_config.accounts.get(account_id)
+    if account is None:
+        raise HTTPException(status_code=404, detail=f"no account '{account_id}'")
+
+    result = await engine.close_position(account, symbol, reason="dashboard_manual_exit")
+    return {
+        "account_id": account_id,
+        "symbol": symbol,
+        "status": result.status.value,
+        "filled_quantity": result.filled_quantity,
+        "message": result.message,
+    }
+
+
+@app.post("/accounts/{account_id}/flatten")
+async def flatten_account(account_id: str) -> dict:
+    """Exit every open position tracked for this account — the dashboard's
+    account-level "Flatten account" action. Closes positions one at a time
+    (not concurrently): each `close_position` call for a managed-lifecycle
+    account holds that position's own `CloseArbiter` lock for its full
+    duration anyway, so nothing is gained by parallelizing across symbols,
+    and doing it sequentially keeps `SignalStore`'s recorded order simple
+    to read. One symbol failing to close does not stop the rest — the
+    response reports each symbol's own outcome."""
+    account = routing_config.accounts.get(account_id)
+    if account is None:
+        raise HTTPException(status_code=404, detail=f"no account '{account_id}'")
+
+    symbols = [p["symbol"] for p in store.list_open_positions() if p["account_id"] == account_id]
+    closed = []
+    for symbol in symbols:
+        result = await engine.close_position(account, symbol, reason="dashboard_flatten_account")
+        closed.append(
+            {
+                "symbol": symbol,
+                "status": result.status.value,
+                "filled_quantity": result.filled_quantity,
+                "message": result.message,
+            }
+        )
+    return {"account_id": account_id, "closed": closed}
 
 
 @app.get("/brokers")

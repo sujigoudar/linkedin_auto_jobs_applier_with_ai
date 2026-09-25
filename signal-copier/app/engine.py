@@ -359,7 +359,7 @@ class SignalCopierEngine:
         return result
 
     async def _handle_managed_close(
-        self, signal: Signal, account: DestinationAccount, symbol: str
+        self, signal: Signal, account: DestinationAccount, symbol: str, source: str = "provider_exit"
     ) -> OrderResult:
         lifecycle = self.lifecycle_manager.get_lifecycle(account.account_id, symbol)
         if lifecycle is None or lifecycle.closed:
@@ -379,8 +379,71 @@ class SignalCopierEngine:
                 message="no shares available to sell",
             )
 
-        result = await self.lifecycle_manager.request_exit(account, symbol, available, source="provider_exit")
+        result = await self.lifecycle_manager.request_exit(account, symbol, available, source=source)
         if result.status in (OrderStatus.FILLED, OrderStatus.PENDING):
             filled_quantity = result.filled_quantity if result.filled_quantity is not None else available
             self.store.record_fill(account.account_id, symbol, lifecycle.exit_side, filled_quantity)
+        return result
+
+    async def close_position(
+        self, account: DestinationAccount, symbol: str, reason: str = "manual_exit"
+    ) -> OrderResult:
+        """Manually close (flatten) one destination account's position in one
+        symbol, bypassing routing rules entirely — the actual work behind
+        the dashboard's per-position "Exit now" button and account-level
+        "Flatten account" action (see app/main.py's
+        `POST /positions/{account_id}/{symbol}/close` and
+        `POST /accounts/{account_id}/flatten`).
+
+        Reuses the exact same close-resolution logic a real provider CLOSE
+        signal would use — managed-lifecycle accounts go through
+        `PositionLifecycleManager.request_exit` (respecting `CloseArbiter`,
+        the pending-exit protection-transfer rules, everything already
+        covered by `tests/test_protection_transfer.py`); plain accounts
+        resolve against the tracked `SignalStore` position and submit the
+        opposing BUY/SELL at the full quantity. It deliberately does NOT
+        apply the entry-only gates (`can_trade_asset_class`, the
+        stop_loss-embedding check) — those exist to stop *new* risk from
+        being added on a route that can't protect it; they have no
+        business blocking someone from *removing* existing risk.
+        """
+        broker = self.brokers.get(account.broker)
+        if broker is None:
+            return OrderResult(
+                account_id=account.account_id,
+                status=OrderStatus.ERROR,
+                signal_id="",
+                message=f"no broker adapter registered for '{account.broker}'",
+            )
+
+        close_signal = Signal(source=reason, symbol=symbol, side=Side.CLOSE)
+
+        if account.managed_lifecycle:
+            result = await self._handle_managed_close(close_signal, account, symbol, source=reason)
+        else:
+            resolved = self._resolve_close(close_signal, account, symbol)
+            if resolved is None:
+                result = OrderResult(
+                    account_id=account.account_id,
+                    status=OrderStatus.REJECTED,
+                    signal_id=close_signal.id,
+                    message="no open position to close",
+                )
+            else:
+                order_signal, quantity = resolved
+                try:
+                    result = await broker.place_order(order_signal, account, quantity, symbol)
+                except Exception as exc:  # noqa: BLE001 - report, don't crash the request
+                    logger.exception("manual close failed for account=%s symbol=%s", account.account_id, symbol)
+                    result = OrderResult(
+                        account_id=account.account_id,
+                        status=OrderStatus.ERROR,
+                        signal_id=close_signal.id,
+                        message=str(exc),
+                    )
+                if result.status in (OrderStatus.FILLED, OrderStatus.PENDING):
+                    filled_quantity = result.filled_quantity or quantity
+                    self.store.record_fill(account.account_id, symbol, order_signal.side, filled_quantity)
+
+        self.store.save_order_result(result, broker=account.broker, symbol=symbol, side=Side.CLOSE)
         return result
