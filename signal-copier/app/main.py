@@ -32,6 +32,7 @@ from app.db import SignalStore
 from app.engine import SignalCopierEngine
 from app.errors import SignalValidationError
 from app.lifecycle.manager import PositionLifecycleManager
+from app.pricing import PriceMonitor
 from app.providers import SettingsOverride, load_provider_registry
 from app.reconciliation import OrderReconciler
 from app.routing import load_routing_config
@@ -95,6 +96,11 @@ reconciler = OrderReconciler(
     interval_seconds=config.RECONCILE_INTERVAL_SECONDS,
     lifecycle_manager=lifecycle_manager,
 )
+price_monitor = PriceMonitor(
+    lifecycle_manager=lifecycle_manager,
+    brokers=brokers,
+    interval_seconds=config.PRICE_MONITOR_INTERVAL_SECONDS,
+)
 
 # Pull-based sources only start if fully configured via env vars.
 _background_sources = []
@@ -140,9 +146,11 @@ async def lifespan(app: FastAPI):
         except Exception:  # noqa: BLE001 - one misconfigured source must not block the app
             logger.exception("failed to start source '%s'", source.name)
     await reconciler.start()
+    await price_monitor.start()
 
     yield
 
+    await price_monitor.stop()
     await reconciler.stop()
     for source in _background_sources:
         await source.stop()
@@ -249,7 +257,13 @@ async def list_broker_capabilities() -> dict:
                 "has_replace_stop_capability": broker.has_replace_stop_capability,
                 "has_position_readback_capability": broker.has_position_readback_capability,
                 "has_order_status_capability": broker.has_order_status_capability,
+                "has_last_price_capability": broker.has_last_price_capability,
                 "can_protect_a_managed_position": broker.can_protect_a_managed_position(),
+                "supported_asset_classes": (
+                    sorted(a.value for a in broker.supported_asset_classes)
+                    if broker.supported_asset_classes is not None
+                    else None  # undeclared -- not verified as restricted, see BrokerAdapter's docstring
+                ),
             }
             for broker in brokers.values()
         ]

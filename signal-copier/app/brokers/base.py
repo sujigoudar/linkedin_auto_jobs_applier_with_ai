@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import abc
 
-from app.models import DestinationAccount, OrderResult, Side, Signal
+from app.models import AssetClass, DestinationAccount, OrderResult, Side, Signal
 
 
 class BrokerAdapter(abc.ABC):
@@ -17,6 +17,26 @@ class BrokerAdapter(abc.ABC):
     #: exists. app/lifecycle/manager.py uses this to decide whether an
     #: account needs the managed-lifecycle fallback at all.
     supports_native_bracket: bool = False
+
+    #: Which `AssetClass` values this adapter's `place_order` actually
+    #: knows how to submit — set ONLY where the adapter's own code enforces
+    #: or is fundamentally limited to a subset (e.g. AlpacaBroker sends
+    #: plain equity orders and explicitly does not attempt options-specific
+    #: order shaping even though Alpaca-the-broker supports options; ccxt
+    #: is inherently exchange/crypto-only). `None` — the default — means
+    #: "not declared," NOT "supports everything": app/engine.py only
+    #: refuses a signal when this is explicitly set and doesn't contain the
+    #: signal's asset_class, so an undeclared adapter's existing behavior
+    #: is unaffected. Declaring a false restriction here would silently
+    #: break a real, working route, which is worse than not declaring at
+    #: all — see each broker module's docstring for what's actually
+    #: verified before adding an entry.
+    supported_asset_classes: frozenset[AssetClass] | None = None
+
+    def can_trade_asset_class(self, asset_class: AssetClass) -> bool:
+        if self.supported_asset_classes is None:
+            return True
+        return asset_class in self.supported_asset_classes
 
     @abc.abstractmethod
     async def place_order(
@@ -94,6 +114,16 @@ class BrokerAdapter(abc.ABC):
         not treat None as zero."""
         return None
 
+    async def get_last_price(self, account: DestinationAccount, symbol: str) -> float | None:
+        """Best-effort current market price for `symbol` on this account's
+        venue — what app/pricing.py's `PriceMonitor` polls to drive
+        `PositionLifecycleManager.on_price_update()` (targets, trailing,
+        stop resizing) continuously in production. Return None if this
+        broker has no verified way to fetch one; the caller must skip this
+        poll for this position, never treat None as "price unchanged" or
+        stop monitoring the position entirely."""
+        return None
+
     # --- Capability introspection (computed, not declared) ---
     #
     # These answer "does this adapter have a REAL implementation of X" by
@@ -124,6 +154,10 @@ class BrokerAdapter(abc.ABC):
     @property
     def has_order_status_capability(self) -> bool:
         return type(self).get_order_status is not BrokerAdapter.get_order_status
+
+    @property
+    def has_last_price_capability(self) -> bool:
+        return type(self).get_last_price is not BrokerAdapter.get_last_price
 
     def can_protect_a_managed_position(self) -> bool:
         """Whether `PositionLifecycleManager` can actually keep a position

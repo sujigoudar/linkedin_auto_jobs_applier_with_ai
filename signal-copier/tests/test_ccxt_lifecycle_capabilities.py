@@ -24,6 +24,8 @@ class _FakeExchange:
         self.cancel_order_calls = []
         self.fetch_positions_result = None
         self.fetch_positions_raises = None
+        self.fetch_ticker_result = None
+        self.fetch_ticker_raises = None
 
     async def create_order(self, **kwargs):
         self.create_order_calls.append(kwargs)
@@ -38,6 +40,11 @@ class _FakeExchange:
         if self.fetch_positions_raises:
             raise self.fetch_positions_raises
         return self.fetch_positions_result or []
+
+    async def fetch_ticker(self, symbol):
+        if getattr(self, "fetch_ticker_raises", None):
+            raise self.fetch_ticker_raises
+        return self.fetch_ticker_result
 
 
 @pytest.mark.asyncio
@@ -126,3 +133,30 @@ async def test_get_broker_position_returns_zero_when_flat(broker, account):
 @pytest.mark.asyncio
 async def test_replace_stop_quantity_not_implemented(broker, account):
     assert await broker.replace_stop_quantity(account, "stop-order-1", new_quantity=1.0) is None
+
+
+@pytest.mark.asyncio
+async def test_get_last_price_reads_ticker_last(broker, account):
+    fake = _FakeExchange()
+    fake.fetch_ticker_result = {"last": 63500.5, "close": 63400.0}
+    broker._exchanges["acct1"] = fake
+
+    assert await broker.get_last_price(account, "BTC/USDT") == 63500.5
+
+
+@pytest.mark.asyncio
+async def test_get_last_price_falls_back_to_close_when_last_missing(broker, account):
+    fake = _FakeExchange()
+    fake.fetch_ticker_result = {"last": None, "close": 63400.0}
+    broker._exchanges["acct1"] = fake
+
+    assert await broker.get_last_price(account, "BTC/USDT") == 63400.0
+
+
+@pytest.mark.asyncio
+async def test_get_last_price_returns_none_on_exchange_error(broker, account):
+    fake = _FakeExchange()
+    fake.fetch_ticker_raises = Exception("network error")
+    broker._exchanges["acct1"] = fake
+
+    assert await broker.get_last_price(account, "BTC/USDT") is None

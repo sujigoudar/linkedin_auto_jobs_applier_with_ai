@@ -35,12 +35,20 @@ silently placing the entry without its exit.
   `NotSupported` — caught and reported as `None` (unknown), never `0.0`,
   since spot holdings clearly aren't zero just because "position" doesn't
   apply.
+- `get_last_price` — ccxt's unified `fetch_ticker(symbol)`, reading
+  `last` (falling back to `close`) — one of ccxt's oldest and most
+  broadly implemented methods, same tier as `cancel_order`. This is what
+  app/pricing.py's `PriceMonitor` polls to drive
+  `PositionLifecycleManager.on_price_update()` continuously in
+  production — REST polling on an interval, not a websocket stream
+  (ccxt's websocket/"pro" support would need separate per-exchange
+  verification and isn't wired up here).
 """
 from __future__ import annotations
 
 import os
 
-from app.models import DestinationAccount, OrderResult, OrderStatus, Side, Signal
+from app.models import AssetClass, DestinationAccount, OrderResult, OrderStatus, Side, Signal
 from app.brokers.base import BrokerAdapter
 
 
@@ -50,6 +58,10 @@ class CCXTBroker(BrokerAdapter):
     # entry — genuinely atomic where the exchange supports it (see module
     # docstring: ~90 of ccxt's implementations do; unverified elsewhere).
     supports_native_bracket = True
+    # ccxt talks to crypto exchanges — there is no equity/option/forex/future
+    # (in this project's traditional-futures sense) route through it.
+    # See BrokerAdapter.supported_asset_classes.
+    supported_asset_classes = frozenset({AssetClass.CRYPTO})
 
     def __init__(self, exchange_id: str = "binance"):
         try:
@@ -172,6 +184,17 @@ class CCXTBroker(BrokerAdapter):
                 continue
             return -contracts if position.get("side") == "short" else contracts
         return 0.0  # no open position found for this symbol
+
+    async def get_last_price(self, account: DestinationAccount, symbol: str) -> float | None:
+        exchange = self._exchange_for(account)
+        try:
+            ticker = await exchange.fetch_ticker(symbol)
+        except Exception:  # noqa: BLE001 - network/exchange error — genuinely unknown right now, not "unchanged"
+            return None
+        price = ticker.get("last")
+        if price is None:
+            price = ticker.get("close")
+        return float(price) if price is not None else None
 
     async def close(self) -> None:
         for exchange in self._exchanges.values():

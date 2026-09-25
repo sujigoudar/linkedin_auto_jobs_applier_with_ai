@@ -29,7 +29,7 @@ places market entries.
 from __future__ import annotations
 
 from app.brokers.base import BrokerAdapter
-from app.models import DestinationAccount, OrderResult, OrderStatus, Signal
+from app.models import AssetClass, DestinationAccount, OrderResult, OrderStatus, Signal
 
 
 class IBKRBroker(BrokerAdapter):
@@ -37,6 +37,10 @@ class IBKRBroker(BrokerAdapter):
     # IB's own native parent/child/transmit bracket mechanism (not a synthetic
     # app-side workaround) — see module docstring and _build_bracket below.
     supports_native_bracket = True
+    # This module's own docstring: "Only equities are wired up (a plain
+    # market order on a STK contract)" — ib_insync/IBKR itself supports far
+    # more, but _contract_for here doesn't. See BrokerAdapter.supported_asset_classes.
+    supported_asset_classes = frozenset({AssetClass.EQUITY})
 
     def __init__(self, host: str = "127.0.0.1", port: int = 7497, client_id: int = 1):
         try:

@@ -43,12 +43,18 @@ import os
 import httpx
 
 from app.brokers.base import BrokerAdapter
-from app.models import DestinationAccount, OrderResult, OrderStatus, Side, Signal
+from app.models import AssetClass, DestinationAccount, OrderResult, OrderStatus, Side, Signal
 
 
 class AlpacaBroker(BrokerAdapter):
     name = "alpaca"
     supports_native_bracket = True  # bracket/OTO order_class, see place_order below
+    # This module's own docstring: "this adapter sends plain equity market
+    # orders and doesn't attempt options-specific order shaping" — despite
+    # Alpaca-the-broker supporting options, this adapter's place_order does
+    # not, so routing an OPTION signal here would submit a malformed/wrong
+    # order rather than an options contract. See BrokerAdapter.supported_asset_classes.
+    supported_asset_classes = frozenset({AssetClass.EQUITY})
 
     def __init__(self, timeout: float = 10.0):
         self._client = httpx.AsyncClient(timeout=timeout)

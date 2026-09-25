@@ -79,6 +79,76 @@ alongside the effective settings it resolves to for each destination
 account, so "what does this analyst's signal actually do here" is
 answerable without doing the account->provider->analyst merge by hand.
 
+## Multi-asset routing, account selection, and balances
+
+Direct, honest answers to how this actually behaves today — not what a
+mature multi-asset platform would ideally do:
+
+**Does the system handle every asset class (crypto, forex, futures,
+stocks, options)?** `Signal.asset_class` (`crypto`/`forex`/`equity`/
+`option`/`future`) is carried through the whole pipeline — persisted,
+passed to the broker, shown in the backtester — but nothing about it is
+inherently "handled" beyond what a specific broker adapter actually
+implements. `AlpacaBroker` and `IBKRBroker` only submit plain equity
+orders (both say so in their own module docstrings — Alpaca's explicitly
+does not attempt options-specific order shaping even though Alpaca
+itself supports options); `CCXTBroker` is crypto-only by what ccxt is.
+Nothing here implements true options-contract order construction,
+futures margin/contract-roll handling beyond symbol mapping, or forex
+lot-sizing beyond what MT4/5's own request fields do.
+
+**If one provider mixes asset classes (e.g. options + stocks + crypto
+alerts in one channel), does each trade reach the correct broker?**
+As of this round, **yes, or it's refused — never silently misrouted.**
+Every `BrokerAdapter` can declare `supported_asset_classes`
+(`app/brokers/base.py`); `SignalCopierEngine` checks
+`broker.can_trade_asset_class(signal.asset_class)` before submitting
+anything and rejects the signal outright if it doesn't match (message:
+`"broker '...' cannot trade asset_class=... — refusing to route this
+signal here"`), rather than sending a malformed order or letting the
+broker misinterpret it. This is opt-in per broker and only declared
+where the code has a real, verified reason to restrict (Alpaca/IBKR:
+equity-only; ccxt: crypto-only) — an undeclared broker (SignalStack,
+MT4/5, NinjaTrader, Rithmic) is unrestricted by default, since those
+genuinely can carry more than one asset class or this project hasn't
+verified a hard restriction for them yet. `GET /brokers`'
+`supported_asset_classes` field shows exactly which brokers are
+restricted and to what. `tests/test_asset_class_gate.py` reproduces the
+mixed-provider scenario directly: an options alert and a crypto alert
+from the same source both correctly refused on an equity-only account,
+while a stock alert from that same source still routes normally.
+
+**Are balances and margin kept separated per broker/exchange?** Every
+`DestinationAccount` maps to exactly one broker connection with its own
+credentials (env vars per `account_id`) and `PositionLifecycleManager`/
+`CloseArbiter` track protection and available-to-sell state per
+`(account_id, symbol)` independently — nothing here ever pools or
+commingles state across accounts or brokers. That said: **there is no
+unified balance or margin tracking at all yet.** Position sizing
+(`app/risk.py`) uses a flat `multiplier`/`fixed_quantity`/provider-
+override, not a live read of buying power or margin at any broker — an
+undersized/oversized order relative to actual available capital isn't
+caught here. `get_broker_position` (position readback) exists as an
+optional broker capability; a matching `get_account_balance`/margin
+capability does not exist yet — a real, scoped follow-up, not
+implemented in this round.
+
+**If I have two accounts of the same type (e.g. two options-capable
+accounts), where does an incoming options trade get placed?** Routing is
+still purely rule-based (`config/routing.yaml`'s `source` +
+`symbol_filter`, now also implicitly filtered by the asset-class gate
+above) — **every account listed as a destination for a matching rule
+receives the signal; there is no automatic "pick the best one" logic.**
+If two accounts are both listed as destinations for the same
+`source`/`symbol_filter` rule, both get every matching signal — that's
+fan-out (deliberate copying to multiple accounts), not disambiguation.
+To send options alerts to account A and everything else to account B,
+write two separate routing rules with non-overlapping `symbol_filter`s
+(or, once it exists, an asset-class-aware filter — not implemented yet;
+today the only disambiguation lever is `symbol_filter`). There's no
+per-account "I only want option symbols" declarative rule yet — a
+concrete, buildable next step if that's the disambiguation you need.
+
 ## Close signals
 
 A `close` signal doesn't carry a size — closing means flattening whatever
@@ -321,6 +391,47 @@ rationale, and `tests/test_close_arbiter.py` / `tests/test_lifecycle_manager.py`
 / `tests/test_protection_transfer.py` for the oversell-prevention,
 partial-fill-arithmetic, and pending-exit-transfer proofs.
 
+### Continuous monitoring and trailing (`app/pricing.py`)
+
+The lifecycle manager's target/trailing logic
+(`PositionLifecycleManager.on_price_update` — tighten a stop, activate a
+trail, cancel/replace when a broker can't amend one in place) was fully
+built and tested, but for a long time nothing actually called it outside
+tests: there was no live price feed. `app/pricing.py`'s `PriceMonitor` is
+a background loop (started in `app/main.py`'s `lifespan`, same pattern as
+`OrderReconciler`) that polls every open managed-lifecycle position on an
+interval and feeds whatever price it gets into `on_price_update()` — this
+is what makes "the system continuously monitors an open position and
+moves/replaces its protective stop, including cancel-and-resubmit when
+an in-place amend isn't possible" actually true in production, not just
+a tested capability nothing exercises live.
+
+Be precise about what's real here: each broker's optional
+`get_last_price()` (`app/brokers/base.py`) is the only source `PriceMonitor`
+uses — no separate custom price-feed infrastructure. **`CCXTBroker` is
+the only broker with a real implementation**, using ccxt's own unified
+`fetch_ticker` REST call (an existing, broadly-verified library
+capability — not something built from scratch, per this project's
+leverage-existing-solutions principle). It's REST polling on a fixed
+interval (`PRICE_MONITOR_INTERVAL_SECONDS`, default 15s) — **not a
+websocket/tick stream.** ccxt's own websocket ("pro") support, Alpaca's
+market-data websocket, an MT5 terminal's tick feed, and IBKR's
+`reqMktData` would all be real, lower-latency options for the brokers
+that have them, and are a documented next step, not implemented yet.
+`GET /brokers`' `has_last_price_capability` field shows exactly which
+brokers are actually being polled today (currently: ccxt only) — a
+managed-lifecycle position on any other broker is correctly protected on
+entry and on every exit/target event, but its trailing stop won't move
+between those events until that broker also gets a `get_last_price`
+implementation.
+
+`tests/test_price_monitor.py` drives the exact scenario end-to-end
+through `PriceMonitor.poll_once()` (not by calling the lifecycle manager
+directly): a position enters, price rallies, and the stop is
+cancelled/resubmitted to the new trailing floor — plus the "feed
+temporarily returns nothing" and "broker has no feed at all" cases,
+neither of which drops or unprotects the position.
+
 ## Signal Backtester
 
 ```
@@ -448,6 +559,9 @@ a naive `protected: true/false` flag can't give you.
 | Rithmic source & broker, via [async_rithmic](https://github.com/rundef/async_rithmic) | ✅ Working (needs `pip install async_rithmic` + licensed Rithmic credentials from your broker — there's no self-serve signup, this is a paid/licensed service regardless of which library talks to it) |
 | NinjaTrader broker, via [TradeRouter](https://github.com/roydufek/traderouter)'s `WebhookOrderStrategy.cs` | ✅ Working (needs TradeRouter's NinjaScript strategy file installed and compiled inside NinjaTrader itself — this service just POSTs to its local HTTP listener; see the broker's docstring) |
 | NinjaTrader signal *source* | 🚧 Stub — every open-source NinjaTrader bridge found (TradeRouter, ninja-webhook, tv-ninjatrader-bridge) is one-way (external signal → NinjaTrader order); none reads trade/fill events back out. Doing that needs a custom NinjaScript AddOn this project can't write and verify without the actual platform. See the file's docstring. |
+| Asset-class routing gate (a signal can't reach a broker that can't trade its asset class) | ✅ Working, tested — declared for Alpaca/IBKR (equity-only) and ccxt (crypto-only); undeclared (unrestricted) elsewhere pending verification. See "Multi-asset routing" above. |
+| Balance/margin tracking per broker | 🚧 Not implemented — `get_broker_position` (position readback) exists; a matching balance/margin capability doesn't yet. Sizing doesn't read live buying power. |
+| Live price feed driving trailing/target monitoring (`PriceMonitor`) | ✅ Working, tested for **ccxt only** (REST polling via `fetch_ticker`, not a websocket). Other brokers' managed-lifecycle positions stay protected but their trailing stop doesn't move between fill/exit events yet — see "Continuous monitoring" above. |
 
 The Telegram/Discord/Slack/SMS/Twitter parsers all share one generic
 free-text parser (`app/sources/text_parser.py`) that handles the common

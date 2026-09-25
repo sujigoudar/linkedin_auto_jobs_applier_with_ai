@@ -147,6 +147,26 @@ class SignalCopierEngine:
                 results.append(result)
                 continue
 
+            if not broker.can_trade_asset_class(signal.asset_class):
+                # e.g. an OPTION signal reaching AlpacaBroker/IBKRBroker (equity-only
+                # in this codebase — see their module docstrings) or any non-CRYPTO
+                # signal reaching ccxt. Refusing here is what makes "a source mixing
+                # asset classes routes each trade to the right broker" actually true —
+                # without this, the wrong-asset-class order would still be *sent*,
+                # just malformed or silently misinterpreted by that broker.
+                result = OrderResult(
+                    account_id=account.account_id,
+                    status=OrderStatus.REJECTED,
+                    signal_id=signal.id,
+                    message=(
+                        f"broker '{account.broker}' cannot trade asset_class="
+                        f"'{signal.asset_class.value}' — refusing to route this signal here"
+                    ),
+                )
+                self.store.save_order_result(result, broker=account.broker)
+                results.append(result)
+                continue
+
             symbol = symbol_for_account(signal, account)
 
             if account.managed_lifecycle:

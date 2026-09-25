@@ -57,3 +57,8 @@ RITHMIC_SOURCE_ACCOUNT_ID = os.getenv("RITHMIC_SOURCE_ACCOUNT_ID", "")  # option
 # How often app/reconciliation.py re-checks PENDING orders on brokers that
 # support get_order_status() (currently Alpaca and IBKR).
 RECONCILE_INTERVAL_SECONDS = float(os.getenv("RECONCILE_INTERVAL_SECONDS", "30"))
+
+# How often app/pricing.py's PriceMonitor polls each open managed-lifecycle
+# position's broker for a current price (currently ccxt only — see
+# app/pricing.py's module docstring).
+PRICE_MONITOR_INTERVAL_SECONDS = float(os.getenv("PRICE_MONITOR_INTERVAL_SECONDS", "15"))
