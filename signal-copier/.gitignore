@@ -4,3 +4,9 @@ __pycache__/
 *.pyc
 .venv/
 .pytest_cache/
+
+# Real config, copied from the .example.yaml files — may end up naming real
+# accounts/webhooks even though secrets themselves live in env vars, not here.
+config/accounts.yaml
+config/routing.yaml
+config/providers.yaml

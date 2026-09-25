@@ -321,6 +321,23 @@ rationale, and `tests/test_close_arbiter.py` / `tests/test_lifecycle_manager.py`
 / `tests/test_protection_transfer.py` for the oversell-prevention,
 partial-fill-arithmetic, and pending-exit-transfer proofs.
 
+## Dashboard
+
+```
+GET /   # a minimal, read-only web dashboard
+```
+
+One static HTML page (`app/static/dashboard.html`, served directly — no
+build step, no frontend framework, no new dependency) with vanilla JS
+that polls the JSON endpoints below and renders them as tables: broker
+capabilities, open positions, managed-lifecycle coverage/deficit detail,
+provider/analyst overrides, recent signals, and recent orders. It
+auto-refreshes every 10 seconds and has a manual refresh button. It is
+**read-only** — there is no button anywhere on it that submits, cancels,
+or modifies anything; every mutation still only happens through a
+source's own push (a webhook, SMS) or a pull-based source's background
+task, exactly as before this page existed.
+
 ## Monitoring
 
 ```
@@ -331,8 +348,12 @@ GET /brokers                # every registered broker's actual, code-verified ca
 GET /providers              # configured provider/analyst overrides and their effective settings per account
 ```
 
-All three read from `SignalStore` (`app/db.py`) — this service's own
-record, not a live broker read. Positions self-correct in the background
+The dashboard above is built entirely on these — nothing it shows isn't
+already available as JSON here too. `/positions`, `/signals`, and
+`/orders` read from `SignalStore` (`app/db.py`) — this service's own
+record, not a live broker read; `/brokers` and `/providers` are computed
+directly from the registered adapters and `config/providers.yaml`
+in-process, nothing to do with `SignalStore`. Positions self-correct in the background
 for Alpaca/IBKR via `OrderReconciler` (see "Close signals" above); on
 brokers without a wired-up order-status read, a PENDING order stays
 optimistic until you check that broker's own account state directly.

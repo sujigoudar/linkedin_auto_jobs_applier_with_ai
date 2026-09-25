@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Signal Copier — Dashboard</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #0b0e14;
+    --panel: #141926;
+    --border: #262c3d;
+    --text: #e6e9f0;
+    --muted: #8b93a7;
+    --ok: #3ddc84;
+    --warn: #f5b942;
+    --bad: #ef5b5b;
+    --accent: #5b8cff;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    padding: 16px;
+  }
+  h1 { font-size: 1.3rem; margin: 0 0 4px; }
+  .subtitle { color: var(--muted); font-size: 0.85rem; margin-bottom: 20px; }
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+    gap: 16px;
+  }
+  section.panel {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 14px 16px;
+    overflow-x: auto;
+  }
+  section.panel.full { grid-column: 1 / -1; }
+  section.panel table { min-width: max-content; }
+  h2 {
+    font-size: 0.95rem;
+    margin: 0 0 10px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  h2 .count { color: var(--muted); font-weight: normal; font-size: 0.8rem; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
+  th, td {
+    text-align: left;
+    padding: 5px 8px;
+    border-bottom: 1px solid var(--border);
+    white-space: nowrap;
+  }
+  th { color: var(--muted); font-weight: 500; }
+  tr:last-child td { border-bottom: none; }
+  .empty { color: var(--muted); font-style: italic; padding: 8px 0; }
+  .pill {
+    display: inline-block;
+    padding: 1px 8px;
+    border-radius: 999px;
+    font-size: 0.72rem;
+    font-weight: 600;
+  }
+  .pill.ok { background: rgba(61,220,132,0.15); color: var(--ok); }
+  .pill.warn { background: rgba(245,185,66,0.15); color: var(--warn); }
+  .pill.bad { background: rgba(239,91,91,0.15); color: var(--bad); }
+  .pill.muted { background: rgba(139,147,167,0.15); color: var(--muted); }
+  .status-bar { display: flex; gap: 10px; align-items: center; margin-bottom: 16px; flex-wrap: wrap; }
+  .status-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+  .status-dot.ok { background: var(--ok); }
+  .status-dot.bad { background: var(--bad); }
+  .last-updated { color: var(--muted); font-size: 0.78rem; }
+  .num { text-align: right; font-variant-numeric: tabular-nums; }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  button {
+    background: var(--accent);
+    color: white;
+    border: none;
+    border-radius: 6px;
+    padding: 5px 12px;
+    font-size: 0.78rem;
+    cursor: pointer;
+  }
+  button:hover { opacity: 0.9; }
+</style>
+</head>
+<body>
+  <h1>Signal Copier</h1>
+  <div class="subtitle">Read-only view of this service's own tracked state — not a live broker read. See README.md's "Close signals" / "Managed lifecycle" sections for what each field actually means.</div>
+
+  <div class="status-bar">
+    <span id="health-dot" class="status-dot bad"></span>
+    <span id="health-text">checking…</span>
+    <span class="last-updated" id="last-updated"></span>
+    <button onclick="refreshAll()">Refresh now</button>
+  </div>
+
+  <div class="grid">
+    <section class="panel full">
+      <h2>Broker capabilities <span class="count" id="brokers-count"></span></h2>
+      <div id="brokers-table"><div class="empty">Loading…</div></div>
+    </section>
+
+    <section class="panel full">
+      <h2>Positions <span class="count" id="positions-count"></span></h2>
+      <div id="positions-table"><div class="empty">Loading…</div></div>
+    </section>
+
+    <section class="panel full">
+      <h2>Managed-lifecycle coverage <span class="count" id="lifecycles-count"></span></h2>
+      <div id="lifecycles-table"><div class="empty">Loading…</div></div>
+    </section>
+
+    <section class="panel full">
+      <h2>Providers &amp; analysts <span class="count" id="providers-count"></span></h2>
+      <div id="providers-table"><div class="empty">Loading…</div></div>
+    </section>
+
+    <section class="panel full">
+      <h2>Recent signals <span class="count" id="signals-count"></span></h2>
+      <div id="signals-table"><div class="empty">Loading…</div></div>
+    </section>
+
+    <section class="panel full">
+      <h2>Recent orders <span class="count" id="orders-count"></span></h2>
+      <div id="orders-table"><div class="empty">Loading…</div></div>
+    </section>
+  </div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+
+function pill(text, kind) {
+  return `<span class="pill ${kind}">${text}</span>`;
+}
+
+function boolPill(value, trueLabel = "yes", falseLabel = "no") {
+  if (value === null || value === undefined) return pill("unknown", "muted");
+  return value ? pill(trueLabel, "ok") : pill(falseLabel, "bad");
+}
+
+function fmtNum(n) {
+  if (n === null || n === undefined) return "—";
+  return Number(n).toLocaleString(undefined, { maximumFractionDigits: 6 });
+}
+
+function table(headers, rows, emptyMessage) {
+  if (!rows.length) return `<div class="empty">${emptyMessage}</div>`;
+  const head = headers.map((h) => `<th>${h}</th>`).join("");
+  const body = rows.map((r) => `<tr>${r.map((c) => `<td>${c}</td>`).join("")}</tr>`).join("");
+  return `<table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
+}
+
+async function fetchJSON(path) {
+  const res = await fetch(path);
+  if (!res.ok) throw new Error(`${path} -> HTTP ${res.status}`);
+  return res.json();
+}
+
+async function loadHealth() {
+  try {
+    await fetchJSON("/health");
+    $("health-dot").className = "status-dot ok";
+    $("health-text").textContent = "service reachable";
+  } catch (e) {
+    $("health-dot").className = "status-dot bad";
+    $("health-text").textContent = "service unreachable";
+  }
+}
+
+async function loadBrokers() {
+  const data = await fetchJSON("/brokers");
+  const brokers = data.brokers || [];
+  $("brokers-count").textContent = brokers.length;
+  const rows = brokers.map((b) => [
+    `<span class="mono">${b.name}</span>`,
+    boolPill(b.supports_native_bracket, "native bracket", "no bracket"),
+    boolPill(b.has_protective_stop_capability),
+    boolPill(b.has_cancel_capability),
+    boolPill(b.has_replace_stop_capability),
+    boolPill(b.has_position_readback_capability),
+    boolPill(b.has_order_status_capability),
+    boolPill(b.can_protect_a_managed_position, "can protect", "cannot protect"),
+  ]);
+  $("brokers-table").innerHTML = table(
+    ["Broker", "Native bracket", "Protective stop", "Cancel", "Replace stop", "Position readback", "Order status", "Can protect (overall)"],
+    rows,
+    "No brokers registered."
+  );
+}
+
+async function loadPositions() {
+  const data = await fetchJSON("/positions");
+  const positions = data.positions || [];
+  $("positions-count").textContent = positions.length;
+  const rows = positions.map((p) => [
+    `<span class="mono">${p.account_id}</span>`,
+    `<span class="mono">${p.symbol}</span>`,
+    `<span class="num">${fmtNum(p.net_quantity)}</span>`,
+    p.updated_at || "—",
+  ]);
+  $("positions-table").innerHTML = table(
+    ["Account", "Symbol", "Net qty", "Updated at"],
+    rows,
+    "No open positions tracked."
+  );
+
+  const lifecycles = data.managed_lifecycles || [];
+  $("lifecycles-count").textContent = lifecycles.length;
+  const lcRows = lifecycles.map((l) => {
+    const pending = l.pending_exit
+      ? `${fmtNum(l.pending_exit.unresolved_remainder)} unresolved (${l.pending_exit.phase}, order ${l.pending_exit.broker_order_id || "—"})`
+      : `<span class="pill ok">none</span>`;
+    return [
+      `<span class="mono">${l.account_id}</span>`,
+      `<span class="mono">${l.symbol}</span>`,
+      `<span class="num">${fmtNum(l.owned_quantity)}</span>`,
+      `<span class="num">${fmtNum(l.covered_quantity)}</span>`,
+      `<span class="num">${l.uncovered_quantity > 0 ? pill(fmtNum(l.uncovered_quantity), "warn") : fmtNum(l.uncovered_quantity)}</span>`,
+      l.stop_status || "—",
+      l.halted ? pill(l.halt_reason || "halted", "bad") : pill("ok", "ok"),
+      pending,
+    ];
+  });
+  $("lifecycles-table").innerHTML = table(
+    ["Account", "Symbol", "Owned", "Covered", "Uncovered", "Stop status", "Halt state", "Pending exit"],
+    lcRows,
+    "No open managed-lifecycle positions."
+  );
+}
+
+async function loadProviders() {
+  const data = await fetchJSON("/providers");
+  const providers = data.providers || [];
+  $("providers-count").textContent = providers.length;
+  const rows = [];
+  for (const p of providers) {
+    rows.push([`<strong>${p.display_name || p.provider_id}</strong> <span class="mono">(${p.provider_id})</span>`, "provider", fmtNum(p.settings.multiplier), boolPill(p.settings.enabled, "enabled", "disabled")]);
+    for (const a of p.analysts || []) {
+      rows.push([`&nbsp;&nbsp;↳ ${a.display_name || a.analyst_id} <span class="mono">(${a.analyst_id})</span>`, "analyst", fmtNum(a.settings.multiplier), boolPill(a.settings.enabled, "enabled", "disabled")]);
+    }
+  }
+  $("providers-table").innerHTML = table(
+    ["Provider / analyst", "Level", "Multiplier override", "Enabled"],
+    rows,
+    "No provider/analyst overrides configured (config/providers.yaml)."
+  );
+}
+
+async function loadSignals() {
+  const data = await fetchJSON("/signals?limit=20");
+  const signals = data.signals || [];
+  $("signals-count").textContent = signals.length;
+  const rows = signals.map((s) => [
+    s.received_at || "—",
+    `<span class="mono">${s.source}</span>`,
+    `<span class="mono">${s.symbol}</span>`,
+    s.side,
+    fmtNum(s.quantity),
+  ]);
+  $("signals-table").innerHTML = table(
+    ["Received at", "Source", "Symbol", "Side", "Qty"],
+    rows,
+    "No signals received yet."
+  );
+}
+
+async function loadOrders() {
+  const data = await fetchJSON("/orders?limit=30");
+  const orders = data.orders || [];
+  $("orders-count").textContent = orders.length;
+  const statusPill = (status) => {
+    if (status === "filled") return pill(status, "ok");
+    if (status === "pending") return pill(status, "warn");
+    return pill(status, "bad");
+  };
+  const rows = orders.map((o) => [
+    o.executed_at || "—",
+    `<span class="mono">${o.account_id}</span>`,
+    `<span class="mono">${o.broker || "—"}</span>`,
+    `<span class="mono">${o.symbol || "—"}</span>`,
+    o.side || "—",
+    fmtNum(o.requested_quantity),
+    fmtNum(o.filled_quantity),
+    statusPill(o.status),
+    o.message || "",
+  ]);
+  $("orders-table").innerHTML = table(
+    ["Executed at", "Account", "Broker", "Symbol", "Side", "Requested", "Filled", "Status", "Message"],
+    rows,
+    "No orders recorded yet."
+  );
+}
+
+async function refreshAll() {
+  await Promise.allSettled([
+    loadHealth(),
+    loadBrokers(),
+    loadPositions(),
+    loadProviders(),
+    loadSignals(),
+    loadOrders(),
+  ]);
+  $("last-updated").textContent = `last updated ${new Date().toLocaleTimeString()}`;
+}
+
+refreshAll();
+setInterval(refreshAll, 10000);
+</script>
+</body>
+</html>

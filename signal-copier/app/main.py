@@ -10,10 +10,14 @@ from __future__ import annotations
 
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, Form, Header, HTTPException, Query, Request
+from fastapi.responses import FileResponse
 
 from app import config
+
+STATIC_DIR = Path(__file__).resolve().parent / "static"
 from app.brokers.alpaca import AlpacaBroker
 from app.brokers.ccxt_broker import CCXTBroker
 from app.brokers.ibkr import IBKRBroker
@@ -149,6 +153,19 @@ app = FastAPI(title="Trading Signal Copier", lifespan=lifespan)
 @app.get("/health")
 async def health() -> dict:
     return {"status": "ok"}
+
+
+@app.get("/")
+async def dashboard() -> FileResponse:
+    """A minimal, read-only dashboard: one static HTML page with vanilla JS
+    that polls the JSON endpoints below (/positions, /brokers, /providers,
+    /signals, /orders) and renders them as tables — no build step, no
+    frontend framework, no new dependency. It shows exactly what this
+    service's own state is; it cannot submit an order, cancel one, or
+    change any config — every mutation still only happens through a
+    source's own push (webhook/SMS route) or a pull-based source's
+    background task, same as before this existed."""
+    return FileResponse(STATIC_DIR / "dashboard.html")
 
 
 @app.post("/webhook/{source_name}")
