@@ -20,3 +20,24 @@ DATABASE_PATH = Path(os.getenv("DATABASE_PATH", BASE_DIR / "signal_copier.db"))
 WEBHOOK_SHARED_SECRET = os.getenv("WEBHOOK_SHARED_SECRET", "")
 
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
+
+# Optional pull-based sources: each only starts if its required env vars are
+# all set (see .env.example). Push-based sources (webhook, SMS) need no
+# startup config beyond their own route.
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
+
+DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN", "")
+DISCORD_CHANNEL_ID = os.getenv("DISCORD_CHANNEL_ID", "")
+
+SLACK_BOT_TOKEN = os.getenv("SLACK_BOT_TOKEN", "")
+SLACK_APP_TOKEN = os.getenv("SLACK_APP_TOKEN", "")
+SLACK_CHANNEL_ID = os.getenv("SLACK_CHANNEL_ID", "")
+
+TWITTER_BEARER_TOKEN = os.getenv("TWITTER_BEARER_TOKEN", "")
+TWITTER_RULES = [r.strip() for r in os.getenv("TWITTER_RULES", "").split(",") if r.strip()]
+
+TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN", "")
+# Full public URL Twilio POSTs to, required for signature validation (Twilio
+# signs the exact URL it called, including scheme/host).
+TWILIO_WEBHOOK_URL = os.getenv("TWILIO_WEBHOOK_URL", "")

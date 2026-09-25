@@ -21,12 +21,11 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.errors import SignalValidationError
 from app.models import AssetClass, Signal, Side
 from app.sources.base import SourceAdapter
 
-
-class SignalValidationError(ValueError):
-    pass
+__all__ = ["WebhookSource", "SignalValidationError"]
 
 
 class WebhookSource(SourceAdapter):

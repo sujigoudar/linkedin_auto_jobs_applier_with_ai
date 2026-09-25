@@ -1,36 +1,137 @@
-"""MT4/MT5 as an execution destination — STUB.
+"""MT5 execution destination, via the official `MetaTrader5` Python package
+(Windows only, same host as a running MT5 terminal).
 
-Like the MT4/MT5 source, there's no native inbound API — execution needs a
-bridge on the receiving terminal too:
-    - MT5: `pip install MetaTrader5` works if this service runs on the same
-      Windows host/VPS as the terminal (the official package talks to a
-      running MT5 terminal via local IPC — it cannot connect to a remote
-      terminal). This is the simplest path for MT5.
-    - MT4: no official Python package; use an EA bridge (e.g. ZeroMQ REQ/REP,
-      matching the pattern in app/sources/mt4_mt5.py) that receives order
-      commands from this service and calls OrderSend().
-    - Cross-platform/remote option: a hosted terminal bridge service if you
-      don't want this process on the same machine as MetaTrader.
+Setup:
+    pip install MetaTrader5
+    1. This service must run on the same Windows host as the MT5 terminal
+       (the package talks to it via local IPC — it cannot reach a remote
+       terminal). If this service normally runs elsewhere, you need a
+       Windows box/VPS running both.
+    2. One MT5 terminal instance == one logged-in account. Multiple
+       accounts need multiple terminal instances (separate install
+       directories), each with its own MetaTraderBroker(terminal_path=...)
+       registered under a distinct broker name if used simultaneously — the
+       `MetaTrader5` package's `initialize()` call targets one terminal
+       process per Python interpreter.
+    3. Login credentials go in accounts.yaml only as the *env var name
+       prefix* pattern used elsewhere: set `MT5_{ACCOUNT_ID}_LOGIN` /
+       `..._PASSWORD` / `..._SERVER` (and optionally `..._TERMINAL_PATH` if
+       not using the default installed terminal).
 
-`place_order()` should translate the Signal into the chosen bridge's order
-command and await its fill confirmation.
+MT4 has no equivalent official Python package — trading on MT4 needs an EA
+bridge (e.g. ZeroMQ) on the terminal, which is out of scope for this file
+(see app/sources/mt4_mt5.py's docstring for the same caveat on the source
+side).
+
+The `MetaTrader5` package's calls are blocking (local IPC, not network
+async), so they're run via `asyncio.to_thread`.
 """
 from __future__ import annotations
 
-from app.models import DestinationAccount, OrderResult, Signal
+import asyncio
+import os
+
 from app.brokers.base import BrokerAdapter
+from app.models import DestinationAccount, OrderResult, OrderStatus, Signal
 
 
-class MT4MT5Broker(BrokerAdapter):
+class MT5Broker(BrokerAdapter):
     name = "mt4_mt5"
 
-    def __init__(self, bridge_endpoint: str | None = None):
-        self.bridge_endpoint = bridge_endpoint
+    def __init__(self):
+        try:
+            import MetaTrader5 as mt5
+        except ImportError as exc:  # pragma: no cover
+            raise RuntimeError(
+                "MetaTrader5 package is not installed (Windows only); run `pip install MetaTrader5`"
+            ) from exc
+        self._mt5 = mt5
+
+    def _credentials_for(self, account: DestinationAccount) -> tuple[int, str, str]:
+        prefix = f"MT5_{account.account_id.upper()}"
+        login = os.getenv(f"{prefix}_LOGIN")
+        password = os.getenv(f"{prefix}_PASSWORD")
+        server = os.getenv(f"{prefix}_SERVER")
+        if not login or not password or not server:
+            raise RuntimeError(
+                f"missing {prefix}_LOGIN / {prefix}_PASSWORD / {prefix}_SERVER "
+                f"environment variables for account '{account.account_id}'"
+            )
+        return int(login), password, server
+
+    def _place_order_sync(self, signal: Signal, account: DestinationAccount, quantity: float, symbol: str) -> dict:
+        mt5 = self._mt5
+        login, password, server = self._credentials_for(account)
+
+        if not mt5.initialize(login=login, password=password, server=server):
+            raise RuntimeError(f"MT5 initialize() failed: {mt5.last_error()}")
+
+        try:
+            tick = mt5.symbol_info_tick(symbol)
+            if tick is None:
+                raise RuntimeError(f"MT5 has no tick data for symbol '{symbol}' (check it's visible/enabled)")
+
+            order_type = mt5.ORDER_TYPE_BUY if signal.side.value == "buy" else mt5.ORDER_TYPE_SELL
+            price = tick.ask if signal.side.value == "buy" else tick.bid
+
+            request = {
+                "action": mt5.TRADE_ACTION_DEAL,
+                "symbol": symbol,
+                "volume": quantity,
+                "type": order_type,
+                "price": price,
+                "deviation": 20,
+                "magic": 20260101,
+                "comment": f"signal-copier:{signal.source}",
+                "type_time": mt5.ORDER_TIME_GTC,
+                "type_filling": mt5.ORDER_FILLING_IOC,
+            }
+            result = mt5.order_send(request)
+            return {
+                "retcode": result.retcode,
+                "order": result.order,
+                "price": result.price,
+                "volume": result.volume,
+                "comment": result.comment,
+            }
+        finally:
+            mt5.shutdown()
 
     async def place_order(
         self, signal: Signal, account: DestinationAccount, quantity: float, symbol: str
     ) -> OrderResult:
-        raise NotImplementedError(
-            "MT4MT5Broker is a stub. See module docstring: use the MetaTrader5 package "
-            "(same-host MT5) or an EA bridge (MT4/remote MT5)."
+        if signal.side.value == "close":
+            return OrderResult(
+                account_id=account.account_id,
+                status=OrderStatus.REJECTED,
+                signal_id=signal.id,
+                message="'close' side requires position-aware close logic; not yet implemented",
+            )
+
+        try:
+            result = await asyncio.to_thread(self._place_order_sync, signal, account, quantity, symbol)
+        except RuntimeError as exc:
+            return OrderResult(
+                account_id=account.account_id,
+                status=OrderStatus.ERROR,
+                signal_id=signal.id,
+                message=str(exc),
+            )
+
+        if result["retcode"] != self._mt5.TRADE_RETCODE_DONE:
+            return OrderResult(
+                account_id=account.account_id,
+                status=OrderStatus.REJECTED,
+                signal_id=signal.id,
+                message=f"MT5 rejected order: retcode={result['retcode']} ({result['comment']})",
+            )
+
+        return OrderResult(
+            account_id=account.account_id,
+            status=OrderStatus.FILLED,
+            signal_id=signal.id,
+            broker_order_id=str(result["order"]),
+            filled_quantity=result["volume"],
+            filled_price=result["price"],
+            message="filled by MT5",
         )

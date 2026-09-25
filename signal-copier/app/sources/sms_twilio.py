@@ -1,39 +1,43 @@
-"""SMS signal source via Twilio — STUB.
+"""SMS signal source via Twilio.
 
-To implement:
+Setup:
     pip install twilio
-    1. Buy/configure a Twilio phone number, set its "A message comes in"
-       webhook to POST /sms/twilio on this service (needs a public URL —
+    1. Buy/configure a Twilio phone number.
+    2. Set its "A message comes in" webhook (Messaging config) to
+       POST https://<your-public-host>/sms/twilio (needs a public URL —
        ngrok in dev, a real domain in prod).
-    2. Add a FastAPI route that reads Twilio's form-encoded `Body` and
-       `From` fields, validates the request signature with Twilio's
-       `RequestValidator` (X-Twilio-Signature header) to stop spoofed
-       requests, then calls `self.parse()` and `self.on_signal()`.
-    3. `parse()` needs real logic for whatever fixed SMS format the signal
-       provider sends (SMS signal formats are usually short and rigid,
-       e.g. "BUY EURUSD 0.10 SL 1.0950 TP 1.1050" — a regex is usually enough).
+    3. Set TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN; the FastAPI route in
+       app/main.py uses the auth token to validate the X-Twilio-Signature
+       header, so a request not actually from Twilio is rejected.
+
+Message parsing uses the shared free-text parser (app/sources/text_parser.py) —
+SMS signal formats are usually short and rigid ("BUY EURUSD 0.10 SL 1.0950
+TP 1.1050"), which is exactly what that parser handles. Override `parse()`
+if your provider's format doesn't fit.
 """
 from __future__ import annotations
 
-from app.models import Signal
+from app.models import AssetClass, Signal
 from app.sources.base import SourceAdapter
+from app.sources.text_parser import parse_text_signal
 
 
 class TwilioSMSSource(SourceAdapter):
     name = "sms_twilio"
 
-    def __init__(self, on_signal, account_sid: str | None = None, auth_token: str | None = None):
+    def __init__(self, on_signal, asset_class: AssetClass = AssetClass.CRYPTO):
         super().__init__(on_signal)
-        self.account_sid = account_sid
-        self.auth_token = auth_token
+        self.asset_class = asset_class
 
     async def start(self) -> None:
-        # Push-based via the Twilio webhook route — nothing to start here once
-        # the route + signature validation + parse() below are implemented.
-        raise NotImplementedError(
-            "TwilioSMSSource is a stub. See module docstring: wire the /sms/twilio route, "
-            "validate X-Twilio-Signature, and implement parse()."
-        )
+        # Push-based: signals arrive via the /sms/twilio FastAPI route in
+        # app/main.py, which validates the request and calls ingest().
+        return None
 
     def parse(self, sms_body: str) -> Signal:
-        raise NotImplementedError("Implement SMS body parsing for your signal provider's format.")
+        return parse_text_signal(sms_body, source=self.name, asset_class=self.asset_class)
+
+    async def ingest(self, sms_body: str) -> Signal:
+        signal = self.parse(sms_body)
+        await self.on_signal(signal)
+        return signal

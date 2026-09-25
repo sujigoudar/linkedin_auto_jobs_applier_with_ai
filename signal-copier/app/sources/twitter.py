@@ -1,39 +1,87 @@
-"""Twitter/X signal source — STUB.
+"""Twitter/X signal source.
 
-To implement:
+Setup:
     pip install tweepy
-    1. Get X API v2 access (a paid tier is required for filtered/real-time
-       stream access as of the current API pricing — check current terms).
-    2. Use tweepy's `StreamingClient` filtered to the target account(s), or
-       poll `get_users_tweets` on an interval if streaming access isn't
-       available.
-    3. In `start()`, run the stream/poll loop as a background asyncio task,
-       parse each tweet's text with `self.parse()`, and await
-       `self.on_signal(signal)` on a successful parse.
-    4. `parse()` needs real logic tailored to the specific account's tweet
-       format — this is the least reliable source (free text, no schema),
-       so expect a lot of false negatives/positives without a fairly
-       specific parser or an LLM-based extractor.
+    1. Get X API v2 access with filtered-stream permission (a paid tier is
+       required for this as of X's current API pricing — check their terms,
+       since this changes).
+    2. Create a rule matching the account(s) you want to copy from, e.g.
+       `from:SomeTraderHandle`, via `add_rules` (done once, out of band —
+       see tweepy's StreamingClient docs) or pass `rules` here to set them
+       on start.
+    3. Set TWITTER_BEARER_TOKEN.
+
+tweepy's StreamingClient is synchronous (uses `requests` under the hood),
+so it runs in a background thread; matched tweets are handed back to the
+asyncio event loop via `asyncio.run_coroutine_threadsafe`.
+
+Message parsing uses the shared free-text parser (app/sources/text_parser.py) —
+expect a lot of false negatives/positives on free-text tweets without a
+more specific parser tailored to the account's actual posting style.
 """
 from __future__ import annotations
 
-from app.models import Signal
+import asyncio
+import functools
+import logging
+
+from app.errors import SignalValidationError
+from app.models import AssetClass, Signal
 from app.sources.base import SourceAdapter
+from app.sources.text_parser import parse_text_signal
+
+logger = logging.getLogger(__name__)
 
 
 class TwitterSource(SourceAdapter):
     name = "twitter"
 
-    def __init__(self, on_signal, bearer_token: str | None = None, usernames: list[str] | None = None):
+    def __init__(
+        self,
+        on_signal,
+        bearer_token: str,
+        rules: list[str] | None = None,
+        asset_class: AssetClass = AssetClass.CRYPTO,
+    ):
         super().__init__(on_signal)
         self.bearer_token = bearer_token
-        self.usernames = usernames or []
-
-    async def start(self) -> None:
-        raise NotImplementedError(
-            "TwitterSource is a stub. See module docstring: set up X API v2 streaming/polling "
-            "access with tweepy, and implement parse()."
-        )
+        self.rules = rules or []
+        self.asset_class = asset_class
+        self._stream = None
 
     def parse(self, tweet_text: str) -> Signal:
-        raise NotImplementedError("Implement tweet text parsing for your target account's format.")
+        return parse_text_signal(tweet_text, source=self.name, asset_class=self.asset_class)
+
+    async def start(self) -> None:
+        try:
+            import tweepy
+        except ImportError as exc:  # pragma: no cover
+            raise RuntimeError("tweepy is not installed; run `pip install tweepy`") from exc
+
+        loop = asyncio.get_running_loop()
+        source = self
+
+        class _Stream(tweepy.StreamingClient):
+            def on_tweet(self, tweet) -> None:  # noqa: ANN001 - tweepy's own signature
+                try:
+                    signal = source.parse(tweet.text)
+                except SignalValidationError:
+                    logger.debug("tweet did not parse as a signal: %r", tweet.text)
+                    return
+                asyncio.run_coroutine_threadsafe(source.on_signal(signal), loop)
+
+        stream = _Stream(self.bearer_token)
+
+        if self.rules:
+            existing = stream.get_rules().data or []
+            stream.delete_rules([rule.id for rule in existing])
+            stream.add_rules([tweepy.StreamRule(value=rule) for rule in self.rules])
+
+        self._stream = stream
+        # stream.filter() blocks forever running the stream loop, so it's run in a
+        # background thread rather than awaited directly (which would hang startup).
+        loop.run_in_executor(None, functools.partial(stream.filter, tweet_fields=["author_id"]))
+
+    async def stop(self) -> None:
+        if self._stream is not None:
+            self._stream.disconnect()

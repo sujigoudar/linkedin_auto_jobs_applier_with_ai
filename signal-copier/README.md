@@ -5,10 +5,13 @@ symbol-mapped per account, to one or more execution destinations.
 
 This is a scaffold, not a finished product: the core pipeline (ingestion →
 routing → risk sizing → execution → persistence) is fully working and
-tested. Most individual source/broker integrations are stubs with detailed
-setup notes in their docstrings, because each one needs real credentials,
-a licensed API, or platform-specific bridge software that can't be wired up
-sight-unseen. See "What's real vs. stubbed" below.
+tested, and so is every source/broker integration that only needs API
+credentials to run (Telegram, Discord, Slack, SMS, Twitter, Alpaca, IBKR,
+same-host MT5). A few integrations remain stubs with detailed setup notes
+in their docstrings, because finishing them means writing and compiling
+platform-specific bridge code (an MQL5 EA, a C# NinjaScript AddOn) or
+requires a licensed SDK this project has no access to — see "What's real
+vs. stubbed" below for exactly which and why.
 
 ## Architecture
 
@@ -50,21 +53,26 @@ commit.
 | Generic JSON / TradingView webhook source | ✅ Working, tested |
 | Paper (mock) broker | ✅ Working, tested |
 | ccxt broker (Binance/Bybit/etc crypto exchanges) | ✅ Working (needs `pip install ccxt` + API keys) |
-| SignalStack broker (relays to IBKR, Schwab, Alpaca, Tradier, TradeStation, Bybit, Coinbase Pro, Oanda, etc. via signalstack.com) | ✅ Working (needs a SignalStack account + a webhook URL per connected broker) |
-| Telegram, Discord, Slack, SMS (Twilio), Twitter sources | 🚧 Stub — each needs its own bot/API credentials and a message-format parser tailored to the actual channel you're copying |
-| MT4/MT5 source & broker | 🚧 Stub — MetaTrader has no native API; needs an EA bridge (ZeroMQ or file-based) or the same-host `MetaTrader5` package for MT5 |
-| NinjaTrader source & broker | 🚧 Stub — needs a custom NinjaScript AddOn bridge |
-| Rithmic source & broker | 🚧 Stub — needs licensed R\|API access from Rithmic/your broker before any code can be written against it |
-| Alpaca, IBKR brokers | 🚧 Stub — straightforward with `alpaca-py` / `ib_insync`, just not wired up yet |
+| SignalStack broker (relays to IBKR, Schwab, Alpaca, Tradier, TradeStation, Bybit, Coinbase Pro, Oanda, etc. via signalstack.com) | ✅ Working, tested (needs a SignalStack account + a webhook URL per connected broker) |
+| Alpaca broker (plain REST, no SDK) | ✅ Working, tested (needs API key/secret; defaults to the paper-trading endpoint) |
+| Telegram, Discord, Slack sources | ✅ Working (needs `pip install python-telegram-bot` / `discord.py` / `slack-bolt` + a bot token; only starts if its env vars are set) |
+| SMS source (Twilio) | ✅ Working (needs a public URL + `TWILIO_AUTH_TOKEN`/`TWILIO_WEBHOOK_URL` for signature validation; route is always mounted at `/sms/twilio`) |
+| Twitter/X source | ✅ Working, but needs X API v2 filtered-stream access (a paid tier as of X's current pricing — verify current terms) and is the least reliable parser of the bunch since tweets are free text |
+| IBKR broker | ✅ Working (needs `pip install ib_insync` + a running IB Gateway/TWS with the API enabled; reports PENDING, not a confirmed fill, since IBKR confirms asynchronously) |
+| MT5 broker (same-host only) | ✅ Working (needs `pip install MetaTrader5`, Windows, and the service running on the same host as a logged-in MT5 terminal — one terminal process per account) |
+| MT4/MT5 as a signal *source*, NinjaTrader source & broker | 🚧 Stub — these need platform-side bridge code (an MQL5 Expert Advisor, a C# NinjaScript AddOn) that has to be written, compiled, and run inside that platform. This project can't verify code like that works without the actual platform, so it's left as detailed setup notes rather than unverifiable code. See each file's docstring. |
+| Rithmic source & broker | 🚧 Stub — needs licensed R\|API access from Rithmic/your broker before any code can be written against it at all |
 
-Every stub file's docstring spells out exactly what's needed to finish it.
-Start with whichever source/broker pair you actually have accounts for.
+The Telegram/Discord/Slack/SMS/Twitter parsers all share one generic
+free-text parser (`app/sources/text_parser.py`) that handles the common
+`BUY BTCUSDT @ 65000 SL 63000 TP 70000` family of formats. If a specific
+channel's format doesn't fit, override that source's `parse()`.
 
-Note: the direct `alpaca` and `ibkr` broker stubs above are only needed if
-you want this service talking to those brokers itself. If you already have
-(or set up) a SignalStack account, the `signalstack` broker reaches IBKR,
-Alpaca, and several others through one already-working adapter — no need
-to also build the direct integration for those specific brokers.
+Note: the direct `alpaca` and `ibkr` brokers are only needed if you want
+this service talking to those brokers itself. If you already have (or set
+up) a SignalStack account, the `signalstack` broker reaches IBKR, Alpaca,
+and several others through one already-working adapter — no need to also
+configure the direct integration for those specific brokers.
 
 ## Quickstart
 
