@@ -47,8 +47,8 @@ class SlackSource(SourceAdapter):
         self.asset_class = asset_class
         self._handler = None
 
-    def parse(self, message_text: str) -> Signal:
-        return parse_text_signal(message_text, source=self.name, asset_class=self.asset_class)
+    def parse(self, message_text: str, analyst: str | None = None) -> Signal:
+        return parse_text_signal(message_text, source=self.name, asset_class=self.asset_class, analyst=analyst)
 
     async def start(self) -> None:
         try:
@@ -64,8 +64,13 @@ class SlackSource(SourceAdapter):
             if event.get("channel") != self.channel_id or event.get("subtype"):
                 return
             text = event.get("text", "")
+            # Slack's event gives a raw user ID (e.g. "U123ABC"), not a display
+            # name -- resolving that needs an extra users.info API call this
+            # doesn't make; the ID itself is a stable, sufficient identifier
+            # for app/providers.py's per-analyst overrides.
+            analyst = event.get("user")
             try:
-                signal = self.parse(text)
+                signal = self.parse(text, analyst=analyst)
             except SignalValidationError:
                 logger.debug("slack message did not parse as a signal: %r", text)
                 return

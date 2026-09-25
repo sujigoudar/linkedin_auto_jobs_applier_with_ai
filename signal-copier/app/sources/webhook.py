@@ -14,7 +14,8 @@ Expected JSON body:
         "price": 65000.0,           # optional, informational
         "stop_loss": 63000.0,       # optional
         "take_profit": 70000.0,     # optional
-        "asset_class": "crypto"     # optional, defaults to crypto
+        "asset_class": "crypto",    # optional, defaults to crypto
+        "analyst": "alice"          # optional -- who/what posted this, for app/providers.py overrides
     }
 """
 from __future__ import annotations
@@ -59,11 +60,13 @@ class WebhookSource(SourceAdapter):
         except ValueError as exc:
             raise SignalValidationError(f"invalid asset_class '{asset_class_raw}'") from exc
 
+        analyst = payload.get("analyst")
         return Signal(
             source=source_override or self.name,
             symbol=str(symbol),
             side=side_enum,
             asset_class=asset_class,
+            analyst=str(analyst) if analyst is not None else None,
             quantity=_optional_float(payload.get("quantity")),
             price=_optional_float(payload.get("price")),
             stop_loss=_optional_float(payload.get("stop_loss")),

@@ -87,11 +87,46 @@
     cursor: pointer;
   }
   button:hover { opacity: 0.9; }
+  button.danger { background: var(--bad); }
+  button.ghost { background: transparent; border: 1px solid var(--border); color: var(--text); }
+  form.inline-form {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: flex-end;
+    margin-bottom: 14px;
+    padding: 10px;
+    background: rgba(255,255,255,0.02);
+    border: 1px dashed var(--border);
+    border-radius: 8px;
+  }
+  form.inline-form label {
+    display: flex;
+    flex-direction: column;
+    font-size: 0.72rem;
+    color: var(--muted);
+    gap: 3px;
+  }
+  form.inline-form input[type="text"],
+  form.inline-form input[type="number"] {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 5px;
+    padding: 4px 7px;
+    font-size: 0.8rem;
+    width: 130px;
+  }
+  form.inline-form label.checkbox { flex-direction: row; align-items: center; gap: 5px; font-size: 0.78rem; }
+  form.inline-form .actions { align-self: center; }
+  .form-error { color: var(--bad); font-size: 0.78rem; margin: -8px 0 10px; }
+  .section-note { color: var(--muted); font-size: 0.78rem; margin: -4px 0 10px; }
+  td button { margin-right: 4px; }
 </style>
 </head>
 <body>
   <h1>Signal Copier</h1>
-  <div class="subtitle">Read-only view of this service's own tracked state — not a live broker read. See README.md's "Close signals" / "Managed lifecycle" sections for what each field actually means.</div>
+  <div class="subtitle">Live view of this service's own tracked state (not a live broker read) — and, below, live management of accounts, routing rules, and provider/analyst overrides. See README.md's "Managing config through the GUI/API" section for exactly what is and isn't covered here (pull-based bot sources like Telegram/Discord still need env vars + a restart).</div>
 
   <div class="status-bar">
     <span id="health-dot" class="status-dot bad"></span>
@@ -117,7 +152,67 @@
     </section>
 
     <section class="panel full">
+      <h2>Accounts <span class="count" id="accounts-count"></span></h2>
+      <div class="section-note">Broker credentials are still set via environment variables (never entered here) — creating an account here doesn't by itself make a route tradeable. See README.md's Security notes.</div>
+      <form class="inline-form" id="account-form">
+        <label>Account ID<input type="text" name="account_id" required placeholder="paper_main"></label>
+        <label>Broker<input type="text" name="broker" required placeholder="paper"></label>
+        <label>Multiplier<input type="number" step="any" name="multiplier" value="1.0"></label>
+        <label>Fixed qty<input type="number" step="any" name="fixed_quantity" placeholder="(none)"></label>
+        <label>Symbol map (JSON)<input type="text" name="symbol_map" placeholder='{"BTCUSDT":"BTC/USDT"}'></label>
+        <label class="checkbox"><input type="checkbox" name="enabled" checked> Enabled</label>
+        <label class="checkbox"><input type="checkbox" name="managed_lifecycle"> Managed lifecycle</label>
+        <div class="actions"><button type="submit">Add / update account</button></div>
+      </form>
+      <div class="form-error" id="account-form-error"></div>
+      <div id="accounts-table"><div class="empty">Loading…</div></div>
+    </section>
+
+    <section class="panel full">
+      <h2>Routing rules <span class="count" id="routing-rules-count"></span></h2>
+      <div class="section-note">Every account listed in "destinations" receives every signal matching "source" (and "symbol filter" if set) — this is fan-out, not disambiguation. Comma-separate multiple destinations/symbols.</div>
+      <form class="inline-form" id="routing-rule-form">
+        <label>Source<input type="text" name="source" required placeholder="tradingview"></label>
+        <label>Destinations (comma-separated)<input type="text" name="destinations" required placeholder="paper_main, acct2"></label>
+        <label>Symbol filter (comma-separated, optional)<input type="text" name="symbol_filter" placeholder="BTCUSDT, ETHUSDT"></label>
+        <div class="actions"><button type="submit">Add rule</button></div>
+      </form>
+      <div class="form-error" id="routing-rule-form-error"></div>
+      <div id="routing-rules-table"><div class="empty">Loading…</div></div>
+    </section>
+
+    <section class="panel full">
       <h2>Providers &amp; analysts <span class="count" id="providers-count"></span></h2>
+      <div class="section-note">Overrides an account's own multiplier/fixed_quantity/managed_lifecycle/enabled for signals from a given source (provider) or, more specifically, a given analyst within that source. Unset fields inherit from the next broader level. See README.md's "Providers and analysts" section.</div>
+      <form class="inline-form" id="provider-form">
+        <label>Provider ID (= signal source)<input type="text" name="provider_id" required placeholder="telegram"></label>
+        <label>Display name<input type="text" name="display_name" placeholder="Telegram signals"></label>
+        <label>Multiplier override<input type="number" step="any" name="multiplier" placeholder="(inherit)"></label>
+        <label>Fixed qty override<input type="number" step="any" name="fixed_quantity" placeholder="(inherit)"></label>
+        <label>Managed lifecycle
+          <select name="managed_lifecycle"><option value="">(inherit)</option><option value="true">true</option><option value="false">false</option></select>
+        </label>
+        <label>Enabled
+          <select name="enabled"><option value="">(inherit)</option><option value="true">true</option><option value="false">false</option></select>
+        </label>
+        <div class="actions"><button type="submit">Add / update provider</button></div>
+      </form>
+      <div class="form-error" id="provider-form-error"></div>
+      <form class="inline-form" id="analyst-form">
+        <label>Provider ID<input type="text" name="provider_id" required placeholder="telegram"></label>
+        <label>Analyst ID<input type="text" name="analyst_id" required placeholder="alice"></label>
+        <label>Display name<input type="text" name="display_name" placeholder="Alice"></label>
+        <label>Multiplier override<input type="number" step="any" name="multiplier" placeholder="(inherit)"></label>
+        <label>Fixed qty override<input type="number" step="any" name="fixed_quantity" placeholder="(inherit)"></label>
+        <label>Managed lifecycle
+          <select name="managed_lifecycle"><option value="">(inherit)</option><option value="true">true</option><option value="false">false</option></select>
+        </label>
+        <label>Enabled
+          <select name="enabled"><option value="">(inherit)</option><option value="true">true</option><option value="false">false</option></select>
+        </label>
+        <div class="actions"><button type="submit">Add / update analyst</button></div>
+      </form>
+      <div class="form-error" id="analyst-form-error"></div>
       <div id="providers-table"><div class="empty">Loading…</div></div>
     </section>
 
@@ -240,17 +335,227 @@ async function loadProviders() {
   $("providers-count").textContent = providers.length;
   const rows = [];
   for (const p of providers) {
-    rows.push([`<strong>${p.display_name || p.provider_id}</strong> <span class="mono">(${p.provider_id})</span>`, "provider", fmtNum(p.settings.multiplier), boolPill(p.settings.enabled, "enabled", "disabled")]);
+    rows.push([
+      `<strong>${escapeHtml(p.display_name || p.provider_id)}</strong> <span class="mono">(${escapeHtml(p.provider_id)})</span>`,
+      "provider",
+      fmtNum(p.settings.multiplier),
+      boolPill(p.settings.enabled, "enabled", "disabled"),
+      `<button class="danger" onclick="deleteProvider('${escapeAttr(p.provider_id)}')">Delete</button>`,
+    ]);
     for (const a of p.analysts || []) {
-      rows.push([`&nbsp;&nbsp;↳ ${a.display_name || a.analyst_id} <span class="mono">(${a.analyst_id})</span>`, "analyst", fmtNum(a.settings.multiplier), boolPill(a.settings.enabled, "enabled", "disabled")]);
+      rows.push([
+        `&nbsp;&nbsp;↳ ${escapeHtml(a.display_name || a.analyst_id)} <span class="mono">(${escapeHtml(a.analyst_id)})</span>`,
+        "analyst",
+        fmtNum(a.settings.multiplier),
+        boolPill(a.settings.enabled, "enabled", "disabled"),
+        `<button class="danger" onclick="deleteAnalyst('${escapeAttr(p.provider_id)}', '${escapeAttr(a.analyst_id)}')">Delete</button>`,
+      ]);
     }
   }
   $("providers-table").innerHTML = table(
-    ["Provider / analyst", "Level", "Multiplier override", "Enabled"],
+    ["Provider / analyst", "Level", "Multiplier override", "Enabled", ""],
     rows,
-    "No provider/analyst overrides configured (config/providers.yaml)."
+    "No provider/analyst overrides configured yet — add one above."
   );
 }
+
+function escapeHtml(s) {
+  return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+function escapeAttr(s) {
+  return String(s ?? "").replace(/'/g, "\\'");
+}
+
+async function postJSON(path, body) {
+  const res = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  if (!res.ok) {
+    const detail = await res.text();
+    throw new Error(`${path} -> HTTP ${res.status}: ${detail}`);
+  }
+  return res.json();
+}
+async function putJSON(path, body) {
+  const res = await fetch(path, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  if (!res.ok) throw new Error(`${path} -> HTTP ${res.status}: ${await res.text()}`);
+  return res.json();
+}
+async function deleteJSON(path) {
+  const res = await fetch(path, { method: "DELETE" });
+  if (!res.ok) throw new Error(`${path} -> HTTP ${res.status}: ${await res.text()}`);
+  return res.json();
+}
+function tristate(value) {
+  return value === "" || value === undefined ? null : value === "true";
+}
+
+// --- Accounts ---
+
+async function loadAccounts() {
+  const data = await fetchJSON("/accounts");
+  const accounts = data.accounts || [];
+  $("accounts-count").textContent = accounts.length;
+  const rows = accounts.map((a) => [
+    `<span class="mono">${escapeHtml(a.account_id)}</span>`,
+    `<span class="mono">${escapeHtml(a.broker)}</span>`,
+    fmtNum(a.multiplier),
+    fmtNum(a.fixed_quantity),
+    `<span class="mono">${escapeHtml(JSON.stringify(a.symbol_map || {}))}</span>`,
+    boolPill(a.enabled, "enabled", "disabled"),
+    boolPill(a.managed_lifecycle, "managed", "plain"),
+    `<button class="danger" onclick="deleteAccount('${escapeAttr(a.account_id)}')">Delete</button>`,
+  ]);
+  $("accounts-table").innerHTML = table(
+    ["Account ID", "Broker", "Multiplier", "Fixed qty", "Symbol map", "Enabled", "Lifecycle", ""],
+    rows,
+    "No accounts configured yet — add one above."
+  );
+}
+
+async function deleteAccount(accountId) {
+  if (!confirm(`Delete account "${accountId}"? Any routing rule still naming it will simply stop matching it.`)) return;
+  await deleteJSON(`/accounts/${encodeURIComponent(accountId)}`);
+  await loadAccounts();
+}
+
+$("account-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const f = new FormData(e.target);
+  const errorEl = $("account-form-error");
+  errorEl.textContent = "";
+  let symbolMap = {};
+  const rawMap = (f.get("symbol_map") || "").trim();
+  if (rawMap) {
+    try {
+      symbolMap = JSON.parse(rawMap);
+    } catch (err) {
+      errorEl.textContent = `Symbol map must be valid JSON (e.g. {"BTCUSDT":"BTC/USDT"}): ${err.message}`;
+      return;
+    }
+  }
+  try {
+    await postJSON("/accounts", {
+      account_id: f.get("account_id").trim(),
+      broker: f.get("broker").trim(),
+      multiplier: parseFloat(f.get("multiplier") || "1.0"),
+      fixed_quantity: f.get("fixed_quantity") ? parseFloat(f.get("fixed_quantity")) : null,
+      symbol_map: symbolMap,
+      enabled: f.get("enabled") === "on",
+      managed_lifecycle: f.get("managed_lifecycle") === "on",
+    });
+    e.target.reset();
+    e.target.querySelector('[name="multiplier"]').value = "1.0";
+    e.target.querySelector('[name="enabled"]').checked = true;
+    await loadAccounts();
+  } catch (err) {
+    errorEl.textContent = err.message;
+  }
+});
+
+// --- Routing rules ---
+
+async function loadRoutingRules() {
+  const data = await fetchJSON("/routing-rules");
+  const rules = data.routing_rules || [];
+  $("routing-rules-count").textContent = rules.length;
+  const rows = rules.map((r) => [
+    `<span class="mono">${escapeHtml(r.source)}</span>`,
+    `<span class="mono">${escapeHtml((r.destinations || []).join(", "))}</span>`,
+    `<span class="mono">${escapeHtml((r.symbol_filter || []).join(", ")) || "<em>(all symbols)</em>"}</span>`,
+    `<button class="danger" onclick="deleteRoutingRule(${r.id})">Delete</button>`,
+  ]);
+  $("routing-rules-table").innerHTML = table(
+    ["Source", "Destinations", "Symbol filter", ""],
+    rows,
+    "No routing rules configured yet — add one above. Without a rule, a matching signal has nowhere to go."
+  );
+}
+
+async function deleteRoutingRule(ruleId) {
+  if (!confirm(`Delete routing rule #${ruleId}?`)) return;
+  await deleteJSON(`/routing-rules/${ruleId}`);
+  await loadRoutingRules();
+}
+
+$("routing-rule-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const f = new FormData(e.target);
+  const errorEl = $("routing-rule-form-error");
+  errorEl.textContent = "";
+  const destinations = (f.get("destinations") || "").split(",").map((s) => s.trim()).filter(Boolean);
+  if (!destinations.length) {
+    errorEl.textContent = "At least one destination account is required.";
+    return;
+  }
+  const symbolFilterRaw = (f.get("symbol_filter") || "").split(",").map((s) => s.trim()).filter(Boolean);
+  try {
+    await postJSON("/routing-rules", {
+      source: f.get("source").trim(),
+      destinations,
+      symbol_filter: symbolFilterRaw.length ? symbolFilterRaw : null,
+    });
+    e.target.reset();
+    await loadRoutingRules();
+  } catch (err) {
+    errorEl.textContent = err.message;
+  }
+});
+
+// --- Providers / analysts ---
+
+async function deleteProvider(providerId) {
+  if (!confirm(`Delete provider "${providerId}" and all its analyst overrides?`)) return;
+  await deleteJSON(`/providers/${encodeURIComponent(providerId)}`);
+  await loadProviders();
+}
+
+async function deleteAnalyst(providerId, analystId) {
+  if (!confirm(`Delete analyst "${analystId}" under provider "${providerId}"?`)) return;
+  await deleteJSON(`/providers/${encodeURIComponent(providerId)}/analysts/${encodeURIComponent(analystId)}`);
+  await loadProviders();
+}
+
+$("provider-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const f = new FormData(e.target);
+  const errorEl = $("provider-form-error");
+  errorEl.textContent = "";
+  try {
+    await postJSON(`/providers/${encodeURIComponent(f.get("provider_id").trim())}`, {
+      display_name: f.get("display_name") || "",
+      multiplier: f.get("multiplier") ? parseFloat(f.get("multiplier")) : null,
+      fixed_quantity: f.get("fixed_quantity") ? parseFloat(f.get("fixed_quantity")) : null,
+      managed_lifecycle: tristate(f.get("managed_lifecycle")),
+      enabled: tristate(f.get("enabled")),
+    });
+    e.target.reset();
+    await loadProviders();
+  } catch (err) {
+    errorEl.textContent = err.message;
+  }
+});
+
+$("analyst-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const f = new FormData(e.target);
+  const errorEl = $("analyst-form-error");
+  errorEl.textContent = "";
+  try {
+    await postJSON(
+      `/providers/${encodeURIComponent(f.get("provider_id").trim())}/analysts/${encodeURIComponent(f.get("analyst_id").trim())}`,
+      {
+        display_name: f.get("display_name") || "",
+        multiplier: f.get("multiplier") ? parseFloat(f.get("multiplier")) : null,
+        fixed_quantity: f.get("fixed_quantity") ? parseFloat(f.get("fixed_quantity")) : null,
+        managed_lifecycle: tristate(f.get("managed_lifecycle")),
+        enabled: tristate(f.get("enabled")),
+      }
+    );
+    e.target.reset();
+    await loadProviders();
+  } catch (err) {
+    errorEl.textContent = err.message;
+  }
+});
 
 async function loadSignals() {
   const data = await fetchJSON("/signals?limit=20");
@@ -302,6 +607,8 @@ async function refreshAll() {
     loadHealth(),
     loadBrokers(),
     loadPositions(),
+    loadAccounts(),
+    loadRoutingRules(),
     loadProviders(),
     loadSignals(),
     loadOrders(),

@@ -43,7 +43,9 @@ _PATTERN = re.compile(
 )
 
 
-def parse_text_signal(text: str, *, source: str, asset_class: AssetClass = AssetClass.CRYPTO) -> Signal:
+def parse_text_signal(
+    text: str, *, source: str, asset_class: AssetClass = AssetClass.CRYPTO, analyst: str | None = None
+) -> Signal:
     match = _PATTERN.search(text.strip())
     if not match:
         raise SignalValidationError(f"could not parse a signal out of: {text!r}")
@@ -55,6 +57,7 @@ def parse_text_signal(text: str, *, source: str, asset_class: AssetClass = Asset
         symbol=match.group("symbol").upper(),
         side=side,
         asset_class=asset_class,
+        analyst=analyst,
         quantity=_optional_float(match.group("quantity")),
         price=_optional_float(match.group("price")),
         stop_loss=_optional_float(match.group("sl")),

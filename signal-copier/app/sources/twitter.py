@@ -49,8 +49,8 @@ class TwitterSource(SourceAdapter):
         self.asset_class = asset_class
         self._stream = None
 
-    def parse(self, tweet_text: str) -> Signal:
-        return parse_text_signal(tweet_text, source=self.name, asset_class=self.asset_class)
+    def parse(self, tweet_text: str, analyst: str | None = None) -> Signal:
+        return parse_text_signal(tweet_text, source=self.name, asset_class=self.asset_class, analyst=analyst)
 
     async def start(self) -> None:
         try:
@@ -63,8 +63,12 @@ class TwitterSource(SourceAdapter):
 
         class _Stream(tweepy.StreamingClient):
             def on_tweet(self, tweet) -> None:  # noqa: ANN001 - tweepy's own signature
+                # tweet_fields=["author_id"] below makes this available -- the
+                # numeric account ID, not a @handle (resolving that needs an
+                # extra users lookup this doesn't make), but stable and
+                # sufficient for app/providers.py's per-analyst overrides.
                 try:
-                    signal = source.parse(tweet.text)
+                    signal = source.parse(tweet.text, analyst=str(tweet.author_id) if tweet.author_id else None)
                 except SignalValidationError:
                     logger.debug("tweet did not parse as a signal: %r", tweet.text)
                     return

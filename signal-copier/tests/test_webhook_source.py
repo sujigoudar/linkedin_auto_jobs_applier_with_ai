@@ -61,3 +61,15 @@ async def test_ingest_calls_on_signal():
 
     assert len(received) == 1
     assert received[0].symbol == "ETHUSDT"
+
+
+def test_parse_reads_analyst_field():
+    source = WebhookSource(on_signal=None)
+    signal = source.parse({"symbol": "BTCUSDT", "side": "buy", "analyst": "alice"})
+    assert signal.analyst == "alice"
+
+
+def test_parse_without_analyst_field_leaves_it_none():
+    source = WebhookSource(on_signal=None)
+    signal = source.parse({"symbol": "BTCUSDT", "side": "buy"})
+    assert signal.analyst is None

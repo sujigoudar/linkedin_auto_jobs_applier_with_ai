@@ -123,6 +123,39 @@ def load_provider_registry(path: Path) -> ProviderRegistry:
     return ProviderRegistry(providers=providers)
 
 
+def load_provider_registry_from_store(store) -> ProviderRegistry:
+    """The live, GUI/API-editable equivalent of `load_provider_registry` —
+    reads `SignalStore`'s `config_providers`/`config_analysts` tables
+    (app/db.py) instead of static YAML. See app/main.py's provider/analyst
+    CRUD endpoints, which write to the same tables and mutate the engine's
+    live `ProviderRegistry` in place, so changes take effect immediately."""
+    providers: dict[str, ProviderConfig] = {}
+    for row in store.list_config_providers():
+        providers[row["provider_id"]] = ProviderConfig(
+            provider_id=row["provider_id"],
+            display_name=row["display_name"],
+            settings=SettingsOverride(
+                multiplier=row["multiplier"],
+                fixed_quantity=row["fixed_quantity"],
+                managed_lifecycle=row["managed_lifecycle"],
+                enabled=row["enabled"],
+            ),
+        )
+    for row in store.list_config_analysts():
+        provider = providers.setdefault(row["provider_id"], ProviderConfig(provider_id=row["provider_id"]))
+        provider.analysts[row["analyst_id"]] = AnalystConfig(
+            analyst_id=row["analyst_id"],
+            display_name=row["display_name"],
+            settings=SettingsOverride(
+                multiplier=row["multiplier"],
+                fixed_quantity=row["fixed_quantity"],
+                managed_lifecycle=row["managed_lifecycle"],
+                enabled=row["enabled"],
+            ),
+        )
+    return ProviderRegistry(providers=providers)
+
+
 def _settings_from_spec(spec: dict) -> SettingsOverride:
     return SettingsOverride(
         multiplier=spec.get("multiplier"),

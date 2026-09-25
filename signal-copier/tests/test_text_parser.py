@@ -29,3 +29,13 @@ def test_parse_text_signal(text, side, symbol, quantity, price, sl, tp):
 def test_unparseable_text_raises():
     with pytest.raises(SignalValidationError):
         parse_text_signal("just chatting, nothing to trade here", source="test")
+
+
+def test_analyst_is_passed_through():
+    signal = parse_text_signal("BUY BTCUSDT", source="test", analyst="alice")
+    assert signal.analyst == "alice"
+
+
+def test_analyst_defaults_to_none():
+    signal = parse_text_signal("BUY BTCUSDT", source="test")
+    assert signal.analyst is None

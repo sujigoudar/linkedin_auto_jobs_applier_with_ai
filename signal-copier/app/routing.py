@@ -64,3 +64,28 @@ def load_routing_config(routing_path: Path, accounts_path: Path) -> RoutingConfi
             )
 
     return RoutingConfig(rules=rules, accounts=accounts)
+
+
+def load_routing_config_from_store(store) -> RoutingConfig:
+    """The live, GUI/API-editable equivalent of `load_routing_config` —
+    reads `SignalStore`'s `config_accounts`/`config_routing_rules` tables
+    (app/db.py) instead of static YAML. See app/main.py's account/routing
+    CRUD endpoints, which write to the same tables and mutate the engine's
+    live `RoutingConfig` in place, so changes take effect immediately."""
+    accounts: dict[str, DestinationAccount] = {
+        row["account_id"]: DestinationAccount(
+            account_id=row["account_id"],
+            broker=row["broker"],
+            multiplier=row["multiplier"],
+            fixed_quantity=row["fixed_quantity"],
+            symbol_map=row["symbol_map"],
+            enabled=row["enabled"],
+            managed_lifecycle=row["managed_lifecycle"],
+        )
+        for row in store.list_config_accounts()
+    }
+    rules = [
+        RoutingRule(source=row["source"], destinations=row["destinations"], symbol_filter=row["symbol_filter"])
+        for row in store.list_config_routing_rules()
+    ]
+    return RoutingConfig(rules=rules, accounts=accounts)

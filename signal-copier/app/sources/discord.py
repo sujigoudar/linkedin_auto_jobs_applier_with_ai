@@ -43,8 +43,8 @@ class DiscordSource(SourceAdapter):
         self._client = None
         self._task: asyncio.Task | None = None
 
-    def parse(self, message_text: str) -> Signal:
-        return parse_text_signal(message_text, source=self.name, asset_class=self.asset_class)
+    def parse(self, message_text: str, analyst: str | None = None) -> Signal:
+        return parse_text_signal(message_text, source=self.name, asset_class=self.asset_class, analyst=analyst)
 
     async def start(self) -> None:
         try:
@@ -61,7 +61,7 @@ class DiscordSource(SourceAdapter):
             if message.author == client.user or message.channel.id != self.channel_id:
                 return
             try:
-                signal = self.parse(message.content)
+                signal = self.parse(message.content, analyst=str(message.author))
             except SignalValidationError:
                 logger.debug("discord message did not parse as a signal: %r", message.content)
                 return

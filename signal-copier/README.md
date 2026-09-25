@@ -45,11 +45,59 @@ Source adapter --(Signal)--> SignalCopierEngine --(per destination account)--> B
   HTTP route; pull-based sources (bots, pollers) would be started as
   background tasks in the `lifespan` handler.
 
-Routing and account config are plain YAML (`config/*.yaml`, gitignored —
-copy from the `.example.yaml` files). **Credentials are never stored in
-YAML** — they're read from environment variables per account
-(`CCXT_{ACCOUNT_ID}_API_KEY`, etc.), so the config files stay safe to
-commit.
+Accounts, routing rules, and provider/analyst overrides are **live-managed
+through the dashboard/API**, backed by SQLite (`SignalStore`'s
+`config_accounts`/`config_routing_rules`/`config_providers`/`config_analysts`
+tables) — not static YAML you hand-edit and restart the process for. See
+"Managing config through the GUI/API" below for what that actually means
+and, just as importantly, what it doesn't cover. `config/*.yaml` still
+exists as a one-time import path for an existing hand-edited setup
+(`app/config_admin.py`'s `seed_from_yaml_if_empty`) and remains the option
+for anyone who prefers file-based config in version control — but once any
+account exists (from either path), the database is authoritative and the
+YAML files are no longer read. **Credentials are never stored in the
+database or YAML either way** — they're always read from environment
+variables per account (`CCXT_{ACCOUNT_ID}_API_KEY`, etc.), so neither the
+config files nor the database need to be treated as secret.
+
+## Managing config through the GUI/API
+
+Direct answer to "can I manage everything through the GUI": **accounts,
+routing rules, and provider/analyst overrides — yes, live, no restart.
+Signal sources themselves — partially; see the table below.**
+
+The dashboard (`GET /`) has forms for all three, backed by real CRUD
+endpoints:
+
+```
+GET/POST/DELETE   /accounts                          # destination accounts
+GET/POST/PUT/DELETE  /routing-rules /routing-rules/{id}  # which source feeds which account(s)
+GET/POST/DELETE   /providers/{provider_id}                       # provider-level overrides
+POST/DELETE       /providers/{provider_id}/analysts/{analyst_id} # analyst-level overrides
+```
+
+Every write here does two things: persists to the database, AND mutates
+the running engine's live `RoutingConfig`/`ProviderRegistry` objects in
+place — so a signal arriving immediately after you click "Add account" in
+the browser already uses it, no restart, no reload. `tests/test_config_crud.py`
+proves this end-to-end (create an account + routing rule through the
+API, then send a real webhook signal in the same test, with no restart in
+between).
+
+**What this does NOT cover — the genuinely honest limits:**
+
+| What you might expect | What's actually true today |
+|---|---|
+| "Give it a Discord/Telegram/Slack/X and it just works" | No. You still have to create a bot/app on that platform's own developer portal yourself (Discord Developer Portal, @BotFather, api.slack.com/apps, X's API dashboard) — that step is inherent to those platforms and no amount of GUI here can skip it. |
+| Adding a Telegram/Discord/Slack/X/SMS **source** through this app | Not yet live-manageable. Each pull-based source is a long-lived background task started once at process startup from env vars (`TELEGRAM_BOT_TOKEN`, `DISCORD_BOT_TOKEN`, etc. — see `.env.example`); starting/stopping one dynamically via an API call needs careful asyncio task lifecycle handling this project hasn't built yet. Set the env var, restart the process, and it starts. The webhook source (`POST /webhook/{name}`) is the one push-based exception — genuinely zero config needed beyond a routing rule pointing at whatever `{name}` you choose. |
+| Setting broker credentials through the GUI | Deliberately not offered. `DestinationAccount`/broker credentials stay in environment variables per the project's "never store secrets in config" rule (see Security notes below) — creating an account through the dashboard registers its *routing/sizing* config, not its API keys. Weakening this to make onboarding one step shorter isn't a trade this project makes. |
+| Editing which brokers are *available* (`ccxt`, `alpaca`, etc.) | Not live either — the broker registry (`app/main.py`'s `brokers` dict) is built once at startup from installed packages/env vars. `GET /brokers` shows you what's actually registered. |
+
+So: once you've done the one-time, per-platform bot setup and set the
+resulting token as an env var (and restarted once), **everything else —
+which account that source's signals go to, sizing per provider/analyst,
+adding new accounts, changing routing — is fully GUI/API-managed from
+then on**, live.
 
 ## Providers and analysts
 
@@ -61,18 +109,23 @@ always go through the managed-lifecycle protect-first path regardless of
 what the account's own default is. `app/providers.py`'s `ProviderRegistry`
 handles this as a settings-inheritance layer, entirely optional:
 
-    account (accounts.yaml) -> provider (Signal.source) -> analyst (Signal.analyst)
+    account (GET/POST /accounts) -> provider (Signal.source) -> analyst (Signal.analyst)
 
 Any field left unset at a level inherits from the next broader one;
 `enabled: false` at any level (account, provider, or analyst) skips that
-destination for that signal without touching the others. Configure it in
-`config/providers.yaml` (copy from `config/providers.example.yaml` — see
-that file for the exact shape); no file at all means every signal uses
-its destination account's own settings, completely unchanged from before
-this existed. `Signal.analyst` is optional and only set by a source
-parser that can actually identify who within that source posted a
-signal — most currently can't, and provider-level (not analyst-level)
-overrides still apply either way.
+destination for that signal without touching the others. Manage it live
+through the dashboard's "Providers & analysts" forms or the
+`POST/DELETE /providers/{id}` and `/providers/{id}/analysts/{id}`
+endpoints (see "Managing config through the GUI/API" above); no provider
+configured at all means every signal uses its destination account's own
+settings, completely unchanged from before this existed.
+`Signal.analyst` is populated by every source that can actually identify
+who posted a signal: Discord (the message author), Telegram (username or
+full name), Slack (the raw user ID), Twitter/X (the numeric author ID),
+SMS (the sender's phone number), and the webhook source (an explicit
+`"analyst"` field in the JSON payload) — see each source's own docstring
+for exactly what identifier it uses. `tests/test_source_analyst_wiring.py`
+covers each one.
 
 `GET /providers` returns every configured provider/analyst override
 alongside the effective settings it resolves to for each destination
@@ -498,19 +551,27 @@ for the ambiguity-handling and end-to-end proofs.
 ## Dashboard
 
 ```
-GET /   # a minimal, read-only web dashboard
+GET /   # the web dashboard
 ```
 
 One static HTML page (`app/static/dashboard.html`, served directly — no
-build step, no frontend framework, no new dependency) with vanilla JS
-that polls the JSON endpoints below and renders them as tables: broker
-capabilities, open positions, managed-lifecycle coverage/deficit detail,
-provider/analyst overrides, recent signals, and recent orders. It
-auto-refreshes every 10 seconds and has a manual refresh button. It is
-**read-only** — there is no button anywhere on it that submits, cancels,
-or modifies anything; every mutation still only happens through a
-source's own push (a webhook, SMS) or a pull-based source's background
-task, exactly as before this page existed.
+build step, no frontend framework, no new dependency) with vanilla JS.
+Two kinds of panels:
+
+- **Read-only, polled every 10s**: broker capabilities, open positions,
+  managed-lifecycle coverage/deficit detail, recent signals, recent
+  orders.
+- **Live-managed, via forms**: Accounts, Routing rules, Providers &
+  analysts — add/edit/delete, taking effect on the very next signal (see
+  "Managing config through the GUI/API" above for exactly what this
+  does and doesn't cover).
+
+What it still can NOT do, on purpose: submit, cancel, or modify a live
+*order* or *position* — every trade-affecting mutation only happens
+through a source's own push (a webhook, SMS) or a pull-based source's
+background task, exactly as before config management existed. Config
+management and trade execution are deliberately different trust
+boundaries.
 
 ## Monitoring
 
@@ -582,10 +643,21 @@ python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt          # uncomment optional deps you need
 
 cp .env.example .env                     # fill in what you have
-cp config/routing.example.yaml config/routing.yaml
-cp config/accounts.example.yaml config/accounts.yaml
 
 uvicorn app.main:app --reload
+```
+
+Open `http://localhost:8000/` and add an account and a routing rule
+through the dashboard's forms (Accounts / Routing rules panels) — no
+YAML editing needed. To start from the example config instead (useful if
+you're migrating an existing hand-edited setup, or just prefer to see a
+realistic starting point), copy the `.example.yaml` files into place
+*before* the first startup — it's imported into the database once and
+then live-managed from there:
+
+```bash
+cp config/routing.example.yaml config/routing.yaml
+cp config/accounts.example.yaml config/accounts.yaml
 ```
 
 Send a test signal:
@@ -596,9 +668,9 @@ curl -X POST http://localhost:8000/webhook/tradingview \
   -d '{"symbol": "BTCUSDT", "side": "buy", "quantity": 1.0, "price": 65000}'
 ```
 
-With the example config this fills the `paper_main` account instantly (no
-real order placed) and attempts `binance_sub1` via ccxt (will error until
-you install `ccxt` and set its API key env vars).
+Against an account you created for `broker: paper`, this fills instantly
+(no real order placed) — watch it show up live on the dashboard's
+Positions/Recent orders panels.
 
 ## Adding a new source or broker
 

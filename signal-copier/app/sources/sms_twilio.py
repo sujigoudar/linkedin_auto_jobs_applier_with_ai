@@ -34,10 +34,10 @@ class TwilioSMSSource(SourceAdapter):
         # app/main.py, which validates the request and calls ingest().
         return None
 
-    def parse(self, sms_body: str) -> Signal:
-        return parse_text_signal(sms_body, source=self.name, asset_class=self.asset_class)
+    def parse(self, sms_body: str, analyst: str | None = None) -> Signal:
+        return parse_text_signal(sms_body, source=self.name, asset_class=self.asset_class, analyst=analyst)
 
-    async def ingest(self, sms_body: str) -> Signal:
-        signal = self.parse(sms_body)
+    async def ingest(self, sms_body: str, analyst: str | None = None) -> Signal:
+        signal = self.parse(sms_body, analyst=analyst)
         await self.on_signal(signal)
         return signal

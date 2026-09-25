@@ -28,14 +28,15 @@ from app.brokers.ninjatrader import NinjaTraderBroker
 from app.brokers.paper import PaperBroker
 from app.brokers.rithmic import RithmicBroker
 from app.brokers.signalstack import SignalStackBroker
+from app.config_admin import seed_from_yaml_if_empty
 from app.db import SignalStore
 from app.engine import SignalCopierEngine
 from app.errors import SignalValidationError
 from app.lifecycle.manager import PositionLifecycleManager
 from app.pricing import PriceMonitor
-from app.providers import SettingsOverride, load_provider_registry
+from app.providers import SettingsOverride, load_provider_registry_from_store
 from app.reconciliation import OrderReconciler
-from app.routing import load_routing_config
+from app.routing import load_routing_config_from_store
 from app.sources.discord import DiscordSource
 from app.sources.mt4_mt5 import MetaApiSource
 from app.sources.rithmic import RithmicSource
@@ -50,9 +51,10 @@ STATIC_DIR = Path(__file__).resolve().parent / "static"
 logging.basicConfig(level=config.LOG_LEVEL)
 logger = logging.getLogger(__name__)
 
-routing_config = load_routing_config(config.ROUTING_CONFIG_PATH, config.ACCOUNTS_CONFIG_PATH)
-provider_registry = load_provider_registry(config.PROVIDERS_CONFIG_PATH)
 store = SignalStore(config.DATABASE_PATH)
+seed_from_yaml_if_empty(store)  # one-time: import existing config/*.yaml, then the database is live/authoritative
+routing_config = load_routing_config_from_store(store)
+provider_registry = load_provider_registry_from_store(store)
 
 brokers = {
     "paper": PaperBroker(),
@@ -169,14 +171,18 @@ async def health() -> dict:
 
 @app.get("/")
 async def dashboard() -> FileResponse:
-    """A minimal, read-only dashboard: one static HTML page with vanilla JS
-    that polls the JSON endpoints below (/positions, /brokers, /providers,
-    /signals, /orders) and renders them as tables — no build step, no
-    frontend framework, no new dependency. It shows exactly what this
-    service's own state is; it cannot submit an order, cancel one, or
-    change any config — every mutation still only happens through a
-    source's own push (webhook/SMS route) or a pull-based source's
-    background task, same as before this existed."""
+    """One static HTML page with vanilla JS — no build step, no frontend
+    framework, no new dependency. It polls the read-only JSON endpoints
+    (/positions, /brokers, /signals, /orders) and renders them as tables,
+    AND has forms for the live config-management endpoints below
+    (/accounts, /routing-rules, /providers) — add/edit/delete an account,
+    a routing rule, or a provider/analyst override, taking effect on the
+    very next signal. It still cannot submit, cancel, or modify a live
+    order — that stays exclusively through a source's own push (webhook/
+    SMS route) or a pull-based source's background task. See README.md's
+    "Managing config through the GUI/API" section for exactly what this
+    does and doesn't cover (pull-based bot sources like Telegram/Discord
+    still need env vars + a restart to add)."""
     return FileResponse(STATIC_DIR / "dashboard.html")
 
 
@@ -200,7 +206,9 @@ async def receive_webhook(
 
 
 @app.post("/sms/twilio")
-async def receive_sms(request: Request, body: str = Form(alias="Body")) -> dict:
+async def receive_sms(
+    request: Request, body: str = Form(alias="Body"), from_number: str = Form(alias="From", default="")
+) -> dict:
     if config.TWILIO_AUTH_TOKEN:
         try:
             from twilio.request_validator import RequestValidator
@@ -216,7 +224,7 @@ async def receive_sms(request: Request, body: str = Form(alias="Body")) -> dict:
             raise HTTPException(status_code=401, detail="invalid Twilio signature")
 
     try:
-        signal = sms_source.parse(body)
+        signal = sms_source.parse(body, analyst=from_number or None)
     except SignalValidationError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -301,6 +309,171 @@ async def list_provider_overrides() -> dict:
             entry["effective_by_account"][account_id] = vars(effective)
         result.append(entry)
     return {"providers": result}
+
+
+# --- Live config management: accounts, routing rules, providers/analysts ---
+#
+# These persist to SignalStore's config_* tables (app/db.py) AND mutate the
+# live `routing_config`/`provider_registry` objects IN PLACE (never
+# reassigned — `engine.routing`/`engine.provider_registry` hold the same
+# references) so a change here reaches the very next signal, no restart.
+# This is the layer that makes "add/manage everything through the GUI"
+# real instead of "edit YAML and restart" — see README.md's "Managing
+# config through the GUI/API" section for what's still NOT covered here
+# (pull-based bot sources like Telegram/Discord still need an env var +
+# restart; see that section for exactly why).
+
+
+def _reload_routing_config() -> None:
+    fresh = load_routing_config_from_store(store)
+    routing_config.accounts.clear()
+    routing_config.accounts.update(fresh.accounts)
+    routing_config.rules[:] = fresh.rules
+
+
+def _reload_provider_registry() -> None:
+    fresh = load_provider_registry_from_store(store)
+    provider_registry.providers.clear()
+    provider_registry.providers.update(fresh.providers)
+
+
+class AccountRequest(BaseModel):
+    account_id: str
+    broker: str
+    multiplier: float = 1.0
+    fixed_quantity: float | None = None
+    symbol_map: dict[str, str] = {}
+    enabled: bool = True
+    managed_lifecycle: bool = False
+
+
+@app.get("/accounts")
+async def list_accounts() -> dict:
+    """Every live-managed destination account. `broker` values not currently
+    in `GET /brokers`' list will error at signal time ("no broker adapter
+    registered") — creating the account here doesn't itself register a
+    broker adapter (that still needs the broker's own env-var credentials
+    and, for optional ones, the package installed; see README.md)."""
+    return {"accounts": store.list_config_accounts()}
+
+
+@app.post("/accounts")
+async def create_or_update_account(request: AccountRequest) -> dict:
+    """Create or update (by `account_id`) a destination account. Takes
+    effect on the very next signal — no restart. This does NOT set broker
+    credentials: those remain environment variables per the project's
+    "never store secrets in config" rule (see README.md's Security
+    notes) — create the account here, then set that broker's
+    `{BROKER}_{ACCOUNT_ID}_...` env vars separately."""
+    store.upsert_config_account(
+        account_id=request.account_id,
+        broker=request.broker,
+        multiplier=request.multiplier,
+        fixed_quantity=request.fixed_quantity,
+        symbol_map=request.symbol_map,
+        enabled=request.enabled,
+        managed_lifecycle=request.managed_lifecycle,
+    )
+    _reload_routing_config()
+    return {"account_id": request.account_id, "status": "saved"}
+
+
+@app.delete("/accounts/{account_id}")
+async def delete_account(account_id: str) -> dict:
+    store.delete_config_account(account_id)
+    _reload_routing_config()
+    return {"account_id": account_id, "status": "deleted"}
+
+
+class RoutingRuleRequest(BaseModel):
+    source: str
+    destinations: list[str]
+    symbol_filter: list[str] | None = None
+
+
+@app.get("/routing-rules")
+async def list_routing_rules() -> dict:
+    return {"routing_rules": store.list_config_routing_rules()}
+
+
+@app.post("/routing-rules")
+async def create_routing_rule(request: RoutingRuleRequest) -> dict:
+    rule_id = store.insert_config_routing_rule(request.source, request.destinations, request.symbol_filter)
+    _reload_routing_config()
+    return {"id": rule_id, "status": "created"}
+
+
+@app.put("/routing-rules/{rule_id}")
+async def update_routing_rule(rule_id: int, request: RoutingRuleRequest) -> dict:
+    store.update_config_routing_rule(rule_id, request.source, request.destinations, request.symbol_filter)
+    _reload_routing_config()
+    return {"id": rule_id, "status": "updated"}
+
+
+@app.delete("/routing-rules/{rule_id}")
+async def delete_routing_rule(rule_id: int) -> dict:
+    store.delete_config_routing_rule(rule_id)
+    _reload_routing_config()
+    return {"id": rule_id, "status": "deleted"}
+
+
+class ProviderRequest(BaseModel):
+    display_name: str = ""
+    multiplier: float | None = None
+    fixed_quantity: float | None = None
+    managed_lifecycle: bool | None = None
+    enabled: bool | None = None
+
+
+@app.post("/providers/{provider_id}")
+async def create_or_update_provider(provider_id: str, request: ProviderRequest) -> dict:
+    store.upsert_config_provider(
+        provider_id,
+        request.display_name,
+        request.multiplier,
+        request.fixed_quantity,
+        request.managed_lifecycle,
+        request.enabled,
+    )
+    _reload_provider_registry()
+    return {"provider_id": provider_id, "status": "saved"}
+
+
+@app.delete("/providers/{provider_id}")
+async def delete_provider(provider_id: str) -> dict:
+    store.delete_config_provider(provider_id)
+    _reload_provider_registry()
+    return {"provider_id": provider_id, "status": "deleted"}
+
+
+class AnalystRequest(BaseModel):
+    display_name: str = ""
+    multiplier: float | None = None
+    fixed_quantity: float | None = None
+    managed_lifecycle: bool | None = None
+    enabled: bool | None = None
+
+
+@app.post("/providers/{provider_id}/analysts/{analyst_id}")
+async def create_or_update_analyst(provider_id: str, analyst_id: str, request: AnalystRequest) -> dict:
+    store.upsert_config_analyst(
+        provider_id,
+        analyst_id,
+        request.display_name,
+        request.multiplier,
+        request.fixed_quantity,
+        request.managed_lifecycle,
+        request.enabled,
+    )
+    _reload_provider_registry()
+    return {"provider_id": provider_id, "analyst_id": analyst_id, "status": "saved"}
+
+
+@app.delete("/providers/{provider_id}/analysts/{analyst_id}")
+async def delete_analyst(provider_id: str, analyst_id: str) -> dict:
+    store.delete_config_analyst(provider_id, analyst_id)
+    _reload_provider_registry()
+    return {"provider_id": provider_id, "analyst_id": analyst_id, "status": "deleted"}
 
 
 def _managed_lifecycle_snapshot() -> list[dict]:

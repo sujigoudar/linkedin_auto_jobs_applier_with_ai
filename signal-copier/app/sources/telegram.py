@@ -41,8 +41,8 @@ class TelegramSource(SourceAdapter):
         self.asset_class = asset_class
         self._app = None
 
-    def parse(self, message_text: str) -> Signal:
-        return parse_text_signal(message_text, source=self.name, asset_class=self.asset_class)
+    def parse(self, message_text: str, analyst: str | None = None) -> Signal:
+        return parse_text_signal(message_text, source=self.name, asset_class=self.asset_class, analyst=analyst)
 
     async def start(self) -> None:
         try:
@@ -57,8 +57,10 @@ class TelegramSource(SourceAdapter):
             if str(update.effective_chat.id) != str(self.chat_id):
                 return
             text = update.effective_message.text or ""
+            user = update.effective_user
+            analyst = (user.username or user.full_name) if user else None
             try:
-                signal = self.parse(text)
+                signal = self.parse(text, analyst=analyst)
             except SignalValidationError:
                 logger.debug("telegram message did not parse as a signal: %r", text)
                 return
