@@ -321,6 +321,69 @@ rationale, and `tests/test_close_arbiter.py` / `tests/test_lifecycle_manager.py`
 / `tests/test_protection_transfer.py` for the oversell-prevention,
 partial-fill-arithmetic, and pending-exit-transfer proofs.
 
+## Signal Backtester
+
+```
+POST /backtest
+```
+
+Replays historical signals this service has already received (from
+`SignalStore`) against locally supplied OHLC bars, asking "what would
+have happened to each signal's own resolved stop/target." This is
+deliberately scoped, not a full trading-platform backtester — read
+`app/backtest/replay.py`'s module docstring before trusting a report from
+it, but the short version:
+
+- **No market-data vendor is connected.** There's no API key, no MCP
+  tool, no bundled dataset for historical prices — `app/backtest/models.py`'s
+  `PriceHistoryProvider` is the seam a real one plugs into, and
+  `CsvPriceHistoryProvider` (the only implementation shipped) reads bars
+  *you* supply from a local CSV (`timestamp,open,high,low,close[,volume]`).
+  Backtesting a symbol you haven't sourced data for doesn't work, and
+  nothing here invents prices to make it look like it does.
+- **Path-dependent ambiguity is preserved, not guessed.** If a bar's
+  `[low, high]` range contains both the stop and the target, which one
+  the price actually touched first isn't recoverable from OHLC data
+  alone — that trade is reported as `AMBIGUOUS`, exactly the case
+  worked out with concrete numbers (entry 100, stop 95, target 105, a
+  bar with high 106 / low 94) in the design this follows.
+- **Each signal is replayed as one independent round-trip trade**, sized
+  at its own `quantity`, entering at its own recorded `price`. There's no
+  shared-account-capital portfolio simulation across overlapping
+  signals yet — a real follow-up, not implemented here.
+- **No slippage or fee modeling** — a resolved trade fills at the exact
+  stop/target price.
+- Only signals **saved after this feature shipped** carry `stop_loss`/
+  `take_profit`/`analyst` (new columns on the `signals` table, added via
+  an additive migration — see `app/db.py`'s `_COLUMN_MIGRATIONS`); older
+  rows replay as `NO_EXIT_LEVELS`, not silently skipped.
+- `profit_factor` is `None` with an explanatory note (not `float('inf')`)
+  when there are no losing trades to divide by — an "unexplained
+  infinite score" is exactly the wrong answer this avoids.
+
+```bash
+curl -X POST http://localhost:8000/backtest \
+  -H 'Content-Type: application/json' \
+  -d '{
+        "source": "tradingview",
+        "symbol": "AAPL",
+        "start": "2024-01-01T00:00:00+00:00",
+        "end": "2024-06-01T00:00:00+00:00",
+        "csv_paths": {"AAPL": "/path/to/AAPL_daily_bars.csv"}
+      }'
+```
+
+Returns `{"summary": {...}, "trades": [...]}` — every replayed signal
+with its outcome (`win`/`loss`/`ambiguous`/`still_open`/`no_price_data`/
+`no_exit_levels`/`not_replayed`), not just the ones that resolved
+cleanly. There's no persisted "Signal Backtests workspace" or GUI for
+this yet — the dashboard stays strictly read-only (see below), so a
+run's own request/response is the interface for now.
+
+See `tests/test_backtest_simulator.py`, `tests/test_backtest_replay.py`,
+`tests/test_backtest_csv_provider.py`, and `tests/test_backtest_api.py`
+for the ambiguity-handling and end-to-end proofs.
+
 ## Dashboard
 
 ```

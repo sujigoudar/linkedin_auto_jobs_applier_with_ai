@@ -10,14 +10,16 @@ from __future__ import annotations
 
 import logging
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from fastapi import FastAPI, Form, Header, HTTPException, Query, Request
 from fastapi.responses import FileResponse
+from pydantic import BaseModel
 
 from app import config
-
-STATIC_DIR = Path(__file__).resolve().parent / "static"
+from app.backtest.models import CsvPriceHistoryProvider
+from app.backtest.replay import BacktestEngine
 from app.brokers.alpaca import AlpacaBroker
 from app.brokers.ccxt_broker import CCXTBroker
 from app.brokers.ibkr import IBKRBroker
@@ -41,6 +43,8 @@ from app.sources.sms_twilio import TwilioSMSSource
 from app.sources.telegram import TelegramSource
 from app.sources.twitter import TwitterSource
 from app.sources.webhook import WebhookSource
+
+STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 logging.basicConfig(level=config.LOG_LEVEL)
 logger = logging.getLogger(__name__)
@@ -333,6 +337,64 @@ async def list_orders(
 ) -> dict:
     """Most recent order results, newest first — optionally filtered to one account."""
     return {"orders": store.list_recent_orders(limit=limit, account_id=account_id)}
+
+
+class BacktestRequest(BaseModel):
+    """See app/backtest/replay.py's module docstring for exactly what this
+    does and doesn't simulate before trusting its output."""
+
+    source: str
+    symbol: str | None = None
+    start: datetime
+    end: datetime
+    #: symbol -> local CSV path (columns: timestamp,open,high,low,close[,volume]).
+    #: No vendor is wired in — see app/backtest/models.py's module docstring
+    #: for why this project can't fetch historical bars for you.
+    csv_paths: dict[str, str]
+    max_hold_days: float = 30.0
+
+
+@app.post("/backtest")
+async def run_backtest(request: BacktestRequest) -> dict:
+    """Replays historical signals (from `SignalStore`) against locally
+    supplied OHLC data. Only signals SAVED AFTER the stop_loss/take_profit/
+    analyst columns were added (see app/db.py's `_COLUMN_MIGRATIONS`) carry
+    that data — older rows replay as NO_EXIT_LEVELS. This is a synchronous,
+    in-process replay; no results are persisted (there's no Signal Backtests
+    workspace yet, just this endpoint — see README.md's "Signal Backtester"
+    section for the full list of what's still a documented gap)."""
+    csv_paths = {symbol: Path(path) for symbol, path in request.csv_paths.items()}
+    provider = CsvPriceHistoryProvider(csv_paths)
+    engine = BacktestEngine(provider, max_hold=timedelta(days=request.max_hold_days))
+
+    rows = store.list_signals_in_range(
+        source=request.source, symbol=request.symbol, start=request.start, end=request.end
+    )
+    report = engine.run(rows)
+
+    return {
+        "summary": report.summary(),
+        "trades": [
+            {
+                "signal_id": t.signal_id,
+                "source": t.source,
+                "symbol": t.symbol,
+                "side": t.side.value,
+                "analyst": t.analyst,
+                "entry_time": t.entry_time.isoformat(),
+                "entry_price": t.entry_price,
+                "quantity": t.quantity,
+                "stop_price": t.stop_price,
+                "target_price": t.target_price,
+                "outcome": t.outcome.value,
+                "exit_time": t.exit_time.isoformat() if t.exit_time else None,
+                "exit_price": t.exit_price,
+                "pnl": t.pnl,
+                "note": t.note,
+            }
+            for t in report.trades
+        ],
+    }
 
 
 def _orders_response(signal_id: str, results) -> dict:

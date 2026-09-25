@@ -23,6 +23,9 @@ CREATE TABLE IF NOT EXISTS signals (
     asset_class TEXT NOT NULL,
     quantity REAL,
     price REAL,
+    stop_loss REAL,
+    take_profit REAL,
+    analyst TEXT,
     received_at TEXT NOT NULL,
     raw TEXT NOT NULL
 );
@@ -73,11 +76,30 @@ CREATE TABLE IF NOT EXISTS lifecycle_state (
 """
 
 
+#: Additive migrations for columns added after a table already existed —
+#: `CREATE TABLE IF NOT EXISTS` above only helps a brand-new database.
+#: Each entry is applied with ALTER TABLE, ignoring the "duplicate column"
+#: error SQLite raises when it's already there (no IF NOT EXISTS support
+#: for columns before SQLite 3.35, and this stays compatible with older
+#: builds rather than assuming a version).
+_COLUMN_MIGRATIONS = [
+    ("signals", "stop_loss", "REAL"),
+    ("signals", "take_profit", "REAL"),
+    ("signals", "analyst", "TEXT"),
+]
+
+
 class SignalStore:
     def __init__(self, db_path: Path):
         self.db_path = db_path
         with self._connect() as conn:
             conn.executescript(SCHEMA)
+            for table, column, coltype in _COLUMN_MIGRATIONS:
+                try:
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {coltype}")
+                except sqlite3.OperationalError as exc:
+                    if "duplicate column name" not in str(exc):
+                        raise
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
@@ -92,8 +114,9 @@ class SignalStore:
         with self._connect() as conn:
             conn.execute(
                 """INSERT OR REPLACE INTO signals
-                   (id, source, symbol, side, asset_class, quantity, price, received_at, raw)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   (id, source, symbol, side, asset_class, quantity, price, stop_loss, take_profit,
+                    analyst, received_at, raw)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     signal.id,
                     signal.source,
@@ -102,6 +125,9 @@ class SignalStore:
                     signal.asset_class.value,
                     signal.quantity,
                     signal.price,
+                    signal.stop_loss,
+                    signal.take_profit,
+                    signal.analyst,
                     signal.received_at.isoformat(),
                     json.dumps(signal.raw),
                 ),
@@ -278,6 +304,59 @@ class SignalStore:
             conn.execute(
                 "DELETE FROM lifecycle_state WHERE account_id = ? AND symbol = ?", (account_id, symbol)
             )
+
+    def list_signals_in_range(
+        self,
+        source: str | None = None,
+        symbol: str | None = None,
+        start: datetime | None = None,
+        end: datetime | None = None,
+    ) -> list[dict]:
+        """Every field needed to replay a historical signal (see
+        app/backtest/replay.py) — including `stop_loss`/`take_profit`/
+        `analyst`, which `list_recent_signals` above doesn't return. Only
+        signals saved after this method's columns were added will have
+        those three populated; older rows have them as `None` (see
+        `_COLUMN_MIGRATIONS`) — the backtester surfaces that as a
+        NO_PROTECTION_DATA case rather than assuming "no stop was ever
+        requested" for a signal that predates this column existing."""
+        query = """SELECT id, source, symbol, side, asset_class, quantity, price, stop_loss,
+                          take_profit, analyst, received_at, raw
+                   FROM signals WHERE 1=1"""
+        params: list = []
+        if source:
+            query += " AND source = ?"
+            params.append(source)
+        if symbol:
+            query += " AND symbol = ?"
+            params.append(symbol)
+        if start:
+            query += " AND received_at >= ?"
+            params.append(start.isoformat())
+        if end:
+            query += " AND received_at <= ?"
+            params.append(end.isoformat())
+        query += " ORDER BY received_at ASC"
+
+        with self._connect() as conn:
+            rows = conn.execute(query, params).fetchall()
+        return [
+            {
+                "id": r[0],
+                "source": r[1],
+                "symbol": r[2],
+                "side": r[3],
+                "asset_class": r[4],
+                "quantity": r[5],
+                "price": r[6],
+                "stop_loss": r[7],
+                "take_profit": r[8],
+                "analyst": r[9],
+                "received_at": r[10],
+                "raw": json.loads(r[11]) if r[11] else {},
+            }
+            for r in rows
+        ]
 
     def list_recent_orders(self, limit: int = 50, account_id: str | None = None) -> list[dict]:
         query = """SELECT id, account_id, broker, symbol, side, requested_quantity, signal_id,
