@@ -380,14 +380,69 @@ against what's *actually confirmed done*. `app/lifecycle/models.py`'s
   current owned quantity would re-cover shares that might still leave via
   the pending order, recreating the same oversell risk.
 - Once the outcome is final — `PositionLifecycleManager.resolve_pending_exit()`,
-  called by `app/reconciliation.py` polling `get_order_status()` the same
-  way it already does for pending entries — the stop is resized to
-  `confirmed_owned_quantity - confirmed_filled_quantity`, using whatever
-  actually filled. A 15-share target that only fills 8 before its
-  remainder is confirmed cancelled restores the stop to 54 (62 − 8), not
-  47 (62 − 15); if 3 more fill while that cancellation was in flight, the
-  restore target is 51, not 54. See `tests/test_protection_transfer.py`,
-  which reproduces this exact sequence.
+  called by `app/reconciliation.py` polling `get_order_status()` — the stop
+  is resized to `confirmed_owned_quantity - confirmed_filled_quantity`,
+  using whatever actually filled. A 15-share target that only fills 8
+  before its remainder is confirmed cancelled restores the stop to 54
+  (62 − 8), not 47 (62 − 15); if 3 more fill while that cancellation was in
+  flight, the restore target is 51, not 54. See
+  `tests/test_protection_transfer.py`, which reproduces this exact
+  sequence.
+
+### Pending entries get exactly the same treatment
+
+The same async-confirmation problem exists on the way in, not just the way
+out: a managed entry can report `PENDING` too, and until this round it was
+handled wrong — `record_fill` applied the full requested quantity to
+`SignalStore`'s tracked position, but `on_entry_fill` (which places the
+protective stop) was never called for it, so the position looked owned
+while genuinely having **no protection at all**, indefinitely.
+`app/lifecycle/models.py`'s `PendingEntry` and
+`PositionLifecycleManager.register_pending_entry`/`resolve_pending_entry`
+close that gap, mirroring `PendingExit` exactly:
+
+- A `PENDING` entry response registers a `PendingEntry` (requested
+  quantity, broker order id) instead of guessing. `on_entry_fill` is
+  **not** called yet, and nothing is optimistically applied to
+  `SignalStore`'s position — `GET /positions`' `managed_lifecycles` array
+  shows the pending entry explicitly (`pending_entry` field) instead of a
+  silently-owned-but-unprotected position.
+- `app/reconciliation.py` polls unresolved pending entries the same way it
+  polls pending exits, and once the broker's answer is terminal
+  (`resolve_pending_entry`): zero confirmed fill unregisters the plan
+  (nothing to protect); any positive confirmed fill calls `on_entry_fill`
+  with exactly that amount — even if less than requested (a partial fill
+  whose remainder was then cancelled) — which places the stop and
+  (exactly once) applies that confirmed quantity to `SignalStore`'s
+  tracked position.
+- A timeout or lost response is **not** treated as a rejection — only a
+  broker-confirmed terminal status (filled, or confirmed
+  cancelled/rejected) may resolve it; anything else keeps polling.
+
+See `tests/test_pending_fill_reconciliation_integration.py`, which drives
+this end to end through the real engine → lifecycle manager → reconciler
+path (not a hand-constructed shortcut) for both a full and a partial
+confirmed fill.
+
+### The same optimistic-fill bug, for plain (non-managed) accounts
+
+Managed accounts weren't the only place this happened. A plain account's
+`PENDING` order also applies an optimistic quantity to `SignalStore`'s
+tracked position (there's no `CloseArbiter`/lifecycle to defer to — see
+"Close signals" above), but until this round the `orders` table row
+persisted the *broker's* raw `filled_quantity` (`None` for a genuine
+`PENDING` response) instead of the quantity actually applied.
+`app/reconciliation.py`'s `_correct_position` uses that stored value as
+its baseline for computing the correction once the real fill is
+confirmed — reading back `None` (as 0) meant the later-confirmed quantity
+was added a **second time** on top of what optimistic tracking already
+applied, silently doubling the position. `SignalStore.save_order_result`
+now takes an explicit `applied_quantity` — always exactly what
+`record_fill` was actually called with — so the reconciler's baseline
+matches reality. See
+`tests/test_pending_fill_reconciliation_integration.py`'s plain-account
+cases, which reproduce the double-count directly through
+`SignalCopierEngine.handle_signal` → `OrderReconciler.reconcile_once()`.
 
 ### Crash-resumable persistence
 

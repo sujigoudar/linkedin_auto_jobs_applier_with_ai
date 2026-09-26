@@ -105,7 +105,53 @@ class OrderReconciler:
             corrected += 1
 
         corrected += await self._reconcile_pending_exits()
+        corrected += await self._reconcile_pending_entries()
         return corrected
+
+    async def _reconcile_pending_entries(self) -> int:
+        """Poll every managed-lifecycle position's unresolved entry (see
+        app/lifecycle/manager.py's PendingEntry) and, once the broker gives a
+        final word, hand it to `resolve_pending_entry` — the only thing
+        allowed to call `on_entry_fill` (and so place the protective stop)
+        for it. Until this resolves, the position has no protection at all,
+        so this is at least as important as pending-exit reconciliation.
+        A no-op if no `PositionLifecycleManager` was wired in."""
+        if self.lifecycle_manager is None:
+            return 0
+
+        resolved = 0
+        for account_id, symbol, broker_name, pending in self.lifecycle_manager.list_pending_entries():
+            broker = self.brokers.get(broker_name)
+            if broker is None or pending.broker_order_id is None:
+                continue
+
+            account = DestinationAccount(account_id=account_id, broker=broker_name)
+            try:
+                result = await broker.get_order_status(account, pending.broker_order_id)
+            except Exception:  # noqa: BLE001 - one broker's failure must not block the rest
+                logger.exception(
+                    "get_order_status failed for pending entry account=%s symbol=%s order=%s",
+                    account_id,
+                    symbol,
+                    pending.broker_order_id,
+                )
+                continue
+
+            if result is None or result.status not in (OrderStatus.FILLED, OrderStatus.REJECTED):
+                continue  # still open on the broker's side -- a timeout/lost response is not a rejection
+
+            filled = result.filled_quantity if result.filled_quantity is not None else 0.0
+            lifecycle = self.lifecycle_manager.get_lifecycle(account_id, symbol)
+            entry_side = lifecycle.plan.side if lifecycle is not None else None
+            await self.lifecycle_manager.resolve_pending_entry(account, symbol, filled, remainder_cancelled=True)
+            if filled > 0 and entry_side is not None:
+                # Nothing optimistically touched SignalStore's tracked position
+                # for this entry (see engine.py's PENDING branch) -- this is the
+                # one point that applies the confirmed fill, exactly once.
+                self.store.record_fill(account_id, symbol, entry_side, filled)
+            resolved += 1
+
+        return resolved
 
     async def _reconcile_pending_exits(self) -> int:
         """Poll every managed-lifecycle position's unresolved exit (see

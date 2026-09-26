@@ -136,12 +136,37 @@ class PendingExit:
 
 
 @dataclass
+class PendingEntry:
+    """An entry order whose broker response reported PENDING rather than a
+    synchronous, final fill — so how much (if any) of `requested_quantity`
+    will actually be owned is still unknown. Until this resolves,
+    `on_entry_fill` must NOT be called (there is nothing confirmed yet to
+    protect), but the entry must also not be treated as a definite
+    rejection — the broker may already have accepted it and the response
+    was merely delayed or lost. `PositionLifecycleManager.resolve_pending_entry`
+    (driven by app/reconciliation.py polling `broker_order_id` via
+    `get_order_status()`) is the only thing allowed to settle this: a
+    zero-fill, confirmed-cancelled outcome unregisters the plan (nothing
+    to protect); any positive confirmed fill calls `on_entry_fill` with
+    exactly that amount — even if less than `requested_quantity` (a
+    partial fill whose remainder was then cancelled), never the naive
+    "assume the whole request filled" guess.
+    """
+
+    broker_order_id: str | None
+    requested_quantity: float
+    confirmed_filled_quantity: float = 0.0
+    remainder_resolved: bool = False
+
+
+@dataclass
 class PositionLifecycle:
     plan: PositionPlan
     confirmed_owned_quantity: float = 0.0
     stop: StopRecord = field(default_factory=StopRecord)
     closed: bool = False
     pending_exit: PendingExit | None = None
+    pending_entry: PendingEntry | None = None
     # Halt state lives on CloseArbiter, not here — it's the single source of
     # truth (app/lifecycle/close_arbiter.py's is_halted()/halt_reason()), so
     # this lifecycle and the arbiter's ledger can never disagree about it.

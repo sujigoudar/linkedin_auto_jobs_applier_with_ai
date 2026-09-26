@@ -212,15 +212,32 @@ class SignalStore:
         symbol: str | None = None,
         side: Side | None = None,
         requested_quantity: float | None = None,
+        applied_quantity: float | None = None,
     ) -> int:
         """Persist an order result and return its row id.
 
         `broker`/`symbol`/`side`/`requested_quantity` are what was actually
         sent to the broker for this order (not just the original signal —
         for a resolved close, `side` is the opposing buy/sell, not
-        Side.CLOSE). app/reconciliation.py needs these to re-check and
-        correct a PENDING order's tracked position later.
+        Side.CLOSE).
+
+        `applied_quantity` is what the caller actually applied to the
+        tracked position (`SignalStore.positions`) for this order, if
+        anything — pass it whenever `record_fill`/`adjust_position` was
+        called alongside this save. It is NOT always `result.filled_quantity`:
+        a broker reporting PENDING with `filled_quantity=None` still gets an
+        optimistic quantity applied to the tracked position (the requested
+        quantity, per the "protect first" design), and that applied amount,
+        not the broker's still-unconfirmed `None`, is what
+        app/reconciliation.py's `_correct_position` must use as its baseline
+        when the real fill is confirmed later — otherwise it corrects
+        against a baseline of 0 and adds the confirmed quantity a second
+        time on top of what was already applied (a real, confirmed bug this
+        parameter exists to close). Omit this for calls that never touched
+        the tracked position (REJECTED/ERROR results, or a save with no
+        `symbol`/`side` at all).
         """
+        stored_filled_quantity = applied_quantity if applied_quantity is not None else result.filled_quantity
         with self._connect() as conn:
             cursor = conn.execute(
                 """INSERT INTO orders
@@ -236,7 +253,7 @@ class SignalStore:
                     result.signal_id,
                     result.status.value,
                     result.broker_order_id,
-                    result.filled_quantity,
+                    stored_filled_quantity,
                     result.filled_price,
                     result.message,
                     result.executed_at.isoformat(),

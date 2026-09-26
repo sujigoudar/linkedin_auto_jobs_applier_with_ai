@@ -231,9 +231,10 @@ class SignalCopierEngine:
                     message=str(exc),
                 )
 
+            applied_quantity = None
             if result.status in (OrderStatus.FILLED, OrderStatus.PENDING):
-                filled_quantity = result.filled_quantity or quantity
-                self.store.record_fill(account.account_id, symbol, order_signal.side, filled_quantity)
+                applied_quantity = result.filled_quantity or quantity
+                self.store.record_fill(account.account_id, symbol, order_signal.side, applied_quantity)
 
             self.store.save_order_result(
                 result,
@@ -241,6 +242,7 @@ class SignalCopierEngine:
                 symbol=symbol,
                 side=order_signal.side,
                 requested_quantity=quantity,
+                applied_quantity=applied_quantity,
             )
             results.append(result)
 
@@ -272,7 +274,12 @@ class SignalCopierEngine:
 
     async def _submit_order(
         self, order_signal: Signal, quantity: float, account: DestinationAccount, symbol: str, broker: BrokerAdapter
-    ) -> OrderResult:
+    ) -> tuple[OrderResult, float | None]:
+        """Returns (result, applied_quantity) — `applied_quantity` is what was
+        actually applied to the tracked position (None if nothing was), for
+        the caller to pass into `save_order_result`'s `applied_quantity` so
+        the stored row matches what `record_fill` did (see that parameter's
+        docstring for why the two must agree)."""
         try:
             result = await broker.place_order(order_signal, account, quantity, symbol)
         except Exception as exc:  # noqa: BLE001 - one account's failure must not block others
@@ -280,10 +287,11 @@ class SignalCopierEngine:
             result = OrderResult(
                 account_id=account.account_id, status=OrderStatus.ERROR, signal_id=order_signal.id, message=str(exc)
             )
+        applied_quantity = None
         if result.status in (OrderStatus.FILLED, OrderStatus.PENDING):
-            filled_quantity = result.filled_quantity or quantity
-            self.store.record_fill(account.account_id, symbol, order_signal.side, filled_quantity)
-        return result
+            applied_quantity = result.filled_quantity or quantity
+            self.store.record_fill(account.account_id, symbol, order_signal.side, applied_quantity)
+        return result, applied_quantity
 
     async def _resolve_and_submit_plain_close(
         self, signal: Signal, account: DestinationAccount, symbol: str, broker: BrokerAdapter
@@ -309,9 +317,14 @@ class SignalCopierEngine:
                 return result
 
             order_signal, quantity = resolved
-            result = await self._submit_order(order_signal, quantity, account, symbol, broker)
+            result, applied_quantity = await self._submit_order(order_signal, quantity, account, symbol, broker)
             self.store.save_order_result(
-                result, broker=account.broker, symbol=symbol, side=order_signal.side, requested_quantity=quantity
+                result,
+                broker=account.broker,
+                symbol=symbol,
+                side=order_signal.side,
+                requested_quantity=quantity,
+                applied_quantity=applied_quantity,
             )
             return result
 
@@ -390,17 +403,22 @@ class SignalCopierEngine:
             self.store.record_fill(account.account_id, symbol, signal.side, filled_quantity)
             await self.lifecycle_manager.on_entry_fill(account, symbol, filled_quantity)
         elif result.status == OrderStatus.PENDING:
-            # Fill confirmation for async-confirming brokers doesn't feed back into
-            # the lifecycle manager yet (same documented gap app/reconciliation.py
-            # has for the plain path) — the position is entered but left
-            # unprotected by this manager until that's wired up.
-            logger.warning(
-                "managed entry for account=%s symbol=%s is PENDING; protective stop not yet placed "
-                "(no fill-confirmation feed into PositionLifecycleManager)",
+            # Don't assume the requested quantity is owned yet -- retain the
+            # intent (this may already be a real, accepted order) and let
+            # app/reconciliation.py's pending-entry polling call
+            # `resolve_pending_entry` once the broker's final word is known,
+            # which is the only thing allowed to call `on_entry_fill` (and so
+            # place the protective stop) for this position. Calling
+            # `record_fill` with the full requested quantity here, before
+            # anything is confirmed, is exactly the optimistic-guess bug this
+            # exists to avoid -- see PendingEntry's docstring.
+            logger.info(
+                "managed entry for account=%s symbol=%s is PENDING; retaining as an unresolved "
+                "entry until the broker confirms what actually filled",
                 account.account_id,
                 symbol,
             )
-            self.store.record_fill(account.account_id, symbol, signal.side, quantity)
+            self.lifecycle_manager.register_pending_entry(account, symbol, result.broker_order_id, quantity)
 
         return result
 

@@ -63,6 +63,7 @@ from datetime import datetime
 from app.brokers.base import BrokerAdapter
 from app.lifecycle.close_arbiter import CloseArbiter
 from app.lifecycle.models import (
+    PendingEntry,
     PendingExit,
     PositionLifecycle,
     PositionPlan,
@@ -101,6 +102,18 @@ class PositionLifecycleManager:
             (lifecycle.plan.account_id, lifecycle.plan.symbol, lifecycle.plan.broker, lifecycle.pending_exit)
             for lifecycle in self._lifecycles.values()
             if lifecycle.pending_exit is not None and not lifecycle.pending_exit.remainder_resolved
+        ]
+
+    def list_pending_entries(self) -> list[tuple[str, str, str, PendingEntry]]:
+        """Every (account_id, symbol, broker, PendingEntry) whose outcome
+        hasn't resolved yet — what app/reconciliation.py polls to eventually
+        call `resolve_pending_entry`. See PendingEntry's docstring: until
+        resolved, this position has NOT had `on_entry_fill` called for it,
+        so it has no protective stop yet."""
+        return [
+            (lifecycle.plan.account_id, lifecycle.plan.symbol, lifecycle.plan.broker, lifecycle.pending_entry)
+            for lifecycle in self._lifecycles.values()
+            if lifecycle.pending_entry is not None and not lifecycle.pending_entry.remainder_resolved
         ]
 
     def restore_from_store(self) -> None:
@@ -211,6 +224,60 @@ class PositionLifecycleManager:
 
         self._persist(lifecycle)
         return lifecycle
+
+    def register_pending_entry(
+        self, account: DestinationAccount, symbol: str, broker_order_id: str | None, requested_quantity: float
+    ) -> None:
+        """Call instead of `on_entry_fill` when the entry order's broker
+        response is PENDING rather than a synchronous fill: retains the
+        intent (this may already be a real, accepted order) without
+        assuming `requested_quantity` is actually owned/protected yet — see
+        PendingEntry's docstring for why guessing here is exactly the bug
+        this exists to avoid. `app/reconciliation.py` polls
+        `list_pending_entries()` and eventually calls
+        `resolve_pending_entry` once the broker's final word is known."""
+        lifecycle = self._lifecycles.get((account.account_id, symbol))
+        if lifecycle is None:
+            return
+        lifecycle.pending_entry = PendingEntry(broker_order_id=broker_order_id, requested_quantity=requested_quantity)
+        self._persist(lifecycle)
+
+    async def resolve_pending_entry(
+        self, account: DestinationAccount, symbol: str, confirmed_filled_quantity: float, remainder_cancelled: bool
+    ) -> None:
+        """Call once the broker's final word on a PENDING entry (from
+        `register_pending_entry`) is known — mirrors `resolve_pending_exit`'s
+        contract exactly, for the entry side. `remainder_cancelled=True`
+        means nothing more of `requested_quantity` can fill (fully filled,
+        or the remainder's cancellation/expiry is confirmed); a timeout or
+        lost response is NOT that — it must keep polling, not call this
+        with a guessed outcome.
+
+        Zero confirmed fill -> the entry never happened; unregisters the
+        plan (nothing to protect, nothing protecting it). Any positive
+        confirmed fill -> protects exactly that much via `on_entry_fill`,
+        even if less than `requested_quantity` (a partial fill whose
+        remainder was then cancelled) — never the originally requested
+        amount."""
+        lifecycle = self._lifecycles.get((account.account_id, symbol))
+        if lifecycle is None or lifecycle.pending_entry is None:
+            return
+        pending = lifecycle.pending_entry
+
+        if not remainder_cancelled and confirmed_filled_quantity < pending.requested_quantity:
+            pending.confirmed_filled_quantity = confirmed_filled_quantity
+            self._persist(lifecycle)
+            return
+
+        pending.confirmed_filled_quantity = confirmed_filled_quantity
+        pending.remainder_resolved = True
+        lifecycle.pending_entry = None
+
+        if confirmed_filled_quantity <= 0:
+            self.unregister_plan(account.account_id, symbol)
+            return
+
+        await self.on_entry_fill(account, symbol, confirmed_filled_quantity)
 
     async def on_stop_filled(
         self, account: DestinationAccount, symbol: str, filled_quantity: float, filled_price: float | None = None
@@ -589,6 +656,14 @@ def _lifecycle_to_state(lifecycle: PositionLifecycle, ledger: dict) -> dict:
             "source": lifecycle.pending_exit.source,
             "reason": lifecycle.pending_exit.reason,
         },
+        "pending_entry": None
+        if lifecycle.pending_entry is None
+        else {
+            "broker_order_id": lifecycle.pending_entry.broker_order_id,
+            "requested_quantity": lifecycle.pending_entry.requested_quantity,
+            "confirmed_filled_quantity": lifecycle.pending_entry.confirmed_filled_quantity,
+            "remainder_resolved": lifecycle.pending_entry.remainder_resolved,
+        },
         "ledger": ledger,
     }
 
@@ -651,10 +726,23 @@ def _lifecycle_from_state(row: dict) -> PositionLifecycle:
         )
     )
 
+    pending_entry_row = row.get("pending_entry")
+    pending_entry = (
+        None
+        if pending_entry_row is None
+        else PendingEntry(
+            broker_order_id=pending_entry_row.get("broker_order_id"),
+            requested_quantity=pending_entry_row["requested_quantity"],
+            confirmed_filled_quantity=pending_entry_row.get("confirmed_filled_quantity", 0.0),
+            remainder_resolved=pending_entry_row.get("remainder_resolved", False),
+        )
+    )
+
     return PositionLifecycle(
         plan=plan,
         confirmed_owned_quantity=row.get("confirmed_owned_quantity", 0.0),
         stop=stop,
         closed=row.get("closed", False),
         pending_exit=pending_exit,
+        pending_entry=pending_entry,
     )

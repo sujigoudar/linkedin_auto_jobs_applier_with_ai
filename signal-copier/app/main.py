@@ -646,6 +646,7 @@ def _managed_lifecycle_snapshot() -> list[dict]:
     for lifecycle in lifecycle_manager.list_open_lifecycles():
         account_id, symbol = lifecycle.key
         pending = lifecycle.pending_exit
+        pending_entry = lifecycle.pending_entry
         snapshot.append(
             {
                 "account_id": account_id,
@@ -666,6 +667,17 @@ def _managed_lifecycle_snapshot() -> list[dict]:
                     "unresolved_remainder": pending.unresolved_remainder,
                     "phase": pending.phase.value,
                     "source": pending.source,
+                },
+                # Non-null while an entry order's broker response was PENDING and
+                # still hasn't resolved -- this position has NO protective stop
+                # yet (owned_quantity is still 0 until resolve_pending_entry calls
+                # on_entry_fill; see app/lifecycle/models.py's PendingEntry).
+                "pending_entry": None
+                if pending_entry is None
+                else {
+                    "broker_order_id": pending_entry.broker_order_id,
+                    "requested_quantity": pending_entry.requested_quantity,
+                    "confirmed_filled_quantity": pending_entry.confirmed_filled_quantity,
                 },
             }
         )

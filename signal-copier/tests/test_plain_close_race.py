@@ -16,7 +16,7 @@ from app.brokers.paper import PaperBroker
 from app.db import SignalStore
 from app.engine import SignalCopierEngine
 from app.models import DestinationAccount, OrderResult, OrderStatus, Side, Signal
-from app.routing import RoutingConfig
+from app.routing import RoutingConfig, RoutingRule
 
 
 class _SlowBroker(PaperBroker):
@@ -51,7 +51,14 @@ def broker():
 @pytest.fixture
 def engine(store, broker):
     account = DestinationAccount(account_id="acct1", broker="paper")
-    routing = RoutingConfig(rules=[], accounts={"acct1": account})
+    # A real routing rule is required for test_provider_close_signal_races_
+    # manual_close_without_double_selling below: without one,
+    # destinations_for() returns [] and engine.handle_signal(close_signal)
+    # is a silent no-op, which would make that test "pass" without the
+    # provider-side close ever reaching the shared lock it's meant to test.
+    routing = RoutingConfig(
+        rules=[RoutingRule(source="tradingview", destinations=["acct1"])], accounts={"acct1": account}
+    )
     return SignalCopierEngine(routing=routing, brokers={"paper": broker}, store=store)
 
 
@@ -90,8 +97,16 @@ async def test_provider_close_signal_races_manual_close_without_double_selling(s
     manual_result: OrderResult = results[1]
     provider_results: list[OrderResult] = results[0]
 
+    # Confirms the provider-side close actually reached _resolve_and_submit_
+    # plain_close (and so the same lock as the manual close) rather than
+    # destinations_for() silently returning no destinations.
+    assert len(provider_results) == 1
+
     all_results = provider_results + [manual_result]
     filled = [r for r in all_results if r.status == OrderStatus.FILLED]
+    rejected = [r for r in all_results if r.status == OrderStatus.REJECTED]
     assert len(filled) == 1
+    assert len(rejected) == 1
+    assert rejected[0].message == "no open position to close"
     assert broker.submitted_sells == [6.0]
     assert store.get_position("acct1", "AAPL") == 0.0
