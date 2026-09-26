@@ -216,23 +216,44 @@ class AlpacaBroker(BrokerAdapter):
             message=f"Alpaca stop resting (status: {order.get('status')})",
         )
 
+    #: Alpaca order states that actually mean nothing more of this order can
+    #: ever execute. `pending_cancel` (returned by DELETE's 204 acceptance
+    #: itself being merely a request, not a confirmed outcome) is
+    #: deliberately NOT here -- the order can still fill before the venue
+    #: finishes cancelling it.
+    _TERMINAL_CANCELLED_STATUSES = frozenset({"canceled", "expired"})
+
     async def cancel_order(self, account: DestinationAccount, broker_order_id: str) -> bool:
         try:
             api_key, api_secret, base_url = self._credentials_for(account)
         except RuntimeError:
             return False
+        headers = {"APCA-API-KEY-ID": api_key, "APCA-API-SECRET-KEY": api_secret}
 
         try:
-            response = await self._client.delete(
-                f"{base_url}/v2/orders/{broker_order_id}",
-                headers={"APCA-API-KEY-ID": api_key, "APCA-API-SECRET-KEY": api_secret},
-            )
+            response = await self._client.delete(f"{base_url}/v2/orders/{broker_order_id}", headers=headers)
         except httpx.HTTPError:
             return False
 
-        # 204: cancelled. Anything else (404 = already filled/gone, 422 = can't be
-        # cancelled in its current state, ...) is NOT a confirmed cancellation.
-        return response.status_code == 204
+        # ADP-04: Alpaca's 204 from DELETE means "the cancel REQUEST was
+        # accepted," not "the order is now actually cancelled" -- the order
+        # can sit in `pending_cancel` and still fill before the venue
+        # finishes tearing it down. Anything other than 204 here (404 =
+        # already filled/gone, 422 = can't be cancelled in its current
+        # state, ...) was never even accepted, so that's still an
+        # unconfirmed cancellation. A confirmed one additionally requires a
+        # follow-up read showing the order actually reached a terminal
+        # cancelled state.
+        if response.status_code != 204:
+            return False
+
+        try:
+            status_response = await self._client.get(f"{base_url}/v2/orders/{broker_order_id}", headers=headers)
+            status_response.raise_for_status()
+        except httpx.HTTPError:
+            return False
+
+        return status_response.json().get("status") in self._TERMINAL_CANCELLED_STATUSES
 
     async def replace_stop_quantity(
         self,
@@ -261,13 +282,30 @@ class AlpacaBroker(BrokerAdapter):
             return None  # no confirmed replace — caller falls back to cancel + resubmit
 
         order = response.json()
+        order_status = order.get("status")
+        if order_status in ("rejected", "canceled", "expired"):
+            # ADP-04: an HTTP 200 here only means Alpaca's API layer accepted
+            # the PATCH request -- the order-management system can still
+            # reject the replace itself, reported in the response BODY's own
+            # `status`, not the HTTP status code. Reporting this as PENDING
+            # would make the caller believe a replacement is resting when
+            # nothing actually is (see docs.alpaca.markets/reference/
+            # patchorderbyorderid-1's own note that a 200 does not guarantee
+            # the replace happened).
+            return OrderResult(
+                account_id=account.account_id,
+                status=OrderStatus.REJECTED,
+                signal_id="",
+                broker_order_id=order.get("id"),
+                message=f"Alpaca stop replace was not accepted (status: {order_status})",
+            )
         return OrderResult(
             account_id=account.account_id,
             status=OrderStatus.PENDING,
             signal_id="",
             # Alpaca's replace creates a new order id — see module docstring.
             broker_order_id=order.get("id"),
-            message=f"Alpaca stop replaced (status: {order.get('status')})",
+            message=f"Alpaca stop replaced (status: {order_status})",
         )
 
     async def get_broker_position(self, account: DestinationAccount, symbol: str) -> float | None:

@@ -58,13 +58,39 @@ async def test_place_protective_stop_for_short_position_buys(broker, account, mo
 
 
 @pytest.mark.asyncio
-async def test_cancel_order_success_on_204(broker, account, monkeypatch):
+async def test_cancel_order_confirmed_once_the_venue_reports_a_terminal_cancelled_status(broker, account, monkeypatch):
+    """ADP-04: a 204 from DELETE only means the cancel REQUEST was
+    accepted -- the order can still sit in `pending_cancel` and execute
+    before the venue actually tears it down. Only a follow-up read
+    confirming a genuinely terminal cancelled status counts."""
     async def fake_delete(self, url, headers):
         return _mock_response(204)
 
+    async def fake_get(self, url, headers):
+        return _mock_response(200, {"status": "canceled"})
+
     monkeypatch.setattr(broker._client, "delete", fake_delete.__get__(broker._client))
+    monkeypatch.setattr(broker._client, "get", fake_get.__get__(broker._client))
 
     assert await broker.cancel_order(account, "stop-order-1") is True
+
+
+@pytest.mark.asyncio
+async def test_cancel_order_accepted_but_still_pending_is_not_confirmed(broker, account, monkeypatch):
+    """The audit's exact reproduced gap: DELETE returns 204, but the
+    order's real status is still `pending_cancel` -- not yet a confirmed
+    cancellation, so proceeding (e.g. resizing/re-arming a stop) could
+    oversell against shares this order might still sell."""
+    async def fake_delete(self, url, headers):
+        return _mock_response(204)
+
+    async def fake_get(self, url, headers):
+        return _mock_response(200, {"id": "1", "status": "pending_cancel", "filled_qty": "0"})
+
+    monkeypatch.setattr(broker._client, "delete", fake_delete.__get__(broker._client))
+    monkeypatch.setattr(broker._client, "get", fake_get.__get__(broker._client))
+
+    assert await broker.cancel_order(account, "1") is False
 
 
 @pytest.mark.asyncio
