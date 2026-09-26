@@ -314,6 +314,27 @@ async def test_rejected_initial_stop_is_not_reported_confirmed(world):
 
 
 @pytest.mark.asyncio
+async def test_protection_recovers_on_the_next_reconciliation_pass_without_a_new_fill(world):
+    """PRO-04: a definitive stop-placement failure used to only ever get
+    retried by the NEXT confirmed fill increment -- a position that's
+    already fully filled (no more fills coming) would stay unprotected
+    forever. retry_unprotected_positions must recover it on its own."""
+    entry = await start_entry(world)
+    world.broker.new_stop_outcome = OrderStatus.REJECTED
+    await progress(world, entry, 30.0, OrderStatus.FILLED)  # fully filled, no more fills will ever arrive
+
+    assert lifecycle(world).stop.status is not ProtectionStatus.STOP_CONFIRMED
+    assert world.broker.standing_stop_quantity() == 0.0
+
+    world.broker.new_stop_outcome = None  # the venue recovers
+    await world.reconciler.reconcile_once()  # no new fill -- pure periodic retry
+
+    assert lifecycle(world).stop.status == ProtectionStatus.STOP_CONFIRMED
+    assert lifecycle(world).stop.protected_quantity == 30.0
+    assert world.broker.standing_stop_quantity() == 30.0
+
+
+@pytest.mark.asyncio
 async def test_managed_exit_partial_cancel_reconciles_store_and_lifecycle(world):
     """F04: pending close then 40 sold/60 canceled must not leave the UI flat."""
     entry = await start_entry(world)

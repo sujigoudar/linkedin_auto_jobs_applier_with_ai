@@ -140,6 +140,11 @@ class OrderReconciler:
 
         corrected += await self._reconcile_pending_exits()
         corrected += await self._reconcile_pending_entries()
+        if self.lifecycle_manager is not None:
+            # PRO-04: retry protection for any owned-but-unprotected
+            # lifecycle every pass, independent of whether a new fill
+            # increment ever arrives to trigger it otherwise.
+            corrected += await self.lifecycle_manager.retry_unprotected_positions()
         return corrected
 
     async def _reconcile_pending_entries(self) -> int:

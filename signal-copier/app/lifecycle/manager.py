@@ -105,6 +105,38 @@ class PositionLifecycleManager:
         (see app/main.py's `/positions`), not for mutation."""
         return [lifecycle for lifecycle in self._lifecycles.values() if not lifecycle.closed]
 
+    async def retry_unprotected_positions(self) -> int:
+        """Independent of any new fill increment (PRO-04): re-attempt
+        protection for every open, genuinely-owned lifecycle that isn't
+        currently STOP_CONFIRMED. A definitive stop-placement/replace
+        failure used to only ever get retried by the NEXT confirmed fill
+        increment (see resolve_pending_entry) — a position that's already
+        fully filled would never see one, leaving it unprotected
+        indefinitely with no other recovery path. app/reconciliation.py
+        calls this every pass, so a real protection deficit gets a bounded,
+        periodic retry rather than depending on unrelated future activity.
+        Safe to call repeatedly: an already-protected lifecycle, or one
+        deferring to an unresolved exit, is a no-op."""
+        retried = 0
+        for lifecycle in list(self._lifecycles.values()):
+            if lifecycle.closed or lifecycle.confirmed_owned_quantity <= 0:
+                continue
+            if lifecycle.stop.status == ProtectionStatus.STOP_CONFIRMED:
+                continue
+            if lifecycle.pending_exit is not None and not lifecycle.pending_exit.remainder_resolved:
+                continue  # deferred to that exit's own resolution, same as _replace_stop_price's own guard
+            broker = self.brokers.get(lifecycle.plan.broker)
+            if broker is None:
+                continue
+            desired_price = lifecycle.stop.desired_price or lifecycle.plan.initial_stop
+            if desired_price is None:
+                continue
+            lifecycle.stop.desired_price = desired_price
+            account = DestinationAccount(account_id=lifecycle.plan.account_id, broker=lifecycle.plan.broker)
+            await self._replace_stop_price(lifecycle, account)
+            retried += 1
+        return retried
+
     def list_pending_exits(self) -> list[tuple[str, str, str, PendingExit]]:
         """Every (account_id, symbol, broker, PendingExit) whose remainder
         hasn't resolved yet — what app/reconciliation.py polls to eventually
