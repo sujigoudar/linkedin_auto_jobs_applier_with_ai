@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import abc
 import csv
+import math
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -36,6 +37,13 @@ class HistoricalBar:
     volume: float = 0.0
 
     def __post_init__(self) -> None:
+        # FIN-03: NaN/inf silently passed every downstream OHLC-relationship
+        # check below (any comparison against NaN is False, so a NaN wouldn't
+        # even trip "impossible relationship"), then wrecked simulate_bar_fill's
+        # arithmetic without ever raising -- reject non-finite values outright.
+        for field_name, value in (("open", self.open), ("high", self.high), ("low", self.low), ("close", self.close)):
+            if not math.isfinite(value):
+                raise ValueError(f"bar at {self.timestamp} has a non-finite {field_name}={value!r}")
         if self.high < max(self.open, self.close) or self.low > min(self.open, self.close):
             raise ValueError(
                 f"bar at {self.timestamp} has an impossible OHLC relationship "
@@ -84,20 +92,35 @@ class CsvPriceHistoryProvider(PriceHistoryProvider):
 
 def _load_csv(path: Path) -> list[HistoricalBar]:
     bars: list[HistoricalBar] = []
+    seen_at_timestamp: dict[datetime, HistoricalBar] = {}
     with path.open(newline="") as f:
         for row in csv.DictReader(f):
             ts = datetime.fromisoformat(row["timestamp"])
             if ts.tzinfo is None:
                 ts = ts.replace(tzinfo=timezone.utc)
-            bars.append(
-                HistoricalBar(
-                    timestamp=ts,
-                    open=float(row["open"]),
-                    high=float(row["high"]),
-                    low=float(row["low"]),
-                    close=float(row["close"]),
-                    volume=float(row.get("volume") or 0.0),
-                )
+            bar = HistoricalBar(
+                timestamp=ts,
+                open=float(row["open"]),
+                high=float(row["high"]),
+                low=float(row["low"]),
+                close=float(row["close"]),
+                volume=float(row.get("volume") or 0.0),
             )
+            # FIN-03: two rows can't both be "the" bar for one timestamp.
+            # An identical duplicate is harmless (the same row appearing
+            # twice, e.g. from an export re-run), but two DIFFERENT bars
+            # claiming the same timestamp is an unresolvable conflict --
+            # silently keeping one (first or last) would fabricate
+            # certainty the underlying data doesn't have.
+            existing = seen_at_timestamp.get(ts)
+            if existing is not None:
+                if existing != bar:
+                    raise ValueError(
+                        f"conflicting bars for the same timestamp {ts} in {path}: "
+                        f"{existing} vs {bar}"
+                    )
+                continue  # an exact duplicate row -- not a conflict, not double-counted
+            seen_at_timestamp[ts] = bar
+            bars.append(bar)
     bars.sort(key=lambda b: b.timestamp)
     return bars

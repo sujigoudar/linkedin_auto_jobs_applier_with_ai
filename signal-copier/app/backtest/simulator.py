@@ -50,26 +50,43 @@ def simulate_bar_fill(
     trigger conditions are mirrored accordingly. Either `stop_price` or
     `target_price` may be None (position with only one of the two active)."""
     if side == Side.BUY:
-        stop_hit = stop_price is not None and bar.low <= stop_price
-        target_hit = target_price is not None and bar.high >= target_price
         gapped_through_stop = stop_price is not None and bar.open <= stop_price
         gapped_through_target = target_price is not None and bar.open >= target_price
     elif side == Side.SELL:
-        stop_hit = stop_price is not None and bar.high >= stop_price
-        target_hit = target_price is not None and bar.low <= target_price
         gapped_through_stop = stop_price is not None and bar.open >= stop_price
         gapped_through_target = target_price is not None and bar.open <= target_price
     else:
         raise ValueError(f"simulate_bar_fill needs an entry side (BUY/SELL), got {side}")
+
+    # FIN-03: "was this level touched during the bar" is bar.low <= level <=
+    # bar.high, regardless of side -- the OLD code only checked the
+    # one-sided inequality (e.g. `bar.low <= stop_price` for a long), which
+    # is trivially true for ANY stop_price above the bar's low, including
+    # one far ABOVE the bar's entire range that price never came close to.
+    # A 95 stop on a bar trading [88, 92] was reported "filled at 95" even
+    # though price never rose anywhere near it. Requiring the level to fall
+    # within [low, high] is what actually proves it was reachable this bar.
+    stop_hit = stop_price is not None and bar.low <= stop_price <= bar.high
+    target_hit = target_price is not None and bar.low <= target_price <= bar.high
 
     if gapped_through_stop and gapped_through_target:
         # Both were already breached at the open — genuinely can't tell which
         # of two simultaneous conditions "happened first" at a single price point.
         return BarResult(BarOutcome.AMBIGUOUS)
     if gapped_through_stop:
-        return BarResult(BarOutcome.STOP_ONLY, fill_price=stop_price)
+        # FIN-03: claiming a fill at the stop LEVEL is only honest when that
+        # level actually fell within this bar's own traded range -- when the
+        # gap carried price PAST the bar's entire range (the level was never
+        # a real, observed price this bar), reporting it anyway invents
+        # precision the bar doesn't have and understates the real loss (the
+        # actual gap price is worse than the stop level). Fall back to the
+        # bar's own open -- the real, observed price the gap actually
+        # produced -- rather than the unreached level.
+        fill = stop_price if bar.low <= stop_price <= bar.high else bar.open
+        return BarResult(BarOutcome.STOP_ONLY, fill_price=fill)
     if gapped_through_target:
-        return BarResult(BarOutcome.TARGET_ONLY, fill_price=target_price)
+        fill = target_price if bar.low <= target_price <= bar.high else bar.open
+        return BarResult(BarOutcome.TARGET_ONLY, fill_price=fill)
 
     if stop_hit and target_hit:
         return BarResult(BarOutcome.AMBIGUOUS)
