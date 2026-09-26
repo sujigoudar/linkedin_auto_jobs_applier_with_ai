@@ -27,3 +27,4 @@ pytest>=8.2
 pytest-asyncio>=0.23
 hypothesis>=6.100        # test-only: generated/stateful sequences supplementing the finite-case suite (C29)
 schemathesis>=4.20       # test-only: OpenAPI schema fuzzing for the bounded read-only endpoint set (C30)
+mutmut>=3.0              # test-only: mutation testing config scoped to app/auth.py (C31, see pyproject.toml)

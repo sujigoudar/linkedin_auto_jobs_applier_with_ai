@@ -7,11 +7,14 @@ an unconfigured secret disables that ingress (503), it never makes it
 silently public. /health stays reachable with no auth at all, since it
 carries no private data.
 """
+from datetime import datetime, timedelta, timezone
+
 import pytest
 from fastapi.testclient import TestClient
 
 import app.main as main_module
 from app import config as app_config
+from app.auth import _credential_epoch, _session_or_none, create_session
 from app.db import SignalStore
 from app.models import DestinationAccount
 
@@ -191,3 +194,54 @@ def test_webhook_401s_with_wrong_secret(configured_client):
             headers={"X-Webhook-Secret": "not-it"},
         )
     assert response.status_code == 401
+
+
+# --- app.auth._session_or_none: direct unit coverage for its
+# expires_at-normalization and cleanup behavior (surfaced as surviving
+# mutants by the C31 mutmut config scoped to app/auth.py) ---
+
+
+def test_naive_stored_expires_at_is_treated_as_utc_not_a_crash(configured_client):
+    """A row whose expires_at was stored without a timezone (e.g. an older
+    row from before this normalization existed) must still be usable --
+    comparing a naive and an aware datetime directly raises TypeError, so
+    this only works if the naive value is actually promoted to UTC first."""
+    _client, store = configured_client
+    naive_future = datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(hours=1)
+    store.create_session("naive-session", "csrf-token", naive_future, credential_epoch=_credential_epoch())
+
+    session = _session_or_none(store, "naive-session")
+
+    assert session is not None
+    assert session["session_id"] == "naive-session"
+
+
+def test_naive_stored_expires_at_in_the_past_is_still_rejected(configured_client):
+    _client, store = configured_client
+    naive_past = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=1)
+    store.create_session("naive-expired-session", "csrf-token", naive_past, credential_epoch=_credential_epoch())
+
+    assert _session_or_none(store, "naive-expired-session") is None
+
+
+def test_expired_session_is_actually_deleted_from_the_store(configured_client):
+    """Not just rejected for this one call -- actually removed, so it
+    doesn't linger in the sessions table forever."""
+    _client, store = configured_client
+    expired = datetime.now(timezone.utc) - timedelta(hours=1)
+    store.create_session("expired-session", "csrf-token", expired, credential_epoch=_credential_epoch())
+
+    assert _session_or_none(store, "expired-session") is None
+    assert store.get_session("expired-session") is None
+
+
+def test_session_with_stale_credential_epoch_is_actually_deleted_from_the_store(configured_client):
+    """A session issued under a since-rotated OWNER_PASSWORD/SESSION_SECRET
+    is treated as revoked (not merely stale) -- and, same as an expired
+    session, actually removed rather than left behind."""
+    _client, store = configured_client
+    future = datetime.now(timezone.utc) + timedelta(hours=1)
+    store.create_session("stale-epoch-session", "csrf-token", future, credential_epoch="some-old-epoch")
+
+    assert _session_or_none(store, "stale-epoch-session") is None
+    assert store.get_session("stale-epoch-session") is None

@@ -1,0 +1,42 @@
+[tool.mutmut]
+# C31 (bounded): mutation-testing config scoped to the one module where a
+# silently-wrong change is most dangerous -- owner authentication
+# (password check, session validation, CSRF enforcement). See
+# app/auth.py's own docstring for why this module is "fail closed, not
+# fail open": a mutation that quietly weakens one of those checks (e.g.
+# flipping a comparison, dropping the CSRF check for non-GET requests) is
+# exactly the class of bug a mutation score can catch that a coverage
+# percentage cannot -- 100% line coverage says every line ran, not that
+# every line's *behavior* is actually asserted on.
+#
+# Deliberately NOT scoped to the whole app: mutmut re-runs the selected
+# tests once per surviving mutant, so widening this to app/engine.py or
+# app/lifecycle/manager.py (both far larger, with hundreds of mutable
+# branches) against the full ~750-test suite would turn a single mutmut
+# run into a multi-hour job -- unsuitable for a routine local or CI check.
+# This scope is intentionally the first, smallest slice; widening it to
+# another single critical module (e.g. app/reconciliation.py) is a
+# reasonable follow-up, done the same deliberate way rather than all at
+# once.
+#
+# Run locally with: mutmut run
+#
+# Baseline (this commit): 105 mutants, 71 killed, 34 survived. Most
+# survivors are either equivalent mutants (e.g. rewording an HTTPException
+# detail string the tests correctly don't assert on) or a defensive branch
+# whose two directions don't actually differ given how RequireOwner is
+# wired today (see this file's own commit message for the specific
+# example). A handful of genuinely meaningful survivors -- the naive/aware
+# expires_at normalization, and the two "delete the expired/revoked
+# session, not just reject it" cleanup calls -- were confirmed and closed
+# with targeted regression tests in tests/test_owner_auth.py rather than
+# chased to zero here; this is a starting baseline, not a target score.
+#
+# source_paths must cover the whole importable "app" package (mutmut
+# copies it verbatim into mutants/app/ so the test suite's `import
+# app.main` etc. still resolves); only_mutate is what actually narrows
+# the mutation scope to app/auth.py -- every other file under app/ is
+# copied unmutated.
+source_paths = ["app"]
+only_mutate = ["app/auth.py"]
+pytest_add_cli_args_test_selection = ["tests/test_owner_auth.py", "tests/test_sms_twilio_sender_authorization.py"]
