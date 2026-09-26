@@ -460,8 +460,25 @@ class SignalCopierEngine:
         try:
             result = await broker.place_order(entry_signal, account, quantity, symbol)
         except Exception as exc:  # noqa: BLE001 - one account's failure must not block others
-            logger.exception("managed entry failed for account=%s", account.account_id)
-            self.lifecycle_manager.unregister_plan(account.account_id, symbol)
+            # EXE-01: `place_order` raising here is genuinely ambiguous — the
+            # broker adapter may have already sent the request and gotten it
+            # accepted at the venue before the exception happened (a network
+            # timeout/connection reset reading the response, unlike a
+            # RuntimeError from `_credentials_for` that never sent anything).
+            # Assuming "never happened" and calling `unregister_plan` (the
+            # old behavior) would delete the one durable record that could
+            # ever let a restart's reconciliation notice a real position it
+            # doesn't know about. Keep the plan's persisted row and mark it
+            # as an unresolved pending entry with no known broker_order_id —
+            # `app/reconciliation.py`'s broker-position readback (OPS-03)
+            # is what can eventually discover whether this actually filled.
+            logger.exception(
+                "managed entry response lost for account=%s symbol=%s -- retaining as an "
+                "unresolved pending entry (may already be a real, accepted order)",
+                account.account_id,
+                symbol,
+            )
+            self.lifecycle_manager.register_pending_entry(account, symbol, None, quantity)
             return OrderResult(
                 account_id=account.account_id, status=OrderStatus.ERROR, signal_id=signal.id, message=str(exc)
             )

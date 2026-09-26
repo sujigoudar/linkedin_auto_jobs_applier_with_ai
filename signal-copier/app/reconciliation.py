@@ -187,6 +187,26 @@ class OrderReconciler:
                 continue
             if broker_owned is None:
                 continue  # genuinely unknown -- never treated as confirming zero
+
+            # EXE-01: an entry whose place_order response was lost (see
+            # app/engine.py's _handle_managed_entry) has no broker_order_id
+            # to poll via _reconcile_pending_entries -- this broker-position
+            # readback is the only way such an order's real outcome is ever
+            # discovered. Whatever the venue shows now is treated as final
+            # (remainder_cancelled=True): there's no order id left to keep
+            # waiting on, so there's nothing more this could still become.
+            if (
+                lifecycle.pending_entry is not None
+                and lifecycle.pending_entry.broker_order_id is None
+                and not lifecycle.pending_entry.remainder_resolved
+                and broker_owned > 0
+            ):
+                await self.lifecycle_manager.resolve_pending_entry(
+                    account, lifecycle.plan.symbol, broker_owned, remainder_cancelled=True
+                )
+                corrected += 1
+                continue
+
             deficit = lifecycle.confirmed_owned_quantity - broker_owned
             if deficit <= 1e-9:
                 continue  # matches (or the venue reports MORE than tracked -- a different, unmodeled anomaly)

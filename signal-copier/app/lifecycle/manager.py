@@ -309,9 +309,19 @@ class PositionLifecycleManager:
     def start_plan(self, plan: PositionPlan) -> PositionLifecycle:
         """Register a plan BEFORE the entry is submitted (design section 1). Call
         `validate_plan` first; submit the entry order yourself after this; then
-        call `on_entry_fill` with what actually filled."""
+        call `on_entry_fill` with what actually filled.
+
+        EXE-01: persisted immediately, not just held in memory -- this is
+        the durable pre-submission execution intent. If the entry order's
+        response is then lost (a timeout/connection error after the broker
+        already accepted it, not before), the caller registers an unresolved
+        pending entry (`register_pending_entry(..., broker_order_id=None)`)
+        rather than calling `unregister_plan`, so this row survives for a
+        restart's reconciliation to eventually ask the broker what actually
+        happened -- see app/engine.py's `_handle_managed_entry`."""
         lifecycle = PositionLifecycle(plan=plan)
         self._lifecycles[(plan.account_id, plan.symbol)] = lifecycle
+        self._persist(lifecycle)
         return lifecycle
 
     def unregister_plan(self, account_id: str, symbol: str) -> None:

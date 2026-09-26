@@ -384,7 +384,13 @@ async def receive_webhook(
     `POST /positions/.../close` and `POST /accounts/.../flatten` already
     use) lets a sender that can set custom headers mark each distinct
     alert with a stable key; a replayed request with the same key
-    replays the cached response instead of submitting again."""
+    replays the cached response instead of submitting again. Most
+    alerting platforms (TradingView included) can't set custom headers at
+    all, but many alert payloads carry their own stable event id in the
+    JSON body itself (an `id`/`event_id` field) -- when no
+    `Idempotency-Key` header is present, that field is used as the same
+    kind of dedup key instead, so a redelivery of the exact same alert
+    still doesn't submit twice."""
     if not config.WEBHOOK_SHARED_SECRET:
         # Fail closed: an unconfigured secret disables this ingress, it does
         # not make it public. Set WEBHOOK_SHARED_SECRET to accept signals here.
@@ -406,6 +412,15 @@ async def receive_webhook(
         raise HTTPException(status_code=400, detail=f"invalid JSON body: {exc}") from exc
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="request body must be a JSON object")
+
+    if cache_key is None:
+        event_id = payload.get("id") or payload.get("event_id")
+        if event_id is not None:
+            cache_key = f"webhook:{source_name}:event:{event_id}"
+            cached = store.get_idempotent_response(cache_key)
+            if cached is not None:
+                return cached
+
     try:
         signal = webhook_source.parse(payload, source_override=source_name)
     except SignalValidationError as exc:

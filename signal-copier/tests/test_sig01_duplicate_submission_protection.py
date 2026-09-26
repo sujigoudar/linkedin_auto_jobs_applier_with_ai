@@ -154,6 +154,31 @@ def test_webhook_replay_with_the_same_idempotency_key_does_not_resubmit(client):
         assert third.json()["signal_id"] != first.json()["signal_id"]
 
 
+def test_webhook_dedupes_on_the_payloads_own_event_id_when_no_header_is_sent(client):
+    """Reproduces the audit's exact case (test_http_audit.py::
+    test_webhook_same_event_id_submits_once): most alerting platforms
+    (TradingView included) can't set a custom `Idempotency-Key` header at
+    all, but a redelivered alert often carries its own stable `id` in the
+    JSON body -- that must dedupe the same way the header does."""
+    with client:
+        payload = {"id": "event-001", "symbol": "BTCUSDT", "side": "buy", "quantity": 1.0}
+
+        first = client.post("/webhook/tradingview", json=payload)
+        assert first.status_code == 200
+        assert first.json()["orders"][0]["status"] == "filled"
+
+        second = client.post("/webhook/tradingview", json=payload)
+        assert second.status_code == 200
+        assert second.json() == first.json()
+
+        third = client.post(
+            "/webhook/tradingview",
+            json={"id": "event-002", "symbol": "BTCUSDT", "side": "buy", "quantity": 1.0},
+        )
+        assert third.status_code == 200
+        assert third.json()["signal_id"] != first.json()["signal_id"]
+
+
 def test_webhook_without_idempotency_key_still_works_unchanged(client):
     with client:
         response = client.post(
