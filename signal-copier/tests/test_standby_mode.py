@@ -49,6 +49,35 @@ def test_writes_work_normally_when_not_in_standby_mode(store, monkeypatch):
     assert "read-only" not in response.json()["detail"]
 
 
+def test_owner_can_still_log_in_on_a_standby(store, monkeypatch):
+    """DEP-08: a blanket non-GET refusal also blocked /auth/login itself,
+    leaving no way for the owner to even inspect a standby's read-only
+    data. Login/logout are session-only -- never a financial effect --
+    so they're the one narrow exception to the read-only gate."""
+    monkeypatch.setattr(app_config, "STANDBY_MODE", True)
+    monkeypatch.setattr(app_config, "OWNER_PASSWORD", "test-owner-password")
+    monkeypatch.setattr(app_config, "SESSION_SECRET", "test-session-secret")
+    client = TestClient(main_module.app)
+    with client:
+        response = client.post("/auth/login", json={"password": "test-owner-password"})
+    assert response.status_code == 200
+    # A real financial command must still be refused even with a fresh session.
+    with client:
+        client.headers["X-CSRF-Token"] = response.json()["csrf_token"]
+        blocked = client.post("/webhook/tradingview", json={"symbol": "AAPL", "side": "buy"})
+    assert blocked.status_code == 503
+
+
+def test_security_headers_present_on_every_response(store, monkeypatch):
+    monkeypatch.setattr(app_config, "STANDBY_MODE", False)
+    client = TestClient(main_module.app)
+    with client:
+        response = client.get("/health")
+    assert "default-src 'self'" in response.headers["content-security-policy"]
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert response.headers["x-frame-options"] == "DENY"
+
+
 @pytest.mark.asyncio
 async def test_lifespan_skips_background_loops_in_standby_mode(store, monkeypatch):
     monkeypatch.setattr(app_config, "STANDBY_MODE", True)

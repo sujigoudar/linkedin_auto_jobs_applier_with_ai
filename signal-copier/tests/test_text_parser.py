@@ -39,3 +39,22 @@ def test_analyst_is_passed_through():
 def test_analyst_defaults_to_none():
     signal = parse_text_signal("BUY BTCUSDT", source="test")
     assert signal.analyst is None
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "DO NOT BUY AAPL 10",
+        "please don't buy AAPL 10",
+        "if price breaks resistance buy AAPL 10",
+        "considering SELL EURUSD 0.5 lots",
+        "BUY BTCUSDT -- actually wait, hold off",
+        "SELL EURUSD 0.5 lots, cancel that",
+    ],
+)
+def test_negated_or_conditional_commentary_is_refused_not_traded(text):
+    """SIG-02: a plain substring match doesn't prove the message is actually
+    giving that instruction -- these must be refused outright, not
+    silently admitted as a real trade."""
+    with pytest.raises(SignalValidationError):
+        parse_text_signal(text, source="test")

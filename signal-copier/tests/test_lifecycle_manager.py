@@ -248,6 +248,42 @@ async def test_trailing_stop_ratchets_up_and_never_loosens(manager, account, bro
 
 
 @pytest.mark.asyncio
+async def test_first_trailing_activation_cannot_loosen_an_existing_stop(manager, account, broker):
+    """PRO-01: on the FIRST trail update, trailing.floor_price is still
+    None, so comparing only against it (not the existing stop) treated any
+    candidate as 'improved'. Existing stop 95, price 100, trail distance 20
+    -> candidate 80, which is a LOOSER stop and must be refused."""
+    plan = _plan(
+        planned_quantity=10.0,
+        initial_stop=95.0,
+        trailing=TrailingPolicy(trail_distance=20.0, active=True),
+    )
+    await _enter(manager, broker, account, plan, 10.0)
+    lifecycle = manager.get_lifecycle("acct1", "AAPL")
+    assert lifecycle.stop.desired_price == 95.0
+
+    await manager.on_price_update(account, "AAPL", 100.0)  # candidate floor = 80, worse than 95
+
+    assert lifecycle.stop.desired_price == 95.0
+
+    # Mirrored short case: existing stop 105, price 100, trail distance 20 -> candidate 120 (worse).
+    short_plan = _plan(
+        symbol="MSFT",
+        side=Side.SELL,
+        planned_quantity=10.0,
+        initial_stop=105.0,
+        trailing=TrailingPolicy(trail_distance=20.0, active=True),
+    )
+    await _enter(manager, broker, account, short_plan, 10.0)
+    short_lifecycle = manager.get_lifecycle("acct1", "MSFT")
+    assert short_lifecycle.stop.desired_price == 105.0
+
+    await manager.on_price_update(account, "MSFT", 100.0)
+
+    assert short_lifecycle.stop.desired_price == 105.0
+
+
+@pytest.mark.asyncio
 async def test_target_can_tighten_stop_instead_of_selling(manager, account, broker):
     """Design section 9: a provider TP can mean 'lock in profit' rather than 'sell'."""
     plan = _plan(

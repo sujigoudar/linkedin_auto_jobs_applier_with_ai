@@ -348,7 +348,10 @@ async function checkSession() {
 }
 
 function pill(text, kind) {
-  return `<span class="pill ${kind}">${text}</span>`;
+  // `text` is frequently a value that ultimately traces back to a source/
+  // broker/analyst-controlled string (a halt reason, an order message) --
+  // never trust it unescaped just because most callers pass a safe literal.
+  return `<span class="pill ${kind}">${escapeHtml(text)}</span>`;
 }
 
 function boolPill(value, trueLabel = "yes", falseLabel = "no") {
@@ -391,7 +394,7 @@ async function loadBrokers() {
   const brokers = data.brokers || [];
   $("brokers-count").textContent = brokers.length;
   const rows = brokers.map((b) => [
-    `<span class="mono">${b.name}</span>`,
+    `<span class="mono">${escapeHtml(b.name)}</span>`,
     boolPill(b.supports_native_bracket, "native bracket", "no bracket"),
     boolPill(b.has_protective_stop_capability),
     boolPill(b.has_cancel_capability),
@@ -438,7 +441,7 @@ async function loadPositions() {
   $("lifecycles-count").textContent = lifecycles.length;
   const lcRows = lifecycles.map((l) => {
     const pending = l.pending_exit
-      ? `${fmtNum(l.pending_exit.unresolved_remainder)} unresolved (${l.pending_exit.phase}, order ${l.pending_exit.broker_order_id || "—"})`
+      ? `${fmtNum(l.pending_exit.unresolved_remainder)} unresolved (${escapeHtml(l.pending_exit.phase)}, order ${escapeHtml(l.pending_exit.broker_order_id || "—")})`
       : `<span class="pill ok">none</span>`;
     return [
       `<span class="mono">${escapeHtml(l.account_id)}</span>`,
@@ -446,7 +449,7 @@ async function loadPositions() {
       `<span class="num">${fmtNum(l.owned_quantity)}</span>`,
       `<span class="num">${fmtNum(l.covered_quantity)}</span>`,
       `<span class="num">${l.uncovered_quantity > 0 ? pill(fmtNum(l.uncovered_quantity), "warn") : fmtNum(l.uncovered_quantity)}</span>`,
-      l.stop_status || "—",
+      escapeHtml(l.stop_status || "—"),
       l.halted ? pill(l.halt_reason || "halted", "bad") : pill("ok", "ok"),
       pending,
       `<button class="danger" onclick="exitPosition('${escapeAttr(l.account_id)}', '${escapeAttr(l.symbol)}')">Exit now</button>`,
@@ -733,9 +736,9 @@ async function loadSignals() {
   $("signals-count").textContent = signals.length;
   const rows = signals.map((s) => [
     s.received_at || "—",
-    `<span class="mono">${s.source}</span>`,
-    `<span class="mono">${s.symbol}</span>`,
-    s.side,
+    `<span class="mono">${escapeHtml(s.source)}</span>`,
+    `<span class="mono">${escapeHtml(s.symbol)}</span>`,
+    escapeHtml(s.side),
     fmtNum(s.quantity),
   ]);
   $("signals-table").innerHTML = table(
@@ -756,14 +759,17 @@ async function loadOrders() {
   };
   const rows = orders.map((o) => [
     o.executed_at || "—",
-    `<span class="mono">${o.account_id}</span>`,
-    `<span class="mono">${o.broker || "—"}</span>`,
-    `<span class="mono">${o.symbol || "—"}</span>`,
-    o.side || "—",
+    `<span class="mono">${escapeHtml(o.account_id)}</span>`,
+    `<span class="mono">${escapeHtml(o.broker || "—")}</span>`,
+    `<span class="mono">${escapeHtml(o.symbol || "—")}</span>`,
+    escapeHtml(o.side || "—"),
     fmtNum(o.requested_quantity),
     fmtNum(o.filled_quantity),
     statusPill(o.status),
-    o.message || "",
+    // A broker's own error text lands here (see ADP-*/SEC-01 findings) --
+    // this is exactly the kind of upstream-controlled string that must
+    // never reach innerHTML unescaped.
+    escapeHtml(o.message || ""),
   ]);
   $("orders-table").innerHTML = table(
     ["Executed at", "Account", "Broker", "Symbol", "Side", "Requested", "Filled", "Status", "Message"],

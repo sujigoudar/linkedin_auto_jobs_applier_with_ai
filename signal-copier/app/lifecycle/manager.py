@@ -633,13 +633,26 @@ class PositionLifecycleManager:
         await self._replace_stop_price(lifecycle, account)
 
     async def _update_trailing(self, lifecycle: PositionLifecycle, account: DestinationAccount, price: float) -> None:
+        """A trail must never loosen whatever is already protecting this
+        position. The bug this guards against: on the FIRST trail update,
+        `trailing.floor_price` is still None, so comparing only against it
+        (as this used to) treats any candidate as "improved" -- including
+        one worse than the existing stop (e.g. an existing 95 stop, price
+        100, a 20-point trail distance computes a candidate of 80, which
+        used to be accepted as the new stop, loosening protection from 95
+        to 80). The non-loosening floor is the *tighter* of the trailing
+        policy's own prior floor and the stop's current desired price,
+        never just one or the other."""
         trailing = lifecycle.plan.trailing
+        existing = [v for v in (trailing.floor_price, lifecycle.stop.desired_price) if v is not None]
         if lifecycle.plan.side == Side.BUY:
+            current_best = max(existing) if existing else None
             candidate_floor = price - trailing.trail_distance
-            improved = trailing.floor_price is None or candidate_floor > trailing.floor_price
+            improved = current_best is None or candidate_floor > current_best
         else:
+            current_best = min(existing) if existing else None
             candidate_floor = price + trailing.trail_distance
-            improved = trailing.floor_price is None or candidate_floor < trailing.floor_price
+            improved = current_best is None or candidate_floor < current_best
 
         if not improved:
             return

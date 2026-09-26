@@ -68,6 +68,21 @@ variable "boot_volume_size_in_gbs" {
   default     = 50
 }
 
+variable "availability_domain_index" {
+  description = "0-based index into this region's availability domain list. Verify in the OCI console which AD your tenancy's Always Free A1 capacity actually sits in before changing this -- most single-AD regions only have index 0."
+  type        = number
+  default     = 0
+}
+
+# oci_core_instance requires a real availability_domain string -- it cannot
+# be null (this previously failed `terraform validate` with exactly that
+# error). Discovered from the tenancy/region actually being applied to,
+# never hardcoded, since AD names are tenancy-specific
+# (e.g. "AbCd:US-ASHBURN-AD-1").
+data "oci_identity_availability_domains" "ads" {
+  compartment_id = var.compartment_id
+}
+
 data "oci_core_images" "ubuntu" {
   compartment_id           = var.compartment_id
   operating_system         = "Canonical Ubuntu"
@@ -79,7 +94,7 @@ data "oci_core_images" "ubuntu" {
 
 resource "oci_core_instance" "standby" {
   compartment_id      = var.compartment_id
-  availability_domain = null # let OCI pick within the region; set explicitly if your tenancy needs it
+  availability_domain = data.oci_identity_availability_domains.ads.availability_domains[var.availability_domain_index].name
   display_name        = "signal-copier-standby"
   shape                = "VM.Standard.A1.Flex"
 

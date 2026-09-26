@@ -128,14 +128,37 @@ class CCXTBroker(BrokerAdapter):
                 message=str(exc),
             )
 
+        # A "market" order type is not a guarantee of a synchronous fill --
+        # ccxt's unified order carries its own status ('open'/'closed'/
+        # 'canceled'/'expired'/'rejected', or None if this exchange doesn't
+        # report one) and this must be believed rather than assumed. Two
+        # real bugs this replaces: unconditionally labeling every response
+        # FILLED (an open/canceled/rejected order was reported as filled),
+        # and `order.get("filled") or quantity`, which silently turns an
+        # explicit, genuine zero fill into "filled at the full requested
+        # quantity" (`0 or quantity` evaluates to `quantity` in Python).
+        ccxt_status = order.get("status")
+        filled = order.get("filled")
+        amount = order.get("amount")
+        if ccxt_status in ("canceled", "expired", "rejected"):
+            new_status = OrderStatus.REJECTED
+        elif ccxt_status == "closed" or (filled is not None and amount is not None and filled >= amount):
+            new_status = OrderStatus.FILLED
+        else:
+            # 'open', unrecognized, or genuinely unreported by this exchange --
+            # none of those are evidence of a fill. Stay PENDING so the real
+            # confirmed quantity (possibly a real partial, possibly zero) is
+            # what gets applied, not a guess.
+            new_status = OrderStatus.PENDING
+
         return OrderResult(
             account_id=account.account_id,
-            status=OrderStatus.FILLED,
+            status=new_status,
             signal_id=signal.id,
             broker_order_id=str(order.get("id")),
-            filled_quantity=order.get("filled") or quantity,
+            filled_quantity=filled,
             filled_price=order.get("average") or order.get("price"),
-            message="filled by ccxt",
+            message=f"ccxt order status={ccxt_status!r}",
         )
 
     async def place_protective_stop(

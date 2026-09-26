@@ -42,13 +42,43 @@ _PATTERN = re.compile(
     re.IGNORECASE | re.VERBOSE | re.DOTALL,
 )
 
+# A plain substring match doesn't prove the message is actually giving that
+# instruction -- "DO NOT BUY AAPL 10" contains "BUY AAPL 10" too. This is not
+# a full parse of meaning (see this module's docstring: dedicated per-source
+# parsers exist for that), but a bounded, cheap check that refuses the
+# obvious cases of negated or still-conditional commentary rather than
+# silently trading on them -- looking at a few words immediately before the
+# matched instruction, and anywhere after it, for words that reverse or
+# defer it.
+_NEGATION_OR_CONDITIONAL_WORDS = {
+    "not", "don't", "dont", "doesn't", "doesnt", "didn't", "didnt",
+    "won't", "wont", "wouldn't", "wouldnt", "shouldn't", "shouldnt",
+    "never", "no", "avoid", "skip", "cancel", "cancelled", "canceled",
+    "if", "unless", "maybe", "possibly", "might", "considering", "consider",
+    "wait", "waiting", "hold", "holding", "ignore", "disregard",
+}
+_WORDS_BEFORE_MATCH_TO_CHECK = 4
+
+
+def _words(text: str) -> list[str]:
+    return re.findall(r"[A-Za-z']+", text.lower())
+
 
 def parse_text_signal(
     text: str, *, source: str, asset_class: AssetClass = AssetClass.CRYPTO, analyst: str | None = None
 ) -> Signal:
-    match = _PATTERN.search(text.strip())
+    stripped = text.strip()
+    match = _PATTERN.search(stripped)
     if not match:
         raise SignalValidationError(f"could not parse a signal out of: {text!r}")
+
+    preceding = _words(stripped[: match.start()])[-_WORDS_BEFORE_MATCH_TO_CHECK:]
+    following = _words(stripped[match.end() :])
+    if any(w in _NEGATION_OR_CONDITIONAL_WORDS for w in preceding + following):
+        raise SignalValidationError(
+            f"looks like negated, conditional, or still-pending commentary rather than a trade "
+            f"instruction, refusing to admit it: {text!r}"
+        )
 
     side = _SIDE_ALIASES[match.group("side").lower()]
 

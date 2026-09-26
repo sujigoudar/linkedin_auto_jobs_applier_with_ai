@@ -64,6 +64,13 @@ TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN", "")
 # Full public URL Twilio POSTs to, required for signature validation (Twilio
 # signs the exact URL it called, including scheme/host).
 TWILIO_WEBHOOK_URL = os.getenv("TWILIO_WEBHOOK_URL", "")
+# A valid Twilio signature only proves the request transited Twilio with the
+# right account's auth token -- it says nothing about who is allowed to text
+# trading instructions to that number. Comma-separated E.164 sender numbers
+# (e.g. "+15551234567,+15557654321") this route accepts; unset/empty means
+# no sender is authorized, same fail-closed pattern as every other optional
+# ingress here (see app/main.py's receive_sms).
+TWILIO_ALLOWED_FROM_NUMBERS = [n.strip() for n in os.getenv("TWILIO_ALLOWED_FROM_NUMBERS", "").split(",") if n.strip()]
 
 MT4_MT5_METAAPI_TOKEN = os.getenv("MT4_MT5_METAAPI_TOKEN", "")
 MT4_MT5_METAAPI_SOURCE_ACCOUNT_ID = os.getenv("MT4_MT5_METAAPI_SOURCE_ACCOUNT_ID", "")

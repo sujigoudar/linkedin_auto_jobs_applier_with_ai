@@ -180,20 +180,52 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Trading Signal Copier", lifespan=lifespan)
 
 
+#: Session-only routes -- creating/destroying a browser session, never a
+#: financial effect. A standby must still let its owner log in to inspect
+#: its read-only data (see deploy/RUNBOOK.md's "before promotion" checks,
+#: and DEP-08: a blanket non-GET block also blocked this). Every other
+#: mutating route stays refused.
+_STANDBY_ALLOWED_WRITE_PATHS = {"/auth/login", "/auth/logout"}
+
+
 @app.middleware("http")
 async def _standby_read_only_gate(request: Request, call_next):
     """Independent of any route's own logic: in STANDBY_MODE, refuse every
-    request that isn't a plain read (GET/HEAD/OPTIONS) with 503, before it
-    reaches any handler. A release guard that denies effects, not a
-    convention every endpoint has to remember to honor -- see
-    deploy/RUNBOOK.md on why a restored/copied config flag must never be
-    what makes a standby a writer."""
-    if config.STANDBY_MODE and request.method not in ("GET", "HEAD", "OPTIONS"):
+    request that isn't a plain read (GET/HEAD/OPTIONS) -- or one of the
+    narrow session-only exceptions above -- with 503, before it reaches any
+    handler. A release guard that denies effects, not a convention every
+    endpoint has to remember to honor -- see deploy/RUNBOOK.md on why a
+    restored/copied config flag must never be what makes a standby a
+    writer."""
+    if (
+        config.STANDBY_MODE
+        and request.method not in ("GET", "HEAD", "OPTIONS")
+        and request.url.path not in _STANDBY_ALLOWED_WRITE_PATHS
+    ):
         return JSONResponse(
             status_code=503,
             content={"detail": "standby mode: read-only, no financial commands accepted"},
         )
     return await call_next(request)
+
+
+@app.middleware("http")
+async def _security_headers(request: Request, call_next):
+    """Defense in depth alongside escaping every untrusted value the
+    dashboard renders (see SEC-01/app/static/dashboard.html): even a
+    rendering bug this doesn't catch can't load or connect to anything
+    off-origin, frame this app, or run a plugin/object payload. This does
+    not replace correct escaping -- 'unsafe-inline' is still needed for the
+    dashboard's existing inline <script>/<style> blocks."""
+    response = await call_next(request)
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self'; script-src 'self' 'unsafe-inline'; "
+        "style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
+        "connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; object-src 'none'"
+    )
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    return response
 
 
 require_owner = RequireOwner(lambda: store)
@@ -312,6 +344,16 @@ async def receive_sms(
         # accept SMS signals here.
         raise HTTPException(status_code=503, detail="SMS ingress is not configured (set TWILIO_AUTH_TOKEN)")
 
+    if not config.TWILIO_ALLOWED_FROM_NUMBERS:
+        # Same fail-closed rule, for a different question: a valid Twilio
+        # signature only proves the request transited Twilio with the right
+        # account's auth token -- it is a transport check, not an answer to
+        # "is this sender allowed to submit trading instructions." Anyone
+        # who can text this number would otherwise generate trades.
+        raise HTTPException(
+            status_code=503, detail="SMS ingress has no authorized senders configured (set TWILIO_ALLOWED_FROM_NUMBERS)"
+        )
+
     try:
         from twilio.request_validator import RequestValidator
     except ImportError as exc:  # pragma: no cover
@@ -322,6 +364,12 @@ async def receive_sms(
     validator = RequestValidator(config.TWILIO_AUTH_TOKEN)
     if not validator.validate(config.TWILIO_WEBHOOK_URL, dict(form), signature):
         raise HTTPException(status_code=401, detail="invalid Twilio signature")
+
+    if from_number not in config.TWILIO_ALLOWED_FROM_NUMBERS:
+        # Transport authentication (the signature above) and trading-source
+        # authorization are separate decisions -- a genuine Twilio request
+        # from an unrecognized sender is still refused.
+        raise HTTPException(status_code=403, detail="sender is not an authorized trading source")
 
     try:
         signal = sms_source.parse(body, analyst=from_number or None)
