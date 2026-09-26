@@ -71,16 +71,20 @@ from collections import defaultdict
 from dataclasses import replace
 from datetime import datetime, timezone
 
+import structlog
+
 from app.brokers.base import BrokerAdapter
 from app.db import SignalStore
 from app.lifecycle.manager import PositionLifecycleManager
 from app.lifecycle.models import PositionPlan, Target, TargetAction
+from app.logging_config import bind_signal_context
 from app.models import DestinationAccount, OrderResult, OrderStatus, Side, Signal
 from app.providers import ProviderRegistry, SettingsOverride
 from app.risk import size_for_account, symbol_for_account
 from app.routing import RoutingConfig
 
 logger = logging.getLogger(__name__)
+structured_logger = structlog.get_logger(__name__)
 
 
 class SignalCopierEngine:
@@ -116,6 +120,26 @@ class SignalCopierEngine:
         return self.provider_registry.effective_settings(account_defaults, signal.source, signal.analyst)
 
     async def handle_signal(self, signal: Signal) -> list[OrderResult]:
+        """C22: binds correlation fields (signal_id, source, symbol, side)
+        onto every structlog call made anywhere during this signal's
+        processing (see app/logging_config.py's bind_signal_context) --
+        deliberately independent of this codebase's existing plain stdlib
+        `logging.getLogger(__name__)` calls, which are unaffected either
+        way. The actual routing/sizing/submission logic lives in
+        _handle_signal below, unchanged."""
+        with bind_signal_context(
+            signal_id=signal.id, source=signal.source, symbol=signal.symbol, side=signal.side.value
+        ):
+            structured_logger.info("signal_received", quantity=signal.quantity, analyst=signal.analyst)
+            results = await self._handle_signal(signal)
+            structured_logger.info(
+                "signal_processed",
+                destination_count=len(results),
+                statuses=[r.status.value for r in results],
+            )
+            return results
+
+    async def _handle_signal(self, signal: Signal) -> list[OrderResult]:
         # SIG-01: this exact signal id may already have been processed --
         # e.g. a caller that retries handle_signal itself after a timeout
         # without knowing whether the first attempt's orders actually went

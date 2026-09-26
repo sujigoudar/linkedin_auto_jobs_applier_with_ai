@@ -40,6 +40,7 @@ from app.context import sec_edgar
 from app.db import SignalStore
 from app.economics import compute_account_economics
 from app.engine import SignalCopierEngine
+from app.logging_config import configure_structlog
 from app.metrics import render_metrics
 from app.errors import SignalValidationError
 from app.lifecycle.manager import PositionLifecycleManager
@@ -59,6 +60,7 @@ from app.sources.webhook import WebhookSource
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 logging.basicConfig(level=config.LOG_LEVEL)
+configure_structlog()
 logger = logging.getLogger(__name__)
 
 store = SignalStore(config.DATABASE_PATH)

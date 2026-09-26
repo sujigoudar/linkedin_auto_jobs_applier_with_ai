@@ -4,6 +4,7 @@ pyyaml>=6.0
 pydantic>=2.7
 pydantic-settings>=2.5   # typed env-var config (app/config.py) -- fails loud on a malformed value instead of silently defaulting
 prometheus_client>=0.20  # private operational metrics (app/metrics.py, GET /metrics)
+structlog>=24.0          # correlated structured logs for the core financial path (app/logging_config.py)
 httpx>=0.27      # used by SignalStackBroker, AlpacaBroker, NinjaTraderBroker (plain REST, no SDK)
 python-multipart>=0.0.9  # required by FastAPI's Form() parsing, used by the /sms/twilio route
 
