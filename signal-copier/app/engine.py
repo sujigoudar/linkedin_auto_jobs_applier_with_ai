@@ -443,11 +443,16 @@ class SignalCopierEngine:
                 message="no shares available to sell",
             )
 
-        result = await self.lifecycle_manager.request_exit(account, symbol, available, source=source)
-        if result.status in (OrderStatus.FILLED, OrderStatus.PENDING):
-            filled_quantity = result.filled_quantity if result.filled_quantity is not None else available
-            self.store.record_fill(account.account_id, symbol, lifecycle.exit_side, filled_quantity)
-        return result
+        # `request_exit` is now the single execution-application owner for this
+        # fill (see PositionLifecycleManager._apply_exit_fill): it applies the
+        # confirmed delta to SignalStore itself, once, whether the exit fills
+        # synchronously or is later resolved via resolve_pending_exit --
+        # applying an optimistic `available` guess here too was exactly the
+        # "PENDING commitment recorded as a completed sale" bug this closes
+        # (a partial fill followed by a cancelled remainder used to leave the
+        # tracked position flat/wrong forever, since nothing ever corrected
+        # this optimistic write).
+        return await self.lifecycle_manager.request_exit(account, symbol, available, source=source)
 
     async def close_position(
         self, account: DestinationAccount, symbol: str, reason: str = "manual_exit"

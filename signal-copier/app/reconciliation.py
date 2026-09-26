@@ -110,18 +110,29 @@ class OrderReconciler:
                 # left alone here no matter which account it belongs to.
                 continue
 
-            # A lifecycle-tracked (account, symbol) owns its own position/
-            # protection truth exclusively through `_reconcile_pending_exits`/
-            # `_reconcile_pending_entries` below -- applying `_correct_position`
-            # here too would double-apply the same confirmed fill a second
-            # time (once here, once there). Still update this row's display
-            # status (FILLED/REJECTED) so GET /orders doesn't show it stuck
-            # at "pending" forever.
-            is_lifecycle_tracked = (
-                self.lifecycle_manager is not None
-                and self.lifecycle_manager.get_lifecycle(order["account_id"], order["symbol"]) is not None
+            # THIS SPECIFIC ORDER's own confirmed entry fill is owned exclusively
+            # by `_reconcile_pending_entries` below (via `resolve_pending_entry`) --
+            # applying `_correct_position` to it too would double-apply the same
+            # confirmed fill a second time (once here, once there). That
+            # exclusion is scoped to the exact order the lifecycle is waiting
+            # on (matched by broker_order_id), not to every order that ever
+            # shares this (account, symbol) -- an older plain order still
+            # pending when the account later became managed_lifecycle, or a
+            # lifecycle that already resolved and moved on, must still get
+            # its own correction here; the mere existence of *some* lifecycle
+            # for this symbol doesn't make it that order's owner. Still
+            # update this row's display status (FILLED/REJECTED) so GET
+            # /orders doesn't show it stuck at "pending" forever either way.
+            lifecycle = (
+                self.lifecycle_manager.get_lifecycle(order["account_id"], order["symbol"])
+                if self.lifecycle_manager is not None
+                else None
             )
-            if not is_lifecycle_tracked:
+            order_is_lifecycles_own_pending_order = lifecycle is not None and order["broker_order_id"] in (
+                lifecycle.pending_entry.broker_order_id if lifecycle.pending_entry is not None else None,
+                lifecycle.pending_exit.broker_order_id if lifecycle.pending_exit is not None else None,
+            )
+            if not order_is_lifecycles_own_pending_order:
                 self._correct_position(order, result.status, result.filled_quantity)
             self.store.update_order_status(order["id"], result)
             corrected += 1
@@ -167,7 +178,13 @@ class OrderReconciler:
                 continue  # nothing new to report at all -- a timeout/lost response is not a rejection
 
             is_terminal = result.status in (OrderStatus.FILLED, OrderStatus.REJECTED)
-            filled = result.filled_quantity if result.filled_quantity is not None else 0.0
+            # A missing cumulative quantity is not a reversal to zero -- an
+            # omitted field on a terminal response (e.g. a bare "rejected"
+            # with no fill data) must not erase a fill that was already
+            # confirmed on an earlier, more informative observation. Falling
+            # back to the last known progress (rather than 0.0) means this
+            # is a no-op below when that's genuinely all we still know.
+            filled = result.filled_quantity if result.filled_quantity is not None else pending.confirmed_filled_quantity
             if not is_terminal and filled <= pending.confirmed_filled_quantity:
                 continue  # a repeated observation of the same progress -- nothing new to act on
 
@@ -210,8 +227,10 @@ class OrderReconciler:
             # requested filled, or nothing more of it can (rejected/canceled/expired).
             # Either way the remainder is resolved, so this order's own filled_qty
             # (which brokers report even on a canceled-after-partial-fill order — see
-            # e.g. AlpacaBroker.get_order_status) is the true, final fill.
-            filled = result.filled_quantity if result.filled_quantity is not None else 0.0
+            # e.g. AlpacaBroker.get_order_status) is the true, final fill. A missing
+            # quantity here isn't a reversal to zero either -- fall back to whatever
+            # was last confirmed rather than erasing it.
+            filled = result.filled_quantity if result.filled_quantity is not None else pending.confirmed_filled_quantity
             await self.lifecycle_manager.resolve_pending_exit(account, symbol, filled, remainder_cancelled=True)
             resolved += 1
 

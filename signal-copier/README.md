@@ -487,6 +487,98 @@ See `tests/test_edd2b70_review_regressions.py`'s plain-account cases,
 which reproduce both worked examples above directly through
 `SignalCopierEngine.handle_signal` → `OrderReconciler.reconcile_once()`.
 
+### Round three: entry-fill arithmetic, protection-failure honesty, and one exit-execution owner
+
+A third review (against `5e91e783f6a7fc2326d28cc7c4beab88c2c5c664`) found the
+round-two fixes above were real but incomplete: they held only in isolation,
+not once an entry's later fills interacted with an intervening exit, a
+failed stop operation, or a crash. All ten reproduced cases are fixed; see
+`tests/test_5e91e78_lifecycle_composition.py` (four preservation controls +
+ten follow-on cases, all passing).
+
+- **Cumulative entry fills are not remaining ownership.** `resolve_pending_entry`
+  used to overwrite `confirmed_owned_quantity` with the entry's raw
+  cumulative fill total — correct only if nothing had exited yet. 30 bought,
+  10 sold, then entry cumulative reaching 60 was being sized as *60* owned
+  (and a stop resized to match), when the true remaining position is 50.
+  Fixed: every new confirmed increment (`newly_applied = confirmed -
+  previous_confirmed`) is now added to whatever's *currently* owned
+  (`tx.owned`), never substituted for it.
+- **A late entry fill must not arm a fresh stop over an unresolved exit.**
+  A missing `stop.broker_order_id` used to be read as "this is the first
+  ever fill, place an initial stop" — but `request_exit` also clears it
+  when cancelling the old stop before a target/manual close, and that
+  exit's own commitment isn't done yet. Fixed: `resolve_pending_entry` skips
+  stop placement/resizing entirely while `lifecycle.pending_exit` is
+  unresolved, leaving that exit's own resolution (`resolve_pending_exit`) to
+  protect the true remainder once it settles, rather than placing an
+  independent stop that would double-cover shares the pending exit already
+  claims.
+- **A rejected/failed protection response is not working coverage.**
+  `_place_stop_locked` treated a `REJECTED` result the same as success
+  (only `ERROR` and `None` were failures); `_replace_stop_price` treated
+  *any* non-`None` replacement result as a successful resize, including an
+  explicit `ERROR`/`REJECTED` outcome. Either bug let a failed protection
+  attempt get reported as `STOP_CONFIRMED` at the new (larger) quantity,
+  even though nothing changed at the broker — see also Alpaca's own
+  replace-order docs, which don't guarantee a successful-looking replace
+  response means the old order is actually gone. Fixed: both now treat
+  `ERROR`/`REJECTED` as failure, preserving the previously-confirmed
+  coverage rather than reporting the requested quantity as newly protected.
+- **One execution-application owner per order, not per symbol.**
+  `OrderReconciler`'s generic loop used to skip position-correction for
+  *any* order sharing an (account, symbol) with an active lifecycle — so an
+  older plain order still pending when an account later became
+  `managed_lifecycle` (or a second, unrelated lifecycle order) could get
+  silently swallowed, never corrected by anyone. Fixed: the exclusion is
+  now scoped to the exact order id the lifecycle is currently waiting on
+  (its `pending_entry`/`pending_exit`'s own `broker_order_id`), not every
+  order for that symbol.
+- **A managed close is a commitment, not a completed sale until confirmed.**
+  `_handle_managed_close` used to apply the full requested (or reported)
+  quantity to `SignalStore.positions` optimistically on a `PENDING` close
+  result — but nothing ever corrected that guess once the real outcome
+  (partially filled, remainder canceled) came back, since
+  `resolve_pending_exit` never touched the store at all. A 100-share close
+  with 40 actually sold and 60 canceled left the store showing 0 (fully
+  closed) forever. Fixed: `PositionLifecycleManager` is now the single
+  execution-application owner for exits too (`request_exit`'s synchronous
+  branch and `resolve_pending_exit`'s terminal branch both call the same
+  internal `_apply_exit_fill`, applying the store delta exactly once, only
+  once the real outcome is known) — the engine no longer touches the store
+  for a managed close at all.
+- **A missing terminal quantity is not a reversal to zero.** A terminal
+  response that omits its cumulative fill (used to be treated as `0.0`)
+  could unregister a lifecycle that had a real, already-confirmed fill, or
+  erase an exit's known progress. Fixed: both `_reconcile_pending_entries`
+  and `_reconcile_pending_exits` fall back to the last confirmed progress,
+  not zero, when a terminal response's quantity is missing.
+- **The fill-application decision itself needed serializing, not just the
+  stop call.** `resolve_pending_entry` used to read/compare the last-applied
+  checkpoint *before* acquiring any lock, so two concurrent observations of
+  the same broker order (a duplicate poll, an overlapping reconciliation
+  pass) could both compute the same "newly applied" delta before either
+  advanced the checkpoint. Fixed: the whole read-decide-apply sequence is
+  now serialized per (account, symbol) via a dedicated lock (separate from
+  `CloseArbiter`'s, which is acquired/released multiple times within one
+  call) — a second, identical observation arriving mid-resolution now waits
+  and then correctly no-ops.
+- **Crash-consistent local commits.** The previous round moved
+  `SignalStore.record_fill` next to the lifecycle checkpoint update but
+  still wrote them as two separate commits — an interruption between them
+  left the checkpoint advanced with the position un-updated, or vice versa.
+  Fixed: `record_fill` now takes an optional `lifecycle_state` and writes
+  the position delta and the lifecycle checkpoint in the same local SQLite
+  transaction (one commit), used for every entry/exit fill application. The
+  checkpoint field itself is only advanced in memory immediately before
+  that call, so anything persisted *before* it (e.g. inside a stop
+  placement/resize that ran first) still reflects the OLD checkpoint —
+  an interruption before the atomic commit replays the same delta on
+  restart; an interruption at or after it lands with both already applied
+  together, so restart sees a stale (already-seen) observation and no-ops.
+  This is a short local transaction only — broker I/O always happens
+  before it, never inside it, so nothing is claimed atomic with the venue.
+
 ### A known remaining gap: an ambiguous submission outcome still unregisters the plan
 
 Not yet fixed, flagged honestly rather than silently left implicit: if
@@ -532,11 +624,6 @@ implying broader coverage than exists:
   strategy shouldn't be trusted until they account for real feed latency
   and the cancel/replace delays above, not an idealized instant-fill
   assumption.
-- **Fill confirmation for an entry that reports `PENDING`.** The position
-  is opened but left unprotected by this manager until a fill-confirmation
-  path feeds the entry's actual fill back in (the pending-*exit* half of
-  this problem is now handled via `resolve_pending_exit`/reconciliation
-  above; the pending-*entry* half is not).
 - **Per-order-family accounting for genuinely independent broker orders**
   (as opposed to this manager's own cancel-then-exit sequence). Everything
   routed through `PositionLifecycleManager` goes through the single

@@ -307,21 +307,37 @@ class SignalStore:
             ).fetchone()
         return row[0] if row else 0.0
 
-    def record_fill(self, account_id: str, symbol: str, side: Side, quantity: float) -> float:
+    def record_fill(
+        self, account_id: str, symbol: str, side: Side, quantity: float, *, lifecycle_state: dict | None = None
+    ) -> float:
         """Update the tracked position after a buy/sell and return the new net quantity.
 
         A `side` of BUY adds `quantity`, SELL subtracts it. Never called with
         CLOSE — the engine resolves a close into the opposing BUY/SELL before
         this is reached (see app/engine.py).
-        """
+
+        `lifecycle_state`, if given, is written to `lifecycle_state` (see
+        `save_lifecycle_state`) in the SAME local transaction as the position
+        update — one commit, not two. `PositionLifecycleManager.resolve_pending_entry`/
+        `_apply_exit_fill` use this so a confirmed execution delta and the
+        lifecycle checkpoint that already reflects it can't be split by a
+        crash landing between "position committed" and "checkpoint
+        committed" (see those methods' docstrings — this is deliberately
+        NOT held open across any broker I/O; it's a short, local-only
+        transaction over two SQLite tables)."""
         delta = quantity if side == Side.BUY else -quantity
-        return self.adjust_position(account_id, symbol, delta)
+        return self._apply_position_delta(account_id, symbol, delta, lifecycle_state=lifecycle_state)
 
     def adjust_position(self, account_id: str, symbol: str, delta: float) -> float:
         """Apply a raw signed adjustment to a tracked position and return the new net
         quantity. Used directly by app/reconciliation.py to correct an optimistic fill
         (e.g. reverse it if the order actually got rejected, or true it up to the real
         filled quantity)."""
+        return self._apply_position_delta(account_id, symbol, delta)
+
+    def _apply_position_delta(
+        self, account_id: str, symbol: str, delta: float, *, lifecycle_state: dict | None = None
+    ) -> float:
         with self._connect() as conn:
             current = conn.execute(
                 "SELECT net_quantity FROM positions WHERE account_id = ? AND symbol = ?",
@@ -335,6 +351,14 @@ class SignalStore:
                    DO UPDATE SET net_quantity = excluded.net_quantity, updated_at = excluded.updated_at""",
                 (account_id, symbol, new_quantity, datetime.now(timezone.utc).isoformat()),
             )
+            if lifecycle_state is not None:
+                conn.execute(
+                    """INSERT INTO lifecycle_state (account_id, symbol, state, updated_at)
+                       VALUES (?, ?, ?, ?)
+                       ON CONFLICT (account_id, symbol)
+                       DO UPDATE SET state = excluded.state, updated_at = excluded.updated_at""",
+                    (account_id, symbol, json.dumps(lifecycle_state), datetime.now(timezone.utc).isoformat()),
+                )
         return new_quantity
 
     def list_open_positions(self) -> list[dict]:

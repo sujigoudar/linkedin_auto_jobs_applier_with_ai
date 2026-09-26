@@ -18,7 +18,7 @@ def _engine(store, paper, account):
         rules=[RoutingRule(source="tradingview", destinations=[account.account_id])],
         accounts={account.account_id: account},
     )
-    lifecycle_manager = PositionLifecycleManager(brokers={"paper": paper})
+    lifecycle_manager = PositionLifecycleManager(brokers={"paper": paper}, store=store)
     engine = SignalCopierEngine(
         routing=routing, brokers={"paper": paper}, store=store, lifecycle_manager=lifecycle_manager
     )
