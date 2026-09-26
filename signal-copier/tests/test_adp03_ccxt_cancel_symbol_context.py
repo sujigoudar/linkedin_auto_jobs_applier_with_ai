@@ -9,6 +9,8 @@ Reproduces the audit's exact case
 """
 import pytest
 
+pytest.importorskip("ccxt")
+
 from app.brokers.ccxt_broker import CCXTBroker
 from app.models import AssetClass, DestinationAccount, Side, Signal
 
