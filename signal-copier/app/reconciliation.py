@@ -195,10 +195,16 @@ class OrderReconciler:
 
     async def _reconcile_pending_exits(self) -> int:
         """Poll every managed-lifecycle position's unresolved exit (see
-        app/lifecycle/manager.py's PendingExit) and, once the broker gives a
-        final word, hand it to `resolve_pending_exit` — the only thing
-        allowed to settle that reservation and restore the protective stop.
-        A no-op if no `PositionLifecycleManager` was wired in."""
+        app/lifecycle/manager.py's PendingExit) and hand each new
+        observation to `resolve_pending_exit` — the only thing allowed to
+        settle the reservation and restore the protective stop. A working
+        partial fill whose remainder is still open gets acted on too
+        (EXE-06: `resolve_pending_exit` applies a confirmed increment to
+        `SignalStore` immediately without restoring the stop early — this
+        used to skip anything short of a terminal status entirely, leaving
+        a confirmed partial unreflected until the whole order finished).
+        Only a timeout/lost response (still nothing new to report) is
+        skipped. A no-op if no `PositionLifecycleManager` was wired in."""
         if self.lifecycle_manager is None:
             return 0
 
@@ -220,18 +226,17 @@ class OrderReconciler:
                 )
                 continue
 
-            if result is None or result.status not in (OrderStatus.FILLED, OrderStatus.REJECTED):
-                continue  # still open on the broker's side — more of it may yet fill
+            if result is None or result.status not in (OrderStatus.FILLED, OrderStatus.REJECTED, OrderStatus.PENDING):
+                continue  # nothing new to report at all -- a timeout/lost response is not a rejection
 
-            # FILLED or REJECTED are both terminal for this order: either everything
-            # requested filled, or nothing more of it can (rejected/canceled/expired).
-            # Either way the remainder is resolved, so this order's own filled_qty
-            # (which brokers report even on a canceled-after-partial-fill order — see
-            # e.g. AlpacaBroker.get_order_status) is the true, final fill. A missing
-            # quantity here isn't a reversal to zero either -- fall back to whatever
-            # was last confirmed rather than erasing it.
+            is_terminal = result.status in (OrderStatus.FILLED, OrderStatus.REJECTED)
+            # A missing quantity isn't a reversal to zero -- fall back to
+            # whatever was last confirmed rather than erasing it.
             filled = result.filled_quantity if result.filled_quantity is not None else pending.confirmed_filled_quantity
-            await self.lifecycle_manager.resolve_pending_exit(account, symbol, filled, remainder_cancelled=True)
+            if not is_terminal and filled <= pending.confirmed_filled_quantity:
+                continue  # a repeated observation of the same progress -- nothing new to act on
+
+            await self.lifecycle_manager.resolve_pending_exit(account, symbol, filled, remainder_cancelled=is_terminal)
             resolved += 1
 
         return resolved

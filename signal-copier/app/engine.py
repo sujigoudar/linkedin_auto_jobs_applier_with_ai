@@ -427,6 +427,15 @@ class SignalCopierEngine:
                 symbol,
             )
             self.lifecycle_manager.register_pending_entry(account, symbol, result.broker_order_id, quantity)
+            if result.filled_quantity is not None and result.filled_quantity > 0:
+                # The initial synchronous response can itself already carry
+                # a confirmed partial fill (e.g. some brokers report
+                # PENDING with a non-zero filled_quantity for a still-open
+                # order) -- protecting it must not wait for the next
+                # reconciliation poll, which could be minutes away (EXE-08).
+                await self.lifecycle_manager.resolve_pending_entry(
+                    account, symbol, result.filled_quantity, remainder_cancelled=False
+                )
 
         return result
 

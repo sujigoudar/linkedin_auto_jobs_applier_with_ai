@@ -327,6 +327,33 @@ async def test_managed_exit_partial_cancel_reconciles_store_and_lifecycle(world)
 
 
 @pytest.mark.asyncio
+async def test_working_partial_exit_is_applied_immediately_not_at_terminal(world):
+    """EXE-06: a managed close for 100 with 40 confirmed while the
+    remaining 60 is still working must reduce tracked ownership to 60
+    immediately -- not leave it at 100 until the whole order finishes."""
+    entry = await start_entry(world)
+    await progress(world, entry, 100.0, OrderStatus.FILLED)
+    exit_result = await world.engine.close_position(world.account, SYMBOL)
+    assert exit_result.status is OrderStatus.PENDING
+
+    # Confirmed partial progress while still working (not terminal).
+    await world.manager.resolve_pending_exit(world.account, SYMBOL, 40.0, remainder_cancelled=False)
+
+    assert lifecycle(world).confirmed_owned_quantity == 60.0
+    assert world.store.get_position(ACCOUNT, SYMBOL) == 60.0
+    # The stop is deliberately NOT restored yet -- the remaining 60 is still
+    # an open, uncertain commitment (see request_exit's worked example).
+    assert lifecycle(world).stop.broker_order_id is None
+
+    # More fills, then the remainder is confirmed cancelled (terminal).
+    await world.manager.resolve_pending_exit(world.account, SYMBOL, 55.0, remainder_cancelled=True)
+
+    assert lifecycle(world).confirmed_owned_quantity == 45.0
+    assert world.store.get_position(ACCOUNT, SYMBOL) == 45.0
+    assert world.broker.standing_stop_quantity() == 45.0
+
+
+@pytest.mark.asyncio
 async def test_new_same_symbol_lifecycle_cannot_swallow_an_older_plain_order(tmp_path):
     """F04: owner selection must be per order, not any current symbol match."""
     world = make_world(tmp_path / "transition.sqlite", managed=False)

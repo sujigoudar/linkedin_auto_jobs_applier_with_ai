@@ -541,22 +541,44 @@ class PositionLifecycleManager:
         54-share remainder, not 47; if 3 more fill while cancellation was in
         flight, the restore target is 51, not 54).
 
-        If the remainder isn't resolved yet, this just records progress
-        (`confirmed_filled_quantity`) and leaves the deficit open — it does
-        NOT restore anything early."""
+        If the remainder isn't resolved yet, any INCREASE in
+        `confirmed_filled_quantity` since the last call is still applied
+        immediately to `SignalStore`/`confirmed_owned_quantity` (EXE-06: a
+        confirmed partial -- 40 of a 100-share close, 60 still working --
+        used to leave the tracked position at the pre-close 100 until the
+        whole order finished, even though the venue had genuinely already
+        sold 40). Only the STOP is deliberately not restored/resized yet —
+        the remaining, still-uncertain quantity keeps the reservation open
+        so nothing else can claim those shares (see `request_exit`'s
+        docstring for why the design's worked partial-fill example -- 8 of
+        15 confirmed, 7 still open -- restores against 54, not 47)."""
         broker = self.brokers.get(account.broker)
         async with self.arbiter.transition(account.account_id, symbol) as tx:
             lifecycle = self._lifecycles.get((account.account_id, symbol))
             if lifecycle is None or lifecycle.pending_exit is None:
                 return
             pending = lifecycle.pending_exit
+            previously_applied = pending.confirmed_filled_quantity
+            delta = max(0.0, confirmed_filled_quantity - previously_applied)
 
             if not remainder_cancelled and confirmed_filled_quantity < pending.requested_quantity:
+                if delta > 0:
+                    tx.settle(reserved_quantity=delta, filled_quantity=delta)
+                    lifecycle.confirmed_owned_quantity = tx.owned
                 pending.confirmed_filled_quantity = confirmed_filled_quantity
-                self._persist(lifecycle)
+                if delta > 0:
+                    self._apply_exit_fill(lifecycle, account, symbol, delta)
+                else:
+                    self._persist(lifecycle)
                 return
 
-            tx.settle(reserved_quantity=pending.requested_quantity, filled_quantity=confirmed_filled_quantity)
+            # Terminal: release whatever of the ORIGINAL reservation hasn't
+            # already been released by an earlier partial-progress
+            # observation above, and apply only the NEW delta since then
+            # (not the full confirmed_filled_quantity again, or an earlier
+            # partial would be double-applied).
+            remaining_reserved = max(0.0, pending.requested_quantity - previously_applied)
+            tx.settle(reserved_quantity=remaining_reserved, filled_quantity=delta)
             pending.confirmed_filled_quantity = confirmed_filled_quantity
             pending.remainder_resolved = True
             pending.phase = TransferPhase.RESTORING
@@ -571,11 +593,10 @@ class PositionLifecycleManager:
             elif lifecycle.stop.desired_price is not None and broker is not None:
                 await self._place_stop_locked(lifecycle, account, broker, remaining, lifecycle.stop.desired_price)
 
-        # SignalStore was never touched for this exit until its remainder
-        # resolved (an unresolved PENDING exit is a commitment, not a
-        # completed sale — see this method's docstring), so the FULL
-        # confirmed_filled_quantity is the delta to apply now, exactly once.
-        self._apply_exit_fill(lifecycle, account, symbol, confirmed_filled_quantity)
+        if delta > 0:
+            self._apply_exit_fill(lifecycle, account, symbol, delta)
+        else:
+            self._persist(lifecycle)
 
     def _apply_exit_fill(
         self, lifecycle: PositionLifecycle, account: DestinationAccount, symbol: str, filled_quantity: float
