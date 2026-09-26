@@ -125,6 +125,13 @@ class PendingExit:
     phase: TransferPhase = TransferPhase.EXIT_SUBMITTED
     source: str = ""
     reason: str = ""
+    #: PRO-06: True when the old protective stop was shrunk in place
+    #: (broker.replace_stop_quantity) rather than cancelled outright before
+    #: this exit was submitted -- `stop.broker_order_id` is still the SAME
+    #: resting order, just sized down. resolve_pending_exit's terminal
+    #: branch must correct that same order's quantity to the true
+    #: remainder rather than submit a brand new stop on top of it.
+    stop_amended: bool = False
 
     @property
     def unresolved_remainder(self) -> float:

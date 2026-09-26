@@ -609,7 +609,34 @@ class PositionLifecycleManager:
                 return OrderResult(account_id=account.account_id, status=OrderStatus.REJECTED, signal_id="", message="no shares available to sell")
 
             had_stop = lifecycle.stop.broker_order_id is not None
-            if had_stop:
+            remaining_after_request = tx.owned - requested
+            amended_stop = False
+            if (
+                had_stop
+                and remaining_after_request > 0
+                and lifecycle.stop.desired_price is not None
+                and broker.has_replace_stop_capability
+            ):
+                # PRO-06: a partial reduce (a target selling a fraction of the
+                # position) used to ALWAYS cancel the entire existing stop
+                # outright, even on a venue that can amend a resting order's
+                # quantity in place -- leaving the WHOLE position, not just
+                # the fraction being sold, briefly uncovered while the sell
+                # was in flight and a brand new stop was submitted afterward.
+                # When the broker can amend, shrink the same resting order
+                # down to what will remain instead: the position never has a
+                # moment with zero coverage, only the shares actually being
+                # sold are freed.
+                replaced = await broker.replace_stop_quantity(
+                    account, lifecycle.stop.broker_order_id, remaining_after_request, lifecycle.stop.desired_price
+                )
+                if replaced is not None and replaced.status not in (OrderStatus.ERROR, OrderStatus.REJECTED):
+                    if replaced.broker_order_id:
+                        lifecycle.stop.broker_order_id = replaced.broker_order_id
+                    lifecycle.stop.protected_quantity = remaining_after_request
+                    amended_stop = True
+
+            if had_stop and not amended_stop:
                 cancelled = await broker.cancel_order(account, lifecycle.stop.broker_order_id)
                 if not cancelled:
                     # Could mean "not supported," or "the stop may have already filled" — either
@@ -646,6 +673,7 @@ class PositionLifecycleManager:
                     phase=TransferPhase.AWAITING_REMAINDER_RESOLUTION,
                     source=source,
                     reason=reason or source,
+                    stop_amended=amended_stop,
                 )
                 self._persist(lifecycle)
                 return exit_result
@@ -660,7 +688,7 @@ class PositionLifecycleManager:
                 # still-working entry order may yet deliver more units.
                 lifecycle.closed = not lifecycle.has_unresolved_entry
             elif had_stop and lifecycle.stop.desired_price is not None:
-                await self._place_stop_locked(lifecycle, account, broker, remaining, lifecycle.stop.desired_price)
+                await self._restore_stop_coverage(lifecycle, account, broker, remaining, amended_stop)
 
             self._apply_exit_fill(lifecycle, account, symbol, actual_filled)
             return exit_result
@@ -724,6 +752,7 @@ class PositionLifecycleManager:
             pending.phase = TransferPhase.RESTORING
             remaining = tx.owned
             lifecycle.confirmed_owned_quantity = remaining
+            stop_amended = pending.stop_amended
             lifecycle.pending_exit = None
 
             if remaining <= 0:
@@ -731,7 +760,7 @@ class PositionLifecycleManager:
                 # still-working entry order may yet deliver more units.
                 lifecycle.closed = not lifecycle.has_unresolved_entry
             elif lifecycle.stop.desired_price is not None and broker is not None:
-                await self._place_stop_locked(lifecycle, account, broker, remaining, lifecycle.stop.desired_price)
+                await self._restore_stop_coverage(lifecycle, account, broker, remaining, stop_amended)
 
         if delta > 0:
             self._apply_exit_fill(lifecycle, account, symbol, delta)
@@ -775,6 +804,43 @@ class PositionLifecycleManager:
             raw={"reason": reason},
         )
         return await broker.place_order(exit_signal, account, quantity, lifecycle.plan.symbol)
+
+    async def _restore_stop_coverage(
+        self,
+        lifecycle: PositionLifecycle,
+        account: DestinationAccount,
+        broker: BrokerAdapter,
+        remaining: float,
+        stop_amended: bool,
+    ) -> None:
+        """PRO-06: once an exit's real outcome is known, bring stop coverage
+        to exactly `remaining`. If the stop was amended down in place before
+        the exit was submitted (rather than cancelled), it is STILL resting
+        at the broker under the same `broker_order_id` -- correct that same
+        order's quantity via another amend, never submit a brand new stop on
+        top of one that's already there (that would be two live stop orders
+        covering the same shares). Only when nothing was amended (the
+        cancel-then-resubmit fallback path, for a broker with no amend
+        capability) is a fresh stop actually placed."""
+        if stop_amended and lifecycle.stop.broker_order_id:
+            replaced = await broker.replace_stop_quantity(
+                account, lifecycle.stop.broker_order_id, remaining, lifecycle.stop.desired_price
+            )
+            if replaced is not None and replaced.status not in (OrderStatus.ERROR, OrderStatus.REJECTED):
+                if replaced.broker_order_id:
+                    lifecycle.stop.broker_order_id = replaced.broker_order_id
+                lifecycle.stop.protected_quantity = remaining
+                return
+            logger.warning(
+                "could not correct amended stop to final remaining=%.6f for account=%s symbol=%s -- "
+                "coverage may be stale at %.6f",
+                remaining,
+                account.account_id,
+                lifecycle.plan.symbol,
+                lifecycle.stop.protected_quantity,
+            )
+            return
+        await self._place_stop_locked(lifecycle, account, broker, remaining, lifecycle.stop.desired_price)
 
     async def _place_stop_locked(
         self,
@@ -1011,6 +1077,7 @@ def _lifecycle_to_state(lifecycle: PositionLifecycle, ledger: dict) -> dict:
             "phase": lifecycle.pending_exit.phase.value,
             "source": lifecycle.pending_exit.source,
             "reason": lifecycle.pending_exit.reason,
+            "stop_amended": lifecycle.pending_exit.stop_amended,
         },
         "pending_entry": None
         if lifecycle.pending_entry is None
@@ -1079,6 +1146,7 @@ def _lifecycle_from_state(row: dict) -> PositionLifecycle:
             phase=TransferPhase(pending_row.get("phase", TransferPhase.AWAITING_REMAINDER_RESOLUTION.value)),
             source=pending_row.get("source", ""),
             reason=pending_row.get("reason", ""),
+            stop_amended=pending_row.get("stop_amended", False),
         )
     )
 

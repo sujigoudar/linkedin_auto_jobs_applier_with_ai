@@ -4,6 +4,12 @@ a 62-share position, a 15-share target that only confirms asynchronously
 until the remaining 7-share order is confirmed done — and once it is, the
 restore target reflects whatever ACTUALLY happened (8 filled -> 54; 8+3
 filled during cancellation -> 51), never the originally requested 15.
+
+PaperBroker supports replace_stop_quantity (PRO-06: shrink the existing
+stop in place rather than cancel it outright when the venue can amend), so
+the 47 shares NOT part of this target stay STOP_CONFIRMED/covered the whole
+time the 15-share target's outcome is unknown -- only those 15 requested
+shares are ever the coverage deficit, never the full 62.
 """
 import pytest
 
@@ -67,11 +73,13 @@ async def test_pending_exit_does_not_restore_stop_and_marks_coverage_deficit(acc
     assert lifecycle.pending_exit.requested_quantity == 15.0
     assert lifecycle.pending_exit.remainder_resolved is False
     assert lifecycle.pending_exit.phase == TransferPhase.AWAITING_REMAINDER_RESOLUTION
-    # the old 62-share stop was cancelled to free these shares, but nothing
-    # re-armed yet — those 15 shares are genuinely uncovered right now
-    assert lifecycle.stop.status == ProtectionStatus.UNPROTECTED
-    assert lifecycle.covered_quantity == 0.0
-    assert lifecycle.uncovered_quantity == 62.0
+    # PRO-06: PaperBroker can amend a resting stop's quantity in place, so
+    # the old stop was shrunk to protect the 47 shares NOT part of this
+    # target rather than cancelled outright -- only the 15 requested shares
+    # are genuinely uncovered right now, not the whole 62-share position.
+    assert lifecycle.stop.status == ProtectionStatus.STOP_CONFIRMED
+    assert lifecycle.covered_quantity == 47.0
+    assert lifecycle.uncovered_quantity == 15.0
     # the 15 requested shares are still excluded from what's sellable, so a
     # second target can't also claim them
     assert manager.arbiter.available_to_sell("acct1", "AAPL") == 47.0
@@ -106,7 +114,11 @@ async def test_resolving_a_partial_fill_before_remainder_is_cancelled_does_not_r
     assert lifecycle.pending_exit is not None
     assert lifecycle.pending_exit.remainder_resolved is False
     assert lifecycle.pending_exit.confirmed_filled_quantity == 8.0
-    assert lifecycle.stop.status == ProtectionStatus.UNPROTECTED
+    # PRO-06: the amended stop is still resting, still covering the 47
+    # shares outside this target -- unresolved is about the arbiter's
+    # reservation/settlement, not about whether a stop exists at all.
+    assert lifecycle.stop.status == ProtectionStatus.STOP_CONFIRMED
+    assert lifecycle.covered_quantity == 47.0
     assert manager.arbiter.available_to_sell("acct1", "AAPL") == 47.0  # unchanged — still not settled
 
 
@@ -184,7 +196,14 @@ async def test_trailing_update_does_not_touch_stop_while_pending_exit_unresolved
 
     assert results == []
     lifecycle = manager.get_lifecycle("acct1", "AAPL")
-    assert lifecycle.stop.status == ProtectionStatus.UNPROTECTED  # still not re-armed
+    # PRO-06: the stop is amended (still resting, covering the 47 shares
+    # outside the pending target), but _replace_stop_price's own guard
+    # must still refuse to touch it further -- resizing to tx.owned (still
+    # including the 15 uncertain shares) while the pending exit is
+    # unresolved would recreate exactly the double-claim this exists to
+    # prevent.
+    assert lifecycle.stop.status == ProtectionStatus.STOP_CONFIRMED
+    assert lifecycle.stop.protected_quantity == 47.0  # unchanged, not re-armed to tx.owned
     assert lifecycle.pending_exit is not None
 
 
