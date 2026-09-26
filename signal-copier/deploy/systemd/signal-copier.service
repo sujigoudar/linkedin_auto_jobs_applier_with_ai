@@ -1,0 +1,33 @@
+[Unit]
+Description=Signal Copier - active trading service (single writer)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=signal-copier
+Group=signal-copier
+WorkingDirectory=/opt/signal-copier/src/signal-copier
+EnvironmentFile=/etc/signal-copier/active.env
+ExecStart=/opt/signal-copier/venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000
+# Put a reverse proxy (Caddy/nginx) in front for TLS -- this binds loopback
+# only. Restart, don't reload-replace: a config edit that changes broker
+# credentials or STANDBY_MODE must go through a fresh process, never a
+# live reload, so app/main.py's module-level broker/engine construction
+# always reflects exactly one coherent environment.
+Restart=on-failure
+RestartSec=5
+# Liveness alone never proves ownership -- see deploy/RUNBOOK.md's fencing
+# step. This unit restarting after a crash is not proof the OLD process
+# (possibly on a different host) is gone.
+TimeoutStopSec=30
+
+# Hardening -- narrow what this process can touch even if compromised.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/signal-copier
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

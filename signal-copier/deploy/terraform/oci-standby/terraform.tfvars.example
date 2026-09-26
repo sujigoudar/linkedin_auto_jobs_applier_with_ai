@@ -1,0 +1,15 @@
+# Copy to terraform.tfvars and fill in with values from YOUR tenancy --
+# discovered via `oci iam region-subscription list` / `oci network subnet list`,
+# never guessed. Do not commit terraform.tfvars (it's gitignored below).
+
+region         = "us-ashburn-1"          # your tenancy's actual home region
+compartment_id = "ocid1.compartment.oc1..REPLACE_ME"
+subnet_id      = "ocid1.subnet.oc1..REPLACE_ME"
+ssh_public_key = "ssh-ed25519 AAAA... you@yourhost"
+
+# Defaults below match the current Always Free A1 allowance (2 OCPU / 12GB).
+# Only raise these after confirming remaining free-tier headroom in the
+# OCI console -- "out of capacity" is a blocker, not permission to buy more.
+# ocpus                   = 2
+# memory_in_gbs           = 12
+# boot_volume_size_in_gbs = 50
