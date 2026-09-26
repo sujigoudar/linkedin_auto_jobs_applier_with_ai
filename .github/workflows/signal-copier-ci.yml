@@ -38,3 +38,17 @@ jobs:
         run: |
           pip install pip-audit
           pip-audit -r requirements.txt
+
+  secret-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Scan for committed secrets (C37, adoption plan)
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_CONFIG: signal-copier/.gitleaks.toml

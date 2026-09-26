@@ -1,0 +1,25 @@
+# C37 (conditional, adoption plan): gitleaks config for the CI secret-scan
+# step in .github/workflows/signal-copier-ci.yml. Extends gitleaks'
+# built-in default rule set (not replacing it) with an allowlist for this
+# project's own well-known, non-secret test fixture values -- strings
+# like "test-owner-password" that exist only to exercise
+# app/auth.py's real password/session/CSRF logic in tests, never a real
+# credential. Without this, a generic high-entropy/keyword-adjacent rule
+# could flag them as false positives on every run.
+title = "signal-copier gitleaks config"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Known non-secret test fixture values"
+regexes = [
+  '''test-owner-password''',
+  '''test-session-secret''',
+  '''test-webhook-secret''',
+  '''correct-horse-battery-staple''',
+  '''test-owner-password-[a-z0-9-]*''',
+]
+paths = [
+  '''signal-copier/tests/.*''',
+]
