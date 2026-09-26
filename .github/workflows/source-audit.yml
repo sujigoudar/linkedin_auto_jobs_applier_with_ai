@@ -1,84 +1,85 @@
-name: Pinned copier audit baseline
+name: Pinned copier browser and image audit
 on:
   push:
     branches: ['audit/fccf57a-e2e-20260926']
 permissions:
   contents: read
 jobs:
-  baseline:
+  browsers:
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    strategy:
-      fail-fast: false
-      matrix:
-        profile: [core, linux-adapters]
     steps:
       - uses: actions/checkout@v4
         with:
-          repository: sujigoudar/linkedin_auto_jobs_applier_with_ai
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
           ref: fccf57affd8515fe059b1af854856828078a737e
+          path: pinned
           persist-credentials: false
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: Install selected dependency profile
+      - name: Install core and all browser engines
+        run: |
+          python -m pip install -r pinned/signal-copier/requirements.txt playwright
+          python -m playwright install --with-deps chromium firefox webkit
+      - name: Run actual paper-only app and entire declared browser matrix
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/evidence"
-          python -m pip install -r signal-copier/requirements.txt pytest-cov pytest-timeout pytest-socket > "$RUNNER_TEMP/evidence/install-core.txt" 2>&1
-          if [ '${{ matrix.profile }}' = 'linux-adapters' ]; then
-            for package in ccxt ib_insync async_rithmic twilio python-telegram-bot discord.py slack-bolt tweepy metaapi-cloud-sdk; do
-              python -m pip install "$package" > "$RUNNER_TEMP/evidence/install-${package}.txt" 2>&1 || echo "$package" >> "$RUNNER_TEMP/evidence/unavailable-packages.txt"
-            done
-          fi
+          mkdir -p "$RUNNER_TEMP/evidence" "$RUNNER_TEMP/guard"
+          printf '%s\n' 'import socket' '_connect=socket.socket.connect' 'def guarded(self,address):' '    if self.family in (socket.AF_INET,socket.AF_INET6) and address[0] not in ("127.0.0.1","::1","localhost"): raise OSError("audit denies external sockets")' '    return _connect(self,address)' 'socket.socket.connect=guarded' > "$RUNNER_TEMP/guard/sitecustomize.py"
+          (cd pinned/signal-copier; env -i PATH="$PATH" HOME="$RUNNER_TEMP" PYTHONPATH="$RUNNER_TEMP/guard:$PWD" DATABASE_PATH="$RUNNER_TEMP/browser.sqlite" OWNER_PASSWORD=audit-browser-password SESSION_SECRET=audit-browser-secret WEBHOOK_SHARED_SECRET=audit-browser-ingress python -m uvicorn app.main:app --host 127.0.0.1 --port 8765) > "$RUNNER_TEMP/evidence/server.log" 2>&1 &
+          pid=$!
+          trap 'kill "$pid" || true' EXIT
+          for i in $(seq 1 30); do curl -fsS http://127.0.0.1:8765/health > "$RUNNER_TEMP/evidence/initial-health.json" && break || sleep 1; done
+          AUDIT_EVIDENCE="$RUNNER_TEMP/evidence" python audit/browser_audit.py > "$RUNNER_TEMP/evidence/driver.log" 2>&1
+          cp audit/browser_audit.py "$RUNNER_TEMP/evidence/"
           python -m pip freeze > "$RUNNER_TEMP/evidence/freeze.txt"
-          python -m pip check > "$RUNNER_TEMP/evidence/pip-check.txt" 2>&1 || true
-          git rev-parse HEAD > "$RUNNER_TEMP/evidence/revision.txt"
-      - name: Run every collected application test without outbound sockets
-        shell: bash
-        working-directory: signal-copier
-        run: |
-          set +e
-          env -i PATH="$PATH" HOME="$RUNNER_TEMP" DATABASE_PATH="$RUNNER_TEMP/isolated.db" python -m pytest --collect-only -q --disable-socket --allow-unix-socket > "$RUNNER_TEMP/evidence/collection.txt" 2>&1
-          env -i PATH="$PATH" HOME="$RUNNER_TEMP" DATABASE_PATH="$RUNNER_TEMP/isolated.db" python -m pytest -ra --timeout=45 --disable-socket --allow-unix-socket --cov=app --cov-branch --cov-report=term-missing --cov-report=json:"$RUNNER_TEMP/evidence/coverage.json" --junitxml="$RUNNER_TEMP/evidence/results.xml" > "$RUNNER_TEMP/evidence/pytest.txt" 2>&1
-          rc=$?
-          cat "$RUNNER_TEMP/evidence/pytest.txt"
-          echo "$rc" > "$RUNNER_TEMP/evidence/exit-code.txt"
-          exit "$rc"
+          git -C pinned rev-parse HEAD > "$RUNNER_TEMP/evidence/revision.txt"
+          cat "$RUNNER_TEMP/evidence/driver.log"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: audit-baseline-${{ matrix.profile }}
+          name: actual-three-engine-gui-audit
           path: ${{ runner.temp }}/evidence/
           retention-days: 7
           if-no-files-found: error
-  offline-wheelhouse:
+  image:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
         with:
           ref: fccf57affd8515fe059b1af854856828078a737e
           persist-credentials: false
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.13'
-      - name: Download dependencies for credential-free offline auditing
+      - name: Build exact application Dockerfile
         shell: bash
         run: |
-          set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/wheels" "$RUNNER_TEMP/wheel-logs"
-          python -m pip download --only-binary=:all: -d "$RUNNER_TEMP/wheels" -r signal-copier/requirements.txt > "$RUNNER_TEMP/wheel-logs/core.log" 2>&1
-          for package in pytest-cov pytest-timeout pytest-socket hypothesis ruff bandit ccxt ib_insync async_rithmic twilio python-telegram-bot discord.py slack-bolt tweepy metaapi-cloud-sdk; do
-            python -m pip download --only-binary=:all: -d "$RUNNER_TEMP/wheels" "$package" > "$RUNNER_TEMP/wheel-logs/${package}.log" 2>&1 || echo "$package" >> "$RUNNER_TEMP/wheel-logs/unavailable.txt"
-          done
+          mkdir -p "$RUNNER_TEMP/evidence"
+          docker build -t copier-audit:fccf57a signal-copier > "$RUNNER_TEMP/evidence/build.log" 2>&1
+          docker image inspect copier-audit:fccf57a > "$RUNNER_TEMP/evidence/image.json"
+          docker run --network none --name copier-audit -d -e OWNER_PASSWORD=audit-only -e SESSION_SECRET=audit-only copier-audit:fccf57a
+          sleep 4
+          docker exec copier-audit python -c 'import urllib.request,os,json; print(json.dumps({"uid":os.getuid(),"health":json.load(urllib.request.urlopen("http://127.0.0.1:8000/health"))}))' > "$RUNNER_TEMP/evidence/container-state.json"
+          docker exec copier-audit python -m pip freeze > "$RUNNER_TEMP/evidence/image-freeze.txt"
+          docker logs copier-audit > "$RUNNER_TEMP/evidence/container.log" 2>&1
+          docker rm -f copier-audit
+          docker run --network none --name copier-standby -d -e STANDBY_MODE=true copier-audit:fccf57a
+          sleep 3
+          docker exec copier-standby python -c 'import urllib.request,urllib.error,json; r={};
+          for method,path in [("GET","/health"),("POST","/webhook/audit"),("POST","/accounts"),("POST","/auth/login")]:
+           try:
+            x=urllib.request.urlopen(urllib.request.Request("http://127.0.0.1:8000"+path,data=b"{}" if method=="POST" else None,method=method,headers={"Content-Type":"application/json"}));r[method+path]={"status":x.status,"body":x.read().decode()}
+           except urllib.error.HTTPError as e:r[method+path]={"status":e.code,"body":e.read().decode()}
+          print(json.dumps(r))' > "$RUNNER_TEMP/evidence/standby-routes.json"
+          docker logs copier-standby > "$RUNNER_TEMP/evidence/standby.log" 2>&1
+          docker rm -f copier-standby
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: audit-linux313-wheelhouse
-          path: |
-            ${{ runner.temp }}/wheels/
-            ${{ runner.temp }}/wheel-logs/
-          retention-days: 3
+          name: actual-image-audit
+          path: ${{ runner.temp }}/evidence/
+          retention-days: 7
           if-no-files-found: error
