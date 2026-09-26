@@ -28,8 +28,14 @@ jobs:
         with:
           python-version: '3.11'
 
+      - name: Install uv (C35, faster installs via a shared package cache)
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+          cache-dependency-glob: signal-copier/requirements.txt
+
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: uv pip install --system -r requirements.txt
 
       - name: Install Playwright's Chromium (C14/C33/C34)
         run: playwright install --with-deps chromium
@@ -39,7 +45,7 @@ jobs:
 
       - name: Audit dependencies for known advisories (C36, adoption plan)
         run: |
-          pip install pip-audit
+          uv pip install --system pip-audit
           pip-audit -r requirements.txt
 
   secret-scan:

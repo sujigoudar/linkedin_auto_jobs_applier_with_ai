@@ -1059,6 +1059,14 @@ CI runs this automatically on every push/PR that touches `signal-copier/**`
 (`.github/workflows/signal-copier-ci.yml`, scoped separately from the
 parent repo's own CI so it doesn't run against unrelated changes).
 
+**C35:** CI installs dependencies with [uv](https://docs.astral.sh/uv/)
+(`uv pip install --system -r requirements.txt`, via
+`astral-sh/setup-uv`) instead of plain `pip install`, with its package
+cache keyed off `requirements.txt` — a faster, resolver-backed install
+on every run, not a change to what gets installed or how tests run
+locally (`pip install -r requirements.txt` still works fine for local
+dev).
+
 ## Running with Docker
 
 ```bash
