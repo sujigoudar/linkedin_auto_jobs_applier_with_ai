@@ -283,6 +283,7 @@ class SignalCopierEngine:
 
             admitted, notional, rejection = await self._try_reserve_capital(account, order_signal, quantity)
             if not admitted:
+                assert rejection is not None  # _try_reserve_capital always sets this when admitted is False
                 self.store.save_order_result(
                     rejection, broker=account.broker, symbol=symbol, side=order_signal.side, requested_quantity=quantity
                 )
@@ -508,6 +509,7 @@ class SignalCopierEngine:
 
         admitted, notional, rejection = await self._try_reserve_capital(account, signal, quantity)
         if not admitted:
+            assert rejection is not None  # _try_reserve_capital always sets this when admitted is False
             return rejection
 
         self.lifecycle_manager.start_plan(plan)

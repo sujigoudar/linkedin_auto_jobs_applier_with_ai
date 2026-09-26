@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator
 
-from alembic import command
+from alembic import command  # type: ignore[attr-defined]  # real, working import; alembic's __init__.py doesn't re-export it in a way mypy can see
 from alembic.config import Config as AlembicConfig
 
 from app.models import OrderResult, Side, Signal
@@ -342,6 +342,11 @@ class SignalStore:
                     result.executed_at.isoformat(),
                 ),
             )
+            # lastrowid is None only for a statement that isn't a rowid-table
+            # INSERT -- never true for this one; asserted so this stays true
+            # if the schema or query ever changes, rather than silently
+            # returning None where every caller expects a real id.
+            assert cursor.lastrowid is not None
             return cursor.lastrowid
 
     def list_pending_orders(self) -> list[dict]:
@@ -672,6 +677,7 @@ class SignalStore:
                 "INSERT INTO config_routing_rules (source, destinations, symbol_filter) VALUES (?, ?, ?)",
                 (source, json.dumps(destinations), json.dumps(symbol_filter) if symbol_filter else None),
             )
+            assert cursor.lastrowid is not None  # see save_order_result's identical comment
             return cursor.lastrowid
 
     def update_config_routing_rule(

@@ -36,3 +36,6 @@ playwright>=1.40         # test-only: real-browser dashboard tests (C14 XSS regr
                          # CI installs the matching browser separately (`playwright install chromium`) --
                          # see .github/workflows/signal-copier-ci.yml.
 axe-playwright-python>=0.1.8  # test-only: C33/C34 -- runs axe-core against the real rendered dashboard
+ruff>=0.6                # dev-only: lint (C38, see pyproject.toml's [tool.ruff] for the exact scoped ruleset)
+mypy>=1.11               # dev-only: type checking (C38, see pyproject.toml's [tool.mypy])
+types-PyYAML>=6.0        # dev-only: stubs for app/routing.py's `import yaml` (mypy has none bundled)

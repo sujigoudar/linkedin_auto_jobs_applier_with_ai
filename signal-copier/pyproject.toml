@@ -40,3 +40,26 @@
 source_paths = ["app"]
 only_mutate = ["app/auth.py"]
 pytest_add_cli_args_test_selection = ["tests/test_owner_auth.py", "tests/test_sms_twilio_sender_authorization.py"]
+
+# C38 (bounded): static analysis -- ruff (lint) + mypy (type checking).
+# Neither existed at all before this; both close a genuine gap, not busywork
+# added for its own sake.
+
+[tool.ruff]
+line-length = 120  # the codebase's own de facto style (many lines already run well past 88); not relitigated here
+
+[tool.ruff.lint]
+# F (pyflakes) and B (bugbear) are real-bug detectors: unused
+# imports/variables, unreachable code, mutable default args, etc. --
+# deliberately NOT the opinionated style families (E/W pycodestyle,
+# I import-sorting, UP pyupgrade): those would produce a repo-wide
+# reformatting diff unrelated to catching actual mistakes.
+select = ["F", "B"]
+# FastAPI's own documented Depends()-as-a-default-argument idiom (every
+# `_owner: dict = Depends(require_owner)` route in app/main.py )-- not a
+# real "mutable default argument" bug, just the framework's DI pattern.
+ignore = ["B008"]
+
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true

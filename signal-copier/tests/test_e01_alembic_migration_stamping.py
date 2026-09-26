@@ -5,11 +5,10 @@ already-stamped database is never re-stamped.
 """
 import sqlite3
 
-import pytest
 
 from alembic import command
 from app.db import SCHEMA, SignalStore, _alembic_config
-from app.models import OrderResult, OrderStatus, Side, Signal
+from app.models import Side, Signal
 
 
 def test_fresh_database_is_stamped_at_head(tmp_path):
@@ -43,7 +42,7 @@ def test_legacy_pre_alembic_database_is_stamped_not_recreated(tmp_path):
     conn.commit()
     conn.close()
 
-    store = SignalStore(db_path)
+    SignalStore(db_path)
 
     conn = sqlite3.connect(db_path)
     version_row = conn.execute("SELECT version_num FROM alembic_version").fetchone()

@@ -74,6 +74,7 @@ def simulate_bar_fill(
         # of two simultaneous conditions "happened first" at a single price point.
         return BarResult(BarOutcome.AMBIGUOUS)
     if gapped_through_stop:
+        assert stop_price is not None  # gapped_through_stop is only ever True when it is
         # FIN-03: claiming a fill at the stop LEVEL is only honest when that
         # level actually fell within this bar's own traded range -- when the
         # gap carried price PAST the bar's entire range (the level was never
@@ -85,6 +86,7 @@ def simulate_bar_fill(
         fill = stop_price if bar.low <= stop_price <= bar.high else bar.open
         return BarResult(BarOutcome.STOP_ONLY, fill_price=fill)
     if gapped_through_target:
+        assert target_price is not None  # gapped_through_target is only ever True when it is
         fill = target_price if bar.low <= target_price <= bar.high else bar.open
         return BarResult(BarOutcome.TARGET_ONLY, fill_price=fill)
 

@@ -17,7 +17,7 @@ from fastapi.testclient import TestClient
 import app.main as main_module
 from app import config as app_config
 from app.db import SignalStore
-from app.models import DestinationAccount, OrderResult, OrderStatus, Side, Signal
+from app.models import DestinationAccount, OrderStatus, Side, Signal
 from app.routing import RoutingConfig, RoutingRule
 
 

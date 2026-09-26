@@ -1,0 +1,18 @@
+version: 2
+updates:
+  # signal-copier is a separate project (see its own README) with its own
+  # requirements.txt -- scoped here rather than to the parent repo's own
+  # dependencies, which this session has no context on.
+  - package-ecosystem: pip
+    directory: /signal-copier
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+
+  # Pins like actions/checkout@v3 never update themselves; this covers both
+  # signal-copier's own workflow and the parent repo's.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5

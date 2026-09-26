@@ -92,7 +92,7 @@ class AlpacaBroker(BrokerAdapter):
                 message=str(exc),
             )
 
-        order_payload = {
+        order_payload: dict[str, object] = {
             "symbol": symbol,
             "qty": str(quantity),
             "side": signal.side.value,

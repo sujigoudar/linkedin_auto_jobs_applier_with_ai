@@ -40,6 +40,18 @@ jobs:
       - name: Install Playwright's Chromium (C14/C33/C34)
         run: playwright install --with-deps chromium
 
+      - name: Lint (C38, ruff -- see pyproject.toml for the scoped ruleset)
+        run: ruff check .
+
+      - name: Type check (C38, mypy -- see pyproject.toml for scope/config)
+        run: |
+          python -m mypy app/db.py app/engine.py app/reconciliation.py app/lifecycle/manager.py app/routing.py \
+               app/risk.py app/models.py app/main.py app/backtest/simulator.py app/sources/webhook.py \
+               app/sources/text_parser.py app/sources/base.py app/brokers/alpaca.py app/brokers/base.py \
+               app/brokers/paper.py app/brokers/ccxt_broker.py app/brokers/signalstack.py app/brokers/ninjatrader.py \
+               app/config.py app/auth.py app/rate_limit.py app/context/sec_edgar.py app/context/fred.py app/context/fx.py \
+               --follow-imports=silent
+
       - name: Run tests
         run: pytest -q
 

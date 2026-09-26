@@ -114,8 +114,6 @@ def test_fx_is_keyless_and_needs_no_extra_config(client):
         request = httpx.Request("GET", url)
         return httpx.Response(200, json={"base": "USD", "rates": {"EUR": 0.92}}, request=request)
 
-    import app.context.fx as fx_module
-
     original = httpx.AsyncClient.get
     httpx.AsyncClient.get = fake_get
     try:

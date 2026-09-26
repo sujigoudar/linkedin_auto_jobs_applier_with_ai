@@ -5,7 +5,6 @@ capacity/window (monkeypatched onto each module's real limiter instance)
 so the test can observe real throttling in well under a second, rather
 than waiting out the real 1s/60s windows these modules use in production.
 """
-import asyncio
 import time
 
 import httpx

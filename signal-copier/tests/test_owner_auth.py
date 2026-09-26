@@ -14,7 +14,7 @@ from fastapi.testclient import TestClient
 
 import app.main as main_module
 from app import config as app_config
-from app.auth import _credential_epoch, _session_or_none, create_session
+from app.auth import _credential_epoch, _session_or_none
 from app.db import SignalStore
 from app.models import DestinationAccount
 

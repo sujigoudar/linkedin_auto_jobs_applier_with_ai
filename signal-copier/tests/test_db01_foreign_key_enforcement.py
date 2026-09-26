@@ -9,6 +9,8 @@ Reproduces the audit's exact case
 plus the real call paths that would otherwise violate it once enforcement
 is actually on.
 """
+import sqlite3
+
 import pytest
 
 from app.brokers.paper import PaperBroker
@@ -30,7 +32,7 @@ def test_audits_exact_case_foreign_keys_are_enabled(store):
 
 
 def test_order_referencing_an_unsaved_signal_is_rejected(store):
-    with pytest.raises(Exception):
+    with pytest.raises(sqlite3.IntegrityError):
         store.save_order_result(OrderResult(account_id="acct1", status=OrderStatus.FILLED, signal_id="never-saved"))
 
 

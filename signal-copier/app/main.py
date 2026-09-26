@@ -14,7 +14,7 @@ from collections import defaultdict
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import httpx
 from fastapi import Cookie, Depends, FastAPI, Form, Header, HTTPException, Query, Request, Response
@@ -31,6 +31,7 @@ from app.backtest.cost_stress import apply_cost_stress
 from app.backtest.models import CsvPriceHistoryProvider
 from app.backtest.replay import BacktestEngine
 from app.brokers.alpaca import AlpacaBroker
+from app.brokers.base import BrokerAdapter
 from app.brokers.ccxt_broker import CCXTBroker
 from app.brokers.ibkr import IBKRBroker
 from app.brokers.mt4_mt5 import MetaApiBroker, MT5Broker
@@ -61,6 +62,7 @@ from app.sources.discord import DiscordSource
 from app.sources.mt4_mt5 import MetaApiSource
 from app.sources.rithmic import RithmicSource
 from app.sources.slack import SlackSource
+from app.sources.base import SourceAdapter
 from app.sources.sms_twilio import TwilioSMSSource
 from app.sources.telegram import TelegramSource
 from app.sources.twitter import TwitterSource
@@ -86,7 +88,12 @@ brokers = {
 # These brokers need optional packages installed (and, for Rithmic, connection
 # credentials up front); only register them if available so the paper-only
 # quickstart doesn't need every dependency.
-_optional_brokers = [("ccxt", CCXTBroker), ("ibkr", IBKRBroker), ("mt4_mt5", MT5Broker), ("mt4_mt5_metaapi", MetaApiBroker)]
+_optional_brokers: list[tuple[str, Callable[[], BrokerAdapter]]] = [
+    ("ccxt", CCXTBroker),
+    ("ibkr", IBKRBroker),
+    ("mt4_mt5", MT5Broker),
+    ("mt4_mt5_metaapi", MetaApiBroker),
+]
 if config.RITHMIC_USER:
     _optional_brokers.append(
         (
@@ -126,7 +133,7 @@ price_monitor = PriceMonitor(
 )
 
 # Pull-based sources only start if fully configured via env vars.
-_background_sources = []
+_background_sources: list[SourceAdapter] = []
 if config.TELEGRAM_BOT_TOKEN and config.TELEGRAM_CHAT_ID:
     _background_sources.append(
         TelegramSource(engine.handle_signal, config.TELEGRAM_BOT_TOKEN, config.TELEGRAM_CHAT_ID)
@@ -188,9 +195,12 @@ async def lifespan(app: FastAPI):
     await reconciler.stop()
     for source in _background_sources:
         await source.stop()
-    for broker_name in ("signalstack", "alpaca", "ninjatrader", "ccxt", "ibkr", "mt4_mt5_metaapi", "rithmic"):
-        if broker_name in brokers:
-            await brokers[broker_name].close()
+    # Every registered broker, not a hand-maintained subset: BrokerAdapter.close()
+    # is a safe no-op by default (see its docstring), so this used to silently
+    # skip whichever brokers weren't named here -- MT5Broker ("mt4_mt5") was
+    # missing, leaking its MetaTrader5 connections on every shutdown.
+    for broker in brokers.values():
+        await broker.close()
 
 
 app = FastAPI(title="Trading Signal Copier", lifespan=lifespan)
@@ -198,7 +208,7 @@ app = FastAPI(title="Trading Signal Copier", lifespan=lifespan)
 # C06: HTTP abuse controls on the ingress routes -- see app/rate_limit.py's
 # module docstring for exactly what this does and doesn't cover.
 app.state.limiter = limiter
-app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)  # type: ignore[arg-type]  # slowapi's handler is typed narrower (RateLimitExceeded, not the generic Exception Starlette expects) than the real, correct runtime behavior needs
 app.add_middleware(SlowAPIMiddleware)
 
 # C12/C13: locally-pinned Chart.js/Tabulator vendor files (no CDN, no build
@@ -737,9 +747,9 @@ async def list_provider_overrides(_owner: dict = Depends(require_owner_read)) ->
     actually do to my sizing/protection here" is answerable without
     reading YAML and doing the account->provider->analyst merge by hand.
     See app/providers.py for the precedence rules."""
-    result = []
+    result: list[dict[str, Any]] = []
     for provider in provider_registry.providers.values():
-        entry = {
+        entry: dict[str, Any] = {
             "provider_id": provider.provider_id,
             "display_name": provider.display_name,
             "settings": vars(provider.settings),

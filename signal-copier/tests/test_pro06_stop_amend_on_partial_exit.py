@@ -163,6 +163,7 @@ async def test_amend_correction_after_partial_fill_uses_replace_not_a_new_stop(a
     await manager.resolve_pending_exit(account, "AAPL", confirmed_filled_quantity=8.0, remainder_cancelled=True)
 
     assert place_protective_stop_calls == []  # corrected via amend, never a brand-new stop
+    assert lifecycle.stop.broker_order_id == original_stop_order_id  # same resting order, not replaced
     assert lifecycle.confirmed_owned_quantity == 54.0
     assert lifecycle.stop.protected_quantity == 54.0
     assert lifecycle.stop.status == ProtectionStatus.STOP_CONFIRMED

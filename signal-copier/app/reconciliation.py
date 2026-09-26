@@ -168,6 +168,7 @@ class OrderReconciler:
         return corrected
 
     async def _reconcile_broker_positions(self) -> int:
+        assert self.lifecycle_manager is not None  # only caller (reconcile_once) checks this first
         corrected = 0
         for lifecycle in list(self.lifecycle_manager.list_open_lifecycles()):
             exit_has_no_order_id_to_poll = (
@@ -207,6 +208,7 @@ class OrderReconciler:
                 # was actually requested, since the venue could also have
                 # moved for an unrelated reason.
                 pending = lifecycle.pending_exit
+                assert pending is not None  # exit_has_no_order_id_to_poll guarantees this
                 filled = min(
                     max(0.0, lifecycle.confirmed_owned_quantity - broker_owned), pending.requested_quantity
                 )

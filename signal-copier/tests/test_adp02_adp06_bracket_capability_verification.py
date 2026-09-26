@@ -66,7 +66,7 @@ def test_a_broker_with_only_a_verified_standalone_stop_still_qualifies():
 
 @pytest.mark.asyncio
 async def test_audits_exact_case_ccxt_rejects_unqualified_bracket_params():
-    ccxt = pytest.importorskip("ccxt")
+    pytest.importorskip("ccxt")
     from app.brokers.ccxt_broker import CCXTBroker
     from app.models import Signal
 

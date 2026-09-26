@@ -48,7 +48,7 @@ async def get_series_observations(
             "FRED_API_KEY is not set -- register a free key at "
             "https://fredaccount.stlouisfed.org/apikeys"
         )
-    params = {
+    params: dict[str, str | int] = {
         "series_id": series_id,
         "api_key": config.FRED_API_KEY,
         "file_type": "json",

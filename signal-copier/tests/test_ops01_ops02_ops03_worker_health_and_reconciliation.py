@@ -21,7 +21,7 @@ import pytest
 from app.brokers.paper import PaperBroker
 from app.db import SignalStore
 from app.lifecycle.manager import PositionLifecycleManager
-from app.models import DestinationAccount, OrderStatus, Side, Signal
+from app.models import DestinationAccount, Side, Signal
 from app.pricing import PriceMonitor
 from app.reconciliation import OrderReconciler
 
@@ -31,7 +31,6 @@ async def test_audits_exact_case_all_failed_reads_not_usable_observation_success
     broker = PaperBroker()
     account = DestinationAccount(account_id="acct1", broker="paper", managed_lifecycle=True)
     manager = PositionLifecycleManager(brokers={"paper": broker})
-    manager.start_plan.__self__  # no-op, keep import used
 
     from app.lifecycle.models import PositionPlan
 
@@ -144,6 +143,6 @@ async def test_broker_position_readback_never_corrects_on_an_unknown_read(tmp_pa
     broker.get_broker_position = unknown_position
 
     reconciler = OrderReconciler(store, {"paper": broker}, lifecycle_manager=manager)
-    corrected = await reconciler.reconcile_once()
+    await reconciler.reconcile_once()
 
     assert manager.get_lifecycle("acct1", "AAPL").confirmed_owned_quantity == 10

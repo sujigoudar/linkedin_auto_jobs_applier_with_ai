@@ -1067,6 +1067,24 @@ on every run, not a change to what gets installed or how tests run
 locally (`pip install -r requirements.txt` still works fine for local
 dev).
 
+**C38:** CI also runs `ruff check .` (lint) and a scoped `mypy` type
+check (`app/`'s core engine/lifecycle/reconciliation/db/broker/context
+modules — not the optional-dependency stub adapters like Telegram/IBKR/
+MT5, which need their real packages installed to type-check meaningfully).
+Neither existed before this. `ruff`'s ruleset is deliberately narrow
+(`F` pyflakes + `B` bugbear, real-bug detectors like unused imports/
+variables and mutable-default-argument traps — not the opinionated style
+families that would produce a repo-wide reformatting diff unrelated to
+catching mistakes). The `mypy` pass found several real, if narrow, gaps
+— e.g. `MT5Broker` was never actually closed on shutdown (a hand-maintained
+broker-name list in `app/main.py` had drifted out of sync and silently
+omitted it; now every registered broker's `close()` is called
+unconditionally, a safe no-op by default) — alongside the more common
+class of "mypy can't see an invariant a boolean/earlier check already
+guarantees," each closed with a narrow, commented `assert` rather than
+a broad `# type: ignore`. See `pyproject.toml`'s `[tool.ruff]`/
+`[tool.mypy]` sections for the exact scope and rationale.
+
 ## Running with Docker
 
 ```bash

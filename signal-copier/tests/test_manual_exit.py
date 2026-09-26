@@ -13,7 +13,7 @@ from app.db import SignalStore
 from app.engine import SignalCopierEngine
 from app.lifecycle.manager import PositionLifecycleManager
 from app.models import DestinationAccount, OrderStatus, Signal, Side
-from app.routing import RoutingConfig, RoutingRule
+from app.routing import RoutingConfig
 
 
 @pytest.fixture

@@ -669,6 +669,7 @@ class PositionLifecycleManager:
                 # down to what will remain instead: the position never has a
                 # moment with zero coverage, only the shares actually being
                 # sold are freed.
+                assert lifecycle.stop.broker_order_id is not None  # had_stop guarantees this
                 replaced = await broker.replace_stop_quantity(
                     account, lifecycle.stop.broker_order_id, remaining_after_request, lifecycle.stop.desired_price
                 )
@@ -679,6 +680,7 @@ class PositionLifecycleManager:
                     amended_stop = True
 
             if had_stop and not amended_stop:
+                assert lifecycle.stop.broker_order_id is not None  # had_stop guarantees this
                 cancelled = await broker.cancel_order(account, lifecycle.stop.broker_order_id)
                 if not cancelled:
                     # Could mean "not supported," or "the stop may have already filled" — either
@@ -896,6 +898,7 @@ class PositionLifecycleManager:
         covering the same shares). Only when nothing was amended (the
         cancel-then-resubmit fallback path, for a broker with no amend
         capability) is a fresh stop actually placed."""
+        assert lifecycle.stop.desired_price is not None  # both call sites check this first
         if stop_amended and lifecycle.stop.broker_order_id:
             replaced = await broker.replace_stop_quantity(
                 account, lifecycle.stop.broker_order_id, remaining, lifecycle.stop.desired_price
@@ -1000,6 +1003,7 @@ class PositionLifecycleManager:
         policy's own prior floor and the stop's current desired price,
         never just one or the other."""
         trailing = lifecycle.plan.trailing
+        assert trailing is not None  # only caller (on_price_update) checks this first
         existing = [v for v in (trailing.floor_price, lifecycle.stop.desired_price) if v is not None]
         if lifecycle.plan.side == Side.BUY:
             current_best = max(existing) if existing else None

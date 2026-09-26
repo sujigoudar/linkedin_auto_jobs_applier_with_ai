@@ -9,7 +9,6 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.db import SignalStore
-from app.models import OrderStatus, Signal, Side
 
 
 @pytest.fixture
@@ -194,7 +193,7 @@ def test_deleting_a_provider_reverts_to_account_defaults(client):
         client.post("/providers/tradingview", json={"multiplier": 0.25})
         client.delete("/providers/tradingview")
 
-        response = client.post(
+        client.post(
             "/webhook/tradingview", json={"symbol": "BTCUSDT", "side": "buy", "quantity": 100.0}
         )
 

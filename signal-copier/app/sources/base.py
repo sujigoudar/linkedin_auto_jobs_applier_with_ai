@@ -8,11 +8,16 @@ execution — is handled by the engine.
 from __future__ import annotations
 
 import abc
-from typing import Awaitable, Callable
+from typing import Any, Awaitable, Callable
 
 from app.models import Signal
 
-SignalHandler = Callable[[Signal], Awaitable[None]]
+#: Every adapter calls `await self.on_signal(signal)` and discards whatever
+#: comes back -- in practice always `SignalCopierEngine.handle_signal`,
+#: which returns `list[OrderResult]` (used by the direct HTTP webhook route,
+#: not by any adapter). `Awaitable[Any]` reflects that the return value is
+#: part of no adapter's contract, not a hidden assumption that it's None.
+SignalHandler = Callable[[Signal], Awaitable[Any]]
 
 
 class SourceAdapter(abc.ABC):

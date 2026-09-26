@@ -4,7 +4,6 @@ import pytest
 
 from app.backtest.models import HistoricalBar, PriceHistoryProvider
 from app.backtest.replay import BacktestEngine, TradeOutcome
-from app.models import Side
 
 
 class _FakeProvider(PriceHistoryProvider):

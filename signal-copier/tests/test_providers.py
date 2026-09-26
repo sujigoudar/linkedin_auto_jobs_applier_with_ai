@@ -1,5 +1,3 @@
-import pytest
-
 from app.providers import (
     AnalystConfig,
     ProviderConfig,

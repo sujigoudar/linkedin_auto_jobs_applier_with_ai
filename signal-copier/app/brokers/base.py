@@ -49,6 +49,14 @@ class BrokerAdapter(abc.ABC):
         happened.
         """
 
+    async def close(self) -> None:
+        """Release any held connection/session (an httpx client, an
+        exchange SDK session, a broker API connection). Override only if
+        there's actually something to release — the default here is a
+        no-op, not a missing capability (app/main.py's lifespan shutdown
+        calls this on every registered broker unconditionally)."""
+        return None
+
     async def get_order_status(
         self, account: DestinationAccount, broker_order_id: str
     ) -> OrderResult | None:

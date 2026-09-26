@@ -283,6 +283,7 @@ def parse_text_signal(
     disposition = classify_text_signal(text, source=source, asset_class=asset_class, analyst=analyst)
     if disposition.outcome is not DispositionOutcome.PARSED:
         raise SignalValidationError(f"{disposition.detail}: {text!r}")
+    assert disposition.signal is not None  # PARSED always sets it -- see classify_text_signal
     return disposition.signal
 
 

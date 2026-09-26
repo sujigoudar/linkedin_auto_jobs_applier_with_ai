@@ -2,7 +2,7 @@ import pytest
 
 from app.brokers.base import BrokerAdapter
 from app.db import SignalStore
-from app.models import DestinationAccount, OrderResult, OrderStatus, Side, Signal
+from app.models import OrderResult, OrderStatus, Side, Signal
 from app.reconciliation import OrderReconciler
 
 
@@ -59,7 +59,7 @@ async def test_still_pending_order_is_left_alone(store):
 
 @pytest.mark.asyncio
 async def test_confirmed_fill_with_same_quantity_leaves_position_unchanged(store):
-    row_id = _seed_pending_order(store)
+    _seed_pending_order(store)
     confirmed = OrderResult(
         account_id="acct1", status=OrderStatus.FILLED, signal_id="", filled_quantity=2.0, message="filled"
     )
@@ -140,7 +140,7 @@ async def test_crash_between_position_correction_and_order_status_update_does_no
     original = store.correct_position_and_update_order_status
 
     def commit_then_interrupt(*args, **kwargs):
-        result = original(*args, **kwargs)  # real commit, not a fabricated position row
+        original(*args, **kwargs)  # real commit, not a fabricated position row
         raise ProcessLoss("crashed after the correction committed")
 
     monkeypatch.setattr(store, "correct_position_and_update_order_status", commit_then_interrupt)
