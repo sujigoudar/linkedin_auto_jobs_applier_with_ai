@@ -765,6 +765,36 @@ class SignalStore:
             for r in rows
         ]
 
+    def list_orders_for_signal(self, signal_id: str) -> list[dict]:
+        """Every order already recorded against this exact signal id — what
+        SIG-01's engine-level dedup checks before routing/submitting a
+        signal again: if this id already produced order results, those are
+        replayed instead of re-submitting to every destination a second
+        time."""
+        query = """SELECT id, account_id, broker, symbol, side, requested_quantity, signal_id,
+                          status, broker_order_id, filled_quantity, filled_price, message, executed_at
+                   FROM orders WHERE signal_id = ? ORDER BY id ASC"""
+        with self._connect() as conn:
+            rows = conn.execute(query, (signal_id,)).fetchall()
+        return [
+            {
+                "id": r[0],
+                "account_id": r[1],
+                "broker": r[2],
+                "symbol": r[3],
+                "side": r[4],
+                "requested_quantity": r[5],
+                "signal_id": r[6],
+                "status": r[7],
+                "broker_order_id": r[8],
+                "filled_quantity": r[9],
+                "filled_price": r[10],
+                "message": r[11],
+                "executed_at": r[12],
+            }
+            for r in rows
+        ]
+
     def list_recent_orders(self, limit: int = 50, account_id: str | None = None) -> list[dict]:
         query = """SELECT id, account_id, broker, symbol, side, requested_quantity, signal_id,
                           status, broker_order_id, filled_quantity, filled_price, message, executed_at

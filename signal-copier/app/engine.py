@@ -69,6 +69,7 @@ import asyncio
 import logging
 from collections import defaultdict
 from dataclasses import replace
+from datetime import datetime, timezone
 
 from app.brokers.base import BrokerAdapter
 from app.db import SignalStore
@@ -115,6 +116,27 @@ class SignalCopierEngine:
         return self.provider_registry.effective_settings(account_defaults, signal.source, signal.analyst)
 
     async def handle_signal(self, signal: Signal) -> list[OrderResult]:
+        # SIG-01: this exact signal id may already have been processed --
+        # e.g. a caller that retries handle_signal itself after a timeout
+        # without knowing whether the first attempt's orders actually went
+        # through. Replay those recorded results rather than resolving
+        # destinations and submitting to every broker a second time. This
+        # is a distinct protection from routing.destinations_for's own
+        # per-signal dedup (which stops one signal fanning out to the same
+        # account twice) and from the webhook/Twilio routes' own replay
+        # guards (which stop the SAME external delivery producing two
+        # DIFFERENT signal ids in the first place) -- see those for what
+        # each specifically covers.
+        already_processed = self.store.list_orders_for_signal(signal.id)
+        if already_processed:
+            logger.info(
+                "signal id=%s already produced %d order result(s); replaying them instead of "
+                "re-submitting to every destination",
+                signal.id,
+                len(already_processed),
+            )
+            return [_order_result_from_row(row) for row in already_processed]
+
         self.store.save_signal(signal)
 
         destinations = self.routing.destinations_for(signal.source, signal.symbol)
@@ -536,3 +558,20 @@ class SignalCopierEngine:
             # its own order-result row, so no separate save here.
             result = await self._resolve_and_submit_plain_close(close_signal, account, symbol, broker)
         return result
+
+
+def _order_result_from_row(row: dict) -> OrderResult:
+    """Reconstruct an OrderResult from an `orders` table row — used only to
+    replay already-recorded results for a signal id `handle_signal` has
+    already processed (see SIG-01)."""
+    executed_at = row["executed_at"]
+    return OrderResult(
+        account_id=row["account_id"],
+        status=OrderStatus(row["status"]),
+        signal_id=row["signal_id"],
+        broker_order_id=row["broker_order_id"],
+        filled_quantity=row["filled_quantity"],
+        filled_price=row["filled_price"],
+        message=row["message"] or "",
+        executed_at=datetime.fromisoformat(executed_at) if executed_at else datetime.now(timezone.utc),
+    )

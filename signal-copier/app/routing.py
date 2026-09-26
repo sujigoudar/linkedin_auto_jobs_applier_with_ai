@@ -23,16 +23,27 @@ class RoutingConfig:
     accounts: dict[str, DestinationAccount] = field(default_factory=dict)
 
     def destinations_for(self, source: str, symbol: str) -> list[DestinationAccount]:
+        # SIG-01: two rules for the same source that both list the same
+        # destination account (e.g. a catch-all rule and a
+        # symbol-filtered one, or simple config duplication) used to
+        # append that account once per matching rule -- routing a single
+        # signal to the SAME account more than once, which submitted
+        # duplicate orders for it. Each distinct account_id is routed to
+        # at most once per signal, keeping the first rule's match order.
         accounts: list[DestinationAccount] = []
+        seen_account_ids: set[str] = set()
         for rule in self.rules:
             if rule.source != source:
                 continue
             if rule.symbol_filter and symbol not in rule.symbol_filter:
                 continue
             for account_id in rule.destinations:
+                if account_id in seen_account_ids:
+                    continue
                 account = self.accounts.get(account_id)
                 if account and account.enabled:
                     accounts.append(account)
+                    seen_account_ids.add(account_id)
         return accounts
 
 

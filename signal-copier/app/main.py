@@ -366,13 +366,31 @@ async def receive_webhook(
     source_name: str,
     request: Request,
     x_webhook_secret: str | None = Header(default=None),
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> dict:
+    """SIG-01: an alerting platform (TradingView included) can and does
+    redeliver the same webhook on a timeout/connection error without
+    knowing whether the first attempt was received, and `webhook_source.parse`
+    stamps a fresh random Signal.id every call -- so `handle_signal`'s own
+    dedup-by-signal-id (see app/engine.py) cannot recognize a resend of the
+    exact same alert as a duplicate; only the sender knows it's a resend.
+    An optional `Idempotency-Key` header (the same header/table
+    `POST /positions/.../close` and `POST /accounts/.../flatten` already
+    use) lets a sender that can set custom headers mark each distinct
+    alert with a stable key; a replayed request with the same key
+    replays the cached response instead of submitting again."""
     if not config.WEBHOOK_SHARED_SECRET:
         # Fail closed: an unconfigured secret disables this ingress, it does
         # not make it public. Set WEBHOOK_SHARED_SECRET to accept signals here.
         raise HTTPException(status_code=503, detail="webhook ingress is not configured (set WEBHOOK_SHARED_SECRET)")
     if x_webhook_secret != config.WEBHOOK_SHARED_SECRET:
         raise HTTPException(status_code=401, detail="invalid webhook secret")
+
+    cache_key = f"webhook:{source_name}:{idempotency_key}" if idempotency_key else None
+    if cache_key:
+        cached = store.get_idempotent_response(cache_key)
+        if cached is not None:
+            return cached
 
     try:
         payload = await request.json()
@@ -388,7 +406,10 @@ async def receive_webhook(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     results = await engine.handle_signal(signal)
-    return _orders_response(signal.id, results)
+    response = _orders_response(signal.id, results)
+    if cache_key:
+        store.save_idempotent_response(cache_key, response)
+    return response
 
 
 @app.post("/sms/twilio")
@@ -428,13 +449,32 @@ async def receive_sms(
         # from an unrecognized sender is still refused.
         raise HTTPException(status_code=403, detail="sender is not an authorized trading source")
 
+    # SIG-01: Twilio itself can and does redeliver the same inbound-message
+    # webhook (e.g. if this service's response is slow or the connection
+    # drops before Twilio sees a 200), and `sms_source.parse` stamps a
+    # fresh random Signal.id each call, so a resend would otherwise be
+    # processed as an entirely new signal and submit a second time.
+    # `MessageSid` is Twilio's own stable identifier for the message being
+    # delivered -- unlike the webhook route's Idempotency-Key, no
+    # cooperation from the sender is needed since Twilio always includes
+    # it.
+    message_sid = form.get("MessageSid")
+    cache_key = f"twilio_sms:{message_sid}" if message_sid else None
+    if cache_key:
+        cached = store.get_idempotent_response(cache_key)
+        if cached is not None:
+            return cached
+
     try:
         signal = sms_source.parse(body, analyst=from_number or None)
     except SignalValidationError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     results = await engine.handle_signal(signal)
-    return _orders_response(signal.id, results)
+    response = _orders_response(signal.id, results)
+    if cache_key:
+        store.save_idempotent_response(cache_key, response)
+    return response
 
 
 @app.get("/positions")
