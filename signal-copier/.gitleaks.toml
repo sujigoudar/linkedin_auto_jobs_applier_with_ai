@@ -12,7 +12,7 @@ title = "signal-copier gitleaks config"
 useDefault = true
 
 [allowlist]
-description = "Known non-secret test fixture values"
+description = "Known non-secret test fixture values, and .env.example -- every credential-shaped line there is an intentionally blank placeholder (NAME=), never a real value; see that file's own header comment."
 regexes = [
   '''test-owner-password''',
   '''test-session-secret''',
@@ -22,4 +22,5 @@ regexes = [
 ]
 paths = [
   '''signal-copier/tests/.*''',
+  '''signal-copier/\.env\.example$''',
 ]
