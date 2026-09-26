@@ -1,0 +1,35 @@
+name: Isolated pinned-source audit export
+on:
+  push:
+    branches: ['audit/fccf57a-e2e-20260926']
+permissions:
+  contents: read
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out the exact application revision, without persistent credentials
+        uses: actions/checkout@v4
+        with:
+          repository: sujigoudar/linkedin_auto_jobs_applier_with_ai
+          ref: fccf57affd8515fe059b1af854856828078a737e
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Export source without executing application code
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = 'fccf57affd8515fe059b1af854856828078a737e'
+          mkdir -p "$RUNNER_TEMP/audit-export"
+          git archive --format=zip --output="$RUNNER_TEMP/audit-export/source-fccf57a.zip" HEAD signal-copier .github/workflows LICENSE
+          git ls-tree -r HEAD -- signal-copier .github/workflows LICENSE > "$RUNNER_TEMP/audit-export/git-tree.txt"
+          sha256sum "$RUNNER_TEMP/audit-export/source-fccf57a.zip" > "$RUNNER_TEMP/audit-export/archive.sha256"
+          printf '%s\n' 'fccf57affd8515fe059b1af854856828078a737e' > "$RUNNER_TEMP/audit-export/revision.txt"
+      - name: Retain pinned source for local, credential-free testing
+        uses: actions/upload-artifact@v4
+        with:
+          name: source-fccf57a
+          path: ${{ runner.temp }}/audit-export/
+          retention-days: 7
+          if-no-files-found: error
