@@ -51,6 +51,14 @@ class TradeOutcome(str, enum.Enum):
     NO_PRICE_DATA = "no_price_data"  # the price provider has no bars for this symbol/period at all
     NO_EXIT_LEVELS = "no_exit_levels"  # signal has neither stop_loss nor take_profit resolved — nothing to simulate
     NOT_REPLAYED = "not_replayed"  # e.g. a raw CLOSE signal — depends on runtime position state this engine doesn't reconstruct
+    #: FIN-02: a stop/target genuinely fired, but no trustworthy cash P&L
+    #: can be computed for it -- quantity is missing (silently treating
+    #: that as 0 fabricated an exact-zero "win"), or the instrument needs
+    #: contract metadata this system doesn't track (an option's real cash
+    #: P&L is (exit - entry) * quantity * the contract's multiplier, which
+    #: nothing here records -- share-style math would be wrong by whatever
+    #: that multiplier actually is).
+    EXIT_UNSCORABLE = "exit_unscorable"
 
 
 @dataclass
@@ -143,6 +151,7 @@ class BacktestReport:
             "no_price_data": self.count(TradeOutcome.NO_PRICE_DATA),
             "no_exit_levels": self.count(TradeOutcome.NO_EXIT_LEVELS),
             "not_replayed": self.count(TradeOutcome.NOT_REPLAYED),
+            "exit_unscorable": self.count(TradeOutcome.EXIT_UNSCORABLE),
             "resolved_trades": len(self.resolved_trades),
             "win_rate": self.win_rate,
             "total_pnl": self.total_pnl,
@@ -207,10 +216,28 @@ class BacktestEngine:
                 return ReplayedTrade(**base, outcome=TradeOutcome.AMBIGUOUS, exit_time=bar.timestamp)
 
             exit_price = result.fill_price
-            quantity = row.get("quantity") or 0.0
+            quantity = row.get("quantity")
             entry_price = row["price"]
+
+            if quantity is None or row.get("asset_class") == "option":
+                # FIN-02: don't fabricate a cash P&L -- see EXIT_UNSCORABLE's
+                # docstring for why a missing quantity or an option's
+                # untracked contract multiplier both block this.
+                return ReplayedTrade(
+                    **base,
+                    outcome=TradeOutcome.EXIT_UNSCORABLE,
+                    exit_time=bar.timestamp,
+                    exit_price=exit_price,
+                    pnl=None,
+                    note="quantity is missing" if quantity is None else "option contract multiplier is not tracked",
+                )
+
             pnl = (exit_price - entry_price) * quantity if side == Side.BUY else (entry_price - exit_price) * quantity
-            outcome = TradeOutcome.WIN if result.outcome == BarOutcome.TARGET_ONLY else TradeOutcome.LOSS
+            # FIN-02: outcome must reflect the actual economic result, not
+            # which level fired -- a stop that fires at a price still above
+            # entry (e.g. a trailing/breakeven stop) is a real profit, and
+            # labeling it LOSS just because it was "the stop" is wrong.
+            outcome = TradeOutcome.WIN if pnl > 0 else TradeOutcome.LOSS
             return ReplayedTrade(
                 **base, outcome=outcome, exit_time=bar.timestamp, exit_price=exit_price, pnl=pnl
             )
