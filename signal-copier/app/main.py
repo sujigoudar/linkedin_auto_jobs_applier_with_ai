@@ -40,6 +40,7 @@ from app.context import sec_edgar
 from app.db import SignalStore
 from app.economics import compute_account_economics
 from app.engine import SignalCopierEngine
+from app.metrics import render_metrics
 from app.errors import SignalValidationError
 from app.lifecycle.manager import PositionLifecycleManager
 from app.pricing import PriceMonitor
@@ -276,6 +277,22 @@ async def health() -> dict:
         "price_monitor_ok": price_monitor_ok,
         "reconciler_ok": reconciler_ok,
     }
+
+
+@app.get("/metrics")
+async def metrics(_owner: dict = Depends(require_owner_read)) -> Response:
+    """C23/E10: private aggregate operational metrics (Prometheus text
+    format) -- owner-session protected, unlike /health, since these numbers
+    (pending-order counts, protection deficits) are operational detail an
+    anonymous caller has no business reading. See app/metrics.py for
+    exactly what is and isn't tracked."""
+    body = render_metrics(
+        store=store,
+        price_monitor=price_monitor,
+        reconciler=reconciler,
+        lifecycle_manager=lifecycle_manager,
+    )
+    return Response(content=body, media_type="text/plain; version=0.0.4; charset=utf-8")
 
 
 class LoginRequest(BaseModel):
