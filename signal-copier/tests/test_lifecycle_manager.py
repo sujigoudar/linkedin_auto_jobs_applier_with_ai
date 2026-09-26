@@ -79,6 +79,24 @@ async def test_plan_refused_when_broker_is_not_registered(manager):
 
 
 @pytest.mark.asyncio
+async def test_second_same_symbol_entry_is_refused_not_silently_merged(manager, account, broker):
+    """EXE-09: a second entry for the same (account, symbol) used to
+    silently overwrite the first lifecycle's dict entry via start_plan --
+    discarding its confirmed_owned_quantity/stop tracking entirely while
+    the first entry's real broker-side exposure and resting stop kept
+    existing, now completely untracked."""
+    await _enter(manager, broker, account, _plan(planned_quantity=20.0), 20.0)
+
+    error = manager.validate_plan(_plan(planned_quantity=10.0))
+
+    assert error is not None
+    assert "already exists" in error
+    # The original lifecycle must be untouched.
+    lifecycle = manager.get_lifecycle("acct1", "AAPL")
+    assert lifecycle.confirmed_owned_quantity == 20.0
+
+
+@pytest.mark.asyncio
 async def test_partial_fill_sets_confirmed_owned_not_planned_quantity(manager, account, broker):
     plan = _plan(planned_quantity=100.0)
     lifecycle = await _enter(manager, broker, account, plan, 62.0)

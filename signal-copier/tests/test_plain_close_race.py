@@ -110,3 +110,36 @@ async def test_provider_close_signal_races_manual_close_without_double_selling(s
     assert rejected[0].message == "no open position to close"
     assert broker.submitted_sells == [6.0]
     assert store.get_position("acct1", "AAPL") == 0.0
+
+
+@pytest.mark.asyncio
+async def test_two_independent_engine_instances_sharing_one_store_do_not_double_sell(store, broker):
+    """EXE-12: `_plain_close_locks` is an in-memory asyncio.Lock -- it only
+    serializes calls within ONE engine instance. Two independent engine
+    instances (e.g. two processes, or a bug that constructs a second
+    engine) sharing this same SignalStore have entirely separate lock
+    dicts and no real exclusion between them; the real cross-process
+    guard is SignalStore.claim_close's database-level UNIQUE constraint."""
+    account = DestinationAccount(account_id="acct1", broker="paper")
+    routing = RoutingConfig(
+        rules=[RoutingRule(source="tradingview", destinations=["acct1"])], accounts={"acct1": account}
+    )
+    # Two SEPARATE engines -- separate _plain_close_locks dicts -- sharing
+    # the same store and the same underlying (simulated) venue.
+    engine_a = SignalCopierEngine(routing=routing, brokers={"paper": broker}, store=store)
+    engine_b = SignalCopierEngine(routing=routing, brokers={"paper": broker}, store=store)
+
+    await broker.place_order(Signal(source="test", symbol="AAPL", side=Side.BUY), account, 10.0, "AAPL")
+    store.record_fill("acct1", "AAPL", Side.BUY, 10.0)
+
+    results = await asyncio.gather(
+        engine_a.close_position(account, "AAPL", reason="engine_a"),
+        engine_b.close_position(account, "AAPL", reason="engine_b"),
+    )
+
+    filled = [r for r in results if r.status == OrderStatus.FILLED]
+    rejected = [r for r in results if r.status == OrderStatus.REJECTED]
+    assert len(filled) == 1
+    assert len(rejected) == 1
+    assert broker.submitted_sells == [10.0]  # not two 10-share sells
+    assert store.get_position("acct1", "AAPL") == 0.0  # not -10

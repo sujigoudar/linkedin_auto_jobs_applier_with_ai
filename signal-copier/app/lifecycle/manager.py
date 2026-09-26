@@ -197,6 +197,23 @@ class PositionLifecycleManager:
                 "(no native bracket, no place_protective_stop implementation) — refusing to "
                 "enter under managed_lifecycle rather than admit it unprotected"
             )
+        existing = self._lifecycles.get((plan.account_id, plan.symbol))
+        if existing is not None and not existing.closed:
+            # EXE-09: a second same-symbol entry (e.g. a different analyst
+            # targeting the same account/symbol) used to silently overwrite
+            # this dict entry via start_plan, discarding the FIRST entry's
+            # entire lifecycle object -- its confirmed_owned_quantity, its
+            # stop record, everything -- while that first entry's real
+            # broker-side exposure and resting stop kept existing,
+            # completely untracked from then on. Reject outright rather
+            # than aggregate two independent intents under one identity;
+            # an explicit, released aggregation policy is a separate,
+            # deliberate feature, not an accident of dict-key collision.
+            return (
+                f"an active managed lifecycle already exists for account={plan.account_id} "
+                f"symbol={plan.symbol} (owned={existing.confirmed_owned_quantity}) — refusing to "
+                "start a second, independent entry under the same identity"
+            )
         return None
 
     def start_plan(self, plan: PositionPlan) -> PositionLifecycle:

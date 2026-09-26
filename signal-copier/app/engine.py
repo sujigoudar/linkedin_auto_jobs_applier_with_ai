@@ -310,31 +310,52 @@ class SignalCopierEngine:
         and recording the fill all happen under this (account_id, symbol)'s
         own lock, so a second close attempt arriving while the first is still
         in flight sees the position *after* the first one's fill is recorded,
-        not the same stale value the first one read."""
+        not the same stale value the first one read.
+
+        `_plain_close_locks` alone only serializes calls within THIS engine
+        instance/process (EXE-12: two independent engine instances sharing
+        the same underlying database have entirely separate lock objects
+        and no real exclusion between them -- a controlled reproduction
+        with two engines both reading a 10-unit position and both
+        submitting a 10-unit close left actual inventory at -10). The
+        `SignalStore.claim_close` claim below is the real cross-process
+        guard, enforced by the database itself via a UNIQUE constraint;
+        the in-memory lock stays as a fast, uncontended first check within
+        one process."""
         lock = self._plain_close_locks[(account.account_id, symbol)]
         async with lock:
-            resolved = self._resolve_close(signal, account, symbol)
-            if resolved is None:
-                result = OrderResult(
+            if not self.store.claim_close(account.account_id, symbol):
+                return OrderResult(
                     account_id=account.account_id,
                     status=OrderStatus.REJECTED,
                     signal_id=signal.id,
-                    message="no open position to close",
+                    message="a close for this account/symbol is already in progress elsewhere",
                 )
-                self.store.save_order_result(result)
-                return result
+            try:
+                resolved = self._resolve_close(signal, account, symbol)
+                if resolved is None:
+                    result = OrderResult(
+                        account_id=account.account_id,
+                        status=OrderStatus.REJECTED,
+                        signal_id=signal.id,
+                        message="no open position to close",
+                    )
+                    self.store.save_order_result(result)
+                    return result
 
-            order_signal, quantity = resolved
-            result, applied_quantity = await self._submit_order(order_signal, quantity, account, symbol, broker)
-            self.store.save_order_result(
-                result,
-                broker=account.broker,
-                symbol=symbol,
-                side=order_signal.side,
-                requested_quantity=quantity,
-                applied_quantity=applied_quantity,
-            )
-            return result
+                order_signal, quantity = resolved
+                result, applied_quantity = await self._submit_order(order_signal, quantity, account, symbol, broker)
+                self.store.save_order_result(
+                    result,
+                    broker=account.broker,
+                    symbol=symbol,
+                    side=order_signal.side,
+                    requested_quantity=quantity,
+                    applied_quantity=applied_quantity,
+                )
+                return result
+            finally:
+                self.store.release_close(account.account_id, symbol)
 
     async def _handle_managed_signal(
         self, signal: Signal, account: DestinationAccount, symbol: str

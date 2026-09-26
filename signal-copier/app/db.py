@@ -140,6 +140,21 @@ CREATE TABLE IF NOT EXISTS idempotency_records (
     created_at TEXT NOT NULL
 );
 
+-- Cross-process/cross-instance mutual exclusion for a plain-account close
+-- (EXE-12): app/engine.py's `_plain_close_locks` is an in-memory
+-- asyncio.Lock, which only serializes calls within ONE engine instance --
+-- two independent processes (or two engine instances) sharing this same
+-- database have entirely separate lock objects and no real exclusion
+-- between them. The UNIQUE constraint here makes the claim atomic at the
+-- database itself: only one process's INSERT can ever succeed for a given
+-- (account_id, symbol) at a time, everywhere this file is the shared store.
+CREATE TABLE IF NOT EXISTS close_claims (
+    account_id TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    claimed_at TEXT NOT NULL,
+    PRIMARY KEY (account_id, symbol)
+);
+
 CREATE INDEX IF NOT EXISTS idx_orders_executed_at ON orders (executed_at);
 CREATE INDEX IF NOT EXISTS idx_orders_account_id ON orders (account_id);
 CREATE INDEX IF NOT EXISTS idx_signals_received_at ON signals (received_at);
@@ -448,6 +463,45 @@ class SignalStore:
         with self._connect() as conn:
             conn.execute(
                 "DELETE FROM lifecycle_state WHERE account_id = ? AND symbol = ?", (account_id, symbol)
+            )
+
+    def claim_close(self, account_id: str, symbol: str, *, stale_after_seconds: float = 60.0) -> bool:
+        """Atomically claim the exclusive right to resolve-and-submit a
+        plain-account close for (account_id, symbol) -- see `close_claims`'
+        schema comment for why an in-memory asyncio.Lock alone (EXE-12)
+        doesn't protect against two independent processes/engine instances
+        sharing this same database. Returns False if another
+        process/instance already holds an unexpired claim. A claim older
+        than `stale_after_seconds` is treated as abandoned (its holder
+        presumably crashed) and may be re-claimed -- a safety valve against
+        permanent deadlock, not a substitute for the caller actually
+        releasing its own claim via `release_close` when done."""
+        now = datetime.now(timezone.utc)
+        with self._connect() as conn:
+            existing = conn.execute(
+                "SELECT claimed_at FROM close_claims WHERE account_id = ? AND symbol = ?",
+                (account_id, symbol),
+            ).fetchone()
+            if existing is not None:
+                claimed_at = datetime.fromisoformat(existing[0])
+                if (now - claimed_at).total_seconds() < stale_after_seconds:
+                    return False
+                conn.execute(
+                    "DELETE FROM close_claims WHERE account_id = ? AND symbol = ?", (account_id, symbol)
+                )
+            try:
+                conn.execute(
+                    "INSERT INTO close_claims (account_id, symbol, claimed_at) VALUES (?, ?, ?)",
+                    (account_id, symbol, now.isoformat()),
+                )
+            except sqlite3.IntegrityError:
+                return False
+        return True
+
+    def release_close(self, account_id: str, symbol: str) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "DELETE FROM close_claims WHERE account_id = ? AND symbol = ?", (account_id, symbol)
             )
 
     # --- Live-editable config: accounts, routing rules, providers/analysts ---
