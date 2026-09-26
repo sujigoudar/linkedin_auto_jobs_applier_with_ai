@@ -814,14 +814,14 @@ def _managed_lifecycle_snapshot() -> list[dict]:
 
 
 @app.get("/signals")
-async def list_signals(limit: int = Query(default=50, le=500), _owner: dict = Depends(require_owner_read)) -> dict:
+async def list_signals(limit: int = Query(default=50, ge=1, le=500), _owner: dict = Depends(require_owner_read)) -> dict:
     """Most recently received signals, newest first."""
     return {"signals": store.list_recent_signals(limit=limit)}
 
 
 @app.get("/orders")
 async def list_orders(
-    limit: int = Query(default=50, le=500), account_id: str | None = Query(default=None)
+    limit: int = Query(default=50, ge=1, le=500), account_id: str | None = Query(default=None)
 , _owner: dict = Depends(require_owner_read)) -> dict:
     """Most recent order results, newest first — optionally filtered to one account."""
     return {"orders": store.list_recent_orders(limit=limit, account_id=account_id)}
@@ -951,7 +951,7 @@ async def get_sec_company_facts(ticker: str, _owner: dict = Depends(require_owne
 @app.get("/context/fred/{series_id}")
 async def get_fred_series(
     series_id: str,
-    limit: int = Query(default=100, le=1000),
+    limit: int = Query(default=100, ge=1, le=1000),
     realtime_start: str | None = Query(default=None),
     realtime_end: str | None = Query(default=None),
     _owner: dict = Depends(require_owner_read),

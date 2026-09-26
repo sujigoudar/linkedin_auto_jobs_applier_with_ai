@@ -287,6 +287,40 @@ async def test_target_does_not_fire_twice(manager, account, broker):
 
 
 @pytest.mark.asyncio
+async def test_failed_target_exit_is_not_marked_fired_and_can_retry(manager, account, broker, monkeypatch):
+    """PRO-03: marking the target fired BEFORE calling request_exit meant a
+    failure (e.g. the stop cancellation couldn't be confirmed) still
+    permanently forgot it -- a later, perfectly safe opportunity at the
+    same price never retried."""
+    plan = _plan(
+        planned_quantity=100.0,
+        initial_stop=48.50,
+        targets=[Target(trigger_price=51.50, action=TargetAction.SELL, reduce_fraction=0.25)],
+    )
+    await _enter(manager, broker, account, plan, 100.0)
+
+    async def failing_cancel(account, broker_order_id):
+        return False  # cancellation can't be confirmed -- request_exit refuses to proceed
+
+    monkeypatch.setattr(broker, "cancel_order", failing_cancel)
+    first_results = await manager.on_price_update(account, "AAPL", 51.60)
+
+    assert len(first_results) == 1
+    assert first_results[0].status == OrderStatus.ERROR
+    assert plan.targets[0].fired is False  # not permanently forgotten
+    assert manager.arbiter.available_to_sell("acct1", "AAPL") == 100.0  # nothing sold
+
+    # The stop can now be cancelled -- a later, safe opportunity retries.
+    monkeypatch.undo()
+    second_results = await manager.on_price_update(account, "AAPL", 51.60)
+
+    assert len(second_results) == 1
+    assert second_results[0].status == OrderStatus.FILLED
+    assert plan.targets[0].fired is True
+    assert manager.arbiter.available_to_sell("acct1", "AAPL") == 75.0
+
+
+@pytest.mark.asyncio
 async def test_trailing_stop_ratchets_up_and_never_loosens(manager, account, broker):
     plan = _plan(
         planned_quantity=62.0,

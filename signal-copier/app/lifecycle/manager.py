@@ -428,16 +428,26 @@ class PositionLifecycleManager:
         for target in lifecycle.plan.targets:
             if target.fired or not self._target_triggered(lifecycle, target, price):
                 continue
-            target.fired = True
             if target.action == TargetAction.SELL:
+                # Mark fired only once the exit is at least genuinely
+                # in flight (PENDING/FILLED) -- PRO-03: marking it fired
+                # BEFORE calling request_exit meant a failure (e.g. "could
+                # not confirm cancellation of the existing protective
+                # stop") still permanently forgot this target, so a later,
+                # perfectly safe opportunity at the same price never
+                # retried it.
                 quantity = lifecycle.plan.planned_quantity * (target.reduce_fraction or 0.0)
                 result = await self.request_exit(
                     account, symbol, quantity, source="target", reason=f"target @ {target.trigger_price}"
                 )
                 results.append(result)
+                if result.status in (OrderStatus.FILLED, OrderStatus.PENDING):
+                    target.fired = True
             elif target.action == TargetAction.TIGHTEN_STOP:
+                target.fired = True
                 await self._tighten_stop_to(lifecycle, account, target.trigger_price)
             elif target.action == TargetAction.ACTIVATE_TRAIL:
+                target.fired = True
                 if lifecycle.plan.trailing:
                     lifecycle.plan.trailing.active = True
 
