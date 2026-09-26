@@ -1,52 +1,11 @@
-name: Pinned copier browser and image audit
+name: Pinned copier infrastructure and dependency audit
 on:
   push:
     branches: ['audit/fccf57a-e2e-20260926']
 permissions:
   contents: read
 jobs:
-  browsers:
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - uses: actions/checkout@v4
-        with:
-          ref: fccf57affd8515fe059b1af854856828078a737e
-          path: pinned
-          persist-credentials: false
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-      - name: Install core and all browser engines
-        run: |
-          python -m pip install -r pinned/signal-copier/requirements.txt playwright
-          python -m playwright install --with-deps chromium firefox webkit
-      - name: Run actual paper-only app and entire declared browser matrix
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/evidence" "$RUNNER_TEMP/guard"
-          printf '%s\n' 'import socket' '_connect=socket.socket.connect' 'def guarded(self,address):' '    if self.family in (socket.AF_INET,socket.AF_INET6) and address[0] not in ("127.0.0.1","::1","localhost"): raise OSError("audit denies external sockets")' '    return _connect(self,address)' 'socket.socket.connect=guarded' > "$RUNNER_TEMP/guard/sitecustomize.py"
-          (cd pinned/signal-copier; env -i PATH="$PATH" HOME="$RUNNER_TEMP" PYTHONPATH="$RUNNER_TEMP/guard:$PWD" DATABASE_PATH="$RUNNER_TEMP/browser.sqlite" OWNER_PASSWORD=audit-browser-password SESSION_SECRET=audit-browser-secret WEBHOOK_SHARED_SECRET=audit-browser-ingress python -m uvicorn app.main:app --host 127.0.0.1 --port 8765) > "$RUNNER_TEMP/evidence/server.log" 2>&1 &
-          pid=$!
-          trap 'kill "$pid" || true' EXIT
-          for i in $(seq 1 30); do curl -fsS http://127.0.0.1:8765/health > "$RUNNER_TEMP/evidence/initial-health.json" && break || sleep 1; done
-          AUDIT_EVIDENCE="$RUNNER_TEMP/evidence" python audit/browser_audit.py > "$RUNNER_TEMP/evidence/driver.log" 2>&1
-          cp audit/browser_audit.py "$RUNNER_TEMP/evidence/"
-          python -m pip freeze > "$RUNNER_TEMP/evidence/freeze.txt"
-          git -C pinned rev-parse HEAD > "$RUNNER_TEMP/evidence/revision.txt"
-          cat "$RUNNER_TEMP/evidence/driver.log"
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: actual-three-engine-gui-audit
-          path: ${{ runner.temp }}/evidence/
-          retention-days: 7
-          if-no-files-found: error
-  image:
+  infrastructure:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -54,32 +13,74 @@ jobs:
         with:
           ref: fccf57affd8515fe059b1af854856828078a737e
           persist-credentials: false
-      - name: Build exact application Dockerfile
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: '1.13.5'
+          terraform_wrapper: false
+      - name: Validate exact committed Terraform without planning or applying cloud resources
         shell: bash
         run: |
           mkdir -p "$RUNNER_TEMP/evidence"
-          docker build -t copier-audit:fccf57a signal-copier > "$RUNNER_TEMP/evidence/build.log" 2>&1
-          docker image inspect copier-audit:fccf57a > "$RUNNER_TEMP/evidence/image.json"
-          docker run --network none --name copier-audit -d -e OWNER_PASSWORD=audit-only -e SESSION_SECRET=audit-only copier-audit:fccf57a
-          sleep 4
-          docker exec copier-audit python -c 'import urllib.request,os,json; print(json.dumps({"uid":os.getuid(),"health":json.load(urllib.request.urlopen("http://127.0.0.1:8000/health"))}))' > "$RUNNER_TEMP/evidence/container-state.json"
-          docker exec copier-audit python -m pip freeze > "$RUNNER_TEMP/evidence/image-freeze.txt"
-          docker logs copier-audit > "$RUNNER_TEMP/evidence/container.log" 2>&1
-          docker rm -f copier-audit
-          docker run --network none --name copier-standby -d -e STANDBY_MODE=true copier-audit:fccf57a
-          sleep 3
-          docker exec copier-standby python -c 'import urllib.request,urllib.error,json; r={};
-          for method,path in [("GET","/health"),("POST","/webhook/audit"),("POST","/accounts"),("POST","/auth/login")]:
-           try:
-            x=urllib.request.urlopen(urllib.request.Request("http://127.0.0.1:8000"+path,data=b"{}" if method=="POST" else None,method=method,headers={"Content-Type":"application/json"}));r[method+path]={"status":x.status,"body":x.read().decode()}
-           except urllib.error.HTTPError as e:r[method+path]={"status":e.code,"body":e.read().decode()}
-          print(json.dumps(r))' > "$RUNNER_TEMP/evidence/standby-routes.json"
-          docker logs copier-standby > "$RUNNER_TEMP/evidence/standby.log" 2>&1
-          docker rm -f copier-standby
+          cd signal-copier/deploy/terraform/oci-standby
+          set +e
+          terraform version > "$RUNNER_TEMP/evidence/terraform-version.txt"
+          terraform init -backend=false -input=false > "$RUNNER_TEMP/evidence/terraform-init.txt" 2>&1
+          echo $? > "$RUNNER_TEMP/evidence/terraform-init-exit.txt"
+          terraform validate -json > "$RUNNER_TEMP/evidence/terraform-validate.json" 2>&1
+          echo $? > "$RUNNER_TEMP/evidence/terraform-validate-exit.txt"
+          terraform fmt -check -diff > "$RUNNER_TEMP/evidence/terraform-fmt.txt" 2>&1
+          cp .terraform.lock.hcl "$RUNNER_TEMP/evidence/" || true
+          cat "$RUNNER_TEMP/evidence/terraform-validate.json"
+          exit 0
+      - name: Parse committed replication configuration with verified Litestream release
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/litestream"
+          cd "$RUNNER_TEMP/litestream"
+          curl --fail --location --silent --show-error -o checksums.txt https://github.com/benbjohnson/litestream/releases/download/v0.5.17/checksums.txt
+          curl --fail --location --silent --show-error -o litestream-0.5.17-linux-x86_64.tar.gz https://github.com/benbjohnson/litestream/releases/download/v0.5.17/litestream-0.5.17-linux-x86_64.tar.gz
+          grep ' litestream-0.5.17-linux-x86_64.tar.gz$' checksums.txt | sha256sum --check > "$RUNNER_TEMP/evidence/litestream-checksum.txt"
+          tar -xzf litestream-0.5.17-linux-x86_64.tar.gz
+          ./litestream version > "$RUNNER_TEMP/evidence/litestream-version.txt"
+          cfg="$GITHUB_WORKSPACE/signal-copier/deploy/litestream/litestream.yml"
+          env -i PATH="$PATH" LITESTREAM_R2_ENDPOINT=http://127.0.0.1:9 LITESTREAM_ACCESS_KEY_ID=audit-only LITESTREAM_SECRET_ACCESS_KEY=audit-only ./litestream databases -config "$cfg" > "$RUNNER_TEMP/evidence/litestream-parse.txt" 2>&1 || echo "parse failed" >> "$RUNNER_TEMP/evidence/litestream-parse.txt"
+          cp checksums.txt "$RUNNER_TEMP/evidence/litestream-release-checksums.txt"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: actual-image-audit
+          name: actual-iac-validation
+          path: ${{ runner.temp }}/evidence/
+          retention-days: 7
+          if-no-files-found: error
+  dependency-advisories:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fccf57affd8515fe059b1af854856828078a737e
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Audit clean installed core environment; no application code execution
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/evidence"
+          python -m pip install -r signal-copier/requirements.txt > "$RUNNER_TEMP/evidence/install.txt" 2>&1
+          python -m pip freeze > "$RUNNER_TEMP/evidence/application-core-lock.txt"
+          python -m pip install pip-audit > "$RUNNER_TEMP/evidence/install-auditor.txt" 2>&1
+          set +e
+          timeout 180 python -m pip_audit --no-deps --disable-pip -r "$RUNNER_TEMP/evidence/application-core-lock.txt" --format=json --progress-spinner=off -o "$RUNNER_TEMP/evidence/advisories.json" > "$RUNNER_TEMP/evidence/audit.log" 2>&1
+          echo $? > "$RUNNER_TEMP/evidence/audit-exit.txt"
+          cat "$RUNNER_TEMP/evidence/audit.log"
+          exit 0
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: core-dependency-advisories
           path: ${{ runner.temp }}/evidence/
           retention-days: 7
           if-no-files-found: error
