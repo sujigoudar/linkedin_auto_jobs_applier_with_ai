@@ -764,6 +764,72 @@ and `pending_exit` (non-null while an exit's remainder hasn't resolved —
 see "Managed lifecycle" above). This is the quantity-by-quantity picture
 a naive `protected: true/false` flag can't give you.
 
+## Market/economic context (read-only, outside the trading path)
+
+```
+GET /context/filings/{ticker}          # recent SEC filing history
+GET /context/filings/{ticker}/facts    # structured XBRL company facts
+GET /context/fred/{series_id}          # FRED (or ALFRED) macro series observations
+GET /context/fx/{base}/{quote}         # daily ECB reference FX rate (Frankfurter)
+```
+
+`app/context/` wraps three free, publicly documented APIs so an operator
+can look something up alongside the live signal/position data already in
+the dashboard — a company's last filing, where a rate series stands, a
+reference FX rate. **Nothing in this package is imported by `app/engine.py`,
+`app/lifecycle/*`, `app/reconciliation.py`, or any `app/brokers/*.py`
+adapter** — it can't place, cancel, or modify an order or a protective
+stop, and nothing here drives a trading decision automatically.
+
+- **SEC EDGAR** (`app/context/sec_edgar.py`) — keyless; SEC's fair-access
+  policy requires only an identifying `SEC_EDGAR_USER_AGENT` env var (e.g.
+  `"YourCompany admin@example.com"`) on every request. 501s if unset,
+  rather than sending an unidentified request.
+- **FRED** (`app/context/fred.py`) — needs a free key
+  (`FRED_API_KEY`, register at
+  https://fredaccount.stlouisfed.org/apikeys). 501s if unset. Supports
+  ALFRED-style vintages via `realtime_start`/`realtime_end` query params —
+  use them for a historical decision that needs the value *as it was known
+  at that time*, not today's since-revised figure.
+- **Frankfurter** (`app/context/fx.py`) — fully keyless daily ECB
+  reference FX. Reference only, not an executable bid/ask and not the
+  price basis any actual FX broker adapter uses for a real order.
+
+These three were chosen out of a much larger reviewed candidate list
+(Alpaca/Tradier/IBKR market data, Alpha Vantage, Polygon, Twelve Data,
+FMP, Tiingo, Finnhub, EODHD, Marketstack, FINRA, Nasdaq Trader halts,
+OpenFIGI, GLEIF, OCC, Cboe VIX, BLS, BEA, Census, Treasury Fiscal Data,
+NY Fed, OFR, FDIC, EIA, CFTC, USDA, NOAA, World Bank, ECB, Eurostat, BIS,
+IMF, OECD, Bank of Canada, DBnomics, a dozen public crypto-exchange feeds,
+CoinGecko/CoinPaprika/DefiLlama/DEX Screener/Coin Metrics/Etherscan,
+GDELT/ClinicalTrials.gov/openFDA, and ~25 MCP server options) specifically
+because they're free with no ambiguous "developer/non-production-only"
+restriction (unlike, e.g., NewsAPI's or GNews' free tiers), keyless or
+simple free-registration, and don't meaningfully overlap each other or
+this project's existing broker/CCXT integrations. Everything else in that
+list is a candidate for later, one at a time, only once it's clearly
+missing a field the existing stack can't provide — not integrated here to
+avoid the overlap and maintenance burden of running many similar vendors
+at once.
+
+**No MCP server processes were stood up.** Running an actual MCP server
+is a host-level configuration decision (e.g. a Claude Desktop/Code MCP
+config, or a separately hosted gateway) with its own isolation
+requirements — it can't be provisioned by a commit to this application
+repo, and doing so without deliberately restricting it from live trading
+credentials and the execution database would be irresponsible. The
+`/context/*` endpoints above give the same read-only capability directly,
+already isolated from the trading path by construction.
+
+**Not independently verified against the live services**: this sandbox's
+own network egress policy blocks outbound connections to `data.sec.gov`
+and `api.frankfurter.dev` (confirmed directly — both time out with a
+policy-denied CONNECT), so these integrations are unit-tested against
+mocked HTTP responses (request shape, headers, param construction, and
+response parsing are all checked), not against the real APIs. Verify
+connectivity and the exact response shape against the live services in
+an environment with normal internet access before relying on this.
+
 ## What's real vs. stubbed
 
 | Component | Status |

@@ -13,6 +13,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import httpx
 from fastapi import Cookie, Depends, FastAPI, Form, Header, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
@@ -30,6 +31,9 @@ from app.brokers.paper import PaperBroker
 from app.brokers.rithmic import RithmicBroker
 from app.brokers.signalstack import SignalStackBroker
 from app.config_admin import seed_from_yaml_if_empty
+from app.context import fred as fred_context
+from app.context import fx as fx_context
+from app.context import sec_edgar
 from app.db import SignalStore
 from app.engine import SignalCopierEngine
 from app.errors import SignalValidationError
@@ -754,6 +758,82 @@ async def run_backtest(request: BacktestRequest, _owner: dict = Depends(require_
             for t in report.trades
         ],
     }
+
+
+# --- Read-only market/economic context (app/context/) ---
+#
+# SEC filings, FRED macro series, FX reference rates -- for an operator to
+# look something up alongside the live signal/position data above. None of
+# these touch routing, engine, lifecycle, or any broker adapter; they can't
+# place, cancel, or modify anything. See app/context/__init__.py and
+# README.md's "Market/economic context" section.
+
+
+@app.get("/context/filings/{ticker}")
+async def get_sec_filings(ticker: str, _owner: dict = Depends(require_owner_read)) -> dict:
+    """Recent SEC filing history for a ticker (data.sec.gov). 501s if
+    SEC_EDGAR_USER_AGENT isn't configured; 404s if the ticker isn't in
+    SEC's own ticker->CIK directory (e.g. not a US-listed equity)."""
+    try:
+        submissions = await sec_edgar.get_company_submissions(ticker)
+    except sec_edgar.NotConfigured as exc:
+        raise HTTPException(status_code=501, detail=str(exc)) from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=f"SEC EDGAR request failed: {exc}") from exc
+    if submissions is None:
+        raise HTTPException(status_code=404, detail=f"no SEC CIK found for ticker '{ticker}'")
+    return submissions
+
+
+@app.get("/context/filings/{ticker}/facts")
+async def get_sec_company_facts(ticker: str, _owner: dict = Depends(require_owner_read)) -> dict:
+    """Structured XBRL company facts (financial statement line items over
+    time, as originally filed/amended) for a ticker."""
+    try:
+        facts = await sec_edgar.get_company_facts(ticker)
+    except sec_edgar.NotConfigured as exc:
+        raise HTTPException(status_code=501, detail=str(exc)) from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=f"SEC EDGAR request failed: {exc}") from exc
+    if facts is None:
+        raise HTTPException(status_code=404, detail=f"no XBRL facts found for ticker '{ticker}'")
+    return facts
+
+
+@app.get("/context/fred/{series_id}")
+async def get_fred_series(
+    series_id: str,
+    limit: int = Query(default=100, le=1000),
+    realtime_start: str | None = Query(default=None),
+    realtime_end: str | None = Query(default=None),
+    _owner: dict = Depends(require_owner_read),
+) -> dict:
+    """FRED (or ALFRED, via realtime_start/realtime_end) observations for
+    one macro series, e.g. `DGS10`, `CPIAUCSL`, `UNRATE`. 501s if
+    FRED_API_KEY isn't configured."""
+    try:
+        return await fred_context.get_series_observations(
+            series_id, limit=limit, realtime_start=realtime_start, realtime_end=realtime_end
+        )
+    except fred_context.NotConfigured as exc:
+        raise HTTPException(status_code=501, detail=str(exc)) from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=f"FRED request failed: {exc}") from exc
+
+
+@app.get("/context/fx/{base}/{quote}")
+async def get_fx_rate(
+    base: str, quote: str, date: str | None = Query(default=None), _owner: dict = Depends(require_owner_read)
+) -> dict:
+    """Daily ECB reference rate (via Frankfurter) for one currency pair —
+    latest by default, or a specific 'YYYY-MM-DD' date. Reference only, not
+    an executable price; see app/context/fx.py's module docstring."""
+    try:
+        if date:
+            return await fx_context.get_historical_rate(date, base, quote)
+        return await fx_context.get_latest_rate(base, quote)
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=f"Frankfurter request failed: {exc}") from exc
 
 
 def _orders_response(signal_id: str, results) -> dict:

@@ -74,3 +74,16 @@ RECONCILE_INTERVAL_SECONDS = float(os.getenv("RECONCILE_INTERVAL_SECONDS", "30")
 # position's broker for a current price (currently ccxt only — see
 # app/pricing.py's module docstring).
 PRICE_MONITOR_INTERVAL_SECONDS = float(os.getenv("PRICE_MONITOR_INTERVAL_SECONDS", "15"))
+
+# Read-only market/economic context lookups (see app/context/ — SEC
+# filings, FRED macro series, FX reference rates). None of these are used
+# anywhere in the order-management/protective-stop path.
+#
+# SEC's fair-access policy requires an identifying User-Agent on every
+# request (e.g. "YourCompany admin@example.com") — no API key, but the
+# /context/filings endpoint 501s if this is blank rather than send an
+# unidentified request.
+SEC_EDGAR_USER_AGENT = os.getenv("SEC_EDGAR_USER_AGENT", "")
+# Free key from https://fredaccount.stlouisfed.org/apikeys -- the
+# /context/fred endpoint 501s if this is blank.
+FRED_API_KEY = os.getenv("FRED_API_KEY", "")
