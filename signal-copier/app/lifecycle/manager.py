@@ -698,7 +698,29 @@ class PositionLifecycleManager:
             if not tx.reserve(requested):
                 return OrderResult(account_id=account.account_id, status=OrderStatus.ERROR, signal_id="", message="reservation failed unexpectedly")
 
-            exit_result = await self._submit_exit_order(broker, account, lifecycle, requested, reason or source)
+            try:
+                exit_result = await self._submit_exit_order(broker, account, lifecycle, requested, reason or source)
+            except Exception:
+                # EXE-01's exit-side counterpart: place_order raising here is
+                # just as ambiguous as on the entry side -- the venue may
+                # already have accepted this exit before the exception (a
+                # network timeout/reset reading the response). The
+                # reservation above already excludes `requested` from
+                # `tx.available`; persist that (via a pending_exit with no
+                # known broker_order_id) before letting the exception
+                # propagate, so a restart's recovery still knows this much
+                # was reserved and unresolved rather than forgetting it
+                # entirely.
+                lifecycle.pending_exit = PendingExit(
+                    broker_order_id=None,
+                    requested_quantity=requested,
+                    phase=TransferPhase.AWAITING_REMAINDER_RESOLUTION,
+                    source=source,
+                    reason=reason or source,
+                    stop_amended=amended_stop,
+                )
+                self._persist(lifecycle)
+                raise
 
             if exit_result.status == OrderStatus.PENDING:
                 # The broker hasn't given a final word yet: how much of `requested`

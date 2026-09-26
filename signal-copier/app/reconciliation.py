@@ -170,8 +170,17 @@ class OrderReconciler:
     async def _reconcile_broker_positions(self) -> int:
         corrected = 0
         for lifecycle in list(self.lifecycle_manager.list_open_lifecycles()):
-            if lifecycle.pending_exit is not None and not lifecycle.pending_exit.remainder_resolved:
-                continue  # an exit's own outcome is already unresolved -- don't second-guess it with a raw read
+            exit_has_no_order_id_to_poll = (
+                lifecycle.pending_exit is not None
+                and lifecycle.pending_exit.broker_order_id is None
+                and not lifecycle.pending_exit.remainder_resolved
+            )
+            if (
+                lifecycle.pending_exit is not None
+                and not lifecycle.pending_exit.remainder_resolved
+                and not exit_has_no_order_id_to_poll
+            ):
+                continue  # a known order id is already resolving via _reconcile_pending_exits -- don't second-guess it with a raw read
             broker = self.brokers.get(lifecycle.plan.broker)
             if broker is None or not broker.has_position_readback_capability:
                 continue
@@ -187,6 +196,25 @@ class OrderReconciler:
                 continue
             if broker_owned is None:
                 continue  # genuinely unknown -- never treated as confirming zero
+
+            if exit_has_no_order_id_to_poll:
+                # Exit-side counterpart of the entry branch below: a
+                # request_exit whose place_order response was lost has no
+                # broker_order_id to poll via _reconcile_pending_exits
+                # either. How much of the reserved quantity actually left is
+                # the drop between what this lifecycle still believed it
+                # owned and what the venue now reports -- clamped to what
+                # was actually requested, since the venue could also have
+                # moved for an unrelated reason.
+                pending = lifecycle.pending_exit
+                filled = min(
+                    max(0.0, lifecycle.confirmed_owned_quantity - broker_owned), pending.requested_quantity
+                )
+                await self.lifecycle_manager.resolve_pending_exit(
+                    account, lifecycle.plan.symbol, filled, remainder_cancelled=True
+                )
+                corrected += 1
+                continue
 
             # EXE-01: an entry whose place_order response was lost (see
             # app/engine.py's _handle_managed_entry) has no broker_order_id
