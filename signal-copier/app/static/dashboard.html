@@ -543,7 +543,23 @@ function escapeHtml(s) {
   return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
 function escapeAttr(s) {
-  return String(s ?? "").replace(/'/g, "\\'");
+  // C14: every caller embeds this inside `onclick="fn('...')"` -- a
+  // double-quoted HTML attribute containing a single-quoted JS string
+  // literal. The browser HTML-decodes the attribute value BEFORE handing
+  // it to the JS parser, so both layers need escaping, in this order:
+  // (1) JS-string-literal-escape first (backslash, then single quote),
+  // so a literal backslash in the input can't eat the quote-escape that
+  // follows it; (2) THEN HTML-attribute-escape the result (&, <, >, ")
+  // so an unescaped `"` can't close the onclick attribute early and let
+  // the rest of the value be parsed as new HTML attributes (e.g. a
+  // symbol like `X" onmouseover="...` from an attacker-controlled
+  // webhook JSON body -- SEC-08, confirmed exploitable in a real browser
+  // before this fix: hovering the resulting button fired injected JS).
+  // This was ONLY escaping the single quote before -- safe against
+  // breaking out of the JS string, but not against breaking out of the
+  // HTML attribute itself.
+  const jsEscaped = String(s ?? "").replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+  return jsEscaped.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 }
 
 // Every mutating call attaches X-CSRF-Token (see this file's top-of-script

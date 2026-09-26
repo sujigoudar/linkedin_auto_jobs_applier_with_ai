@@ -31,6 +31,9 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      - name: Install Playwright's Chromium (C14/C33/C34)
+        run: playwright install --with-deps chromium
+
       - name: Run tests
         run: pytest -q
 

@@ -32,3 +32,6 @@ pytest-asyncio>=0.23
 hypothesis>=6.100        # test-only: generated/stateful sequences supplementing the finite-case suite (C29)
 schemathesis>=4.20       # test-only: OpenAPI schema fuzzing for the bounded read-only endpoint set (C30)
 mutmut>=3.0              # test-only: mutation testing config scoped to app/auth.py (C31, see pyproject.toml)
+playwright>=1.40         # test-only: real-browser dashboard tests (C14 XSS regression, C33/C34 accessibility).
+                         # CI installs the matching browser separately (`playwright install chromium`) --
+                         # see .github/workflows/signal-copier-ci.yml.

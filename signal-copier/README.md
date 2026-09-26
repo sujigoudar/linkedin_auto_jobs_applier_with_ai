@@ -1117,6 +1117,20 @@ every financial command independent of any single route's own auth logic
   multi-process deployment behind a shared load balancer would need a
   shared backend (Redis, via slowapi's `storage_uri`), not implemented
   here since this project runs one process.
+- **C14 (fixed, not just checked):** the dashboard's `escapeAttr` helper
+  (`app/static/dashboard.html`) only escaped a single quote, not a
+  double quote — every `onclick="fn('...')"` call site embedding an
+  attacker-reachable value (e.g. a signal's `symbol`, which
+  `app/sources/webhook.py`'s JSON path never validates the character set
+  of) could break out of the `onclick` attribute and inject arbitrary
+  new HTML attributes. Confirmed exploitable in a real headless Chromium
+  browser before the fix (hovering the resulting button fired injected
+  JS) and confirmed neutralized after — see
+  `tests/test_c14_dashboard_xss_prevention.py`, which reproduces this
+  exact attack against the real running app on every CI run, not a mock.
+  (A DOMPurify-style library wasn't the fix here — this was a broken
+  hand-written escaping function, not a missing sanitizer for rendered
+  HTML fragments.)
 - Never commit `.env` or real `config/routing.yaml` /
   `config/accounts.yaml` if they end up containing anything
   account-identifying (they're gitignored by default).
