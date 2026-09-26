@@ -45,10 +45,12 @@ from app.logging_config import configure_structlog
 from app.metrics import render_metrics
 from app.errors import SignalValidationError
 from app.lifecycle.manager import PositionLifecycleManager
+from app.models import AssetClass
 from app.pricing import PriceMonitor
 from app.providers import SettingsOverride, load_provider_registry_from_store
 from app.reconciliation import OrderReconciler
 from app.routing import load_routing_config_from_store
+from app.sources.text_parser import classify_batch
 from app.sources.discord import DiscordSource
 from app.sources.mt4_mt5 import MetaApiSource
 from app.sources.rithmic import RithmicSource
@@ -1021,6 +1023,53 @@ async def list_orders(
 , _owner: dict = Depends(require_owner_read)) -> dict:
     """Most recent order results, newest first — optionally filtered to one account."""
     return {"orders": store.list_recent_orders(limit=limit, account_id=account_id)}
+
+
+class ClassifyMessagesRequest(BaseModel):
+    """E02 (bounded): batch-classify free-text messages against
+    app/sources/text_parser.py's grammar, without ever creating or
+    routing a live Signal -- for reviewing a source's message history
+    (or trying candidate wording) offline. See that module's
+    `classify_text_signal` docstring for the disposition outcomes."""
+
+    texts: list[str]
+    asset_class: AssetClass = AssetClass.CRYPTO
+    analyst: str | None = None
+
+
+@app.post("/sources/{source_name}/classify-messages")
+async def classify_messages(
+    source_name: str, request: ClassifyMessagesRequest, _owner: dict = Depends(require_owner_read)
+) -> dict:
+    """Never ingests a signal or touches routing/positions -- read-only
+    analysis of what app/sources/text_parser.py's grammar would do with
+    each message, for reviewing a channel's history or testing new
+    wording before it's live. See app/sources/text_parser.py's
+    classify_text_signal for the possible outcomes."""
+    dispositions = classify_batch(request.texts, source=source_name, asset_class=request.asset_class, analyst=request.analyst)
+    return {
+        "dispositions": [
+            {
+                "text": d.text,
+                "outcome": d.outcome.value,
+                "detail": d.detail,
+                "signal": (
+                    None
+                    if d.signal is None
+                    else {
+                        "symbol": d.signal.symbol,
+                        "side": d.signal.side.value,
+                        "asset_class": d.signal.asset_class.value,
+                        "quantity": d.signal.quantity,
+                        "price": d.signal.price,
+                        "stop_loss": d.signal.stop_loss,
+                        "take_profit": d.signal.take_profit,
+                    }
+                ),
+            }
+            for d in dispositions
+        ]
+    }
 
 
 class BacktestRequest(BaseModel):

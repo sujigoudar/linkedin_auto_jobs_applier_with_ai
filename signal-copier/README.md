@@ -964,6 +964,20 @@ free-text parser (`app/sources/text_parser.py`) that handles the common
 `BUY BTCUSDT @ 65000 SL 63000 TP 70000` family of formats. If a specific
 channel's format doesn't fit, override that source's `parse()`.
 
+**E02 (bounded):** every message this parser looks at gets one of five
+dispositions -- `parsed`, `ignored` (negated/conditional/past-tense
+commentary), `ambiguous` (more than one instruction or take-profit
+level), `missing_data` (a structurally invalid value like a negative
+quantity), or `no_match` -- not just a binary pass/fail
+(`app/sources/text_parser.py`'s `classify_text_signal`/`classify_batch`).
+`POST /sources/{source_name}/classify-messages` runs this read-only
+against a batch of texts (e.g. a channel's message history, or wording
+you're testing before it's live) — it never creates a Signal or touches
+routing/positions. This is the classification step a fuller source-
+onboarding workflow (the adoption plan's E02: importing and reviewing a
+channel's ENTIRE authorized history in one pass) would call per message
+— that import/review workflow itself isn't built, a disclosed gap.
+
 Note: the direct `alpaca` and `ibkr` brokers are only needed if you want
 this service talking to those brokers itself. If you already have (or set
 up) a SignalStack account, the `signalstack` broker reaches IBKR, Alpaca,

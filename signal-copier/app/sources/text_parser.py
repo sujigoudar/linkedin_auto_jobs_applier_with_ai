@@ -16,7 +16,9 @@ docstring) rather than fighting this regex into something it isn't.
 """
 from __future__ import annotations
 
+import enum
 import re
+from dataclasses import dataclass
 
 from app.errors import SignalValidationError
 from app.models import AssetClass, Signal, Side
@@ -156,37 +158,89 @@ def _infer_asset_class(symbol: str) -> AssetClass | None:
     return None
 
 
-def parse_text_signal(
+class DispositionOutcome(str, enum.Enum):
+    """E02 (bounded, adoption plan): every message this parser looks at
+    gets one of these outcomes, not just a pass/fail -- see
+    `classify_text_signal`'s docstring. Distinct from `Side` and every
+    other enum in this codebase; this classifies the MESSAGE, not a
+    resolved trade."""
+
+    #: A real, resolved trade instruction was extracted.
+    PARSED = "parsed"
+    #: Recognized as negated, conditional, or past-tense commentary about
+    #: a trade rather than the trade itself -- correctly not a signal,
+    #: not a parser failure.
+    IGNORED = "ignored"
+    #: Looked like an instruction but couldn't be resolved to exactly one
+    #: unambiguous trade (more than one side keyword, more than one
+    #: take-profit level).
+    AMBIGUOUS = "ambiguous"
+    #: An instruction was recognized but a numeric field was structurally
+    #: invalid (e.g. a truncated/negative quantity or level) -- distinct
+    #: from AMBIGUOUS: the shape is clear, one specific value is not.
+    MISSING_DATA = "missing_data"
+    #: Nothing this grammar recognizes as any kind of trade instruction.
+    NO_MATCH = "no_match"
+
+
+@dataclass
+class MessageDisposition:
+    text: str
+    outcome: DispositionOutcome
+    signal: Signal | None = None
+    detail: str | None = None
+
+
+def classify_text_signal(
     text: str, *, source: str, asset_class: AssetClass = AssetClass.CRYPTO, analyst: str | None = None
-) -> Signal:
+) -> MessageDisposition:
+    """E02 (bounded): classify one message's disposition -- PARSED,
+    IGNORED, AMBIGUOUS, MISSING_DATA, or NO_MATCH -- rather than the
+    binary "produced a Signal or raised" this module used to expose. This
+    is what a source onboarding/history-review workflow needs (the
+    adoption plan's E02 acceptance obligation: "every selected record has
+    a parsed/ignored/ambiguous/missing-data disposition") -- reviewing
+    WHY a past message never became a trade, not only that it didn't.
+
+    `parse_text_signal` (below) is now a thin wrapper over this that
+    preserves its exact previous behavior (raises SignalValidationError
+    for every non-PARSED outcome) -- nothing on the live signal-ingestion
+    path changed."""
     stripped = _merge_split_option_symbols(text.strip())
     match = _PATTERN.search(stripped)
     if not match:
-        raise SignalValidationError(f"could not parse a signal out of: {text!r}")
+        return MessageDisposition(text=text, outcome=DispositionOutcome.NO_MATCH, detail="no recognizable trade instruction")
 
     preceding = _words(stripped[: match.start()])[-_WORDS_BEFORE_MATCH_TO_CHECK:]
     following = _words(stripped[match.end() :])
     if any(w in _NEGATION_OR_CONDITIONAL_WORDS for w in preceding + following):
-        raise SignalValidationError(
-            f"looks like negated, conditional, or still-pending commentary rather than a trade "
-            f"instruction, refusing to admit it: {text!r}"
+        return MessageDisposition(
+            text=text,
+            outcome=DispositionOutcome.IGNORED,
+            detail="negated, conditional, or still-pending commentary rather than a trade instruction",
         )
 
     if len(_SIDE_WORD_PATTERN.findall(stripped)) > 1:
-        raise SignalValidationError(
-            f"more than one trade instruction in a single message -- refusing to guess which one "
-            f"(or silently act on only the first): {text!r}"
+        return MessageDisposition(
+            text=text,
+            outcome=DispositionOutcome.AMBIGUOUS,
+            detail="more than one trade instruction in a single message",
         )
     if len(_TP_LEVEL_PATTERN.findall(stripped)) > 1:
-        raise SignalValidationError(
-            f"more than one take-profit level -- this parser has no way to represent a multi-target "
-            f"exit, refusing to silently keep only one: {text!r}"
+        return MessageDisposition(
+            text=text,
+            outcome=DispositionOutcome.AMBIGUOUS,
+            detail="more than one take-profit level -- no way to represent a multi-target exit",
         )
 
     for field in ("quantity", "price", "sl", "tp"):
         raw = match.group(field)
         if raw is not None and raw.startswith("-"):
-            raise SignalValidationError(f"'{field}' must not be negative, got {raw!r} in: {text!r}")
+            return MessageDisposition(
+                text=text,
+                outcome=DispositionOutcome.MISSING_DATA,
+                detail=f"'{field}' must not be negative, got {raw!r}",
+            )
 
     side = _SIDE_ALIASES[match.group("side").lower()]
     symbol = match.group("symbol").upper()
@@ -196,7 +250,7 @@ def parse_text_signal(
         inferred_asset_class if inferred_asset_class is not None else asset_class
     )
 
-    return Signal(
+    signal = Signal(
         source=source,
         symbol=symbol,
         side=side,
@@ -208,6 +262,28 @@ def parse_text_signal(
         take_profit=_optional_float(match.group("tp")),
         raw={"text": text},
     )
+    return MessageDisposition(text=text, outcome=DispositionOutcome.PARSED, signal=signal)
+
+
+def classify_batch(
+    texts: list[str], *, source: str, asset_class: AssetClass = AssetClass.CRYPTO, analyst: str | None = None
+) -> list[MessageDisposition]:
+    """E02 (bounded): classify a batch of historical messages -- the
+    piece of a full source-onboarding/parser-lab workflow this session
+    can deliver without a specific source's own history-export API to
+    pull from (that part -- "one workflow imports all accessible
+    authorized selected history" -- stays a disclosed gap; this is the
+    classification step that workflow would call per message)."""
+    return [classify_text_signal(text, source=source, asset_class=asset_class, analyst=analyst) for text in texts]
+
+
+def parse_text_signal(
+    text: str, *, source: str, asset_class: AssetClass = AssetClass.CRYPTO, analyst: str | None = None
+) -> Signal:
+    disposition = classify_text_signal(text, source=source, asset_class=asset_class, analyst=analyst)
+    if disposition.outcome is not DispositionOutcome.PARSED:
+        raise SignalValidationError(f"{disposition.detail}: {text!r}")
+    return disposition.signal
 
 
 def _optional_float(value: str | None) -> float | None:
