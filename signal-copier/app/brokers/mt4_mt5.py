@@ -44,6 +44,14 @@ from app.brokers.base import BrokerAdapter
 from app.models import DestinationAccount, OrderResult, OrderStatus, Signal
 
 
+#: MT5's own numeric retcode for "the venue filled part of the requested
+#: volume and stopped there" -- a real, terminal partial fill, not a
+#: rejection. Hardcoded (rather than read off `self._mt5`) since it's a
+#: fixed protocol constant from MetaTrader5's trade server, not something
+#: that varies by installed package version.
+_TRADE_RETCODE_DONE_PARTIAL = 10010
+
+
 class MT5Broker(BrokerAdapter):
     name = "mt4_mt5"
     supports_native_bracket = True  # sl/tp are fields on the same order_send request
@@ -133,7 +141,14 @@ class MT5Broker(BrokerAdapter):
                 message=str(exc),
             )
 
-        if result["retcode"] != self._mt5.TRADE_RETCODE_DONE:
+        # ADP-08: TRADE_RETCODE_DONE_PARTIAL (10010) means the venue filled
+        # part of the requested volume and stopped there -- a real, terminal
+        # fill for whatever `result["volume"]` reports, not a rejection.
+        # Treating it as REJECTED (the old behavior, since it isn't
+        # TRADE_RETCODE_DONE) silently dropped a confirmed position the
+        # account actually holds -- nothing downstream (lifecycle tracking,
+        # protective stops) would ever learn about it.
+        if result["retcode"] not in (self._mt5.TRADE_RETCODE_DONE, _TRADE_RETCODE_DONE_PARTIAL):
             return OrderResult(
                 account_id=account.account_id,
                 status=OrderStatus.REJECTED,
@@ -141,6 +156,7 @@ class MT5Broker(BrokerAdapter):
                 message=f"MT5 rejected order: retcode={result['retcode']} ({result['comment']})",
             )
 
+        message = "filled by MT5" if result["retcode"] == self._mt5.TRADE_RETCODE_DONE else "partially filled by MT5"
         return OrderResult(
             account_id=account.account_id,
             status=OrderStatus.FILLED,
@@ -148,7 +164,7 @@ class MT5Broker(BrokerAdapter):
             broker_order_id=str(result["order"]),
             filled_quantity=result["volume"],
             filled_price=result["price"],
-            message="filled by MT5",
+            message=message,
         )
 
 

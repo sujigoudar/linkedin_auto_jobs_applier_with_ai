@@ -331,5 +331,30 @@ class AlpacaBroker(BrokerAdapter):
         qty = position.get("qty")
         return float(qty) if qty is not None else None
 
+    async def get_last_price(self, account: DestinationAccount, symbol: str) -> float | None:
+        # ADP-07: this is what actually drives on_price_update() for a
+        # managed-lifecycle position's targets/trailing/stop resizing (see
+        # app/pricing.py) — without it, Alpaca positions were never polled
+        # at all despite the lifecycle logic supporting them. Alpaca's
+        # market data lives on a separate host from trading/account data
+        # (data.alpaca.markets vs. the paper/live api host), so this can't
+        # reuse `_credentials_for`'s base_url.
+        try:
+            api_key, api_secret, _ = self._credentials_for(account)
+        except RuntimeError:
+            return None
+
+        try:
+            response = await self._client.get(
+                f"https://data.alpaca.markets/v2/stocks/{symbol}/trades/latest",
+                headers={"APCA-API-KEY-ID": api_key, "APCA-API-SECRET-KEY": api_secret},
+            )
+            response.raise_for_status()
+        except httpx.HTTPError:
+            return None
+
+        price = response.json().get("trade", {}).get("p")
+        return float(price) if price is not None else None
+
     async def close(self) -> None:
         await self._client.aclose()
