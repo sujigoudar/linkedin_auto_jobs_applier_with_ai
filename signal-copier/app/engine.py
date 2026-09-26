@@ -592,6 +592,17 @@ class SignalCopierEngine:
         self.store.save_signal(close_signal)
 
         if account.managed_lifecycle:
+            # E06: the resolved opposing side (BUY/SELL), not Side.CLOSE --
+            # save_order_result's own docstring says "for a resolved close,
+            # side is the opposing buy/sell, not Side.CLOSE" (the plain-
+            # account path below already honors this), but this branch
+            # used to save Side.CLOSE regardless, making it impossible to
+            # tell a managed close's actual trade direction from the
+            # `orders` table alone -- exactly what a P&L/execution-journal
+            # report needs to reconstruct realized gains correctly.
+            lifecycle_before_close = self.lifecycle_manager.get_lifecycle(account.account_id, symbol)
+            resolved_side = lifecycle_before_close.exit_side if lifecycle_before_close is not None else Side.CLOSE
+
             result = await self._handle_managed_close(close_signal, account, symbol, source=reason)
             # DB-01: PositionLifecycleManager.request_exit (which this
             # ultimately calls into) reports some outcomes with
@@ -605,7 +616,7 @@ class SignalCopierEngine:
             # above) -- always attribute the row to it rather than trust
             # whatever id happened to come back from deeper in the call.
             result = replace(result, signal_id=close_signal.id)
-            self.store.save_order_result(result, broker=account.broker, symbol=symbol, side=Side.CLOSE)
+            self.store.save_order_result(result, broker=account.broker, symbol=symbol, side=resolved_side)
         else:
             # Goes through the same (account_id, symbol) lock as a provider-driven
             # CLOSE signal (see _resolve_and_submit_plain_close) -- a dashboard
