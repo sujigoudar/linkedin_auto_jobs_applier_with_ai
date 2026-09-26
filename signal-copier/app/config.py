@@ -33,6 +33,11 @@ WEBHOOK_SHARED_SECRET = os.getenv("WEBHOOK_SHARED_SECRET", "")
 OWNER_PASSWORD = os.getenv("OWNER_PASSWORD", "")
 SESSION_SECRET = os.getenv("SESSION_SECRET", "")
 SESSION_TTL_SECONDS = float(os.getenv("SESSION_TTL_SECONDS", str(60 * 60 * 12)))  # 12h
+# Set true when this process sits behind a TLS-terminating reverse proxy
+# (nginx/Caddy) so the login route always marks its session cookie Secure --
+# `request.url.scheme` alone sees only "http" in that deployment, since the
+# proxy, not this process, terminates TLS (see SEC-05).
+FORCE_SECURE_COOKIES = os.getenv("FORCE_SECURE_COOKIES", "false").strip().lower() in ("1", "true", "yes")
 
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 

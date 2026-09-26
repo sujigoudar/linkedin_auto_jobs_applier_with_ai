@@ -127,7 +127,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     session_id TEXT PRIMARY KEY,
     csrf_token TEXT NOT NULL,
     created_at TEXT NOT NULL,
-    expires_at TEXT NOT NULL
+    expires_at TEXT NOT NULL,
+    credential_epoch TEXT
 );
 
 -- Recent financial-command results, keyed by an idempotency key the caller
@@ -172,6 +173,7 @@ _COLUMN_MIGRATIONS = [
     ("signals", "stop_loss", "REAL"),
     ("signals", "take_profit", "REAL"),
     ("signals", "analyst", "TEXT"),
+    ("sessions", "credential_epoch", "TEXT"),
 ]
 
 
@@ -797,21 +799,40 @@ class SignalStore:
 
     # --- owner sessions (app/auth.py) ---
 
-    def create_session(self, session_id: str, csrf_token: str, expires_at: datetime) -> None:
+    def create_session(
+        self, session_id: str, csrf_token: str, expires_at: datetime, credential_epoch: str | None = None
+    ) -> None:
         with self._connect() as conn:
             conn.execute(
-                "INSERT INTO sessions (session_id, csrf_token, created_at, expires_at) VALUES (?, ?, ?, ?)",
-                (session_id, csrf_token, datetime.now(timezone.utc).isoformat(), expires_at.isoformat()),
+                """INSERT INTO sessions (session_id, csrf_token, created_at, expires_at, credential_epoch)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (
+                    session_id,
+                    csrf_token,
+                    datetime.now(timezone.utc).isoformat(),
+                    expires_at.isoformat(),
+                    credential_epoch,
+                ),
             )
 
     def get_session(self, session_id: str) -> dict | None:
         with self._connect() as conn:
             row = conn.execute(
-                "SELECT session_id, csrf_token, expires_at FROM sessions WHERE session_id = ?", (session_id,)
+                "SELECT session_id, csrf_token, expires_at, credential_epoch FROM sessions WHERE session_id = ?",
+                (session_id,),
             ).fetchone()
         if row is None:
             return None
-        return {"session_id": row[0], "csrf_token": row[1], "expires_at": row[2]}
+        return {"session_id": row[0], "csrf_token": row[1], "expires_at": row[2], "credential_epoch": row[3]}
+
+    def delete_all_sessions(self) -> None:
+        """Explicit sign-out-everywhere -- see app/auth.py's credential-epoch
+        binding for why this is now rarely needed on its own (a credential
+        change already invalidates every existing session automatically),
+        but an owner may still want to revoke sessions without rotating
+        either secret (e.g. a shared/public device)."""
+        with self._connect() as conn:
+            conn.execute("DELETE FROM sessions")
 
     def delete_session(self, session_id: str) -> None:
         with self._connect() as conn:

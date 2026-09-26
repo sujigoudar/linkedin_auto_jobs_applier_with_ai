@@ -142,3 +142,31 @@ def test_upstream_http_error_maps_to_502(client, monkeypatch):
         response = client.get("/context/fred/DGS10")
 
     assert response.status_code == 502
+
+
+def test_upstream_http_error_redacts_the_api_key_from_the_request_url(client, monkeypatch):
+    """SEC-07: httpx's own str(exc) on an HTTPStatusError includes the full
+    request URL -- FRED takes its key as a `?api_key=...` query param, so an
+    unsanitized error message put the real key directly into this response."""
+    monkeypatch.setattr(app_config, "FRED_API_KEY", "super-secret-fred-key")
+
+    async def fake_get(self, url, params=None):
+        # Mirror what real httpx.AsyncClient.get(url, params=...) actually
+        # sends: params merged into the request's own URL, unlike the
+        # control test above. Also use the real raise_for_status() (not a
+        # hand-built HTTPStatusError) since ITS generated message is what
+        # actually embeds the full URL -- app/context/fred.py calls this
+        # same method.
+        request = httpx.Request("GET", url, params=params)
+        response = httpx.Response(500, request=request)
+        response.raise_for_status()
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", fake_get)
+
+    with client:
+        response = client.get("/context/fred/DGS10")
+
+    assert response.status_code == 502
+    detail = response.json()["detail"]
+    assert "super-secret-fred-key" not in detail
+    assert "REDACTED" in detail

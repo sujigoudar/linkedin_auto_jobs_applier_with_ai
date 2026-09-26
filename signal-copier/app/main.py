@@ -9,6 +9,7 @@ started in the lifespan handler.
 from __future__ import annotations
 
 import logging
+from collections import defaultdict
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -16,7 +17,7 @@ from pathlib import Path
 import httpx
 from fastapi import Cookie, Depends, FastAPI, Form, Header, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse, JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app import config
 from app.auth import SESSION_COOKIE_NAME, RequireOwner, create_session, verify_password
@@ -261,19 +262,67 @@ async def health() -> dict:
     }
 
 
+class LoginRequest(BaseModel):
+    # A strict model (SEC-02) -- FastAPI/pydantic rejects a non-object body,
+    # a non-string password, or one exceeding this bound with a clean 422,
+    # before any of our own code ever sees it (previously a bare
+    # `await request.json()` + `.get()` let a non-object body, a non-string
+    # password, or similar malformed input reach `hmac.compare_digest` and
+    # raise an uncaught TypeError/AttributeError -- a raw 500). Python's own
+    # string handling is unicode-safe throughout, so a non-ASCII password
+    # needs no special casing once it's guaranteed to actually be a `str`.
+    password: str = Field(max_length=1024)
+
+
+#: Per-client-IP login throttle (SEC-03): bounded and non-permanent, and
+#: deliberately scoped per IP rather than system-wide -- a system-wide
+#: lockout would let any anonymous caller lock the real owner out entirely.
+#: In-memory (resets on restart); this is a single-process app, and a
+#: restart-durable store would still not stop a distributed attempt from
+#: many IPs, which is a materially different, larger problem than this
+#: closes. Behind a reverse proxy, configure it to pass the real client IP
+#: (this uses `request.client.host` as reported to this process) for this
+#: to throttle anything more specific than "the proxy's own address."
+_LOGIN_WINDOW_SECONDS = 900.0
+_LOGIN_MAX_ATTEMPTS = 5
+_login_failures: dict[str, list[float]] = defaultdict(list)
+
+
+def _client_key(request: Request) -> str:
+    return request.client.host if request.client else "unknown"
+
+
 @app.post("/auth/login")
-async def login(request: Request, response: Response) -> dict:
-    body = await request.json()
-    password = body.get("password", "")
-    if not verify_password(password):
+async def login(request: Request, response: Response, body: LoginRequest) -> dict:
+    client_key = _client_key(request)
+    now = datetime.now(timezone.utc).timestamp()
+    recent_failures = [t for t in _login_failures[client_key] if now - t < _LOGIN_WINDOW_SECONDS]
+    _login_failures[client_key] = recent_failures
+    if len(recent_failures) >= _LOGIN_MAX_ATTEMPTS:
+        retry_after = int(_LOGIN_WINDOW_SECONDS - (now - recent_failures[0]))
+        raise HTTPException(
+            status_code=429,
+            detail=f"too many failed login attempts; try again in {max(retry_after, 1)}s",
+        )
+
+    if not verify_password(body.password):
+        _login_failures[client_key].append(now)
         raise HTTPException(status_code=401, detail="invalid password")
+
+    _login_failures.pop(client_key, None)
     session_id, csrf_token = create_session(store)
     response.set_cookie(
         SESSION_COOKIE_NAME,
         session_id,
         httponly=True,
         samesite="strict",
-        secure=request.url.scheme == "https",
+        # SEC-05: `request.url.scheme` alone is wrong behind a TLS-terminating
+        # reverse proxy (nginx/Caddy typically forwards plain HTTP to this
+        # process, so the scheme this app sees is always "http" even though
+        # the real client used HTTPS). FORCE_SECURE_COOKIES is an explicit
+        # operator setting for exactly that deployment, rather than trusting
+        # a spoofable X-Forwarded-Proto header by default.
+        secure=request.url.scheme == "https" or config.FORCE_SECURE_COOKIES,
         max_age=int(config.SESSION_TTL_SECONDS),
     )
     return {"status": "ok", "csrf_token": csrf_token}
@@ -844,6 +893,29 @@ async def run_backtest(request: BacktestRequest, _owner: dict = Depends(require_
 # place, cancel, or modify anything. See app/context/__init__.py and
 # README.md's "Market/economic context" section.
 
+_SECRET_QUERY_PARAMS = ("api_key", "apikey", "token", "key", "secret", "password", "auth")
+
+
+def _sanitized_upstream_error(source: str, exc: httpx.HTTPError) -> str:
+    """httpx's own `str(exc)` on an HTTPStatusError includes the full
+    request URL -- FRED's API takes its key as a `?api_key=...` query
+    parameter, so an unsanitized error message put that real key directly
+    into this response (SEC-07). Redact any secret-shaped query parameter
+    value before it ever leaves this process, in a response or a log line."""
+    message = str(exc)
+    request = getattr(exc, "request", None)
+    if request is not None:
+        try:
+            url = httpx.URL(str(request.url))
+            redacted_params = {
+                k: ("REDACTED" if k.lower() in _SECRET_QUERY_PARAMS else v) for k, v in url.params.multi_items()
+            }
+            safe_url = str(url.copy_with(params=redacted_params))
+            message = message.replace(str(request.url), safe_url)
+        except Exception:  # noqa: BLE001 - never let sanitization itself fail the error path
+            message = f"{type(exc).__name__} (request URL redacted)"
+    return f"{source} request failed: {message}"
+
 
 @app.get("/context/filings/{ticker}")
 async def get_sec_filings(ticker: str, _owner: dict = Depends(require_owner_read)) -> dict:
@@ -855,7 +927,7 @@ async def get_sec_filings(ticker: str, _owner: dict = Depends(require_owner_read
     except sec_edgar.NotConfigured as exc:
         raise HTTPException(status_code=501, detail=str(exc)) from exc
     except httpx.HTTPError as exc:
-        raise HTTPException(status_code=502, detail=f"SEC EDGAR request failed: {exc}") from exc
+        raise HTTPException(status_code=502, detail=_sanitized_upstream_error("SEC EDGAR", exc)) from exc
     if submissions is None:
         raise HTTPException(status_code=404, detail=f"no SEC CIK found for ticker '{ticker}'")
     return submissions
@@ -870,7 +942,7 @@ async def get_sec_company_facts(ticker: str, _owner: dict = Depends(require_owne
     except sec_edgar.NotConfigured as exc:
         raise HTTPException(status_code=501, detail=str(exc)) from exc
     except httpx.HTTPError as exc:
-        raise HTTPException(status_code=502, detail=f"SEC EDGAR request failed: {exc}") from exc
+        raise HTTPException(status_code=502, detail=_sanitized_upstream_error("SEC EDGAR", exc)) from exc
     if facts is None:
         raise HTTPException(status_code=404, detail=f"no XBRL facts found for ticker '{ticker}'")
     return facts
@@ -894,7 +966,7 @@ async def get_fred_series(
     except fred_context.NotConfigured as exc:
         raise HTTPException(status_code=501, detail=str(exc)) from exc
     except httpx.HTTPError as exc:
-        raise HTTPException(status_code=502, detail=f"FRED request failed: {exc}") from exc
+        raise HTTPException(status_code=502, detail=_sanitized_upstream_error("FRED", exc)) from exc
 
 
 @app.get("/context/fx/{base}/{quote}")
@@ -909,7 +981,7 @@ async def get_fx_rate(
             return await fx_context.get_historical_rate(date, base, quote)
         return await fx_context.get_latest_rate(base, quote)
     except httpx.HTTPError as exc:
-        raise HTTPException(status_code=502, detail=f"Frankfurter request failed: {exc}") from exc
+        raise HTTPException(status_code=502, detail=_sanitized_upstream_error("Frankfurter", exc)) from exc
 
 
 def _orders_response(signal_id: str, results) -> dict:

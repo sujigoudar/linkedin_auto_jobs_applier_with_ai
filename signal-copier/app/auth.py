@@ -28,6 +28,7 @@ misconfigured deployment is loud and broken, not quietly public.
 """
 from __future__ import annotations
 
+import hashlib
 import hmac
 import secrets
 from datetime import datetime, timedelta, timezone
@@ -44,10 +45,29 @@ def auth_configured() -> bool:
     return bool(config.OWNER_PASSWORD) and bool(config.SESSION_SECRET)
 
 
+def _credential_epoch() -> str:
+    """A short fingerprint of the CURRENT OWNER_PASSWORD+SESSION_SECRET
+    pair. Every session is stamped with the epoch active when it was
+    created; a session is only honored while its stamp still matches the
+    current one (see `_session_or_none`). SEC-04: SESSION_SECRET used to be
+    checked only as a configured/not-configured boolean flag -- changing
+    either secret had no effect on sessions already issued, since nothing
+    about a session was ever derived from either value. Rotating EITHER
+    secret now revokes every existing session automatically, with no
+    separate sign-out-all step required (though `delete_all_sessions`
+    remains available for revoking without rotating anything)."""
+    fingerprint = f"{config.OWNER_PASSWORD}:{config.SESSION_SECRET}".encode()
+    return hashlib.sha256(fingerprint).hexdigest()[:16]
+
+
 def verify_password(password: str) -> bool:
     if not auth_configured():
         return False
-    return hmac.compare_digest(password, config.OWNER_PASSWORD)
+    # hmac.compare_digest raises TypeError for a non-ASCII `str` (it only
+    # accepts ASCII-only str or arbitrary bytes) -- a non-ASCII password
+    # used to reach this as a raw 500 (SEC-02). Comparing as UTF-8 bytes
+    # is unicode-safe and still constant-time.
+    return hmac.compare_digest(password.encode("utf-8"), config.OWNER_PASSWORD.encode("utf-8"))
 
 
 def create_session(store: SignalStore) -> tuple[str, str]:
@@ -56,7 +76,7 @@ def create_session(store: SignalStore) -> tuple[str, str]:
     session_id = secrets.token_urlsafe(32)
     csrf_token = secrets.token_urlsafe(32)
     expires_at = datetime.now(timezone.utc) + timedelta(seconds=config.SESSION_TTL_SECONDS)
-    store.create_session(session_id, csrf_token, expires_at)
+    store.create_session(session_id, csrf_token, expires_at, credential_epoch=_credential_epoch())
     return session_id, csrf_token
 
 
@@ -65,6 +85,11 @@ def _session_or_none(store: SignalStore, session_id: str | None) -> dict | None:
         return None
     row = store.get_session(session_id)
     if row is None:
+        return None
+    if row.get("credential_epoch") != _credential_epoch():
+        # OWNER_PASSWORD or SESSION_SECRET changed since this session was
+        # issued -- treat it as revoked, not merely stale.
+        store.delete_session(session_id)
         return None
     expires_at = datetime.fromisoformat(row["expires_at"])
     if expires_at.tzinfo is None:
