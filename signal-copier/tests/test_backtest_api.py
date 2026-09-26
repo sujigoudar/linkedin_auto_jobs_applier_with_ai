@@ -106,3 +106,46 @@ def test_backtest_endpoint_runs_a_real_replay_end_to_end(store, tmp_path, monkey
     assert body["summary"]["wins"] == 1
     assert body["trades"][0]["outcome"] == "win"
     assert body["trades"][0]["pnl"] == pytest.approx((110.0 - 100.0) * 10.0)
+    assert "stressed_summary" not in body  # no slippage_bps/fee_per_trade requested
+
+
+def test_backtest_endpoint_applies_cost_stress_when_requested(store, tmp_path, monkeypatch):
+    """E07 (bounded): slippage_bps/fee_per_trade in the request produce a
+    stressed_summary alongside the raw one."""
+    import app.main as main_module
+    from app import config as app_config
+
+    monkeypatch.setattr(app_config, "OWNER_PASSWORD", "test-owner-password")
+    monkeypatch.setattr(app_config, "SESSION_SECRET", "test-session-secret")
+    monkeypatch.setattr(main_module, "store", store)
+    store.save_signal(
+        _signal(source="tradingview", symbol="AAPL", received_at=datetime(2024, 1, 1, tzinfo=timezone.utc))
+    )
+
+    csv_path = tmp_path / "AAPL.csv"
+    csv_path.write_text(
+        "timestamp,open,high,low,close\n"
+        "2024-01-02T00:00:00+00:00,101,111,100,110\n"
+    )
+
+    client = TestClient(main_module.app)
+    with client:
+        login = client.post("/auth/login", json={"password": "test-owner-password"})
+        client.headers["X-CSRF-Token"] = login.json()["csrf_token"]
+        response = client.post(
+            "/backtest",
+            json={
+                "source": "tradingview",
+                "symbol": "AAPL",
+                "start": "2024-01-01T00:00:00+00:00",
+                "end": "2024-01-31T00:00:00+00:00",
+                "csv_paths": {"AAPL": str(csv_path)},
+                "slippage_bps": 100.0,
+                "fee_per_trade": 2.0,
+            },
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert "stressed_summary" in body
+    assert body["stressed_summary"]["total_pnl"] < body["summary"]["total_pnl"]

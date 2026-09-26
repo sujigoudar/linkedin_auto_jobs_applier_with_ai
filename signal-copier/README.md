@@ -750,8 +750,14 @@ it, but the short version:
   at its own `quantity`, entering at its own recorded `price`. There's no
   shared-account-capital portfolio simulation across overlapping
   signals yet — a real follow-up, not implemented here.
-- **No slippage or fee modeling** — a resolved trade fills at the exact
-  stop/target price.
+- **No slippage or fee modeling in the raw replay** — a resolved trade
+  fills at the exact stop/target price. **E07 (bounded):** pass
+  `slippage_bps`/`fee_per_trade` in the `POST /backtest` request to get
+  a `stressed_summary` alongside the raw one (`app/backtest/
+  cost_stress.py`) — a flat, linear stress test ("does the apparent edge
+  survive if every resolved trade's fill is worse by this much"), not a
+  real broker fee schedule or a liquidity/market-impact model. Omit both
+  (or leave them at 0) to skip it entirely.
 - Only signals **saved after this feature shipped** carry `stop_loss`/
   `take_profit`/`analyst` (new columns on the `signals` table, added via
   an additive migration — see `app/db.py`'s `_COLUMN_MIGRATIONS`); older

@@ -23,6 +23,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from app import config
 from app.auth import SESSION_COOKIE_NAME, RequireOwner, create_session, verify_password
+from app.backtest.cost_stress import apply_cost_stress
 from app.backtest.models import CsvPriceHistoryProvider
 from app.backtest.replay import BacktestEngine
 from app.brokers.alpaca import AlpacaBroker
@@ -1085,6 +1086,13 @@ class BacktestRequest(BaseModel):
     #: for why this project can't fetch historical bars for you.
     csv_paths: dict[str, str]
     max_hold_days: float = 30.0
+    #: E07 (bounded): optional linear cost-stress applied on top of the raw
+    #: replay -- see app/backtest/cost_stress.py's module docstring for
+    #: exactly what this is (a stress test, not a claim of real broker
+    #: costs) and its limits. 0/0 (the default) skips it entirely, same as
+    #: omitting both fields.
+    slippage_bps: float = Field(default=0.0, ge=0)
+    fee_per_trade: float = Field(default=0.0, ge=0)
 
 
 @app.post("/backtest")
@@ -1105,7 +1113,7 @@ async def run_backtest(request: BacktestRequest, _owner: dict = Depends(require_
     )
     report = engine.run(rows)
 
-    return {
+    response: dict[str, Any] = {
         "summary": report.summary(),
         "trades": [
             {
@@ -1128,6 +1136,17 @@ async def run_backtest(request: BacktestRequest, _owner: dict = Depends(require_
             for t in report.trades
         ],
     }
+
+    if request.slippage_bps or request.fee_per_trade:
+        stressed = apply_cost_stress(report, slippage_bps=request.slippage_bps, fee_per_trade=request.fee_per_trade)
+        response["stressed_summary"] = stressed.summary()
+        response["cost_stress_note"] = (
+            "Linear stress test only (flat slippage_bps against every resolved trade's exit price, plus a flat "
+            "fee_per_trade) -- not a real broker fee schedule or a liquidity/market-impact model. See "
+            "app/backtest/cost_stress.py's module docstring."
+        )
+
+    return response
 
 
 # --- Read-only market/economic context (app/context/) ---
