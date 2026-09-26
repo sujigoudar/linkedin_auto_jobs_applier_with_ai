@@ -90,9 +90,7 @@ class CloseArbiter:
         intended quantity")."""
         key = (account_id, symbol)
         async with self._locks[key]:
-            ledger = self._ledgers[key]
-            ledger.reserved = max(0.0, ledger.reserved - reserved_quantity)
-            ledger.owned = max(0.0, ledger.owned - filled_quantity)
+            self._settle_locked(key, reserved_quantity, filled_quantity)
 
     async def halt(self, account_id: str, symbol: str, reason: str) -> None:
         key = (account_id, symbol)
@@ -152,11 +150,29 @@ class CloseArbiter:
     def _settle_locked(self, key: tuple[str, str], reserved_quantity: float, filled_quantity: float) -> None:
         ledger = self._ledgers[key]
         ledger.reserved = max(0.0, ledger.reserved - reserved_quantity)
-        ledger.owned = max(0.0, ledger.owned - filled_quantity)
+        # PRO-08: do NOT clamp owned to zero here. Settling more filled
+        # quantity than was actually owned (e.g. 12 confirmed against 10
+        # owned) is a real anomaly -- an unexpected short, a duplicate
+        # fill, a corrupted observation -- and clamping to 0 silently
+        # discards that signed fact instead of surfacing it. Preserve the
+        # true arithmetic result and let _check_invariant halt the
+        # position for it, same as an oversell.
+        ledger.owned = ledger.owned - filled_quantity
+        self._check_invariant(key)
 
     def _check_invariant(self, key: tuple[str, str]) -> None:
         ledger = self._ledgers[key]
-        if ledger.reserved > ledger.owned + _EPSILON:
+        if ledger.owned < -_EPSILON:
+            # Since `reserved` is never negative, this always also implies
+            # `reserved > owned` below -- called out as its own case first
+            # so the halt reason names the actual anomaly (an overclose)
+            # rather than the more generic reserved-vs-owned mismatch.
+            ledger.halted = True
+            ledger.halt_reason = (
+                f"invariant violated: owned ({ledger.owned}) is negative -- more was settled as "
+                "filled than was actually owned (an overclose)"
+            )
+        elif ledger.reserved > ledger.owned + _EPSILON:
             ledger.halted = True
             ledger.halt_reason = (
                 f"invariant violated: reserved ({ledger.reserved}) exceeds owned ({ledger.owned})"

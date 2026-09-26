@@ -59,6 +59,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 from collections import defaultdict
 from datetime import datetime
 
@@ -314,6 +315,23 @@ class PositionLifecycleManager:
             pending = lifecycle.pending_entry
             broker = self.brokers.get(account.broker)
 
+            if not math.isfinite(confirmed_filled_quantity) or confirmed_filled_quantity < 0:
+                # PRO-07: a negative or non-finite observation is invalid
+                # input, not a legitimate trade-bust/correction event (those
+                # are explicit, separate events -- see this method's
+                # docstring). Applying it as-is would corrupt the ledger
+                # (a negative "newly_applied" delta, or arithmetic blowing
+                # up on infinity). Raise an incident and leave everything
+                # untouched rather than silently act on it.
+                logger.error(
+                    "invalid confirmed_filled_quantity=%r for pending entry account=%s symbol=%s "
+                    "-- ignoring this observation rather than applying it",
+                    confirmed_filled_quantity,
+                    account.account_id,
+                    symbol,
+                )
+                return
+
             if confirmed_filled_quantity > pending.confirmed_filled_quantity:
                 newly_applied = confirmed_filled_quantity - pending.confirmed_filled_quantity
                 has_unresolved_exit = (
@@ -370,7 +388,15 @@ class PositionLifecycleManager:
             pending.remainder_resolved = True
             lifecycle.pending_entry = None
 
-            if confirmed_filled_quantity <= 0:
+            # PRO-07: use `pending.confirmed_filled_quantity` (the highest
+            # value ever actually confirmed and applied), not the raw
+            # `confirmed_filled_quantity` argument -- a terminal observation
+            # can itself misreport 0 even after a real, already-applied 30
+            # was previously confirmed (a stale/wrong broker response is not
+            # proof the earlier confirmation was wrong). Unregistering here
+            # would discard a known, already-protected position based on
+            # nothing but a single contradictory observation.
+            if pending.confirmed_filled_quantity <= 0:
                 self.unregister_plan(account.account_id, symbol)
                 return
 
@@ -689,6 +715,31 @@ class PositionLifecycleManager:
                 account.account_id,
                 lifecycle.plan.symbol,
                 account.broker,
+            )
+            return
+        if result.status == OrderStatus.FILLED or not result.broker_order_id:
+            # PRO-05: neither of these is "confirmed resting coverage at
+            # `quantity`". A FILLED result means the stop already executed
+            # on submission (e.g. price was already past the trigger) --
+            # that's a real exit, not a standing order, and reporting it as
+            # STOP_CONFIRMED would hide that the position actually changed.
+            # A resting order with no broker_order_id is unmanageable (it
+            # can never be cancelled or resized later) and just as
+            # unverified as no stop at all. Treat both as an unprotected
+            # incident rather than fabricate confidence in coverage that
+            # isn't actually verifiable.
+            lifecycle.stop.status = ProtectionStatus.UNPROTECTED
+            lifecycle.stop.protected_quantity = 0.0
+            lifecycle.stop.broker_order_id = None
+            logger.error(
+                "protective stop submission for account=%s symbol=%s returned an ambiguous "
+                "result (status=%s, broker_order_id=%s) -- treating as unprotected rather "
+                "than confirmed coverage; if the stop actually filled, this position's real "
+                "exposure needs manual reconciliation against the broker",
+                account.account_id,
+                lifecycle.plan.symbol,
+                result.status.value,
+                result.broker_order_id,
             )
             return
         # A broker accepting the order (however it reports that — PENDING/resting is the

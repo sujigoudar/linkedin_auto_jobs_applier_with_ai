@@ -321,6 +321,44 @@ async def test_failed_target_exit_is_not_marked_fired_and_can_retry(manager, acc
 
 
 @pytest.mark.asyncio
+async def test_stop_placement_missing_a_broker_order_id_is_not_confirmed(manager, account, broker, monkeypatch):
+    """PRO-05: a resting-order result with no broker_order_id is
+    unmanageable (it can never be cancelled/resized later) -- reporting it
+    as STOP_CONFIRMED fabricates confidence in coverage that isn't
+    actually verifiable."""
+
+    async def no_id_stop(account, symbol, quantity, stop_price, exit_side):
+        return OrderResult(account_id=account.account_id, status=OrderStatus.PENDING, signal_id="", broker_order_id=None)
+
+    monkeypatch.setattr(broker, "place_protective_stop", no_id_stop)
+    lifecycle = await _enter(manager, broker, account, _plan(planned_quantity=10.0, initial_stop=48.50), 10.0)
+
+    assert lifecycle.stop.status == ProtectionStatus.UNPROTECTED
+    assert lifecycle.stop.protected_quantity == 0.0
+    assert lifecycle.stop.broker_order_id is None
+
+
+@pytest.mark.asyncio
+async def test_stop_that_fills_immediately_on_submission_is_not_confirmed_coverage(manager, account, broker, monkeypatch):
+    """PRO-05: a FILLED result means the stop already executed on
+    submission (e.g. price was already past the trigger) -- that's a real
+    exit, not standing coverage, and must not be reported as
+    STOP_CONFIRMED at the full requested quantity."""
+
+    async def immediately_filled_stop(account, symbol, quantity, stop_price, exit_side):
+        return OrderResult(
+            account_id=account.account_id, status=OrderStatus.FILLED, signal_id="",
+            broker_order_id="stop-1", filled_quantity=quantity,
+        )
+
+    monkeypatch.setattr(broker, "place_protective_stop", immediately_filled_stop)
+    lifecycle = await _enter(manager, broker, account, _plan(planned_quantity=10.0, initial_stop=48.50), 10.0)
+
+    assert lifecycle.stop.status == ProtectionStatus.UNPROTECTED
+    assert lifecycle.stop.protected_quantity == 0.0
+
+
+@pytest.mark.asyncio
 async def test_trailing_stop_ratchets_up_and_never_loosens(manager, account, broker):
     plan = _plan(
         planned_quantity=62.0,

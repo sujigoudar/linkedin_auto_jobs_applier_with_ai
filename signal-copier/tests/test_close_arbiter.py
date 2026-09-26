@@ -130,3 +130,21 @@ async def test_reserve_blocks_while_a_transition_holds_the_lock():
 
     # the reserve() call must not have completed until after the transition ended
     assert order.index("transition-end") < order.index(("reserve-result", False))
+
+
+@pytest.mark.asyncio
+async def test_overclose_preserves_the_real_negative_inventory_and_halts():
+    """PRO-08: settling more filled quantity than was actually owned (e.g.
+    12 confirmed against 10 owned) must preserve the real signed result
+    (-2), not silently clamp to 0 -- and must halt the position rather than
+    let it keep operating on an unexplained anomaly."""
+    arbiter = CloseArbiter()
+    await arbiter.set_owned_quantity("acct1", "AAPL", 10)
+    assert await arbiter.reserve("acct1", "AAPL", 10) is True
+
+    await arbiter.settle("acct1", "AAPL", reserved_quantity=10, filled_quantity=12)
+
+    ledger = arbiter._ledgers[("acct1", "AAPL")]
+    assert ledger.owned == -2
+    assert arbiter.is_halted("acct1", "AAPL") is True
+    assert "negative" in arbiter.halt_reason("acct1", "AAPL")

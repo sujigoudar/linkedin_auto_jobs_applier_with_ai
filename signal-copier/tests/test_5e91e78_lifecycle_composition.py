@@ -455,6 +455,40 @@ async def test_missing_terminal_quantity_cannot_erase_an_already_owned_lifecycle
 
 
 @pytest.mark.asyncio
+async def test_explicit_terminal_zero_after_a_known_confirmed_fill_does_not_erase_it(world):
+    """PRO-07: an explicit (not just missing) terminal 0 observation, even
+    though it directly contradicts an already-confirmed 30, must not
+    unregister the lifecycle -- a single contradictory/stale broker
+    response is not proof the earlier real confirmation was wrong."""
+    entry = await start_entry(world)
+    await progress(world, entry, 30.0)
+
+    await world.manager.resolve_pending_entry(world.account, SYMBOL, 0.0, remainder_cancelled=True)
+
+    remaining = lifecycle(world)
+    assert remaining is not None, "Known ownership lost its management record"
+    assert remaining.confirmed_owned_quantity == 30.0
+    assert world.store.get_position(ACCOUNT, SYMBOL) == 30.0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("invalid_quantity", [-5.0, float("inf"), float("nan")])
+async def test_invalid_fill_observations_are_ignored_not_applied(world, invalid_quantity):
+    """PRO-07: negative/non-finite observations are invalid input, not a
+    legitimate trade-bust/correction event -- they must be ignored rather
+    than corrupting the ledger."""
+    entry = await start_entry(world)
+    await progress(world, entry, 30.0)
+
+    await world.manager.resolve_pending_entry(world.account, SYMBOL, invalid_quantity, remainder_cancelled=False)
+
+    remaining = lifecycle(world)
+    assert remaining is not None
+    assert remaining.confirmed_owned_quantity == 30.0
+    assert world.store.get_position(ACCOUNT, SYMBOL) == 30.0
+
+
+@pytest.mark.asyncio
 async def test_simultaneous_identical_fill_observations_do_not_duplicate_stops_or_positions(world):
     """F07: events prove overlap; no sleep-duration correctness assumption."""
     entry = await start_entry(world)
