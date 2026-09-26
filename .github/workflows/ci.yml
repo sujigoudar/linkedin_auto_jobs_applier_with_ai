@@ -22,4 +22,13 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Run tests
-        run: pytest 
+        # signal-copier/ is a separate, unrelated project (see its own
+        # README) with its own dependency set and its own dedicated,
+        # path-scoped CI (.github/workflows/signal-copier-ci.yml) --
+        # this root job's `pip install -r requirements.txt` never installs
+        # signal-copier's requirements, so letting bare `pytest` also
+        # collect signal-copier/tests/** here fails at collection time.
+        # The root project itself has no tests of its own yet, so with
+        # signal-copier excluded, pytest exits 5 ("no tests collected") --
+        # that's correct, not a failure, so it's tolerated explicitly here.
+        run: pytest --ignore=signal-copier || [ $? -eq 5 ]
