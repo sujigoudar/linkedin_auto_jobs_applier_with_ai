@@ -58,3 +58,24 @@ def test_negated_or_conditional_commentary_is_refused_not_traded(text):
     silently admitted as a real trade."""
     with pytest.raises(SignalValidationError):
         parse_text_signal(text, source="test")
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Yesterday I said BUY AAPL 10",
+        "BUY AAPL -10 shares",
+        "BUY AAPL 10 SL -5 TP 110",
+        "BUY AAPL 10 and SELL MSFT 5",
+        "BUY AAPL 10 SL 95 TP1 105 TP2 110",
+    ],
+)
+def test_ambiguous_or_compound_text_is_refused_not_immediate_entry(text):
+    """SIG-02: reproduces the audit's exact cases (test_adapter_research_audit.py::
+    test_unreleased_ambiguous_or_compound_text_not_immediate_entry) -- past-tense
+    reporting of someone else's call, a silently-truncated negative
+    quantity/level, more than one trade instruction, and more than one
+    take-profit level must all be refused, not silently narrowed to
+    whatever the grammar happens to capture first."""
+    with pytest.raises(SignalValidationError):
+        parse_text_signal(text, source="test")

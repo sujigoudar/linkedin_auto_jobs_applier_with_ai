@@ -34,13 +34,23 @@ _PATTERN = re.compile(
     r"""
     (?P<side>buy|sell|long|short|close|exit)\s+
     (?P<symbol>[A-Za-z0-9/.\-]+)
-    (?:\s+(?P<quantity>\d+(?:\.\d+)?)\s*(?:lots?|units?|shares?)?)?
-    (?:\s*@\s*(?P<price>\d+(?:\.\d+)?))?
-    (?:.*?\bSL[:=]?\s*(?P<sl>\d+(?:\.\d+)?))?
-    (?:.*?\bTP[:=]?\s*(?P<tp>\d+(?:\.\d+)?))?
+    (?:\s+(?P<quantity>-?\d+(?:\.\d+)?)\s*(?:lots?|units?|shares?)?)?
+    (?:\s*@\s*(?P<price>-?\d+(?:\.\d+)?))?
+    (?:.*?\bSL[:=]?\s*(?P<sl>-?\d+(?:\.\d+)?))?
+    (?:.*?\bTP[:=]?\s*(?P<tp>-?\d+(?:\.\d+)?))?
     """,
     re.IGNORECASE | re.VERBOSE | re.DOTALL,
 )
+
+# SIG-02: more than one side keyword, or more than one TP level, in the same
+# message means this is either a compound instruction (two distinct trades
+# in one message -- "BUY AAPL 10 and SELL MSFT 5") or a multi-target
+# instruction this single-TP grammar can't faithfully represent ("TP1 105
+# TP2 110") -- either way, picking just the first one and silently
+# discarding the rest would trade on less than what the message actually
+# said. Refuse rather than guess.
+_SIDE_WORD_PATTERN = re.compile(r"\b(?:buy|sell|long|short|close|exit)\b", re.IGNORECASE)
+_TP_LEVEL_PATTERN = re.compile(r"\bTP\d*\b", re.IGNORECASE)
 
 # A plain substring match doesn't prove the message is actually giving that
 # instruction -- "DO NOT BUY AAPL 10" contains "BUY AAPL 10" too. This is not
@@ -56,6 +66,10 @@ _NEGATION_OR_CONDITIONAL_WORDS = {
     "never", "no", "avoid", "skip", "cancel", "cancelled", "canceled",
     "if", "unless", "maybe", "possibly", "might", "considering", "consider",
     "wait", "waiting", "hold", "holding", "ignore", "disregard",
+    # SIG-02: past-tense reporting of someone else's instruction ("Yesterday
+    # I said BUY AAPL 10") is a description of a signal, not the signal
+    # itself.
+    "yesterday", "said",
 }
 _WORDS_BEFORE_MATCH_TO_CHECK = 4
 
@@ -157,6 +171,22 @@ def parse_text_signal(
             f"looks like negated, conditional, or still-pending commentary rather than a trade "
             f"instruction, refusing to admit it: {text!r}"
         )
+
+    if len(_SIDE_WORD_PATTERN.findall(stripped)) > 1:
+        raise SignalValidationError(
+            f"more than one trade instruction in a single message -- refusing to guess which one "
+            f"(or silently act on only the first): {text!r}"
+        )
+    if len(_TP_LEVEL_PATTERN.findall(stripped)) > 1:
+        raise SignalValidationError(
+            f"more than one take-profit level -- this parser has no way to represent a multi-target "
+            f"exit, refusing to silently keep only one: {text!r}"
+        )
+
+    for field in ("quantity", "price", "sl", "tp"):
+        raw = match.group(field)
+        if raw is not None and raw.startswith("-"):
+            raise SignalValidationError(f"'{field}' must not be negative, got {raw!r} in: {text!r}")
 
     side = _SIDE_ALIASES[match.group("side").lower()]
     symbol = match.group("symbol").upper()
