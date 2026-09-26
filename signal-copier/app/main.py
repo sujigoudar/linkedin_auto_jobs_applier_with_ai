@@ -39,6 +39,7 @@ from app.context import fx as fx_context
 from app.context import sec_edgar
 from app.db import SignalStore
 from app.economics import compute_account_economics
+from app.execution_quality import compute_execution_quality
 from app.engine import SignalCopierEngine
 from app.logging_config import configure_structlog
 from app.metrics import render_metrics
@@ -547,6 +548,16 @@ async def get_account_economics(account_id: str, _owner: dict = Depends(require_
     if account_id not in routing_config.accounts:
         raise HTTPException(status_code=404, detail=f"no account '{account_id}'")
     return compute_account_economics(store, account_id).to_dict()
+
+
+@app.get("/accounts/{account_id}/execution-quality")
+async def get_account_execution_quality(account_id: str, _owner: dict = Depends(require_owner_read)) -> dict:
+    """E05: signal-to-fill latency per symbol, computed from this schema's
+    actual `received_at`/`executed_at` timestamps (see
+    app/execution_quality.py for the honest scope disclosure)."""
+    if account_id not in routing_config.accounts:
+        raise HTTPException(status_code=404, detail=f"no account '{account_id}'")
+    return compute_execution_quality(store, account_id).to_dict()
 
 
 @app.post("/positions/{account_id}/{symbol}/close")

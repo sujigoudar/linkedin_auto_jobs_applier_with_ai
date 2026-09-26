@@ -861,6 +861,21 @@ class SignalStore:
             for r in rows
         ]
 
+    def list_filled_orders_with_signal_timing(self, account_id: str) -> list[dict]:
+        """Every FILLED order for this account joined to its originating
+        signal's `received_at` -- app/execution_quality.py's only source
+        for signal-to-fill latency. There is no separately tracked
+        decision/submission/acknowledgement timestamp in this schema
+        (see that module's docstring for why its own report says so
+        honestly rather than inventing finer-grained stages)."""
+        query = """SELECT o.symbol, o.executed_at, s.received_at
+                   FROM orders o JOIN signals s ON o.signal_id = s.id
+                   WHERE o.account_id = ? AND o.status = 'filled'
+                   ORDER BY o.executed_at ASC"""
+        with self._connect() as conn:
+            rows = conn.execute(query, (account_id,)).fetchall()
+        return [{"symbol": r[0], "executed_at": r[1], "received_at": r[2]} for r in rows]
+
     def list_recent_orders(self, limit: int = 50, account_id: str | None = None) -> list[dict]:
         query = """SELECT id, account_id, broker, symbol, side, requested_quantity, signal_id,
                           status, broker_order_id, filled_quantity, filled_price, message, executed_at
