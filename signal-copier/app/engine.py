@@ -557,9 +557,27 @@ class SignalCopierEngine:
             )
 
         close_signal = Signal(source=reason, symbol=symbol, side=Side.CLOSE)
+        # DB-01: every order row's signal_id is a real foreign key into
+        # `signals` -- this manual close path is the one place that used to
+        # build a Signal and hand its id straight to save_order_result
+        # without ever persisting the signal itself, an orphaned reference
+        # that only worked because foreign key enforcement was off.
+        self.store.save_signal(close_signal)
 
         if account.managed_lifecycle:
             result = await self._handle_managed_close(close_signal, account, symbol, source=reason)
+            # DB-01: PositionLifecycleManager.request_exit (which this
+            # ultimately calls into) reports some outcomes with
+            # signal_id="" (it has no Signal of its own there, only a
+            # source/reason string) and others with a throwaway internal
+            # Signal's id (_submit_exit_order's own exit_signal, which is
+            # only guaranteed saved when the manager has a store wired in --
+            # not true of every construction, e.g. in tests). Either way,
+            # the semantically correct identity for this order, from this
+            # call's own perspective, is close_signal (just persisted
+            # above) -- always attribute the row to it rather than trust
+            # whatever id happened to come back from deeper in the call.
+            result = replace(result, signal_id=close_signal.id)
             self.store.save_order_result(result, broker=account.broker, symbol=symbol, side=Side.CLOSE)
         else:
             # Goes through the same (account_id, symbol) lock as a provider-driven

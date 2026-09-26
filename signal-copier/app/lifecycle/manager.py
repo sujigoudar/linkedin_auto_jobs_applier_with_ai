@@ -820,6 +820,16 @@ class PositionLifecycleManager:
             asset_class=lifecycle.plan.asset_class,
             raw={"reason": reason},
         )
+        if self.store is not None:
+            # DB-01: this Signal's freshly-generated id becomes the
+            # OrderResult's signal_id, which callers (app/engine.py's
+            # close_position) persist into `orders.signal_id` -- a real
+            # foreign key into `signals.id`. Persist it here, once, at the
+            # single place every request_exit-driven submission (targets,
+            # trailing, provider EXIT signals, time exits, manual
+            # close/flatten) goes through, rather than every caller having
+            # to know this id needs saving.
+            self.store.save_signal(exit_signal)
         return await broker.place_order(exit_signal, account, quantity, lifecycle.plan.symbol)
 
     async def _restore_stop_coverage(

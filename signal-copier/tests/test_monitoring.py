@@ -38,11 +38,18 @@ def test_list_recent_signals_orders_newest_first(store):
 def test_list_recent_orders_filters_by_account(store):
     from app.models import OrderResult, OrderStatus
 
+    # DB-01: orders.signal_id is a real foreign key into signals.id -- each
+    # order here needs an actually-persisted signal to point at.
+    signal1 = Signal(source="a", symbol="BTCUSDT", side=Side.BUY)
+    signal2 = Signal(source="b", symbol="ETHUSDT", side=Side.SELL)
+    store.save_signal(signal1)
+    store.save_signal(signal2)
+
     store.save_order_result(
-        OrderResult(account_id="acct1", status=OrderStatus.FILLED, signal_id="sig1")
+        OrderResult(account_id="acct1", status=OrderStatus.FILLED, signal_id=signal1.id)
     )
     store.save_order_result(
-        OrderResult(account_id="acct2", status=OrderStatus.FILLED, signal_id="sig2")
+        OrderResult(account_id="acct2", status=OrderStatus.FILLED, signal_id=signal2.id)
     )
 
     all_orders = store.list_recent_orders()

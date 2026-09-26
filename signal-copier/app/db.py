@@ -194,6 +194,13 @@ class SignalStore:
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
         conn = sqlite3.connect(self.db_path)
+        # DB-01: SQLite disables foreign key enforcement by default on
+        # every new connection regardless of a schema's own FOREIGN KEY
+        # declarations -- `orders.signal_id -> signals.id` was declared
+        # but never actually enforced, so an order row pointing at a
+        # signal id that was never persisted (or already deleted) was
+        # silently accepted rather than rejected.
+        conn.execute("PRAGMA foreign_keys = ON")
         try:
             yield conn
             conn.commit()
