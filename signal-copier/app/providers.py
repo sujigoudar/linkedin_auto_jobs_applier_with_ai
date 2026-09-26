@@ -94,7 +94,16 @@ def _apply_override(base: SettingsOverride, override: SettingsOverride) -> Setti
         managed_lifecycle=(
             override.managed_lifecycle if override.managed_lifecycle is not None else base.managed_lifecycle
         ),
-        enabled=override.enabled if override.enabled is not None else base.enabled,
+        # RISK-04: `enabled=False` at any level must disable routing
+        # "regardless of what a broader level says" (this class's own
+        # docstring) -- but ordinary override precedence (narrower wins
+        # whenever it's non-None) does the OPPOSITE for this one field: an
+        # analyst explicitly set to enabled=True would re-enable a provider
+        # its owner had disabled. Once disabled at the broader `base`
+        # level, only an explicit narrower `False` is consistent with it;
+        # a narrower `True` cannot override a broader `False`, so it's
+        # ignored here (the merge stays disabled) rather than honored.
+        enabled=False if base.enabled is False else (override.enabled if override.enabled is not None else base.enabled),
     )
 
 

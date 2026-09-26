@@ -13,11 +13,12 @@ from collections import defaultdict
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any
 
 import httpx
 from fastapi import Cookie, Depends, FastAPI, Form, Header, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse, JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from app import config
 from app.auth import SESSION_COOKIE_NAME, RequireOwner, create_session, verify_password
@@ -633,14 +634,28 @@ def _reload_provider_registry() -> None:
     provider_registry.providers.update(fresh.providers)
 
 
+def _reject_bool_scaling_value(v: Any) -> Any:
+    # RISK-04: a bare `float` field still accepts a JSON boolean (pydantic
+    # coerces True/False to 1.0/0.0) -- a multiplier or fixed_quantity of
+    # `true`/`false` is never a real sizing value, so reject it explicitly
+    # before pydantic's own float coercion discards the distinction.
+    if isinstance(v, bool):
+        raise ValueError("must be a number, not a boolean")
+    return v
+
+
 class AccountRequest(BaseModel):
     account_id: str
     broker: str
-    multiplier: float = 1.0
-    fixed_quantity: float | None = None
+    multiplier: float = Field(default=1.0, gt=0)
+    fixed_quantity: float | None = Field(default=None, gt=0)
     symbol_map: dict[str, str] = {}
     enabled: bool = True
     managed_lifecycle: bool = False
+
+    _reject_bool_multiplier = field_validator("multiplier", "fixed_quantity", mode="before")(
+        _reject_bool_scaling_value
+    )
 
 
 @app.get("/accounts")
@@ -715,10 +730,14 @@ async def delete_routing_rule(rule_id: int, _owner: dict = Depends(require_owner
 
 class ProviderRequest(BaseModel):
     display_name: str = ""
-    multiplier: float | None = None
-    fixed_quantity: float | None = None
+    multiplier: float | None = Field(default=None, gt=0)
+    fixed_quantity: float | None = Field(default=None, gt=0)
     managed_lifecycle: bool | None = None
     enabled: bool | None = None
+
+    _reject_bool_multiplier = field_validator("multiplier", "fixed_quantity", mode="before")(
+        _reject_bool_scaling_value
+    )
 
 
 @app.post("/providers/{provider_id}")
@@ -744,10 +763,14 @@ async def delete_provider(provider_id: str, _owner: dict = Depends(require_owner
 
 class AnalystRequest(BaseModel):
     display_name: str = ""
-    multiplier: float | None = None
-    fixed_quantity: float | None = None
+    multiplier: float | None = Field(default=None, gt=0)
+    fixed_quantity: float | None = Field(default=None, gt=0)
     managed_lifecycle: bool | None = None
     enabled: bool | None = None
+
+    _reject_bool_multiplier = field_validator("multiplier", "fixed_quantity", mode="before")(
+        _reject_bool_scaling_value
+    )
 
 
 @app.post("/providers/{provider_id}/analysts/{analyst_id}")
