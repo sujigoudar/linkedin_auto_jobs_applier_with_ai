@@ -831,6 +831,36 @@ class SignalStore:
             for r in rows
         ]
 
+    def list_filled_orders_chronological(self, account_id: str) -> list[dict]:
+        """Every FILLED order for this account, oldest first -- the replay
+        order app/economics.py needs to reconstruct realized P&L via
+        average-cost lot accounting. Unlike `list_recent_orders`, this has
+        no LIMIT: a P&L computation that silently dropped older fills would
+        misstate cost basis and realized gains, not just show fewer rows."""
+        query = """SELECT id, account_id, broker, symbol, side, requested_quantity, signal_id,
+                          status, broker_order_id, filled_quantity, filled_price, message, executed_at
+                   FROM orders WHERE account_id = ? AND status = 'filled' ORDER BY executed_at ASC, id ASC"""
+        with self._connect() as conn:
+            rows = conn.execute(query, (account_id,)).fetchall()
+        return [
+            {
+                "id": r[0],
+                "account_id": r[1],
+                "broker": r[2],
+                "symbol": r[3],
+                "side": r[4],
+                "requested_quantity": r[5],
+                "signal_id": r[6],
+                "status": r[7],
+                "broker_order_id": r[8],
+                "filled_quantity": r[9],
+                "filled_price": r[10],
+                "message": r[11],
+                "executed_at": r[12],
+            }
+            for r in rows
+        ]
+
     def list_recent_orders(self, limit: int = 50, account_id: str | None = None) -> list[dict]:
         query = """SELECT id, account_id, broker, symbol, side, requested_quantity, signal_id,
                           status, broker_order_id, filled_quantity, filled_price, message, executed_at

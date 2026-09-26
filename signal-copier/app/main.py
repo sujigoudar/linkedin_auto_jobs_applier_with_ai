@@ -37,6 +37,7 @@ from app.context import fred as fred_context
 from app.context import fx as fx_context
 from app.context import sec_edgar
 from app.db import SignalStore
+from app.economics import compute_account_economics
 from app.engine import SignalCopierEngine
 from app.errors import SignalValidationError
 from app.lifecycle.manager import PositionLifecycleManager
@@ -508,6 +509,17 @@ async def list_positions(_owner: dict = Depends(require_owner_read)) -> dict:
     asynchronously), not a live read of any broker's account state.
     """
     return {"positions": store.list_open_positions(), "managed_lifecycles": _managed_lifecycle_snapshot()}
+
+
+@app.get("/accounts/{account_id}/economics")
+async def get_account_economics(account_id: str, _owner: dict = Depends(require_owner_read)) -> dict:
+    """E06: authoritative realized P&L, cost basis and completed-trade win
+    rate for this account, computed by replaying its own confirmed
+    executions (see app/economics.py) -- never a simulated equity curve.
+    Gross of fees (not yet tracked); no live-market unrealized P&L."""
+    if account_id not in routing_config.accounts:
+        raise HTTPException(status_code=404, detail=f"no account '{account_id}'")
+    return compute_account_economics(store, account_id).to_dict()
 
 
 @app.post("/positions/{account_id}/{symbol}/close")
