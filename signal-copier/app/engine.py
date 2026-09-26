@@ -74,6 +74,7 @@ from datetime import datetime, timezone
 import structlog
 
 from app.brokers.base import BrokerAdapter
+from app.capital_allocator import CapitalAllocator, confirmed_open_notional
 from app.db import SignalStore
 from app.lifecycle.manager import PositionLifecycleManager
 from app.lifecycle.models import PositionPlan, Target, TargetAction
@@ -109,6 +110,10 @@ class SignalCopierEngine:
         # manual dashboard close) could both read the same tracked position and
         # both submit a full-quantity sell.
         self._plain_close_locks: dict[tuple[str, str], asyncio.Lock] = defaultdict(asyncio.Lock)
+        # E03 (bounded): per-account notional-exposure admission gate — see
+        # app/capital_allocator.py's module docstring for exactly what this
+        # does and doesn't enforce.
+        self.capital_allocator = CapitalAllocator()
 
     def _effective_settings(self, signal: Signal, account: DestinationAccount) -> SettingsOverride:
         account_defaults = SettingsOverride(
@@ -276,6 +281,14 @@ class SignalCopierEngine:
                 results.append(result)
                 continue
 
+            admitted, notional, rejection = await self._try_reserve_capital(account, order_signal, quantity)
+            if not admitted:
+                self.store.save_order_result(
+                    rejection, broker=account.broker, symbol=symbol, side=order_signal.side, requested_quantity=quantity
+                )
+                results.append(rejection)
+                continue
+
             try:
                 result = await broker.place_order(order_signal, account, quantity, symbol)
             except Exception as exc:  # noqa: BLE001 - one account's failure must not block others
@@ -286,6 +299,8 @@ class SignalCopierEngine:
                     signal_id=signal.id,
                     message=str(exc),
                 )
+            finally:
+                self.capital_allocator.release(account.account_id, notional)
 
             applied_quantity = None
             if result.status in (OrderStatus.FILLED, OrderStatus.PENDING):
@@ -309,6 +324,41 @@ class SignalCopierEngine:
             results.append(result)
 
         return results
+
+    async def _try_reserve_capital(
+        self, account: DestinationAccount, order_signal: Signal, quantity: float
+    ) -> tuple[bool, float, OrderResult | None]:
+        """E03 (bounded): admit this entry against `account.max_notional_exposure`,
+        if configured. Returns (admitted, notional_reserved, rejection_or_None).
+        `notional_reserved` is always the caller's responsibility to release
+        via `self.capital_allocator.release(account.account_id, notional)`
+        once the broker call this admission was gating has returned (0.0 is
+        a safe no-op release when nothing was actually reserved, i.e. the
+        check was skipped). See app/capital_allocator.py for what this
+        does and doesn't enforce."""
+        if account.max_notional_exposure is None or order_signal.price is None:
+            return True, 0.0, None
+        notional = abs(quantity) * order_signal.price
+        confirmed = confirmed_open_notional(self.store, account.account_id)
+        admitted = await self.capital_allocator.admit(
+            account.account_id, notional, confirmed_exposure=confirmed, max_exposure=account.max_notional_exposure
+        )
+        if not admitted:
+            return (
+                False,
+                notional,
+                OrderResult(
+                    account_id=account.account_id,
+                    status=OrderStatus.REJECTED,
+                    signal_id=order_signal.id,
+                    message=(
+                        f"account '{account.account_id}' notional exposure ceiling "
+                        f"({account.max_notional_exposure}) would be exceeded by this entry "
+                        f"(confirmed={confirmed:.2f}, requested={notional:.2f}) -- refusing"
+                    ),
+                ),
+            )
+        return True, notional, None
 
     def _resolve_close(
         self, signal: Signal, account: DestinationAccount, symbol: str
@@ -456,6 +506,10 @@ class SignalCopierEngine:
                 account_id=account.account_id, status=OrderStatus.REJECTED, signal_id=signal.id, message=error
             )
 
+        admitted, notional, rejection = await self._try_reserve_capital(account, signal, quantity)
+        if not admitted:
+            return rejection
+
         self.lifecycle_manager.start_plan(plan)
 
         # Entry order only — stop_loss/take_profit are deliberately DROPPED
@@ -506,6 +560,8 @@ class SignalCopierEngine:
             return OrderResult(
                 account_id=account.account_id, status=OrderStatus.ERROR, signal_id=signal.id, message=str(exc)
             )
+        finally:
+            self.capital_allocator.release(account.account_id, notional)
 
         if result.status in (OrderStatus.ERROR, OrderStatus.REJECTED):
             # The entry never happened — don't leave a plan registered with nothing

@@ -88,7 +88,8 @@ CREATE TABLE IF NOT EXISTS config_accounts (
     fixed_quantity REAL,
     symbol_map TEXT NOT NULL DEFAULT '{}',
     enabled INTEGER NOT NULL DEFAULT 1,
-    managed_lifecycle INTEGER NOT NULL DEFAULT 0
+    managed_lifecycle INTEGER NOT NULL DEFAULT 0,
+    max_notional_exposure REAL
 );
 
 CREATE TABLE IF NOT EXISTS config_routing_rules (
@@ -189,6 +190,7 @@ _COLUMN_MIGRATIONS = [
     ("signals", "analyst", "TEXT"),
     ("sessions", "credential_epoch", "TEXT"),
     ("idempotency_records", "fingerprint", "TEXT"),
+    ("config_accounts", "max_notional_exposure", "REAL"),
 ]
 
 
@@ -537,7 +539,7 @@ class SignalStore:
         with self._connect() as conn:
             rows = conn.execute(
                 """SELECT account_id, broker, multiplier, fixed_quantity, symbol_map, enabled,
-                          managed_lifecycle FROM config_accounts ORDER BY account_id"""
+                          managed_lifecycle, max_notional_exposure FROM config_accounts ORDER BY account_id"""
             ).fetchall()
         return [
             {
@@ -548,6 +550,7 @@ class SignalStore:
                 "symbol_map": json.loads(r[4]),
                 "enabled": bool(r[5]),
                 "managed_lifecycle": bool(r[6]),
+                "max_notional_exposure": r[7],
             }
             for r in rows
         ]
@@ -561,16 +564,19 @@ class SignalStore:
         symbol_map: dict | None = None,
         enabled: bool = True,
         managed_lifecycle: bool = False,
+        max_notional_exposure: float | None = None,
     ) -> None:
         with self._connect() as conn:
             conn.execute(
                 """INSERT INTO config_accounts
-                   (account_id, broker, multiplier, fixed_quantity, symbol_map, enabled, managed_lifecycle)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)
+                   (account_id, broker, multiplier, fixed_quantity, symbol_map, enabled, managed_lifecycle,
+                    max_notional_exposure)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT (account_id) DO UPDATE SET
                      broker = excluded.broker, multiplier = excluded.multiplier,
                      fixed_quantity = excluded.fixed_quantity, symbol_map = excluded.symbol_map,
-                     enabled = excluded.enabled, managed_lifecycle = excluded.managed_lifecycle""",
+                     enabled = excluded.enabled, managed_lifecycle = excluded.managed_lifecycle,
+                     max_notional_exposure = excluded.max_notional_exposure""",
                 (
                     account_id,
                     broker,
@@ -579,6 +585,7 @@ class SignalStore:
                     json.dumps(symbol_map or {}),
                     int(enabled),
                     int(managed_lifecycle),
+                    max_notional_exposure,
                 ),
             )
 

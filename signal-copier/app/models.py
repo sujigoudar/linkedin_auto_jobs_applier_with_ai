@@ -95,3 +95,9 @@ class DestinationAccount:
     #: matters. Off by default — existing accounts behave exactly as
     #: before unless explicitly opted in.
     managed_lifecycle: bool = False
+    #: E03 (bounded): an opt-in notional-exposure ceiling for this account
+    #: (None = no limit, the existing default behavior). See
+    #: app/capital_allocator.py's module docstring for exactly what this
+    #: does and doesn't enforce -- only checked when the admitting signal
+    #: carries a price.
+    max_notional_exposure: Optional[float] = None

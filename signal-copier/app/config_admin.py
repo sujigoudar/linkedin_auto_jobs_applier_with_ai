@@ -48,6 +48,7 @@ def seed_from_yaml_if_empty(store: SignalStore) -> bool:
             symbol_map=account.symbol_map,
             enabled=account.enabled,
             managed_lifecycle=account.managed_lifecycle,
+            max_notional_exposure=account.max_notional_exposure,
         )
     for rule in routing_config.rules:
         store.insert_config_routing_rule(

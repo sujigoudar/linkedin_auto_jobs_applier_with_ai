@@ -80,6 +80,27 @@ def test_account_listed_after_creation(client):
     assert accounts[0]["broker"] == "paper"
 
 
+def test_max_notional_exposure_round_trips_and_gates_live(client):
+    """E03: created via the API, listed back correctly, and enforced on
+    the very next signal -- no restart, matching this file's own claim."""
+    with client:
+        create = client.post(
+            "/accounts", json={"account_id": "acct1", "broker": "paper", "max_notional_exposure": 500.0}
+        )
+        assert create.status_code == 200
+
+        listed = client.get("/accounts").json()["accounts"]
+        assert listed[0]["max_notional_exposure"] == 500.0
+
+        client.post("/routing-rules", json={"source": "tradingview", "destinations": ["acct1"]})
+        response = client.post(
+            "/webhook/tradingview",
+            json={"symbol": "BTCUSDT", "side": "buy", "quantity": 10.0, "price": 100.0},  # notional 1000 > 500
+        )
+    assert response.status_code == 200
+    assert response.json()["orders"][0]["status"] == "rejected"
+
+
 def test_deleting_an_account_removes_it_from_routing_immediately(client):
     with client:
         client.post("/accounts", json={"account_id": "acct1", "broker": "paper"})

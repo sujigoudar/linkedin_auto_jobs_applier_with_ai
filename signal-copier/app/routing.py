@@ -66,6 +66,7 @@ def load_routing_config(routing_path: Path, accounts_path: Path) -> RoutingConfi
                 symbol_map=spec.get("symbol_map", {}) or {},
                 enabled=spec.get("enabled", True),
                 managed_lifecycle=spec.get("managed_lifecycle", False),
+                max_notional_exposure=spec.get("max_notional_exposure"),
             )
 
     rules: list[RoutingRule] = []
@@ -98,6 +99,7 @@ def load_routing_config_from_store(store) -> RoutingConfig:
             symbol_map=row["symbol_map"],
             enabled=row["enabled"],
             managed_lifecycle=row["managed_lifecycle"],
+            max_notional_exposure=row["max_notional_exposure"],
         )
         for row in store.list_config_accounts()
     }

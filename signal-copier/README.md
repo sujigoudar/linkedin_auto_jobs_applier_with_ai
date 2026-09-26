@@ -186,6 +186,17 @@ optional broker capability; a matching `get_account_balance`/margin
 capability does not exist yet — a real, scoped follow-up, not
 implemented in this round.
 
+An account can still opt into one narrower ceiling: `max_notional_exposure`
+(`app/capital_allocator.py`) rejects an entry that would push this
+account's confirmed open notional (quantity × price, summed at cost
+across every symbol it holds) over that number — an atomic,
+per-account admission gate, so two signals for the same account arriving
+concurrently can't both spend the same remaining capacity. It's opt-in
+(`None` by default, meaning no ceiling), only checked when the admitting
+signal actually carries a price, and doesn't do currency conversion,
+per-analyst overlap accounting, or an owner-wide ceiling across
+accounts — see that module's docstring for the exact scope.
+
 **If I have two accounts of the same type (e.g. two options-capable
 accounts), where does an incoming options trade get placed?** Routing is
 still purely rule-based (`config/routing.yaml`'s `source` +

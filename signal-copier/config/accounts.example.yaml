@@ -10,6 +10,11 @@ accounts:
     broker: ccxt
     multiplier: 0.5          # trade half the source signal's size
     enabled: true
+    max_notional_exposure: 5000   # optional, opt-in (E03): reject an entry that would push this
+                                   # account's confirmed open notional (quantity * price, summed
+                                   # across symbols at cost) over this ceiling -- only checked
+                                   # when the signal carries a price. See
+                                   # app/capital_allocator.py's module docstring for exact scope.
     symbol_map:
       BTCUSDT: BTC/USDT      # TradingView-style symbol -> ccxt unified symbol
       ETHUSDT: ETH/USDT

@@ -784,8 +784,9 @@ class AccountRequest(BaseModel):
     symbol_map: dict[str, str] = {}
     enabled: bool = True
     managed_lifecycle: bool = False
+    max_notional_exposure: float | None = Field(default=None, gt=0)
 
-    _reject_bool_multiplier = field_validator("multiplier", "fixed_quantity", mode="before")(
+    _reject_bool_multiplier = field_validator("multiplier", "fixed_quantity", "max_notional_exposure", mode="before")(
         _reject_bool_scaling_value
     )
 
@@ -832,6 +833,7 @@ async def create_or_update_account(request: AccountRequest, _owner: dict = Depen
         symbol_map=request.symbol_map,
         enabled=request.enabled,
         managed_lifecycle=request.managed_lifecycle,
+        max_notional_exposure=request.max_notional_exposure,
     )
     _reload_routing_config()
     return {"account_id": request.account_id, "status": "saved"}
