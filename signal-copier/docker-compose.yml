@@ -9,8 +9,10 @@ services:
     env_file:
       - .env
     volumes:
-      # Config files: edit these on the host, no rebuild needed.
-      - ./config:/app/config
+      # Config files: edit these on the host, no rebuild needed. Read-only
+      # from inside the container -- this service reads its own YAML, it
+      # never needs to write back to it.
+      - ./config:/app/config:ro
       # Database: named volume so the signal/order/position log survives
       # container recreation (a bind mount to a single file is flakier
       # across platforms for SQLite's locking).
@@ -18,6 +20,21 @@ services:
     environment:
       DATABASE_PATH: /app/data/signal_copier.db
     restart: unless-stopped
+    # DEP-01: a container escape or a dependency RCE inherits whatever this
+    # container itself is allowed to do -- these narrow that down to
+    # exactly what the process needs (network I/O and the two writable
+    # paths above), not a default-permissive container.
+    read_only: true
+    tmpfs:
+      # /tmp: some libraries (httpx's own temp buffering, etc.) expect a
+      # writable /tmp even though this app has no other use for one.
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 512m
+    cpus: 1.0
 
 volumes:
   signal_copier_db:
