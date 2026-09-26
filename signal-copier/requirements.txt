@@ -26,3 +26,4 @@ python-multipart>=0.0.9  # required by FastAPI's Form() parsing, used by the /sm
 pytest>=8.2
 pytest-asyncio>=0.23
 hypothesis>=6.100        # test-only: generated/stateful sequences supplementing the finite-case suite (C29)
+schemathesis>=4.20       # test-only: OpenAPI schema fuzzing for the bounded read-only endpoint set (C30)
