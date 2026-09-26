@@ -142,7 +142,14 @@
     margin: 12px 0;
   }
   #login-overlay button { width: 100%; padding: 8px; font-size: 0.85rem; }
+  .econ-stats { display: flex; gap: 24px; flex-wrap: wrap; margin: 10px 0; }
+  .econ-stats .muted { color: var(--muted); font-size: 0.8rem; }
+  .econ-stats .num { font-size: 1.1rem; font-family: ui-monospace, monospace; }
+  .ok-text { color: var(--ok); }
+  .bad-text { color: var(--bad); }
+  .chart-container { position: relative; height: 260px; }
 </style>
+<link rel="stylesheet" href="/static/vendor/tabulator.min.css">
 </head>
 <body>
   <div id="login-overlay" hidden>
@@ -178,6 +185,14 @@
       <div class="section-note">"Exit now" submits an immediate market close for that one position. "Flatten" exits every open position on that account, one at a time. Both bypass routing rules and go straight to that specific account's broker.</div>
       <div id="positions-table"><div class="empty">Loading…</div></div>
       <div style="margin-top:10px; display:flex; gap:8px; flex-wrap:wrap;" id="flatten-buttons"></div>
+    </section>
+
+    <section class="panel full">
+      <h2>Account economics</h2>
+      <div class="section-note">Realized P&amp;L, cost basis and completed-trade win rate computed from this account's own confirmed executions (<code>GET /accounts/{id}/economics</code>) — gross of fees, and never a live or simulated equity curve. A symbol with an unresolved fill direction is listed separately rather than silently counted as zero.</div>
+      <label>Account <select id="economics-account-select" onchange="loadEconomics()"></select></label>
+      <div id="economics-summary"><div class="empty">Loading…</div></div>
+      <div class="chart-container"><canvas id="economics-chart"></canvas></div>
     </section>
 
     <section class="panel full">
@@ -257,11 +272,14 @@
 
     <section class="panel full">
       <h2>Recent orders <span class="count" id="orders-count"></span></h2>
-      <div id="orders-table"><div class="empty">Loading…</div></div>
+      <div class="section-note">Sortable/filterable (Tabulator) — every cell is plain text, never raw HTML, so an upstream broker/source-controlled string (a rejection message, a symbol) can't inject markup.</div>
+      <div id="orders-table"></div>
     </section>
   </div>
   </div><!-- #app -->
 
+<script src="/static/vendor/chart.umd.min.js"></script>
+<script src="/static/vendor/tabulator.min.js"></script>
 <script>
 const $ = (id) => document.getElementById(id);
 
@@ -567,6 +585,7 @@ async function loadAccounts() {
   const data = await fetchJSON("/accounts");
   const accounts = data.accounts || [];
   $("accounts-count").textContent = accounts.length;
+  updateEconomicsAccountOptions(accounts.map((a) => a.account_id));
   const rows = accounts.map((a) => [
     `<span class="mono">${escapeHtml(a.account_id)}</span>`,
     `<span class="mono">${escapeHtml(a.broker)}</span>`,
@@ -748,34 +767,158 @@ async function loadSignals() {
   );
 }
 
+// C13: a single persistent Tabulator instance, updated via setData() on
+// every refresh rather than rebuilt -- keeps the user's current sort/
+// filter/scroll position across polls. Every column here is the
+// "plaintext" formatter (Tabulator's default -- text, never raw HTML), the
+// only exception being `status`, whose formatter switches on the fixed,
+// application-controlled OrderStatus enum values (never an upstream-
+// supplied string) to pick a CSS class -- everything a broker/source
+// actually controls (account/broker/symbol/side/message) stays plain text.
+let ordersTable = null;
+
+function statusFormatter(cell) {
+  const status = cell.getValue();
+  const kind = status === "filled" ? "ok" : status === "pending" ? "warn" : "bad";
+  const span = document.createElement("span");
+  span.className = `pill ${kind}`;
+  span.textContent = status || "—";
+  return span;
+}
+
+function initOrdersTable() {
+  if (ordersTable) return;
+  ordersTable = new Tabulator("#orders-table", {
+    data: [],
+    layout: "fitDataStretch",
+    placeholder: "No orders recorded yet.",
+    columns: [
+      { title: "Executed at", field: "executed_at", sorter: "string", width: 190 },
+      { title: "Account", field: "account_id" },
+      { title: "Broker", field: "broker" },
+      { title: "Symbol", field: "symbol" },
+      { title: "Side", field: "side", width: 80 },
+      { title: "Requested", field: "requested_quantity", hozAlign: "right", sorter: "number" },
+      { title: "Filled", field: "filled_quantity", hozAlign: "right", sorter: "number" },
+      { title: "Status", field: "status", formatter: statusFormatter, width: 100 },
+      { title: "Message", field: "message", formatter: "plaintext", widthGrow: 2 },
+    ],
+  });
+  // Tabulator builds itself asynchronously -- calling setData() before its
+  // own `tableBuilt` event fires is documented as producing "inconsistent
+  // behavior" and, in practice, threw (`Cannot read properties of null
+  // (reading 'verticalFillMode')`) here. Queue whatever the first refresh
+  // tried to set and flush it once the table actually exists.
+  ordersTable.built = false;
+  ordersTable.pendingRows = null;
+  ordersTable.on("tableBuilt", () => {
+    ordersTable.built = true;
+    if (ordersTable.pendingRows) {
+      ordersTable.setData(ordersTable.pendingRows);
+      ordersTable.pendingRows = null;
+    }
+  });
+}
+
 async function loadOrders() {
   const data = await fetchJSON("/orders?limit=30");
   const orders = data.orders || [];
   $("orders-count").textContent = orders.length;
-  const statusPill = (status) => {
-    if (status === "filled") return pill(status, "ok");
-    if (status === "pending") return pill(status, "warn");
-    return pill(status, "bad");
-  };
-  const rows = orders.map((o) => [
-    o.executed_at || "—",
-    `<span class="mono">${escapeHtml(o.account_id)}</span>`,
-    `<span class="mono">${escapeHtml(o.broker || "—")}</span>`,
-    `<span class="mono">${escapeHtml(o.symbol || "—")}</span>`,
-    escapeHtml(o.side || "—"),
-    fmtNum(o.requested_quantity),
-    fmtNum(o.filled_quantity),
-    statusPill(o.status),
-    // A broker's own error text lands here (see ADP-*/SEC-01 findings) --
-    // this is exactly the kind of upstream-controlled string that must
-    // never reach innerHTML unescaped.
-    escapeHtml(o.message || ""),
-  ]);
-  $("orders-table").innerHTML = table(
-    ["Executed at", "Account", "Broker", "Symbol", "Side", "Requested", "Filled", "Status", "Message"],
-    rows,
-    "No orders recorded yet."
-  );
+  initOrdersTable();
+  const rows = orders.map((o) => ({
+    executed_at: o.executed_at || "—",
+    account_id: o.account_id,
+    broker: o.broker || "—",
+    symbol: o.symbol || "—",
+    side: o.side || "—",
+    requested_quantity: o.requested_quantity,
+    filled_quantity: o.filled_quantity,
+    status: o.status,
+    message: o.message || "",
+  }));
+  if (ordersTable.built) {
+    ordersTable.setData(rows);
+  } else {
+    ordersTable.pendingRows = rows;
+  }
+}
+
+// C12: one persistent Chart.js instance for the selected account's
+// realized-P&L-by-symbol bar chart, destroyed and rebuilt only when its
+// underlying data changes shape (Chart.js itself doesn't support swapping
+// datasets of a different label set in place cleanly).
+let economicsChart = null;
+
+function updateEconomicsAccountOptions(accountIds) {
+  const select = $("economics-account-select");
+  const previous = select.value;
+  select.innerHTML = accountIds.map((id) => `<option value="${escapeAttr(id)}">${escapeHtml(id)}</option>`).join("");
+  if (accountIds.includes(previous)) {
+    select.value = previous;
+  } else if (accountIds.length && !previous) {
+    select.value = accountIds[0];
+  }
+  loadEconomics();
+}
+
+async function loadEconomics() {
+  const select = $("economics-account-select");
+  const accountId = select.value;
+  if (!accountId) {
+    $("economics-summary").innerHTML = `<div class="empty">No accounts configured.</div>`;
+    return;
+  }
+  let data;
+  try {
+    data = await fetchJSON(`/accounts/${encodeURIComponent(accountId)}/economics`);
+  } catch (e) {
+    $("economics-summary").innerHTML = `<div class="empty">Could not load economics for this account.</div>`;
+    return;
+  }
+  const winRate = data.completed_trade_win_rate;
+  const winRateText = winRate === null || winRate === undefined ? "—" : `${(winRate * 100).toFixed(1)}%`;
+  const pnlClass = data.realized_pnl >= 0 ? "ok-text" : "bad-text";
+  const incompleteNote = (data.incomplete_symbols || []).length
+    ? pill(`incomplete data: ${data.incomplete_symbols.join(", ")}`, "warn")
+    : "";
+  $("economics-summary").innerHTML = `
+    <div class="econ-stats">
+      <div><span class="muted">Realized P&amp;L</span><br><span class="num ${pnlClass}">${fmtNum(data.realized_pnl)}</span></div>
+      <div><span class="muted">Completed-trade win rate</span><br><span class="num">${winRateText}</span></div>
+    </div>
+    <div class="section-note">${escapeHtml(data.note || "")}</div>
+    ${incompleteNote}
+  `;
+
+  const perSymbol = data.per_symbol || {};
+  const symbols = Object.keys(perSymbol);
+  const values = symbols.map((s) => perSymbol[s].realized_pnl);
+  if (economicsChart) {
+    economicsChart.destroy();
+    economicsChart = null;
+  }
+  if (symbols.length) {
+    economicsChart = new Chart($("economics-chart").getContext("2d"), {
+      type: "bar",
+      data: {
+        labels: symbols,
+        datasets: [
+          {
+            label: "Realized P&L by symbol",
+            data: values,
+            backgroundColor: values.map((v) => (v >= 0 ? "#3ddc84" : "#ef5b5b")),
+            maxBarThickness: 60,
+          },
+        ],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: { legend: { display: false } },
+        scales: { y: { beginAtZero: true } },
+      },
+    });
+  }
 }
 
 async function refreshAll() {

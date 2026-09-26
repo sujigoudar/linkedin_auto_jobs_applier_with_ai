@@ -18,6 +18,7 @@ from typing import Any
 import httpx
 from fastapi import Cookie, Depends, FastAPI, Form, Header, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
 
 from app import config
@@ -181,6 +182,13 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Trading Signal Copier", lifespan=lifespan)
+
+# C12/C13: locally-pinned Chart.js/Tabulator vendor files (no CDN, no build
+# step) for the dashboard's charts/tables -- see app/static/vendor/README.md
+# for exact pinned versions. Public, unauthenticated: these are static
+# library files, not application data, same trust level as the dashboard
+# HTML/JS itself.
+app.mount("/static/vendor", StaticFiles(directory=STATIC_DIR / "vendor"), name="vendor")
 
 
 #: Session-only routes -- creating/destroying a browser session, never a
