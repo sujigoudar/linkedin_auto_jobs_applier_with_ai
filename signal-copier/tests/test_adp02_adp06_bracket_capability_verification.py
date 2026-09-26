@@ -16,13 +16,15 @@ test_trading_audit::test_bracket_only_cannot_satisfy_standalone_managed_recipe.
 import pytest
 
 from app.brokers.base import BrokerAdapter
-from app.brokers.ibkr import IBKRBroker
 from app.lifecycle.manager import PositionLifecycleManager
 from app.lifecycle.models import PositionPlan
 from app.models import DestinationAccount, Side
 
 
 def test_audits_exact_case_ibkr_bracket_capability_does_not_claim_standalone_stop():
+    pytest.importorskip("ib_insync")
+    from app.brokers.ibkr import IBKRBroker
+
     broker = IBKRBroker()
     assert not broker.can_protect_a_managed_position()
 
