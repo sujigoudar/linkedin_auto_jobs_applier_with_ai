@@ -55,6 +55,39 @@ async def test_plain_order_has_no_bracket(broker, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_plain_order_carries_the_exact_destination_account(broker, monkeypatch):
+    """ADP-05: a blank Order.account routes to whatever account is
+    "current" on this gateway login -- a multi-account/FA gateway must
+    submit against the specific account this call names, not a default."""
+    fake_ib = _FakeIB()
+    monkeypatch.setattr(broker, "_connected_ib", lambda: _async_return(fake_ib))
+
+    account = DestinationAccount(account_id="DU_EXACT", broker="ibkr")
+    await broker.place_order(
+        Signal(source="test", symbol="AAPL", side=Side.BUY), account, quantity=10.0, symbol="AAPL"
+    )
+
+    assert fake_ib.placed[0].account == "DU_EXACT"
+
+
+@pytest.mark.asyncio
+async def test_bracket_orders_all_carry_the_exact_destination_account(broker, monkeypatch):
+    fake_ib = _FakeIB()
+    monkeypatch.setattr(broker, "_connected_ib", lambda: _async_return(fake_ib))
+
+    account = DestinationAccount(account_id="DU_EXACT", broker="ibkr")
+    await broker.place_order(
+        Signal(source="test", symbol="AAPL", side=Side.BUY, stop_loss=185.0, take_profit=200.0),
+        account,
+        quantity=10.0,
+        symbol="AAPL",
+    )
+
+    assert len(fake_ib.placed) == 3
+    assert all(order.account == "DU_EXACT" for order in fake_ib.placed)
+
+
+@pytest.mark.asyncio
 async def test_both_sl_and_tp_builds_three_order_bracket(broker, monkeypatch):
     fake_ib = _FakeIB()
     monkeypatch.setattr(broker, "_connected_ib", lambda: _async_return(fake_ib))

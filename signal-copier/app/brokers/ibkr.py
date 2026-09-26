@@ -89,10 +89,18 @@ class IBKRBroker(BrokerAdapter):
         try:
             if signal.stop_loss or signal.take_profit:
                 orders = self._build_bracket(action, quantity, signal.stop_loss, signal.take_profit, ib)
+                for order in orders:
+                    # ADP-05: IB routes a blank `account` to whatever account
+                    # is "current" on this gateway login -- fine for a
+                    # single-account gateway, but a multi-account/FA gateway
+                    # would submit against an unintended default rather than
+                    # the specific account this call names.
+                    order.account = account.account_id
                 trades = [ib.placeOrder(contract, o) for o in orders]
                 parent_trade = trades[0]
             else:
                 order = self._ib_insync.MarketOrder(action, quantity)
+                order.account = account.account_id
                 parent_trade = ib.placeOrder(contract, order)
         except Exception as exc:  # noqa: BLE001
             return OrderResult(
