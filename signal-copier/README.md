@@ -1155,6 +1155,18 @@ every financial command independent of any single route's own auth logic
   below WCAG AA thresholds, needing a real palette audit, not a
   one-line change). The test's job is catching new regressions beyond
   this disclosed baseline, not claiming zero violations.
+- **C32 (bounded fault injection):** `tests/test_c32_fault_injection.py`
+  proves, with real `httpx` transport-level faults injected via
+  `httpx.MockTransport` (this sandbox has no infrastructure to run an
+  actual Toxiproxy instance), that a broker connection fault
+  (`ConnectError`/`ReadTimeout`/`ConnectTimeout`) or a corrupted response
+  body doesn't propagate out of `OrderReconciler.reconcile_once()` and
+  block reconciling other brokers' orders in the same pass, and that the
+  background reconciliation loop itself survives an unanticipated
+  exception and keeps running on its next interval — the documented
+  "one broker's failure must not block the rest" contract in
+  `app/reconciliation.py`, exercised against real fault types instead of
+  just asserted in a comment.
 - Never commit `.env` or real `config/routing.yaml` /
   `config/accounts.yaml` if they end up containing anything
   account-identifying (they're gitignored by default).
