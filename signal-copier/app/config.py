@@ -3,107 +3,178 @@
 Secrets (broker API keys, bot tokens, webhook secrets) come from environment
 variables only — never from the YAML routing/account files, so those files
 stay safe to commit as examples.
+
+C01: values are read once at import time through a `pydantic-settings`
+`BaseSettings` model (`_Settings` below), then copied onto this module's
+top-level names -- every existing `config.SOMETHING` access and every
+test's `monkeypatch.setattr(app_config, "SOMETHING", ...)` keeps working
+unchanged. What actually changes is boolean parsing: `STANDBY_MODE` and
+`FORCE_SECURE_COOKIES` used to treat ANY unrecognized string (a typo, an
+empty value from a broken env-file line, "enabled" instead of "true") as
+silently False -- for `STANDBY_MODE` that is the UNSAFE direction: a
+malformed value defaults to "not in standby," i.e. live trading authority,
+exactly backwards from what a misconfigured safety flag should do.
+Pydantic's own bool coercion accepts the same values as before
+(1/true/yes/on and 0/false/no/off, case-insensitive) but RAISES for
+anything else, so a malformed value now fails loud at startup instead of
+silently picking the wrong side.
 """
 from __future__ import annotations
 
-import os
 from pathlib import Path
+
+from pydantic import Field
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-ROUTING_CONFIG_PATH = Path(os.getenv("ROUTING_CONFIG_PATH", BASE_DIR / "config" / "routing.yaml"))
-ACCOUNTS_CONFIG_PATH = Path(os.getenv("ACCOUNTS_CONFIG_PATH", BASE_DIR / "config" / "accounts.yaml"))
-#: Optional per-provider/per-analyst settings overrides — see app/providers.py.
-#: Missing file (the default if never created) means no overrides apply.
-PROVIDERS_CONFIG_PATH = Path(os.getenv("PROVIDERS_CONFIG_PATH", BASE_DIR / "config" / "providers.yaml"))
-DATABASE_PATH = Path(os.getenv("DATABASE_PATH", BASE_DIR / "signal_copier.db"))
 
-# Shared secret the webhook source checks against a header/query param so
-# random requests on the public endpoint can't inject fake signals.
-WEBHOOK_SHARED_SECRET = os.getenv("WEBHOOK_SHARED_SECRET", "")
+class _Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_prefix="", case_sensitive=True, extra="ignore")
 
-# Owner authentication (see app/auth.py). Every account/routing/position/
-# close/flatten/backtest endpoint requires a valid owner session; both of
-# these must be set or every one of those endpoints fails closed (503),
-# never silently open. OWNER_PASSWORD is compared with a constant-time
-# check, same trust level as every other secret this project keeps in an
-# env var (see README's Security notes) -- there is no user database,
-# this is a single-owner app. SESSION_SECRET signs/derives session data;
-# generate both with e.g. `python -c "import secrets; print(secrets.token_urlsafe(32))"`.
-OWNER_PASSWORD = os.getenv("OWNER_PASSWORD", "")
-SESSION_SECRET = os.getenv("SESSION_SECRET", "")
-SESSION_TTL_SECONDS = float(os.getenv("SESSION_TTL_SECONDS", str(60 * 60 * 12)))  # 12h
-# Set true when this process sits behind a TLS-terminating reverse proxy
-# (nginx/Caddy) so the login route always marks its session cookie Secure --
-# `request.url.scheme` alone sees only "http" in that deployment, since the
-# proxy, not this process, terminates TLS (see SEC-05).
-FORCE_SECURE_COOKIES = os.getenv("FORCE_SECURE_COOKIES", "false").strip().lower() in ("1", "true", "yes")
+    ROUTING_CONFIG_PATH: Path = BASE_DIR / "config" / "routing.yaml"
+    ACCOUNTS_CONFIG_PATH: Path = BASE_DIR / "config" / "accounts.yaml"
+    #: Optional per-provider/per-analyst settings overrides — see app/providers.py.
+    #: Missing file (the default if never created) means no overrides apply.
+    PROVIDERS_CONFIG_PATH: Path = BASE_DIR / "config" / "providers.yaml"
+    DATABASE_PATH: Path = BASE_DIR / "signal_copier.db"
 
-LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
+    # Shared secret the webhook source checks against a header/query param so
+    # random requests on the public endpoint can't inject fake signals.
+    WEBHOOK_SHARED_SECRET: str = ""
 
-# Standby mode (see deploy/RUNBOOK.md): when true, this process serves only
-# GET/HEAD/OPTIONS -- no signal ingestion, no background reconciliation/price
-# polling, no financial command can reach the engine, regardless of what any
-# individual route's own logic does. A promotion is a deliberate, separate
-# restart with this unset (or false) AND real broker credentials configured --
-# never a config flip on an already-running process.
-STANDBY_MODE = os.getenv("STANDBY_MODE", "false").strip().lower() in ("1", "true", "yes")
+    # Owner authentication (see app/auth.py). Every account/routing/position/
+    # close/flatten/backtest endpoint requires a valid owner session; both of
+    # these must be set or every one of those endpoints fails closed (503),
+    # never silently open. OWNER_PASSWORD is compared with a constant-time
+    # check, same trust level as every other secret this project keeps in an
+    # env var (see README's Security notes). SESSION_SECRET signs/derives
+    # session data.
+    OWNER_PASSWORD: str = ""
+    SESSION_SECRET: str = ""
+    SESSION_TTL_SECONDS: float = float(60 * 60 * 12)  # 12h
+    # Set true when this process sits behind a TLS-terminating reverse proxy
+    # (nginx/Caddy) so the login route always marks its session cookie Secure --
+    # `request.url.scheme` alone sees only "http" in that deployment, since the
+    # proxy, not this process, terminates TLS (see SEC-05).
+    FORCE_SECURE_COOKIES: bool = False
 
-# Optional pull-based sources: each only starts if its required env vars are
-# all set (see .env.example). Push-based sources (webhook, SMS) need no
-# startup config beyond their own route.
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
+    LOG_LEVEL: str = "INFO"
 
-DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN", "")
-DISCORD_CHANNEL_ID = os.getenv("DISCORD_CHANNEL_ID", "")
+    # Standby mode (see deploy/RUNBOOK.md): when true, this process serves only
+    # GET/HEAD/OPTIONS -- no signal ingestion, no background reconciliation/price
+    # polling, no financial command can reach the engine, regardless of what any
+    # individual route's own logic does. A promotion is a deliberate, separate
+    # restart with this unset (or false) AND real broker credentials configured --
+    # never a config flip on an already-running process.
+    STANDBY_MODE: bool = False
 
-SLACK_BOT_TOKEN = os.getenv("SLACK_BOT_TOKEN", "")
-SLACK_APP_TOKEN = os.getenv("SLACK_APP_TOKEN", "")
-SLACK_CHANNEL_ID = os.getenv("SLACK_CHANNEL_ID", "")
+    # Optional pull-based sources: each only starts if its required env vars are
+    # all set (see .env.example). Push-based sources (webhook, SMS) need no
+    # startup config beyond their own route.
+    TELEGRAM_BOT_TOKEN: str = ""
+    TELEGRAM_CHAT_ID: str = ""
 
-TWITTER_BEARER_TOKEN = os.getenv("TWITTER_BEARER_TOKEN", "")
-TWITTER_RULES = [r.strip() for r in os.getenv("TWITTER_RULES", "").split(",") if r.strip()]
+    DISCORD_BOT_TOKEN: str = ""
+    DISCORD_CHANNEL_ID: str = ""
 
-TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN", "")
-# Full public URL Twilio POSTs to, required for signature validation (Twilio
-# signs the exact URL it called, including scheme/host).
-TWILIO_WEBHOOK_URL = os.getenv("TWILIO_WEBHOOK_URL", "")
-# A valid Twilio signature only proves the request transited Twilio with the
-# right account's auth token -- it says nothing about who is allowed to text
-# trading instructions to that number. Comma-separated E.164 sender numbers
-# (e.g. "+15551234567,+15557654321") this route accepts; unset/empty means
-# no sender is authorized, same fail-closed pattern as every other optional
-# ingress here (see app/main.py's receive_sms).
-TWILIO_ALLOWED_FROM_NUMBERS = [n.strip() for n in os.getenv("TWILIO_ALLOWED_FROM_NUMBERS", "").split(",") if n.strip()]
+    SLACK_BOT_TOKEN: str = ""
+    SLACK_APP_TOKEN: str = ""
+    SLACK_CHANNEL_ID: str = ""
 
-MT4_MT5_METAAPI_TOKEN = os.getenv("MT4_MT5_METAAPI_TOKEN", "")
-MT4_MT5_METAAPI_SOURCE_ACCOUNT_ID = os.getenv("MT4_MT5_METAAPI_SOURCE_ACCOUNT_ID", "")
+    TWITTER_BEARER_TOKEN: str = ""
+    TWITTER_RULES: str = ""
 
-RITHMIC_USER = os.getenv("RITHMIC_USER", "")
-RITHMIC_PASSWORD = os.getenv("RITHMIC_PASSWORD", "")
-RITHMIC_SYSTEM_NAME = os.getenv("RITHMIC_SYSTEM_NAME", "")
-RITHMIC_GATEWAY_URL = os.getenv("RITHMIC_GATEWAY_URL", "")
-RITHMIC_SOURCE_ACCOUNT_ID = os.getenv("RITHMIC_SOURCE_ACCOUNT_ID", "")  # optional filter
+    TWILIO_AUTH_TOKEN: str = ""
+    # Full public URL Twilio POSTs to, required for signature validation (Twilio
+    # signs the exact URL it called, including scheme/host).
+    TWILIO_WEBHOOK_URL: str = ""
+    # A valid Twilio signature only proves the request transited Twilio with the
+    # right account's auth token -- it says nothing about who is allowed to text
+    # trading instructions to that number. Comma-separated E.164 sender numbers
+    # (e.g. "+15551234567,+15557654321") this route accepts; unset/empty means
+    # no sender is authorized, same fail-closed pattern as every other optional
+    # ingress here (see app/main.py's receive_sms).
+    TWILIO_ALLOWED_FROM_NUMBERS: str = ""
 
-# How often app/reconciliation.py re-checks PENDING orders on brokers that
-# support get_order_status() (currently Alpaca and IBKR).
-RECONCILE_INTERVAL_SECONDS = float(os.getenv("RECONCILE_INTERVAL_SECONDS", "30"))
+    MT4_MT5_METAAPI_TOKEN: str = ""
+    MT4_MT5_METAAPI_SOURCE_ACCOUNT_ID: str = ""
 
-# How often app/pricing.py's PriceMonitor polls each open managed-lifecycle
-# position's broker for a current price (currently ccxt only — see
-# app/pricing.py's module docstring).
-PRICE_MONITOR_INTERVAL_SECONDS = float(os.getenv("PRICE_MONITOR_INTERVAL_SECONDS", "15"))
+    RITHMIC_USER: str = ""
+    RITHMIC_PASSWORD: str = ""
+    RITHMIC_SYSTEM_NAME: str = ""
+    RITHMIC_GATEWAY_URL: str = ""
+    RITHMIC_SOURCE_ACCOUNT_ID: str = ""  # optional filter
 
-# Read-only market/economic context lookups (see app/context/ — SEC
-# filings, FRED macro series, FX reference rates). None of these are used
-# anywhere in the order-management/protective-stop path.
-#
-# SEC's fair-access policy requires an identifying User-Agent on every
-# request (e.g. "YourCompany admin@example.com") — no API key, but the
-# /context/filings endpoint 501s if this is blank rather than send an
-# unidentified request.
-SEC_EDGAR_USER_AGENT = os.getenv("SEC_EDGAR_USER_AGENT", "")
-# Free key from https://fredaccount.stlouisfed.org/apikeys -- the
-# /context/fred endpoint 501s if this is blank.
-FRED_API_KEY = os.getenv("FRED_API_KEY", "")
+    # How often app/reconciliation.py re-checks PENDING orders on brokers that
+    # support get_order_status() (currently Alpaca and IBKR).
+    RECONCILE_INTERVAL_SECONDS: float = 30.0
+
+    # How often app/pricing.py's PriceMonitor polls each open managed-lifecycle
+    # position's broker for a current price (currently ccxt only — see
+    # app/pricing.py's module docstring).
+    PRICE_MONITOR_INTERVAL_SECONDS: float = 15.0
+
+    # Read-only market/economic context lookups (see app/context/ — SEC
+    # filings, FRED macro series, FX reference rates). None of these are used
+    # anywhere in the order-management/protective-stop path.
+    #
+    # SEC's fair-access policy requires an identifying User-Agent on every
+    # request (e.g. "YourCompany admin@example.com") — no API key, but the
+    # /context/filings endpoint 501s if this is blank rather than send an
+    # unidentified request.
+    SEC_EDGAR_USER_AGENT: str = ""
+    # Free key from https://fredaccount.stlouisfed.org/apikeys -- the
+    # /context/fred endpoint 501s if this is blank.
+    FRED_API_KEY: str = Field(default="")
+
+
+_settings = _Settings()
+
+ROUTING_CONFIG_PATH = _settings.ROUTING_CONFIG_PATH
+ACCOUNTS_CONFIG_PATH = _settings.ACCOUNTS_CONFIG_PATH
+PROVIDERS_CONFIG_PATH = _settings.PROVIDERS_CONFIG_PATH
+DATABASE_PATH = _settings.DATABASE_PATH
+
+WEBHOOK_SHARED_SECRET = _settings.WEBHOOK_SHARED_SECRET
+
+OWNER_PASSWORD = _settings.OWNER_PASSWORD
+SESSION_SECRET = _settings.SESSION_SECRET
+SESSION_TTL_SECONDS = _settings.SESSION_TTL_SECONDS
+FORCE_SECURE_COOKIES = _settings.FORCE_SECURE_COOKIES
+
+LOG_LEVEL = _settings.LOG_LEVEL
+
+STANDBY_MODE = _settings.STANDBY_MODE
+
+TELEGRAM_BOT_TOKEN = _settings.TELEGRAM_BOT_TOKEN
+TELEGRAM_CHAT_ID = _settings.TELEGRAM_CHAT_ID
+
+DISCORD_BOT_TOKEN = _settings.DISCORD_BOT_TOKEN
+DISCORD_CHANNEL_ID = _settings.DISCORD_CHANNEL_ID
+
+SLACK_BOT_TOKEN = _settings.SLACK_BOT_TOKEN
+SLACK_APP_TOKEN = _settings.SLACK_APP_TOKEN
+SLACK_CHANNEL_ID = _settings.SLACK_CHANNEL_ID
+
+TWITTER_BEARER_TOKEN = _settings.TWITTER_BEARER_TOKEN
+TWITTER_RULES = [r.strip() for r in _settings.TWITTER_RULES.split(",") if r.strip()]
+
+TWILIO_AUTH_TOKEN = _settings.TWILIO_AUTH_TOKEN
+TWILIO_WEBHOOK_URL = _settings.TWILIO_WEBHOOK_URL
+TWILIO_ALLOWED_FROM_NUMBERS = [n.strip() for n in _settings.TWILIO_ALLOWED_FROM_NUMBERS.split(",") if n.strip()]
+
+MT4_MT5_METAAPI_TOKEN = _settings.MT4_MT5_METAAPI_TOKEN
+MT4_MT5_METAAPI_SOURCE_ACCOUNT_ID = _settings.MT4_MT5_METAAPI_SOURCE_ACCOUNT_ID
+
+RITHMIC_USER = _settings.RITHMIC_USER
+RITHMIC_PASSWORD = _settings.RITHMIC_PASSWORD
+RITHMIC_SYSTEM_NAME = _settings.RITHMIC_SYSTEM_NAME
+RITHMIC_GATEWAY_URL = _settings.RITHMIC_GATEWAY_URL
+RITHMIC_SOURCE_ACCOUNT_ID = _settings.RITHMIC_SOURCE_ACCOUNT_ID
+
+RECONCILE_INTERVAL_SECONDS = _settings.RECONCILE_INTERVAL_SECONDS
+PRICE_MONITOR_INTERVAL_SECONDS = _settings.PRICE_MONITOR_INTERVAL_SECONDS
+
+SEC_EDGAR_USER_AGENT = _settings.SEC_EDGAR_USER_AGENT
+FRED_API_KEY = _settings.FRED_API_KEY
