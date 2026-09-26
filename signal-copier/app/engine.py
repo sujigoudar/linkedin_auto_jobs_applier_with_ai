@@ -139,7 +139,13 @@ class SignalCopierEngine:
 
         self.store.save_signal(signal)
 
-        destinations = self.routing.destinations_for(signal.source, signal.symbol)
+        # EXE-10: an account's own `enabled=False` is an entry pause, not
+        # an exit block -- a CLOSE signal must still reach an account that
+        # already has a position open on it, even while new entries are
+        # paused (see RoutingConfig.destinations_for's docstring).
+        destinations = self.routing.destinations_for(
+            signal.source, signal.symbol, include_disabled=signal.side == Side.CLOSE
+        )
         if not destinations:
             logger.info("no destinations configured for source=%s symbol=%s", signal.source, signal.symbol)
             return []
@@ -147,7 +153,11 @@ class SignalCopierEngine:
         results: list[OrderResult] = []
         for raw_account in destinations:
             effective = self._effective_settings(signal, raw_account)
-            if effective.enabled is False:
+            if effective.enabled is False and signal.side != Side.CLOSE:
+                # EXE-10: same entry-pause-not-exit-block distinction as
+                # destinations_for's include_disabled above, for a
+                # provider/analyst-level disable rather than an
+                # account-level one.
                 logger.info(
                     "account=%s disabled for source=%s analyst=%s by provider/analyst settings override",
                     raw_account.account_id,

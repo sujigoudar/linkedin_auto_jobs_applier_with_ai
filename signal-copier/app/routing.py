@@ -22,7 +22,13 @@ class RoutingConfig:
     rules: list[RoutingRule] = field(default_factory=list)
     accounts: dict[str, DestinationAccount] = field(default_factory=dict)
 
-    def destinations_for(self, source: str, symbol: str) -> list[DestinationAccount]:
+    def destinations_for(self, source: str, symbol: str, *, include_disabled: bool = False) -> list[DestinationAccount]:
+        # EXE-10: `account.enabled=False` is meant as an entry PAUSE (stop
+        # taking new positions on this account), not a way to also cut off
+        # the ability to exit a position the account already has open --
+        # the caller passes include_disabled=True for a CLOSE signal (see
+        # app/engine.py's handle_signal) so an already-owned position can
+        # still be found and exited even while new entries are paused.
         # SIG-01: two rules for the same source that both list the same
         # destination account (e.g. a catch-all rule and a
         # symbol-filtered one, or simple config duplication) used to
@@ -41,7 +47,7 @@ class RoutingConfig:
                 if account_id in seen_account_ids:
                     continue
                 account = self.accounts.get(account_id)
-                if account and account.enabled:
+                if account and (account.enabled or include_disabled):
                     accounts.append(account)
                     seen_account_ids.add(account_id)
         return accounts

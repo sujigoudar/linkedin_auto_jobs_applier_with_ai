@@ -26,6 +26,14 @@ def seed_from_yaml_if_empty(store: SignalStore) -> bool:
     """Returns True if a seed import actually happened."""
     if store.list_config_accounts():
         return False  # already has live-managed config -- never overwrite it with YAML
+    if store.has_ever_seeded():
+        # EXE-10: an empty config_accounts table doesn't mean "never
+        # seeded" -- it can just as easily mean every account was
+        # deliberately deleted through the GUI/API after an earlier seed.
+        # Re-importing the static YAML here would resurrect exactly what
+        # the owner removed. Only a database that has NEVER been seeded
+        # gets the one-time YAML import.
+        return False
 
     routing_config = load_routing_config(config.ROUTING_CONFIG_PATH, config.ACCOUNTS_CONFIG_PATH)
     if not routing_config.accounts and not routing_config.rules:
@@ -67,6 +75,7 @@ def seed_from_yaml_if_empty(store: SignalStore) -> bool:
                 enabled=analyst.settings.enabled,
             )
 
+    store.mark_seeded()
     logger.info(
         "imported %d account(s) and %d routing rule(s) from config/*.yaml into the database "
         "(one-time migration — the database is now the live source of truth)",

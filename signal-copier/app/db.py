@@ -157,6 +157,19 @@ CREATE TABLE IF NOT EXISTS close_claims (
     PRIMARY KEY (account_id, symbol)
 );
 
+-- EXE-10: `seed_from_yaml_if_empty` (app/config_admin.py) used to treat an
+-- EMPTY config_accounts table as "never seeded" regardless of why it's
+-- empty -- a deliberate deletion of the only account left the table just
+-- as empty as a genuinely fresh install, so the next restart's seed call
+-- would resurrect the very account the owner just removed. This one-row
+-- marker distinguishes "seeding has already happened once" from "never
+-- seeded" so a later empty state from an explicit delete is never
+-- mistaken for a fresh install.
+CREATE TABLE IF NOT EXISTS seed_state (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    seeded_at TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_orders_executed_at ON orders (executed_at);
 CREATE INDEX IF NOT EXISTS idx_orders_account_id ON orders (account_id);
 CREATE INDEX IF NOT EXISTS idx_signals_received_at ON signals (received_at);
@@ -572,6 +585,20 @@ class SignalStore:
     def delete_config_account(self, account_id: str) -> None:
         with self._connect() as conn:
             conn.execute("DELETE FROM config_accounts WHERE account_id = ?", (account_id,))
+
+    def has_ever_seeded(self) -> bool:
+        """EXE-10: True once `mark_seeded()` has ever been called -- see
+        `seed_state`'s schema comment for why this must be checked
+        instead of just "is config_accounts currently empty"."""
+        with self._connect() as conn:
+            return conn.execute("SELECT 1 FROM seed_state WHERE id = 1").fetchone() is not None
+
+    def mark_seeded(self) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO seed_state (id, seeded_at) VALUES (1, ?)",
+                (datetime.now(timezone.utc).isoformat(),),
+            )
 
     def list_config_routing_rules(self) -> list[dict]:
         with self._connect() as conn:

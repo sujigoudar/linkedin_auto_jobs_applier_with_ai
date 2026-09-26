@@ -736,7 +736,23 @@ async def create_or_update_account(request: AccountRequest, _owner: dict = Depen
     credentials: those remain environment variables per the project's
     "never store secrets in config" rule (see README.md's Security
     notes) — create the account here, then set that broker's
-    `{BROKER}_{ACCOUNT_ID}_...` env vars separately."""
+    `{BROKER}_{ACCOUNT_ID}_...` env vars separately.
+
+    EXE-10: changing `broker` on an account that has real exposure
+    (`account_id` still shows up in list_open_positions or an open
+    managed lifecycle) is refused -- the tracked position was recorded
+    against the OLD broker; retargeting the account to a different one
+    would strand it with nothing that ever placed or can now manage its
+    exit."""
+    existing = next((a for a in store.list_config_accounts() if a["account_id"] == request.account_id), None)
+    if existing is not None and existing["broker"] != request.broker and _account_has_exposure(request.account_id):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"account '{request.account_id}' has an open position/lifecycle tracked against broker "
+                f"'{existing['broker']}' -- refusing to change its broker to '{request.broker}' and strand it"
+            ),
+        )
     store.upsert_config_account(
         account_id=request.account_id,
         broker=request.broker,
@@ -752,9 +768,25 @@ async def create_or_update_account(request: AccountRequest, _owner: dict = Depen
 
 @app.delete("/accounts/{account_id}")
 async def delete_account(account_id: str, _owner: dict = Depends(require_owner)) -> dict:
+    """EXE-10: refuses to delete an account that still has real exposure
+    (an open tracked position or an open managed lifecycle) -- deleting
+    it would drop the only routing/broker configuration that could ever
+    manage or close that exposure, stranding it. Close or flatten the
+    position first (see POST /positions/.../close, POST /accounts/.../flatten)."""
+    if _account_has_exposure(account_id):
+        raise HTTPException(
+            status_code=409,
+            detail=f"account '{account_id}' has an open position/lifecycle -- close or flatten it before deleting",
+        )
     store.delete_config_account(account_id)
     _reload_routing_config()
     return {"account_id": account_id, "status": "deleted"}
+
+
+def _account_has_exposure(account_id: str) -> bool:
+    if any(p["account_id"] == account_id for p in store.list_open_positions()):
+        return True
+    return any(lifecycle.key[0] == account_id for lifecycle in lifecycle_manager.list_open_lifecycles())
 
 
 class RoutingRuleRequest(BaseModel):
