@@ -156,7 +156,15 @@ class IBKRBroker(BrokerAdapter):
             new_status = OrderStatus.FILLED
         elif status in ("Cancelled", "ApiCancelled", "Inactive"):
             new_status = OrderStatus.REJECTED
-        else:  # PendingSubmit / PreSubmitted / Submitted / etc — still open
+        elif trade.orderStatus.filled:
+            # Still open (Submitted, etc.) but with real fill progress worth
+            # reporting -- e.g. so a managed-lifecycle entry can be protected
+            # for what's actually confirmed owned so far, not just once the
+            # whole order is done (see
+            # PositionLifecycleManager.resolve_pending_entry). Stays PENDING
+            # since more may yet fill or the remainder may still be canceled.
+            new_status = OrderStatus.PENDING
+        else:  # PendingSubmit / PreSubmitted / Submitted / etc — still open, nothing filled yet
             return None
 
         return OrderResult(

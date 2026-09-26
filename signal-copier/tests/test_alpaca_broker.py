@@ -128,3 +128,101 @@ async def test_close_side_is_rejected(monkeypatch):
 
     assert result.status == OrderStatus.REJECTED
     await broker.close()
+
+
+@pytest.mark.asyncio
+async def test_get_order_status_partially_filled_reports_pending_with_progress(monkeypatch):
+    """A still-open, partially-filled order must surface its real fill
+    progress (so a managed-lifecycle entry can be protected for what's
+    actually confirmed owned so far -- see
+    PositionLifecycleManager.resolve_pending_entry) rather than being
+    discarded the same as a fully-unfilled "nothing new" order."""
+    monkeypatch.setenv("ALPACA_ACCT1_API_KEY", "key123")
+    monkeypatch.setenv("ALPACA_ACCT1_API_SECRET", "secret456")
+    broker = AlpacaBroker()
+
+    async def fake_get(self, url, headers):
+        request = httpx.Request("GET", url)
+        return httpx.Response(
+            200,
+            json={"status": "partially_filled", "filled_qty": "30", "filled_avg_price": "101.5"},
+            request=request,
+        )
+
+    broker._client.get = fake_get.__get__(broker._client)
+    account = DestinationAccount(account_id="acct1", broker="alpaca")
+
+    result = await broker.get_order_status(account, "order-1")
+
+    assert result is not None
+    assert result.status == OrderStatus.PENDING  # still open, not terminal
+    assert result.filled_quantity == 30.0
+    await broker.close()
+
+
+@pytest.mark.asyncio
+async def test_get_order_status_new_unfilled_order_reports_nothing_new(monkeypatch):
+    monkeypatch.setenv("ALPACA_ACCT1_API_KEY", "key123")
+    monkeypatch.setenv("ALPACA_ACCT1_API_SECRET", "secret456")
+    broker = AlpacaBroker()
+
+    async def fake_get(self, url, headers):
+        request = httpx.Request("GET", url)
+        return httpx.Response(200, json={"status": "new", "filled_qty": "0"}, request=request)
+
+    broker._client.get = fake_get.__get__(broker._client)
+    account = DestinationAccount(account_id="acct1", broker="alpaca")
+
+    result = await broker.get_order_status(account, "order-1")
+
+    assert result is None
+    await broker.close()
+
+
+@pytest.mark.asyncio
+async def test_get_order_status_filled_reports_terminal(monkeypatch):
+    monkeypatch.setenv("ALPACA_ACCT1_API_KEY", "key123")
+    monkeypatch.setenv("ALPACA_ACCT1_API_SECRET", "secret456")
+    broker = AlpacaBroker()
+
+    async def fake_get(self, url, headers):
+        request = httpx.Request("GET", url)
+        return httpx.Response(
+            200, json={"status": "filled", "filled_qty": "100", "filled_avg_price": "102.0"}, request=request
+        )
+
+    broker._client.get = fake_get.__get__(broker._client)
+    account = DestinationAccount(account_id="acct1", broker="alpaca")
+
+    result = await broker.get_order_status(account, "order-1")
+
+    assert result is not None
+    assert result.status == OrderStatus.FILLED
+    assert result.filled_quantity == 100.0
+    await broker.close()
+
+
+@pytest.mark.asyncio
+async def test_get_order_status_canceled_with_partial_fill_reports_it(monkeypatch):
+    """A canceled order can still carry a real partial fill from before the
+    cancellation -- app/reconciliation.py's _correct_position needs this to
+    avoid wiping a confirmed partial fill to zero."""
+    monkeypatch.setenv("ALPACA_ACCT1_API_KEY", "key123")
+    monkeypatch.setenv("ALPACA_ACCT1_API_SECRET", "secret456")
+    broker = AlpacaBroker()
+
+    async def fake_get(self, url, headers):
+        request = httpx.Request("GET", url)
+        return httpx.Response(
+            200, json={"status": "canceled", "filled_qty": "30", "filled_avg_price": "101.0"}, request=request
+        )
+
+    broker._client.get = fake_get.__get__(broker._client)
+    account = DestinationAccount(account_id="acct1", broker="alpaca")
+
+    result = await broker.get_order_status(account, "order-1")
+
+    assert result is not None
+    assert result.status == OrderStatus.REJECTED
+    assert result.filled_quantity == 30.0
+    await broker.close()

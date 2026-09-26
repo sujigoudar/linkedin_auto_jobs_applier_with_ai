@@ -245,31 +245,62 @@ class PositionLifecycleManager:
     async def resolve_pending_entry(
         self, account: DestinationAccount, symbol: str, confirmed_filled_quantity: float, remainder_cancelled: bool
     ) -> None:
-        """Call once the broker's final word on a PENDING entry (from
-        `register_pending_entry`) is known — mirrors `resolve_pending_exit`'s
-        contract exactly, for the entry side. `remainder_cancelled=True`
-        means nothing more of `requested_quantity` can fill (fully filled,
-        or the remainder's cancellation/expiry is confirmed); a timeout or
-        lost response is NOT that — it must keep polling, not call this
-        with a guessed outcome.
+        """Call with the broker's latest word on a PENDING entry (from
+        `register_pending_entry`) — for both a working partial fill whose
+        remainder is still open (`remainder_cancelled=False`) and a terminal
+        outcome (`remainder_cancelled=True`: fully filled, or the remainder's
+        cancellation/expiry is confirmed). A timeout or lost response is
+        NEITHER of those — it must keep polling, never call this with a
+        guessed outcome.
 
-        Zero confirmed fill -> the entry never happened; unregisters the
-        plan (nothing to protect, nothing protecting it). Any positive
-        confirmed fill -> protects exactly that much via `on_entry_fill`,
-        even if less than `requested_quantity` (a partial fill whose
-        remainder was then cancelled) — never the originally requested
-        amount."""
+        Exposure is protected as soon as it's confirmed, not just once the
+        whole order is done: any increase in `confirmed_filled_quantity`
+        since the last call protects exactly that much via `on_entry_fill`
+        (first confirmed fill) or by resizing the existing stop (a later,
+        larger confirmed fill) — never a duplicate stop placed alongside the
+        first one. A repeated observation of the same `confirmed_filled_quantity`
+        is a no-op. Once terminal: zero confirmed fill unregisters the plan
+        (nothing to protect, nothing protecting it); otherwise the pending
+        entry is simply cleared, since whatever was confirmed is already
+        protected."""
         lifecycle = self._lifecycles.get((account.account_id, symbol))
         if lifecycle is None or lifecycle.pending_entry is None:
             return
         pending = lifecycle.pending_entry
+        broker = self.brokers.get(account.broker)
+
+        if confirmed_filled_quantity > pending.confirmed_filled_quantity:
+            newly_applied = confirmed_filled_quantity - pending.confirmed_filled_quantity
+            if lifecycle.stop.broker_order_id is None:
+                # First confirmed fill for this entry -- on_entry_fill's normal
+                # first-time placement path (persists internally).
+                await self.on_entry_fill(account, symbol, confirmed_filled_quantity)
+            else:
+                # Already protected at a smaller confirmed quantity -- resize
+                # the existing stop (cancel/replace) rather than placing a
+                # second one alongside it.
+                async with self.arbiter.transition(account.account_id, symbol) as tx:
+                    lifecycle.confirmed_owned_quantity = confirmed_filled_quantity
+                    tx.set_owned(confirmed_filled_quantity)
+                if broker is not None:
+                    await self._replace_stop_price(lifecycle, account)
+                self._persist(lifecycle)
+            pending.confirmed_filled_quantity = confirmed_filled_quantity
+            # Applied immediately after the persisted protection-state change
+            # above, with no `await` in between -- shrinking (not eliminating)
+            # the crash window between "protection is durably recorded" and
+            # "SignalStore's tracked position reflects it" to two back-to-back
+            # local writes, in the safer order: if a crash lands between them,
+            # the lifecycle already durably knows what it protected, and the
+            # tracked position merely lags behind rather than risking a
+            # duplicate stop placement on restart.
+            if self.store is not None:
+                self.store.record_fill(account.account_id, symbol, lifecycle.plan.side, newly_applied)
 
         if not remainder_cancelled and confirmed_filled_quantity < pending.requested_quantity:
-            pending.confirmed_filled_quantity = confirmed_filled_quantity
             self._persist(lifecycle)
             return
 
-        pending.confirmed_filled_quantity = confirmed_filled_quantity
         pending.remainder_resolved = True
         lifecycle.pending_entry = None
 
@@ -277,7 +308,7 @@ class PositionLifecycleManager:
             self.unregister_plan(account.account_id, symbol)
             return
 
-        await self.on_entry_fill(account, symbol, confirmed_filled_quantity)
+        self._persist(lifecycle)
 
     async def on_stop_filled(
         self, account: DestinationAccount, symbol: str, filled_quantity: float, filled_price: float | None = None

@@ -155,15 +155,22 @@ class AlpacaBroker(BrokerAdapter):
 
         order = response.json()
         status = order.get("status")
+        filled_qty = order.get("filled_qty")
 
         if status == "filled":
             new_status = OrderStatus.FILLED
         elif status in ("canceled", "rejected", "expired"):
             new_status = OrderStatus.REJECTED
+        elif status == "partially_filled" and filled_qty:
+            # Still open, but with real fill progress worth reporting -- e.g.
+            # so a managed-lifecycle entry can be protected for what's
+            # actually confirmed owned so far, not just once the whole order
+            # is done (see PositionLifecycleManager.resolve_pending_entry).
+            # Stays PENDING (not a new terminal status) since more may yet
+            # fill or the remainder may still be canceled.
+            new_status = OrderStatus.PENDING
         else:
-            return None  # still open/pending — nothing new to report
-
-        filled_qty = order.get("filled_qty")
+            return None  # still open/pending with nothing new to report
         filled_price = order.get("filled_avg_price")
         return OrderResult(
             account_id=account.account_id,

@@ -120,7 +120,7 @@ async def test_managed_pending_entry_has_no_protection_until_resolved(store):
     broker = _ControllablePendingBroker()
     account = DestinationAccount(account_id="acct1", broker="paper", managed_lifecycle=True)
     routing = RoutingConfig(rules=[RoutingRule(source="tv", destinations=["acct1"])], accounts={"acct1": account})
-    lifecycle_manager = PositionLifecycleManager(brokers={"paper": broker})
+    lifecycle_manager = PositionLifecycleManager(brokers={"paper": broker}, store=store)
     engine = SignalCopierEngine(
         routing=routing, brokers={"paper": broker}, store=store, lifecycle_manager=lifecycle_manager
     )
@@ -145,7 +145,7 @@ async def test_managed_pending_entry_partial_fill_protects_exactly_the_confirmed
     broker = _ControllablePendingBroker()
     account = DestinationAccount(account_id="acct1", broker="paper", managed_lifecycle=True)
     routing = RoutingConfig(rules=[RoutingRule(source="tv", destinations=["acct1"])], accounts={"acct1": account})
-    lifecycle_manager = PositionLifecycleManager(brokers={"paper": broker})
+    lifecycle_manager = PositionLifecycleManager(brokers={"paper": broker}, store=store)
     engine = SignalCopierEngine(
         routing=routing, brokers={"paper": broker}, store=store, lifecycle_manager=lifecycle_manager
     )
@@ -172,7 +172,7 @@ async def test_managed_pending_entry_that_never_fills_unregisters_cleanly(store)
     broker = _ControllablePendingBroker()
     account = DestinationAccount(account_id="acct1", broker="paper", managed_lifecycle=True)
     routing = RoutingConfig(rules=[RoutingRule(source="tv", destinations=["acct1"])], accounts={"acct1": account})
-    lifecycle_manager = PositionLifecycleManager(brokers={"paper": broker})
+    lifecycle_manager = PositionLifecycleManager(brokers={"paper": broker}, store=store)
     engine = SignalCopierEngine(
         routing=routing, brokers={"paper": broker}, store=store, lifecycle_manager=lifecycle_manager
     )

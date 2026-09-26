@@ -97,10 +97,32 @@ class OrderReconciler:
                 )
                 continue
 
-            if result is None:
-                continue  # still pending on the broker's side, nothing to correct yet
+            if result is None or result.status == OrderStatus.PENDING:
+                # Still open on the broker's side. A PENDING result here can
+                # carry partial-fill progress (see AlpacaBroker/IBKRBroker's
+                # get_order_status) -- for a lifecycle-tracked position that's
+                # exactly what `_reconcile_pending_entries` below independently
+                # polls and acts on. Applying it here too, or letting
+                # `update_order_status` overwrite this row's `filled_quantity`
+                # with the broker's raw in-progress number, would corrupt the
+                # baseline `_correct_position` needs once this order actually
+                # reaches a terminal status -- so a non-terminal PENDING is
+                # left alone here no matter which account it belongs to.
+                continue
 
-            self._correct_position(order, result.status, result.filled_quantity)
+            # A lifecycle-tracked (account, symbol) owns its own position/
+            # protection truth exclusively through `_reconcile_pending_exits`/
+            # `_reconcile_pending_entries` below -- applying `_correct_position`
+            # here too would double-apply the same confirmed fill a second
+            # time (once here, once there). Still update this row's display
+            # status (FILLED/REJECTED) so GET /orders doesn't show it stuck
+            # at "pending" forever.
+            is_lifecycle_tracked = (
+                self.lifecycle_manager is not None
+                and self.lifecycle_manager.get_lifecycle(order["account_id"], order["symbol"]) is not None
+            )
+            if not is_lifecycle_tracked:
+                self._correct_position(order, result.status, result.filled_quantity)
             self.store.update_order_status(order["id"], result)
             corrected += 1
 
@@ -110,12 +132,16 @@ class OrderReconciler:
 
     async def _reconcile_pending_entries(self) -> int:
         """Poll every managed-lifecycle position's unresolved entry (see
-        app/lifecycle/manager.py's PendingEntry) and, once the broker gives a
-        final word, hand it to `resolve_pending_entry` — the only thing
-        allowed to call `on_entry_fill` (and so place the protective stop)
-        for it. Until this resolves, the position has no protection at all,
-        so this is at least as important as pending-exit reconciliation.
-        A no-op if no `PositionLifecycleManager` was wired in."""
+        app/lifecycle/manager.py's PendingEntry) and hand each new
+        observation to `resolve_pending_entry` — the only thing allowed to
+        place/resize protection for it, and (since this round) the one place
+        that applies a confirmed increment to `SignalStore`'s tracked
+        position too (immediately next to the persisted protection-state
+        change, not here — see that method's docstring on why). A working
+        partial fill whose remainder is still open gets acted on the same as
+        a terminal one; only a timeout/lost response (still nothing new to
+        report) is skipped. A no-op if no `PositionLifecycleManager` was
+        wired in."""
         if self.lifecycle_manager is None:
             return 0
 
@@ -137,18 +163,15 @@ class OrderReconciler:
                 )
                 continue
 
-            if result is None or result.status not in (OrderStatus.FILLED, OrderStatus.REJECTED):
-                continue  # still open on the broker's side -- a timeout/lost response is not a rejection
+            if result is None or result.status not in (OrderStatus.FILLED, OrderStatus.REJECTED, OrderStatus.PENDING):
+                continue  # nothing new to report at all -- a timeout/lost response is not a rejection
 
+            is_terminal = result.status in (OrderStatus.FILLED, OrderStatus.REJECTED)
             filled = result.filled_quantity if result.filled_quantity is not None else 0.0
-            lifecycle = self.lifecycle_manager.get_lifecycle(account_id, symbol)
-            entry_side = lifecycle.plan.side if lifecycle is not None else None
-            await self.lifecycle_manager.resolve_pending_entry(account, symbol, filled, remainder_cancelled=True)
-            if filled > 0 and entry_side is not None:
-                # Nothing optimistically touched SignalStore's tracked position
-                # for this entry (see engine.py's PENDING branch) -- this is the
-                # one point that applies the confirmed fill, exactly once.
-                self.store.record_fill(account_id, symbol, entry_side, filled)
+            if not is_terminal and filled <= pending.confirmed_filled_quantity:
+                continue  # a repeated observation of the same progress -- nothing new to act on
+
+            await self.lifecycle_manager.resolve_pending_entry(account, symbol, filled, remainder_cancelled=is_terminal)
             resolved += 1
 
         return resolved
@@ -202,10 +225,19 @@ class OrderReconciler:
         optimistic_quantity = order["filled_quantity"] or 0.0
 
         if new_status == OrderStatus.REJECTED:
-            # Reverse the optimistic fill entirely — it never actually happened.
-            reversal = -optimistic_quantity if side == Side.BUY else optimistic_quantity
-            if reversal:
-                self.store.adjust_position(order["account_id"], order["symbol"], reversal)
+            # REJECTED also covers "canceled"/"expired" on adapters like Alpaca
+            # (see its get_order_status), and a canceled order can still carry
+            # a real partial fill from before the cancellation -- reverse only
+            # the UNFILLED remainder of what was optimistically applied, not
+            # the whole thing, or a genuinely-filled partial quantity gets
+            # wiped to zero. `confirmed_quantity` is None (treated as 0) only
+            # for an adapter that doesn't report a fill on rejection, meaning
+            # "assume nothing filled," same as this branch's old behavior.
+            actual_quantity = confirmed_quantity if confirmed_quantity is not None else 0.0
+            delta = actual_quantity - optimistic_quantity
+            if delta:
+                signed_delta = delta if side == Side.BUY else -delta
+                self.store.adjust_position(order["account_id"], order["symbol"], signed_delta)
         elif new_status == OrderStatus.FILLED:
             actual_quantity = confirmed_quantity if confirmed_quantity is not None else optimistic_quantity
             delta = actual_quantity - optimistic_quantity

@@ -109,3 +109,66 @@ async def test_only_stop_loss_builds_two_order_bracket(broker, monkeypatch):
 
 async def _async_return(value):
     return value
+
+
+class _FakeOrderStatusWithFill:
+    def __init__(self, status, filled=0.0, avgFillPrice=0.0):
+        self.status = status
+        self.filled = filled
+        self.avgFillPrice = avgFillPrice
+
+
+class _FakeTradeWithStatus:
+    def __init__(self, order_status):
+        self.orderStatus = order_status
+
+
+@pytest.mark.asyncio
+async def test_get_order_status_partially_filled_reports_pending_with_progress(broker):
+    """A still-open, partially-filled order must surface its real fill
+    progress (so a managed-lifecycle entry can be protected for what's
+    actually confirmed owned so far -- see
+    PositionLifecycleManager.resolve_pending_entry) rather than being
+    discarded the same as a fully-unfilled "nothing new" order."""
+    broker._trades["order-1"] = _FakeTradeWithStatus(_FakeOrderStatusWithFill("Submitted", filled=30.0))
+    account = DestinationAccount(account_id="acct1", broker="ibkr")
+
+    result = await broker.get_order_status(account, "order-1")
+
+    assert result is not None
+    assert result.status == OrderStatus.PENDING
+    assert result.filled_quantity == 30.0
+
+
+@pytest.mark.asyncio
+async def test_get_order_status_new_unfilled_order_reports_nothing_new(broker):
+    broker._trades["order-1"] = _FakeTradeWithStatus(_FakeOrderStatusWithFill("Submitted", filled=0.0))
+    account = DestinationAccount(account_id="acct1", broker="ibkr")
+
+    result = await broker.get_order_status(account, "order-1")
+
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_get_order_status_filled_reports_terminal(broker):
+    broker._trades["order-1"] = _FakeTradeWithStatus(_FakeOrderStatusWithFill("Filled", filled=100.0))
+    account = DestinationAccount(account_id="acct1", broker="ibkr")
+
+    result = await broker.get_order_status(account, "order-1")
+
+    assert result is not None
+    assert result.status == OrderStatus.FILLED
+    assert result.filled_quantity == 100.0
+
+
+@pytest.mark.asyncio
+async def test_get_order_status_cancelled_with_partial_fill_reports_it(broker):
+    broker._trades["order-1"] = _FakeTradeWithStatus(_FakeOrderStatusWithFill("Cancelled", filled=30.0))
+    account = DestinationAccount(account_id="acct1", broker="ibkr")
+
+    result = await broker.get_order_status(account, "order-1")
+
+    assert result is not None
+    assert result.status == OrderStatus.REJECTED
+    assert result.filled_quantity == 30.0

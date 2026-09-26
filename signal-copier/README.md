@@ -389,60 +389,121 @@ against what's *actually confirmed done*. `app/lifecycle/models.py`'s
   `tests/test_protection_transfer.py`, which reproduces this exact
   sequence.
 
-### Pending entries get exactly the same treatment
+### Pending entries: protected as soon as a fill is confirmed, not just at the end
 
 The same async-confirmation problem exists on the way in, not just the way
-out: a managed entry can report `PENDING` too, and until this round it was
-handled wrong — `record_fill` applied the full requested quantity to
-`SignalStore`'s tracked position, but `on_entry_fill` (which places the
-protective stop) was never called for it, so the position looked owned
-while genuinely having **no protection at all**, indefinitely.
-`app/lifecycle/models.py`'s `PendingEntry` and
-`PositionLifecycleManager.register_pending_entry`/`resolve_pending_entry`
-close that gap, mirroring `PendingExit` exactly:
+out: a managed entry can report `PENDING` too, and this went through two
+rounds to get right.
 
-- A `PENDING` entry response registers a `PendingEntry` (requested
-  quantity, broker order id) instead of guessing. `on_entry_fill` is
-  **not** called yet, and nothing is optimistically applied to
-  `SignalStore`'s position — `GET /positions`' `managed_lifecycles` array
-  shows the pending entry explicitly (`pending_entry` field) instead of a
-  silently-owned-but-unprotected position.
-- `app/reconciliation.py` polls unresolved pending entries the same way it
-  polls pending exits, and once the broker's answer is terminal
-  (`resolve_pending_entry`): zero confirmed fill unregisters the plan
-  (nothing to protect); any positive confirmed fill calls `on_entry_fill`
-  with exactly that amount — even if less than requested (a partial fill
-  whose remainder was then cancelled) — which places the stop and
-  (exactly once) applies that confirmed quantity to `SignalStore`'s
-  tracked position.
-- A timeout or lost response is **not** treated as a rejection — only a
-  broker-confirmed terminal status (filled, or confirmed
-  cancelled/rejected) may resolve it; anything else keeps polling.
+**Round one** (this section's original version) handled a PENDING entry by
+retaining a `PendingEntry` (requested quantity, broker order id) and doing
+nothing else until a terminal broker status arrived. **A follow-up review
+found that this itself introduced a new bug and left one case still
+unprotected**, both confirmed by reproducing them and fixed:
 
-See `tests/test_pending_fill_reconciliation_integration.py`, which drives
-this end to end through the real engine → lifecycle manager → reconciler
-path (not a hand-constructed shortcut) for both a full and a partial
-confirmed fill.
+- **Managed full-fills were double-applied.** `handle_signal`'s
+  managed-account branch always writes an `orders` row for display
+  (`GET /orders`), and that row's `status='pending'` + `broker_order_id`
+  made it match `app/reconciliation.py`'s *generic* pending-order query too
+  — so a confirmed fill got applied once by the generic loop's
+  `_correct_position` (added to `SignalStore`'s tracked position) **and**
+  a second time by `_reconcile_pending_entries` (via `record_fill`),
+  leaving the position at double the true quantity while the lifecycle and
+  stop correctly showed the real amount. Fixed: the generic loop now skips
+  position-correction (but still updates the row's display status) for any
+  `(account, symbol)` with an active tracked lifecycle — that position's
+  truth belongs exclusively to the lifecycle-specific reconciliation paths.
+- **A working partial fill got zero protection until the whole order was
+  done.** Waiting for a terminal status before calling `on_entry_fill`
+  meant a genuinely-confirmed partial fill (say 30 of 100 requested) sat
+  completely unprotected for however long the remaining 70 stayed open —
+  and `AlpacaBroker`/`IBKRBroker`'s `get_order_status` didn't even surface
+  that progress, discarding it the same as "nothing new" until the order
+  reached a terminal state. Fixed on both sides: the adapters now return a
+  non-terminal `PENDING` result carrying the current cumulative fill
+  quantity for a still-open, partially-filled order (instead of `None`),
+  and `resolve_pending_entry` protects any *increase* in confirmed fill
+  immediately — placing the stop for the first confirmed amount via the
+  normal `on_entry_fill` path, or **resizing the existing stop** (cancel/
+  replace, never a second stop placed alongside the first) for a later,
+  larger confirmed amount. A repeated observation of the same quantity is a
+  no-op; `SignalStore`'s tracked position gets only the new increment since
+  the last observation, applied immediately next to the persisted
+  protection-state change (shrinking, though not eliminating, the crash
+  window between "protection is durably recorded" and "the tracked
+  position reflects it" — see "Crash-resumable persistence" below).
 
-### The same optimistic-fill bug, for plain (non-managed) accounts
+`app/reconciliation.py` polls unresolved pending entries the same way it
+polls pending exits. Once terminal: zero confirmed fill unregisters the
+plan (nothing to protect, nothing protecting it); any positive confirmed
+fill — even less than requested, a partial fill whose remainder was then
+cancelled — is protected, never the originally requested amount. A timeout
+or lost response is **not** treated as a rejection — only a
+broker-confirmed status (a terminal one, or a still-open one carrying real
+fill progress) may act; anything else keeps polling unchanged.
 
-Managed accounts weren't the only place this happened. A plain account's
-`PENDING` order also applies an optimistic quantity to `SignalStore`'s
-tracked position (there's no `CloseArbiter`/lifecycle to defer to — see
-"Close signals" above), but until this round the `orders` table row
-persisted the *broker's* raw `filled_quantity` (`None` for a genuine
-`PENDING` response) instead of the quantity actually applied.
-`app/reconciliation.py`'s `_correct_position` uses that stored value as
-its baseline for computing the correction once the real fill is
-confirmed — reading back `None` (as 0) meant the later-confirmed quantity
-was added a **second time** on top of what optimistic tracking already
-applied, silently doubling the position. `SignalStore.save_order_result`
-now takes an explicit `applied_quantity` — always exactly what
-`record_fill` was actually called with — so the reconciler's baseline
-matches reality. See
-`tests/test_pending_fill_reconciliation_integration.py`'s plain-account
-cases, which reproduce the double-count directly through
+See `tests/test_edd2b70_review_regressions.py` (the double-count and
+working-partial-fill fixes, including a same-quantity-repeated-observation
+no-op check and a restart-recovery check) and
+`tests/test_alpaca_broker.py`/`tests/test_ibkr_broker.py`'s
+`get_order_status` cases (new, partially-filled, filled, and
+canceled-with-a-partial-fill, through each adapter's own
+HTTP-mock/fake-trade boundary) alongside
+`tests/test_pending_fill_reconciliation_integration.py`'s original
+full/partial-then-cancelled cases.
+
+### The same two bugs, for plain (non-managed) accounts
+
+Managed accounts weren't the only place the optimistic-fill baseline
+mismatch happened, and cancellation-with-a-partial-fill had its own
+pre-existing bug independent of either round above.
+
+- **Baseline mismatch** (fixed first round): a plain account's `PENDING`
+  order applies an optimistic quantity to `SignalStore`'s tracked position
+  (there's no `CloseArbiter`/lifecycle to defer to — see "Close signals"
+  above), but the `orders` row persisted the *broker's* raw
+  `filled_quantity` (`None` for a genuine `PENDING` response) instead of
+  the quantity actually applied — so a confirmed fill was added a second
+  time on top of what was already applied. `SignalStore.save_order_result`
+  now takes an explicit `applied_quantity`, always exactly what
+  `record_fill` was called with.
+- **Cancellation wiped a confirmed partial fill to zero** (found in the
+  follow-up review, pre-existing, independent of the above):
+  `_correct_position`'s `REJECTED` branch — which also covers
+  "canceled"/"expired" on adapters like Alpaca — reversed the *entire*
+  optimistically-applied quantity unconditionally, ignoring
+  `confirmed_quantity` even when the adapter reported a real partial fill
+  before the cancellation. A 100-share buy with 30 actually filled before
+  the remaining 70 was canceled left the tracked position at 0, not the
+  correct 30; a 100-share close with 40 sold before the remaining 60 was
+  canceled left it at 100 (nothing closed), not the correct 60. Fixed:
+  `REJECTED` now reverses only the *unfilled remainder* of what was
+  optimistically applied (using `confirmed_quantity` when the adapter
+  reports one, same as `FILLED` already did), defaulting to "assume
+  nothing filled" only when the adapter doesn't report a fill on
+  rejection — preserving the original behavior for those adapters.
+
+See `tests/test_edd2b70_review_regressions.py`'s plain-account cases,
+which reproduce both worked examples above directly through
 `SignalCopierEngine.handle_signal` → `OrderReconciler.reconcile_once()`.
+
+### A known remaining gap: an ambiguous submission outcome still unregisters the plan
+
+Not yet fixed, flagged honestly rather than silently left implicit: if
+`broker.place_order()` itself raises (a network error, a timeout) during
+a managed entry's *submission* — before any `broker_order_id` is even
+known — `_handle_managed_entry` unregisters the plan and reports `ERROR`.
+That's correct when the order genuinely never reached the broker, but
+indistinguishable, with what's implemented today, from the broker having
+actually accepted the order while its response was merely lost — which
+would leave a real, unprotected position with no record of it at all.
+Closing this needs a durable pre-submission intent (so a lost response can
+be reconciled against the broker's own order history rather than assumed
+away) and a policy against blind resubmission — a larger piece of work,
+deliberately out of scope for this round alongside the durable
+idempotency-key-to-account/action binding, `asyncio.gather`-wide task
+supervision, and login-throttling work already noted as open elsewhere in
+this README.
 
 ### Crash-resumable persistence
 
