@@ -148,6 +148,24 @@ async def test_naive_time_exit_datetime_is_treated_as_utc(manager, account, brok
 
 
 @pytest.mark.asyncio
+async def test_on_price_update_also_consumes_an_already_expired_time_exit(manager, account, broker):
+    """Reproduces the audit's exact case (test_trading_audit.py::
+    test_deadline_is_consumed_by_management_loop): a price tick can arrive
+    long before the next periodic reconciliation pass ever runs
+    `check_time_exits` -- an already-expired deadline must not have to wait
+    for that separate pass when a price update just arrived anyway."""
+    past_deadline = datetime.now(timezone.utc) - timedelta(seconds=1)
+    plan = _plan(planned_quantity=10.0, initial_stop=90.0, time_exit=past_deadline)
+    lifecycle = await _enter(manager, broker, account, plan, 10.0)
+    assert not lifecycle.closed
+
+    await manager.on_price_update(account, "AAPL", 100.0)
+
+    assert lifecycle.closed is True, "Expired time_exit has no active consumer"
+    assert len(broker.fills) >= 2  # the original entry fill, plus the time-exit close
+
+
+@pytest.mark.asyncio
 async def test_no_time_exit_set_is_a_no_op(manager, account, broker):
     plan = _plan(planned_quantity=10.0, initial_stop=48.50, time_exit=None)
     lifecycle = await _enter(manager, broker, account, plan, 10.0)

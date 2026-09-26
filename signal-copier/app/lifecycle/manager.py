@@ -147,23 +147,35 @@ class PositionLifecycleManager:
         target or trailing stop uses (design section: "a time exit" is one
         of the intents CloseArbiter serializes). app/reconciliation.py
         calls this every pass, same as `retry_unprotected_positions`."""
-        now = datetime.now(timezone.utc)
         triggered = 0
         for lifecycle in list(self._lifecycles.values()):
-            deadline = lifecycle.plan.time_exit
-            if deadline is None or lifecycle.closed:
-                continue
-            if deadline.tzinfo is None:
-                deadline = deadline.replace(tzinfo=timezone.utc)
-            if now < deadline:
-                continue
-            available = self.arbiter.available_to_sell(lifecycle.plan.account_id, lifecycle.plan.symbol)
-            if available <= 0:
-                continue
-            account = DestinationAccount(account_id=lifecycle.plan.account_id, broker=lifecycle.plan.broker)
-            await self.request_exit(account, lifecycle.plan.symbol, available, source="time_exit", reason=f"time exit reached ({deadline.isoformat()})")
-            triggered += 1
+            if await self._consume_expired_time_exit(lifecycle):
+                triggered += 1
         return triggered
+
+    async def _consume_expired_time_exit(self, lifecycle: PositionLifecycle) -> bool:
+        """The one-lifecycle version of `check_time_exits`' loop body --
+        shared so a plan's time_exit is consumed both by the periodic
+        reconciliation pass AND by `on_price_update` itself (PRO-02: a
+        price feed can tick far more often than the reconciliation
+        interval, and there's no reason to make an already-expired deadline
+        wait for the next reconciliation pass when a price update just
+        arrived anyway)."""
+        deadline = lifecycle.plan.time_exit
+        if deadline is None or lifecycle.closed:
+            return False
+        if deadline.tzinfo is None:
+            deadline = deadline.replace(tzinfo=timezone.utc)
+        if datetime.now(timezone.utc) < deadline:
+            return False
+        available = self.arbiter.available_to_sell(lifecycle.plan.account_id, lifecycle.plan.symbol)
+        if available <= 0:
+            return False
+        account = DestinationAccount(account_id=lifecycle.plan.account_id, broker=lifecycle.plan.broker)
+        await self.request_exit(
+            account, lifecycle.plan.symbol, available, source="time_exit", reason=f"time exit reached ({deadline.isoformat()})"
+        )
+        return True
 
     def list_pending_exits(self) -> list[tuple[str, str, str, PendingExit]]:
         """Every (account_id, symbol, broker, PendingExit) whose remainder
@@ -547,6 +559,9 @@ class PositionLifecycleManager:
         module's docstring — no feed is wired up generically)."""
         lifecycle = self._lifecycles.get((account.account_id, symbol))
         if lifecycle is None or lifecycle.closed or self.arbiter.is_halted(account.account_id, symbol):
+            return []
+
+        if await self._consume_expired_time_exit(lifecycle):
             return []
 
         results: list[OrderResult] = []
