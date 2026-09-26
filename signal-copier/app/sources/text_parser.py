@@ -64,10 +64,88 @@ def _words(text: str) -> list[str]:
     return re.findall(r"[A-Za-z']+", text.lower())
 
 
+# SIG-03: a trader posting an OCC-style option contract sometimes puts a
+# space between the underlying ticker and the date/type/strike code (e.g.
+# "BUY AAPL 260918C00200000 1"). Left alone, the main pattern's symbol
+# group only captures the ticker ("AAPL") and the option code's leading
+# digits get swallowed by the quantity group instead -- "260918" units of
+# AAPL is not a real instruction, and treating it as one would size an
+# order off a date/strike code rather than what the trader actually typed.
+# Splice the two tokens back into one contiguous symbol before the main
+# pattern ever runs, so an option contract parses as one instrument with
+# its own real quantity after it, same as it would if posted with no
+# space at all.
+_OPTION_FRAGMENT_AFTER_SYMBOL = re.compile(r"\b(?P<sym>[A-Za-z]{1,6})\s+(?P<optfrag>\d{6}[CP]\d{8})\b")
+
+
+def _merge_split_option_symbols(text: str) -> str:
+    return _OPTION_FRAGMENT_AFTER_SYMBOL.sub(lambda m: f"{m.group('sym')}{m.group('optfrag')}", text)
+
+
+# SIG-03: every text source defaults to (or is configured with) ONE fixed
+# asset_class for every message it ever produces -- fine for a genuinely
+# single-market channel, wrong for a "mixed" one where different analysts
+# post about different markets. A bare "BUY AAPL 10" in a channel
+# configured/defaulted to CRYPTO used to come out tagged CRYPTO regardless,
+# which can pass the broker asset-class gate for the WRONG reason (routed
+# to a crypto venue that "succeeds" against a similarly-named but wrong
+# instrument) rather than being caught. This is a best-effort classifier
+# from the symbol's own shape alone -- no market data, no per-venue lookup
+# -- confident enough to override an assumed default when the two
+# disagree, but never confident enough to invent an asset class for a
+# shape it doesn't recognize (see `_infer_asset_class`'s return of None).
+_OPTION_SYMBOL_PATTERN = re.compile(r"^[A-Z]{1,6}\d{6}[CP]\d{8}$")
+
+_FX_CURRENCY_CODES = {
+    "USD", "EUR", "GBP", "JPY", "CHF", "CAD", "AUD", "NZD", "CNH", "CNY",
+    "HKD", "SGD", "SEK", "NOK", "DKK", "MXN", "ZAR", "TRY", "PLN", "HUF",
+    "CZK", "THB", "INR",
+}
+
+_CRYPTO_QUOTE_SUFFIXES = ("USDT", "USDC", "BUSD", "TUSD", "DAI")
+_CRYPTO_BASE_HINTS = {
+    "BTC", "ETH", "XRP", "LTC", "BCH", "BNB", "SOL", "ADA", "DOGE", "DOT",
+    "MATIC", "AVAX", "LINK", "TRX", "XLM", "ATOM",
+}
+
+
+def _infer_asset_class(symbol: str) -> AssetClass | None:
+    """Best-effort instrument classification from the symbol's shape alone.
+    Returns None when the shape doesn't confidently match any known
+    convention (e.g. a bare 3-letter string could be a stock ticker or half
+    of a currency pair) -- the caller must not guess further in that case,
+    only fall back to whatever asset_class it already trusted."""
+    bare = symbol.replace("/", "").upper()
+
+    if _OPTION_SYMBOL_PATTERN.match(bare):
+        return AssetClass.OPTION
+
+    if (
+        len(bare) == 6
+        and bare[:3] in _FX_CURRENCY_CODES
+        and bare[3:] in _FX_CURRENCY_CODES
+        and bare[:3] != bare[3:]
+    ):
+        return AssetClass.FOREX
+
+    if bare.endswith(_CRYPTO_QUOTE_SUFFIXES):
+        for suffix in _CRYPTO_QUOTE_SUFFIXES:
+            if bare.endswith(suffix) and len(bare) > len(suffix):
+                return AssetClass.CRYPTO
+    for base in _CRYPTO_BASE_HINTS:
+        if bare.startswith(base) and bare[len(base):] in ("USD", "EUR", "GBP", "BTC", "ETH"):
+            return AssetClass.CRYPTO
+
+    if bare.isalpha() and 1 <= len(bare) <= 5:
+        return AssetClass.EQUITY
+
+    return None
+
+
 def parse_text_signal(
     text: str, *, source: str, asset_class: AssetClass = AssetClass.CRYPTO, analyst: str | None = None
 ) -> Signal:
-    stripped = text.strip()
+    stripped = _merge_split_option_symbols(text.strip())
     match = _PATTERN.search(stripped)
     if not match:
         raise SignalValidationError(f"could not parse a signal out of: {text!r}")
@@ -81,12 +159,18 @@ def parse_text_signal(
         )
 
     side = _SIDE_ALIASES[match.group("side").lower()]
+    symbol = match.group("symbol").upper()
+
+    inferred_asset_class = _infer_asset_class(symbol)
+    resolved_asset_class = (
+        inferred_asset_class if inferred_asset_class is not None else asset_class
+    )
 
     return Signal(
         source=source,
-        symbol=match.group("symbol").upper(),
+        symbol=symbol,
         side=side,
-        asset_class=asset_class,
+        asset_class=resolved_asset_class,
         analyst=analyst,
         quantity=_optional_float(match.group("quantity")),
         price=_optional_float(match.group("price")),
