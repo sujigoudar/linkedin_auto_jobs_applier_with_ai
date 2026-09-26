@@ -40,7 +40,15 @@ Source adapter --(Signal)--> SignalCopierEngine --(per destination account)--> B
   right broker.
 - **`app/db.py`** — SQLite log of every signal received, every order
   result, and this service's own tracked net position per
-  (account, symbol) — see "Close signals" below.
+  (account, symbol) — see "Close signals" below. Still plain stdlib
+  `sqlite3` (Core is enough; an ORM rewrite isn't needed for the volume
+  here), but schema changes are now versioned Alembic migrations
+  (`alembic/versions/`, C03) instead of appending to `_COLUMN_MIGRATIONS`
+  — that list is frozen as of the migration to Alembic; the next schema
+  change should be `alembic revision -m "..."`, not another tuple there.
+  Every database (fresh or an existing pre-Alembic one) gets stamped at
+  the current head on open (`SignalStore._stamp_alembic_head_if_needed`)
+  without re-running schema creation against it.
 - **`app/main.py`** — FastAPI app. Push-based sources (webhooks) get an
   HTTP route; pull-based sources (bots, pollers) would be started as
   background tasks in the `lifespan` handler.

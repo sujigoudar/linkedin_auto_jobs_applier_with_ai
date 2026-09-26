@@ -12,7 +12,25 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator
 
+from alembic import command
+from alembic.config import Config as AlembicConfig
+
 from app.models import OrderResult, Side, Signal
+
+_ALEMBIC_DIR = Path(__file__).resolve().parent.parent / "alembic"
+
+
+def _alembic_config(db_path: Path) -> AlembicConfig:
+    """A fresh, in-process Alembic Config per call, pointed at whichever
+    SQLite file this SignalStore instance actually uses -- one process
+    (every test run, in particular) opens many SignalStore instances
+    against different files, so a single static alembic.ini-derived URL
+    would be wrong for all but one of them. alembic.ini on disk still
+    exists for a human running the `alembic` CLI by hand."""
+    cfg = AlembicConfig()
+    cfg.set_main_option("script_location", str(_ALEMBIC_DIR))
+    cfg.set_main_option("sqlalchemy.url", f"sqlite:///{db_path}")
+    return cfg
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS signals (
@@ -205,6 +223,30 @@ class SignalStore:
                 except sqlite3.OperationalError as exc:
                     if "duplicate column name" not in str(exc):
                         raise
+        self._stamp_alembic_head_if_needed()
+
+    def _stamp_alembic_head_if_needed(self) -> None:
+        """C03 (bounded, adoption plan E01): the bootstrap above has
+        already brought this database's schema to exactly what
+        alembic/versions/0001_initial_schema.py's upgrade() would produce
+        -- whether this file is brand new or a pre-existing deployment
+        the old ad-hoc _COLUMN_MIGRATIONS mechanism already upgraded. Mark
+        it as being at that Alembic revision without RE-running it (that
+        would try to CREATE a table that's already there); this is purely
+        so `alembic history`/`alembic upgrade head` are meaningful for
+        every real database from here on, for whatever the NEXT schema
+        change adds as a proper revision. Never re-stamps a database
+        that's already stamped (or that a real `alembic upgrade` has
+        already brought under version control) -- see this method's own
+        `alembic_version` check.
+        """
+        with self._connect() as conn:
+            already_tracked = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='alembic_version'"
+            ).fetchone()
+        if already_tracked:
+            return
+        command.stamp(_alembic_config(self.db_path), "head")
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
