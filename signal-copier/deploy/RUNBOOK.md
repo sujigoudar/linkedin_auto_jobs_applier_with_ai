@@ -139,9 +139,10 @@ incident.
 ## Automatic promotion eligibility (currently: not met, not enabled)
 
 All of the following must be true and explicitly released before automatic
-promotion is even considered, per `docs/03_REDUNDANCY_AND_DATA.md` from the
-reviewed finalization package (a reasonable bar, adopted here without
-inflating it):
+promotion is even considered. This bar comes from this project's own
+external security/reliability review of its deployment design (not a
+document included in this repository) and is adopted here without
+inflating it:
 
 - [ ] A tested, independently-enforceable fencing mechanism (confirmed
       cloud-provider stop/terminate, or confirmed brokerage credential

@@ -24,9 +24,13 @@ terraform {
 
 provider "oci" {
   # Auth via OCI CLI config (~/.oci/config) or environment variables --
-  # never hardcode keys here. See docs/02_CLOUD_SELECTION.md's account
-  # workflow: discover the tenancy/compartment with an authenticated
-  # read-only CLI call first, and paste the *existing* OCIDs below.
+  # never hardcode keys here. Discover the tenancy/compartment with an
+  # authenticated read-only CLI call first, and paste the *existing*
+  # OCIDs into terraform.tfvars -- never create a new compartment/tenancy
+  # from this file:
+  #   oci iam compartment list --compartment-id <tenancy-ocid> --all
+  #   oci iam availability-domain list
+  # and paste the resulting compartment_id/region into terraform.tfvars.
   region = var.region
 }
 
@@ -89,14 +93,14 @@ data "oci_core_images" "ubuntu" {
   operating_system_version = "22.04"
   shape                    = "VM.Standard.A1.Flex"
   sort_by                  = "TIMECREATED"
-  sort_order                = "DESC"
+  sort_order               = "DESC"
 }
 
 resource "oci_core_instance" "standby" {
   compartment_id      = var.compartment_id
   availability_domain = data.oci_identity_availability_domains.ads.availability_domains[var.availability_domain_index].name
   display_name        = "signal-copier-standby"
-  shape                = "VM.Standard.A1.Flex"
+  shape               = "VM.Standard.A1.Flex"
 
   shape_config {
     ocpus         = var.ocpus
@@ -111,12 +115,12 @@ resource "oci_core_instance" "standby" {
   source_details {
     source_type             = "image"
     source_id               = data.oci_core_images.ubuntu.images[0].id
-    boot_volume_size_in_gbs  = var.boot_volume_size_in_gbs
+    boot_volume_size_in_gbs = var.boot_volume_size_in_gbs
   }
 
   metadata = {
     ssh_authorized_keys = var.ssh_public_key
-    user_data            = base64encode(file("${path.module}/../../cloud-init/standby-init.yaml"))
+    user_data           = base64encode(file("${path.module}/../../cloud-init/standby-init.yaml"))
   }
 
   freeform_tags = {

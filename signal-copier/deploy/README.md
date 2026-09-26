@@ -41,6 +41,39 @@ has to be true before a human enables it.
 | `litestream/litestream.yml` | Litestream config template: replicate `signal_copier.db`'s WAL to one private R2 bucket | No — needs R2 credentials and a tested restore first |
 | `RUNBOOK.md` | The actual promotion/fencing/reconciliation procedure a human runs before ever making the standby a writer | Documentation, not automation |
 
+## Static validation performed (no cloud credentials, still real checks)
+
+This sandbox has no OCI/Cloudflare/R2 credentials, so nothing here could be
+`terraform apply`'d, `wrangler deploy`'d, or actually provisioned -- but the
+following checks ran for real and their results are accurate as of the
+commit that added this section:
+
+- `terraform fmt` on `terraform/oci-standby/main.tf` (found and fixed real
+  alignment drift; `terraform validate`/`init` itself could not run --
+  `registry.terraform.io` is unreachable from this sandbox).
+- `systemd-analyze verify` on both `.service` units — both parse as valid
+  unit files; the only reported issue is the trading binary not existing
+  on this sandbox (expected, since it isn't a real deployed host).
+- `cloud-init/standby-init.yaml`, `litestream/litestream.yml`, and
+  `cloudflare-heartbeat/wrangler.toml.example` all parse as valid
+  YAML/YAML/TOML respectively.
+- `cloudflare-heartbeat/worker.js` passes `node --check` (valid JS syntax).
+- Cross-checked `worker.js`'s expected `/health` JSON shape
+  (`status`/`database_ok`/`price_monitor_ok`/`reconciler_ok`) against
+  `app/main.py`'s actual `GET /health` handler — fields match exactly.
+- Cross-checked `STANDBY_MODE`/`_standby_read_only_gate` and
+  `DATABASE_PATH` references in this directory against `app/config.py`/
+  `app/main.py` — all real, all match.
+- Fixed two dangling references to design documents (`docs/
+  02_CLOUD_SELECTION.md`, `docs/03_REDUNDANCY_AND_DATA.md`) that were never
+  actually part of this repository — replaced with inline content or an
+  honest note that the criteria came from an external review, not a file
+  here.
+
+None of this substitutes for `terraform validate`/`plan` or an actual test
+deployment once real cloud credentials are available — see each row's
+"Applied?" column above.
+
 ## What this deliberately does NOT do
 
 - Provision anything against a real account (no `terraform apply`, no
