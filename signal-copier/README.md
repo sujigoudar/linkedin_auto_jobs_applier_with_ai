@@ -1096,7 +1096,18 @@ every financial command independent of any single route's own auth logic
   `python -c "import secrets; print(secrets.token_urlsafe(32))"`.
 - Set `WEBHOOK_SHARED_SECRET` before exposing `/webhook/*` publicly — an
   unset secret now makes that route `503` (disabled), not open; the same
-  applies to `/sms/twilio` and `TWILIO_AUTH_TOKEN`.
+  applies to `/sms/twilio` and `TWILIO_AUTH_TOKEN`. The shared-secret
+  compare uses `hmac.compare_digest` (C06), same as `OWNER_PASSWORD`'s
+  check — a plain `!=` would leak, via response-time variance, how many
+  leading characters of a guessed secret are already correct.
+- **C06:** both ingress routes (`/webhook/{source}`, `/sms/twilio`) are
+  rate-limited to 30 requests/minute per source IP
+  (`app/rate_limit.py`) — a defensive ceiling against a flood (malicious
+  or a misbehaving/looping sender), not a constraint on legitimate use.
+  Exceeding it returns `429`. This is in-memory and per-process; a
+  multi-process deployment behind a shared load balancer would need a
+  shared backend (Redis, via slowapi's `storage_uri`), not implemented
+  here since this project runs one process.
 - Never commit `.env` or real `config/routing.yaml` /
   `config/accounts.yaml` if they end up containing anything
   account-identifying (they're gitignored by default).

@@ -8,6 +8,7 @@ started in the lifespan handler.
 """
 from __future__ import annotations
 
+import hmac
 import logging
 from collections import defaultdict
 from contextlib import asynccontextmanager
@@ -18,6 +19,9 @@ from typing import Any
 import httpx
 from fastapi import Cookie, Depends, FastAPI, Form, Header, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse, JSONResponse
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
 
@@ -49,6 +53,7 @@ from app.lifecycle.manager import PositionLifecycleManager
 from app.models import AssetClass
 from app.pricing import PriceMonitor
 from app.providers import SettingsOverride, load_provider_registry_from_store
+from app.rate_limit import INGRESS_RATE_LIMIT, limiter
 from app.reconciliation import OrderReconciler
 from app.routing import load_routing_config_from_store
 from app.sources.text_parser import classify_batch
@@ -189,6 +194,12 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Trading Signal Copier", lifespan=lifespan)
+
+# C06: HTTP abuse controls on the ingress routes -- see app/rate_limit.py's
+# module docstring for exactly what this does and doesn't cover.
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+app.add_middleware(SlowAPIMiddleware)
 
 # C12/C13: locally-pinned Chart.js/Tabulator vendor files (no CDN, no build
 # step) for the dashboard's charts/tables -- see app/static/vendor/README.md
@@ -400,6 +411,7 @@ async def dashboard() -> FileResponse:
 
 
 @app.post("/webhook/{source_name}")
+@limiter.limit(INGRESS_RATE_LIMIT)
 async def receive_webhook(
     source_name: str,
     request: Request,
@@ -427,7 +439,13 @@ async def receive_webhook(
         # Fail closed: an unconfigured secret disables this ingress, it does
         # not make it public. Set WEBHOOK_SHARED_SECRET to accept signals here.
         raise HTTPException(status_code=503, detail="webhook ingress is not configured (set WEBHOOK_SHARED_SECRET)")
-    if x_webhook_secret != config.WEBHOOK_SHARED_SECRET:
+    if x_webhook_secret is None or not hmac.compare_digest(x_webhook_secret, config.WEBHOOK_SHARED_SECRET):
+        # C06: a plain `!=` compare short-circuits on the first mismatched
+        # byte, leaking (via response-time variance) how many leading
+        # characters of a guessed secret are already correct -- the same
+        # class of bug app/auth.py's verify_password already guards
+        # against for OWNER_PASSWORD. hmac.compare_digest is unicode-safe
+        # for str inputs same as that call site.
         raise HTTPException(status_code=401, detail="invalid webhook secret")
 
     cache_key = f"webhook:{source_name}:{idempotency_key}" if idempotency_key else None
@@ -466,6 +484,7 @@ async def receive_webhook(
 
 
 @app.post("/sms/twilio")
+@limiter.limit(INGRESS_RATE_LIMIT)
 async def receive_sms(
     request: Request, body: str = Form(alias="Body"), from_number: str = Form(alias="From", default="")
 ) -> dict:

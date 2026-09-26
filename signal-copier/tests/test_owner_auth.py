@@ -196,6 +196,44 @@ def test_webhook_401s_with_wrong_secret(configured_client):
     assert response.status_code == 401
 
 
+def test_webhook_401s_with_missing_secret_header(configured_client):
+    """C06: the compare_digest rewrite must still 401 cleanly when the
+    header is absent entirely, not just when it's wrong -- compare_digest
+    itself would raise TypeError on a None argument if the explicit
+    `is None` guard were ever dropped."""
+    client, _ = configured_client
+    with client:
+        response = client.post(
+            "/webhook/tradingview", json={"symbol": "AAPL", "side": "buy", "quantity": 1.0}
+        )
+    assert response.status_code == 401
+
+
+def test_webhook_secret_check_uses_constant_time_compare(configured_client, monkeypatch):
+    """C06: asserts the actual mechanism, not just the outcome -- a plain
+    `!=` would 401 on a wrong secret too, so a status-code-only test can't
+    distinguish it from the timing-safe compare this is supposed to be."""
+    import app.main as main_module_direct
+
+    calls = []
+    original = main_module_direct.hmac.compare_digest
+
+    def _spy(a, b):
+        calls.append((a, b))
+        return original(a, b)
+
+    monkeypatch.setattr(main_module_direct.hmac, "compare_digest", _spy)
+
+    client, _ = configured_client
+    with client:
+        client.post(
+            "/webhook/tradingview",
+            json={"symbol": "AAPL", "side": "buy", "quantity": 1.0},
+            headers={"X-Webhook-Secret": "not-it"},
+        )
+    assert calls == [("not-it", "test-webhook-secret")]
+
+
 # --- app.auth._session_or_none: direct unit coverage for its
 # expires_at-normalization and cleanup behavior (surfaced as surviving
 # mutants by the C31 mutmut config scoped to app/auth.py) ---
