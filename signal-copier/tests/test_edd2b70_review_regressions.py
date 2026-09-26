@@ -51,6 +51,18 @@ class _ControllablePendingBroker(PaperBroker):
     async def get_order_status(self, account, broker_order_id):
         return self._status_by_order_id.get(broker_order_id)
 
+    async def get_broker_position(self, account, symbol):
+        # This stub is deliberately narrow -- it models the PENDING/confirm
+        # dance, not a full broker-side position book (self.positions is
+        # never populated the way place_order's confirmed fills would be
+        # for a real broker). Declare that honestly (None = genuinely
+        # unknown) rather than let the inherited PaperBroker.get_broker_position
+        # read an always-empty book and falsely report "flat" -- OPS-03's
+        # reconciliation gate would otherwise "correct" a real position to
+        # zero based on this stub's own incompleteness, not a real
+        # discrepancy.
+        return None
+
     def script(self, broker_order_id: str, *, status: OrderStatus, filled_quantity: float | None):
         self._status_by_order_id[broker_order_id] = OrderResult(
             account_id="doesn't matter", status=status, signal_id="", filled_quantity=filled_quantity, message="done"

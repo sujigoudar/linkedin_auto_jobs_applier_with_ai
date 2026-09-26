@@ -74,11 +74,16 @@ def test_sms_503s_when_token_unconfigured(unconfigured_client):
 
 
 def test_health_stays_public_when_auth_unconfigured(unconfigured_client):
+    """This test is about /health staying reachable with no auth
+    configured -- not about what `status` says (see
+    test_health_truthfulness.py for that; OPS-01 -- a fresh app with
+    neither background worker having completed a pass yet legitimately
+    reports "degraded", not "ok")."""
     client, _ = unconfigured_client
     with client:
         response = client.get("/health")
     assert response.status_code == 200
-    assert response.json()["status"] == "ok"
+    assert "status" in response.json()
 
 
 # --- login / session / CSRF, once configured ---

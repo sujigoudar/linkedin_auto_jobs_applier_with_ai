@@ -255,11 +255,17 @@ async def health() -> dict:
     except Exception:  # noqa: BLE001 - health check must never raise
         db_ok = False
 
+    price_monitor_ok = _fresh(price_monitor.last_success_at, config.PRICE_MONITOR_INTERVAL_SECONDS)
+    reconciler_ok = _fresh(reconciler.last_success_at, config.RECONCILE_INTERVAL_SECONDS)
     return {
-        "status": "ok",
+        # OPS-01: `status` was hardcoded to "ok" regardless of the flags
+        # right next to it -- a fresh startup (before either worker's
+        # first successful pass) or a genuinely stuck worker still
+        # reported "ok" overall while its own detail flag said otherwise.
+        "status": "ok" if (db_ok and price_monitor_ok and reconciler_ok) else "degraded",
         "database_ok": db_ok,
-        "price_monitor_ok": _fresh(price_monitor.last_success_at, config.PRICE_MONITOR_INTERVAL_SECONDS),
-        "reconciler_ok": _fresh(reconciler.last_success_at, config.RECONCILE_INTERVAL_SECONDS),
+        "price_monitor_ok": price_monitor_ok,
+        "reconciler_ok": reconciler_ok,
     }
 
 

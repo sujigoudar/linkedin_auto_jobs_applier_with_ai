@@ -63,6 +63,11 @@ class PriceMonitor:
         self.last_success_at: datetime | None = None
 
     async def start(self) -> None:
+        # OPS-02: idempotent -- a second start() while one loop is already
+        # running is a no-op, same fix/reasoning as OrderReconciler.start()
+        # in app/reconciliation.py.
+        if self._task is not None and not self._task.done():
+            return
         self._task = asyncio.create_task(self._loop())
 
     async def stop(self) -> None:
@@ -77,8 +82,16 @@ class PriceMonitor:
         while True:
             await asyncio.sleep(self.interval_seconds)
             try:
-                await self.poll_once()
-                self.last_success_at = datetime.now(timezone.utc)
+                succeeded = await self.poll_once()
+                if succeeded > 0:
+                    # OPS-01: a pass that completed without crashing used to
+                    # update this unconditionally, even one where every
+                    # single position's price lookup failed (0 usable
+                    # reads). That let a fully-broken feed still report
+                    # "worker ok" via /health as long as the loop itself
+                    # kept iterating. Only a pass with at least one actually
+                    # usable read counts as a success now.
+                    self.last_success_at = datetime.now(timezone.utc)
             except asyncio.CancelledError:
                 # Structured concurrency: a cancellation is `stop()` asking this
                 # task to end, not a failed pass -- swallowing it here (like the

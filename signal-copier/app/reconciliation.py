@@ -59,6 +59,13 @@ class OrderReconciler:
         self.last_success_at: datetime | None = None
 
     async def start(self) -> None:
+        # OPS-02: a second start() call used to unconditionally spawn a
+        # SECOND background loop, orphaning the first (still running, no
+        # longer referenced, never cancelled by stop()) -- two concurrent
+        # reconciliation loops racing over the same store/brokers. Idempotent:
+        # a call while one is already running is a no-op.
+        if self._task is not None and not self._task.done():
+            return
         self._task = asyncio.create_task(self._loop())
 
     async def stop(self) -> None:
@@ -149,6 +156,42 @@ class OrderReconciler:
             # the clock anywhere else -- this periodic pass is what actually
             # enforces it.
             corrected += await self.lifecycle_manager.check_time_exits()
+            # OPS-03: a native stop (or any other broker-side execution
+            # this service never directly observed -- e.g. one that fired
+            # while the process was down) leaves the locally-tracked
+            # lifecycle believing more is still owned than the venue
+            # actually holds. Restarting and replaying the last persisted
+            # PENDING orders/exits (above) can't catch this, since no
+            # pending order was ever involved -- only asking the broker
+            # for its own current position can.
+            corrected += await self._reconcile_broker_positions()
+        return corrected
+
+    async def _reconcile_broker_positions(self) -> int:
+        corrected = 0
+        for lifecycle in list(self.lifecycle_manager.list_open_lifecycles()):
+            if lifecycle.pending_exit is not None and not lifecycle.pending_exit.remainder_resolved:
+                continue  # an exit's own outcome is already unresolved -- don't second-guess it with a raw read
+            broker = self.brokers.get(lifecycle.plan.broker)
+            if broker is None or not broker.has_position_readback_capability:
+                continue
+            account = DestinationAccount(account_id=lifecycle.plan.account_id, broker=lifecycle.plan.broker)
+            try:
+                broker_owned = await broker.get_broker_position(account, lifecycle.plan.symbol)
+            except Exception:  # noqa: BLE001 - one broker's read failure must not block the rest
+                logger.exception(
+                    "get_broker_position failed for account=%s symbol=%s",
+                    lifecycle.plan.account_id,
+                    lifecycle.plan.symbol,
+                )
+                continue
+            if broker_owned is None:
+                continue  # genuinely unknown -- never treated as confirming zero
+            deficit = lifecycle.confirmed_owned_quantity - broker_owned
+            if deficit <= 1e-9:
+                continue  # matches (or the venue reports MORE than tracked -- a different, unmodeled anomaly)
+            await self.lifecycle_manager.on_stop_filled(account, lifecycle.plan.symbol, filled_quantity=deficit)
+            corrected += 1
         return corrected
 
     async def _reconcile_pending_entries(self) -> int:

@@ -64,6 +64,15 @@ class _ControllablePendingBroker(PaperBroker):
     async def get_order_status(self, account, broker_order_id):
         return self._status_by_order_id.get(broker_order_id)
 
+    async def get_broker_position(self, account, symbol):
+        # This stub models the PENDING/confirm dance only -- it never
+        # populates PaperBroker's own position book, so the inherited
+        # get_broker_position would falsely report "flat" regardless of
+        # what's actually been confirmed. None = honestly unknown (see
+        # OPS-03's reconciliation gate in app/reconciliation.py, which
+        # never treats None as confirming zero).
+        return None
+
     def script_terminal_result(self, broker_order_id: str, *, status: OrderStatus, filled_quantity: float | None):
         self._status_by_order_id[broker_order_id] = OrderResult(
             account_id="doesn't matter", status=status, signal_id="", filled_quantity=filled_quantity, message="done"

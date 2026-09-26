@@ -26,7 +26,10 @@ def test_health_reports_not_ok_before_any_successful_cycle(client, monkeypatch):
     with client:
         response = client.get("/health")
     body = response.json()
-    assert body["status"] == "ok"  # process liveness is still fine
+    # OPS-01: `status` used to be hardcoded to "ok" regardless of the
+    # detail flags right next to it -- a fresh startup with neither
+    # worker having completed a pass yet must not report overall "ok".
+    assert body["status"] != "ok"
     assert body["price_monitor_ok"] is False
     assert body["reconciler_ok"] is False
 
@@ -41,6 +44,7 @@ def test_health_reports_ok_after_a_recent_successful_cycle(client, monkeypatch):
     body = response.json()
     assert body["price_monitor_ok"] is True
     assert body["reconciler_ok"] is True
+    assert body["status"] == "ok"
 
 
 def test_health_reports_not_ok_after_a_stale_cycle(client, monkeypatch):
