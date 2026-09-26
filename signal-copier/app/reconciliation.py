@@ -36,7 +36,7 @@ from datetime import datetime, timezone
 from app.brokers.base import BrokerAdapter
 from app.db import SignalStore
 from app.lifecycle.manager import PositionLifecycleManager
-from app.models import DestinationAccount, OrderStatus, Side
+from app.models import DestinationAccount, OrderResult, OrderStatus, Side
 
 logger = logging.getLogger(__name__)
 
@@ -133,8 +133,9 @@ class OrderReconciler:
                 lifecycle.pending_exit.broker_order_id if lifecycle.pending_exit is not None else None,
             )
             if not order_is_lifecycles_own_pending_order:
-                self._correct_position(order, result.status, result.filled_quantity)
-            self.store.update_order_status(order["id"], result)
+                self._correct_position(order, result.status, result.filled_quantity, result)
+            else:
+                self.store.update_order_status(order["id"], result)
             corrected += 1
 
         corrected += await self._reconcile_pending_exits()
@@ -241,12 +242,16 @@ class OrderReconciler:
 
         return resolved
 
-    def _correct_position(self, order: dict, new_status: OrderStatus, confirmed_quantity: float | None) -> None:
+    def _correct_position(
+        self, order: dict, new_status: OrderStatus, confirmed_quantity: float | None, result: OrderResult
+    ) -> None:
         if not order["symbol"] or not order["side"]:
+            self.store.update_order_status(order["id"], result)
             return  # nothing was optimistically recorded for this order to correct
 
         side = Side(order["side"])
         optimistic_quantity = order["filled_quantity"] or 0.0
+        signed_delta = 0.0
 
         if new_status == OrderStatus.REJECTED:
             # REJECTED also covers "canceled"/"expired" on adapters like Alpaca
@@ -259,12 +264,20 @@ class OrderReconciler:
             # "assume nothing filled," same as this branch's old behavior.
             actual_quantity = confirmed_quantity if confirmed_quantity is not None else 0.0
             delta = actual_quantity - optimistic_quantity
-            if delta:
-                signed_delta = delta if side == Side.BUY else -delta
-                self.store.adjust_position(order["account_id"], order["symbol"], signed_delta)
+            signed_delta = delta if side == Side.BUY else -delta
         elif new_status == OrderStatus.FILLED:
             actual_quantity = confirmed_quantity if confirmed_quantity is not None else optimistic_quantity
             delta = actual_quantity - optimistic_quantity
-            if delta:
-                signed_delta = delta if side == Side.BUY else -delta
-                self.store.adjust_position(order["account_id"], order["symbol"], signed_delta)
+            signed_delta = delta if side == Side.BUY else -delta
+
+        # The position correction and this order row's terminal status are
+        # committed together (EXE-03): applying `signed_delta` in one write
+        # and marking the row done in a separate, later write left a window
+        # where an interruption between them caused the NEXT reconciliation
+        # pass to recompute and re-apply the exact same correction against
+        # the still-stale `orders.filled_quantity` baseline (a 100-unit buy
+        # canceled with 30 filled was observed reaching -40, not the correct
+        # 30, after exactly this interruption).
+        self.store.correct_position_and_update_order_status(
+            order["id"], order["account_id"], order["symbol"], signed_delta, result
+        )

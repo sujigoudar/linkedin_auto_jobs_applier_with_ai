@@ -286,18 +286,51 @@ class SignalStore:
 
     def update_order_status(self, order_row_id: int, result: OrderResult) -> None:
         with self._connect() as conn:
-            conn.execute(
-                """UPDATE orders SET status = ?, filled_quantity = ?, filled_price = ?,
-                          message = ?, executed_at = ? WHERE id = ?""",
-                (
-                    result.status.value,
-                    result.filled_quantity,
-                    result.filled_price,
-                    result.message,
-                    result.executed_at.isoformat(),
-                    order_row_id,
-                ),
-            )
+            self._update_order_status_locked(conn, order_row_id, result)
+
+    def _update_order_status_locked(self, conn: sqlite3.Connection, order_row_id: int, result: OrderResult) -> None:
+        conn.execute(
+            """UPDATE orders SET status = ?, filled_quantity = ?, filled_price = ?,
+                      message = ?, executed_at = ? WHERE id = ?""",
+            (
+                result.status.value,
+                result.filled_quantity,
+                result.filled_price,
+                result.message,
+                result.executed_at.isoformat(),
+                order_row_id,
+            ),
+        )
+
+    def correct_position_and_update_order_status(
+        self, order_row_id: int, account_id: str, symbol: str, signed_delta: float, result: OrderResult
+    ) -> float:
+        """Apply a reconciliation correction to `positions` and mark this
+        order row's terminal status in ONE local transaction (EXE-03: these
+        were two separate commits -- an interruption between them left the
+        order row still `status='pending'`, so the next reconciliation pass
+        re-fetched the same broker answer, recomputed the same correction
+        from the same stale `orders.filled_quantity` baseline, and applied
+        it a SECOND time on top of the first). `signed_delta` may be 0.0
+        (no position change, e.g. a straight terminal-status confirmation)
+        -- the order row is still updated in the same call so it's never
+        re-processed."""
+        with self._connect() as conn:
+            current = conn.execute(
+                "SELECT net_quantity FROM positions WHERE account_id = ? AND symbol = ?",
+                (account_id, symbol),
+            ).fetchone()
+            new_quantity = (current[0] if current else 0.0) + signed_delta
+            if signed_delta:
+                conn.execute(
+                    """INSERT INTO positions (account_id, symbol, net_quantity, updated_at)
+                       VALUES (?, ?, ?, ?)
+                       ON CONFLICT (account_id, symbol)
+                       DO UPDATE SET net_quantity = excluded.net_quantity, updated_at = excluded.updated_at""",
+                    (account_id, symbol, new_quantity, datetime.now(timezone.utc).isoformat()),
+                )
+            self._update_order_status_locked(conn, order_row_id, result)
+        return new_quantity
 
     def get_position(self, account_id: str, symbol: str) -> float:
         with self._connect() as conn:
