@@ -424,13 +424,24 @@ class SignalCopierEngine:
 
         self.lifecycle_manager.start_plan(plan)
 
-        # Entry order only — stop_loss/take_profit are managed by the lifecycle
-        # manager from here on, not embedded in the broker order.
+        # Entry order only — stop_loss/take_profit are deliberately DROPPED
+        # here: they're managed by the lifecycle manager from here on (its
+        # logical targets/trailing/protective-stop machinery), not embedded
+        # in the broker order, where a native bracket would fight the
+        # lifecycle manager's own protection instead of deferring to it.
+        # RISK-03: price/quantity/analyst were ALSO being dropped, with no
+        # such reason -- some broker adapters read signal.price directly
+        # (PaperBroker's simulated fill price, NinjaTraderBroker's limit
+        # price), so a managed-lifecycle entry on either always executed at
+        # price 0 regardless of what the source actually specified.
         entry_signal = Signal(
             source=signal.source,
             symbol=signal.symbol,
             side=signal.side,
             asset_class=signal.asset_class,
+            analyst=signal.analyst,
+            quantity=signal.quantity,
+            price=signal.price,
             id=signal.id,
             received_at=signal.received_at,
             raw=signal.raw,
