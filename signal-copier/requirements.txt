@@ -10,6 +10,7 @@ structlog>=24.0          # correlated structured logs for the core financial pat
 httpx>=0.27      # used by SignalStackBroker, AlpacaBroker, NinjaTraderBroker (plain REST, no SDK)
 python-multipart>=0.0.9  # required by FastAPI's Form() parsing, used by the /sms/twilio route
 slowapi>=0.1.9           # C06: per-IP rate limiting on the webhook/SMS ingress routes (app/rate_limit.py)
+aiolimiter>=1.1          # C07: outbound quota limiter for app/context/* (SEC EDGAR, FRED, Frankfurter)
 
 # Optional, needed only for adapters you actually enable:
 # ccxt>=4.3                    # crypto exchange execution (CCXTBroker)

@@ -14,10 +14,17 @@ default.
 from __future__ import annotations
 
 import httpx
+from aiolimiter import AsyncLimiter
 
 from app import config
 
 _OBSERVATIONS_URL = "https://api.stlouisfed.org/fred/series/observations"
+
+# C07 (bounded): FRED documents a 120 requests/minute ceiling per API key
+# (https://fred.stlouisfed.org/docs/api/fred/). Self-imposes half that so
+# a bug or a misconfigured dashboard polling loop in THIS process leaves
+# real headroom rather than skating the documented limit.
+_rate_limiter = AsyncLimiter(60, 60)
 
 
 class NotConfigured(RuntimeError):
@@ -54,6 +61,7 @@ async def get_series_observations(
         params["realtime_end"] = realtime_end
 
     async with httpx.AsyncClient(timeout=15.0) as client:
-        response = await client.get(_OBSERVATIONS_URL, params=params)
+        async with _rate_limiter:
+            response = await client.get(_OBSERVATIONS_URL, params=params)
         response.raise_for_status()
         return response.json()

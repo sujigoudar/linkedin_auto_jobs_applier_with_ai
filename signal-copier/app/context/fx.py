@@ -10,14 +10,22 @@ for that. Use this for reporting/context only.
 from __future__ import annotations
 
 import httpx
+from aiolimiter import AsyncLimiter
 
 _BASE_URL = "https://api.frankfurter.dev/v1"
+
+# C07 (bounded): Frankfurter documents no rate limit at all (see this
+# module's own docstring above), but a free, keyless public API still
+# deserves a self-imposed courtesy ceiling rather than an unbounded
+# call rate from a bug or a misconfigured polling loop in this process.
+_rate_limiter = AsyncLimiter(10, 60)
 
 
 async def get_latest_rate(base: str, quote: str) -> dict:
     """Latest daily ECB reference rate for one currency pair."""
     async with httpx.AsyncClient(timeout=15.0) as client:
-        response = await client.get(f"{_BASE_URL}/latest", params={"base": base.upper(), "symbols": quote.upper()})
+        async with _rate_limiter:
+            response = await client.get(f"{_BASE_URL}/latest", params={"base": base.upper(), "symbols": quote.upper()})
         response.raise_for_status()
         return response.json()
 
@@ -28,6 +36,7 @@ async def get_historical_rate(date: str, base: str, quote: str) -> dict:
     rate if the exact date wasn't a trading day, per its own documented
     behavior."""
     async with httpx.AsyncClient(timeout=15.0) as client:
-        response = await client.get(f"{_BASE_URL}/{date}", params={"base": base.upper(), "symbols": quote.upper()})
+        async with _rate_limiter:
+            response = await client.get(f"{_BASE_URL}/{date}", params={"base": base.upper(), "symbols": quote.upper()})
         response.raise_for_status()
         return response.json()

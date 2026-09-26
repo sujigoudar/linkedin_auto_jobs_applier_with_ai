@@ -25,6 +25,7 @@ from __future__ import annotations
 import asyncio
 
 import httpx
+from aiolimiter import AsyncLimiter
 
 from app import config
 
@@ -34,6 +35,14 @@ _COMPANY_FACTS_URL = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik:010d}.j
 
 _ticker_to_cik_cache: dict[str, int] | None = None
 _cache_lock = asyncio.Lock()
+
+# C07 (bounded): SEC's fair-access policy documents a 10 requests/second
+# ceiling per source (https://www.sec.gov/os/webmaster-faq#developers) --
+# this self-imposes a lower one (5/sec) so a bug or a misconfigured
+# dashboard polling loop in THIS process can't get this service's IP
+# blocked by SEC for exceeding their stated limit. This only throttles
+# calls from this one process; it isn't SEC-side quota enforcement.
+_rate_limiter = AsyncLimiter(5, 1)
 
 
 class NotConfigured(RuntimeError):
@@ -55,7 +64,8 @@ async def _load_ticker_map(client: httpx.AsyncClient) -> dict[str, int]:
     async with _cache_lock:
         if _ticker_to_cik_cache is not None:
             return _ticker_to_cik_cache
-        response = await client.get(_TICKERS_URL, headers=_headers())
+        async with _rate_limiter:
+            response = await client.get(_TICKERS_URL, headers=_headers())
         response.raise_for_status()
         raw = response.json()  # {"0": {"cik_str": 320193, "ticker": "AAPL", "title": "Apple Inc."}, ...}
         _ticker_to_cik_cache = {row["ticker"].upper(): int(row["cik_str"]) for row in raw.values()}
@@ -78,7 +88,8 @@ async def get_company_submissions(ticker: str) -> dict | None:
         cik = (await _load_ticker_map(client)).get(ticker.upper())
         if cik is None:
             return None
-        response = await client.get(_SUBMISSIONS_URL.format(cik=cik), headers=_headers())
+        async with _rate_limiter:
+            response = await client.get(_SUBMISSIONS_URL.format(cik=cik), headers=_headers())
         response.raise_for_status()
         return response.json()
 
@@ -92,7 +103,8 @@ async def get_company_facts(ticker: str) -> dict | None:
         cik = (await _load_ticker_map(client)).get(ticker.upper())
         if cik is None:
             return None
-        response = await client.get(_COMPANY_FACTS_URL.format(cik=cik), headers=_headers())
+        async with _rate_limiter:
+            response = await client.get(_COMPANY_FACTS_URL.format(cik=cik), headers=_headers())
         if response.status_code == 404:
             return None
         response.raise_for_status()

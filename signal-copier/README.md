@@ -907,6 +907,15 @@ stop, and nothing here drives a trading decision automatically.
   reference FX. Reference only, not an executable bid/ask and not the
   price basis any actual FX broker adapter uses for a real order.
 
+**C07 (bounded):** each of these three modules self-imposes an outbound
+call-rate ceiling (`aiolimiter`) — 5/sec for SEC EDGAR (under their
+documented 10/sec fair-access policy), 60/min for FRED (under their
+documented 120/min), 10/min for Frankfurter (which documents no limit at
+all, but still gets a courtesy ceiling). This throttles calls from THIS
+process only, protecting against a bug or a misconfigured polling loop
+getting this service's IP rate-limited or blocked by the upstream
+provider — it isn't the provider's own quota enforcement.
+
 These three were chosen out of a much larger reviewed candidate list
 (Alpaca/Tradier/IBKR market data, Alpha Vantage, Polygon, Twelve Data,
 FMP, Tiingo, Finnhub, EODHD, Marketstack, FINRA, Nasdaq Trader halts,
