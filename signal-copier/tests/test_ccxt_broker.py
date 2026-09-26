@@ -14,9 +14,10 @@ def broker(monkeypatch):
 
 
 class _FakeExchange:
-    def __init__(self):
+    def __init__(self, has: dict | None = None):
         self.create_order_calls = []
         self.closed = False
+        self.has = has or {}
 
     async def create_order(self, **kwargs):
         self.create_order_calls.append(kwargs)
@@ -27,8 +28,14 @@ class _FakeExchange:
 
 
 @pytest.mark.asyncio
-async def test_stop_loss_and_take_profit_passed_as_unified_params(broker):
-    fake = _FakeExchange()
+async def test_stop_loss_and_take_profit_passed_as_unified_params_when_exchange_declares_support(broker):
+    """ADP-02: `stopLossPrice`/`takeProfitPrice` are ccxt's UNIFIED param
+    names, accepted syntactically by every exchange class whether or not
+    the venue actually honors them as a genuine attached bracket -- this
+    exchange declares real support via `exchange.has`, so the order goes
+    through with the (also unified, but the actual attached-bracket-named)
+    stopLoss/takeProfit params."""
+    fake = _FakeExchange(has={"createOrderWithTakeProfitAndStopLoss": True})
     broker._exchanges["acct1"] = fake
     account = DestinationAccount(account_id="acct1", broker="ccxt")
 
@@ -39,7 +46,27 @@ async def test_stop_loss_and_take_profit_passed_as_unified_params(broker):
         symbol="BTC/USDT",
     )
 
-    assert fake.create_order_calls[0]["params"] == {"stopLossPrice": 63000.0, "takeProfitPrice": 70000.0}
+    assert fake.create_order_calls[0]["params"] == {"stopLoss": 63000.0, "takeProfit": 70000.0}
+
+
+@pytest.mark.asyncio
+async def test_stop_loss_and_take_profit_refused_when_exchange_does_not_declare_support(broker):
+    """The audit's own reproduced gap: an exchange with no verified
+    attached-bracket capability must not receive unqualified flat trigger
+    parameters -- refuse rather than guess."""
+    fake = _FakeExchange()  # no .has declaration at all
+    broker._exchanges["acct1"] = fake
+    account = DestinationAccount(account_id="acct1", broker="ccxt")
+
+    result = await broker.place_order(
+        Signal(source="test", symbol="BTCUSDT", side=Side.BUY, stop_loss=63000.0, take_profit=70000.0),
+        account,
+        quantity=1.0,
+        symbol="BTC/USDT",
+    )
+
+    assert result.status == OrderStatus.REJECTED
+    assert fake.create_order_calls == []
 
 
 @pytest.mark.asyncio

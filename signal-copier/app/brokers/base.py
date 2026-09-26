@@ -161,9 +161,19 @@ class BrokerAdapter(abc.ABC):
 
     def can_protect_a_managed_position(self) -> bool:
         """Whether `PositionLifecycleManager` can actually keep a position
-        protected on this broker: either the entry itself brackets
-        atomically (`supports_native_bracket`), or a real standalone
-        protective stop can be placed after the fact. A broker with
-        neither must not be admitted into managed-lifecycle live trading —
-        see app/lifecycle/manager.py's `validate_plan`."""
-        return self.supports_native_bracket or self.has_protective_stop_capability
+        protected on this broker.
+
+        ADP-06: `supports_native_bracket` alone used to count here, but it
+        can't -- a managed-lifecycle entry deliberately STRIPS stop_loss/
+        take_profit before ever calling `place_order` (see
+        app/engine.py's `_handle_managed_entry`: protection is meant to be
+        owned entirely by the lifecycle manager's own logical
+        targets/trailing/stop machinery, never embedded in the broker
+        order). A broker whose only claimed capability is an atomic
+        entry-time bracket has no way to protect a position through THIS
+        path at all, regardless of what `supports_native_bracket` says --
+        only a real, verified standalone `place_protective_stop`
+        (submitted after the fact, once the actual fill is known) can. A
+        broker with neither must not be admitted into managed-lifecycle
+        live trading — see app/lifecycle/manager.py's `validate_plan`."""
+        return self.has_protective_stop_capability

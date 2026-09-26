@@ -104,6 +104,22 @@ class CCXTBroker(BrokerAdapter):
         self._exchanges[account.account_id] = exchange
         return exchange
 
+    @staticmethod
+    def _exchange_declares_attached_bracket_support(exchange) -> bool:
+        """ADP-02: `stopLossPrice`/`takeProfitPrice` are ccxt's UNIFIED
+        param names -- every ccxt exchange class accepts them
+        syntactically, whether or not the underlying venue actually
+        creates a genuine attached bracket order from them (some silently
+        create a plain standalone trigger order instead, or reject the
+        combination outright). `exchange.has` is ccxt's own long-standing,
+        per-exchange capability declaration -- checking it here is the
+        difference between "ccxt has a name for this" and "this specific
+        exchange says it actually supports it"."""
+        has = getattr(exchange, "has", {}) or {}
+        return bool(has.get("createOrderWithTakeProfitAndStopLoss")) or (
+            bool(has.get("createStopLossOrder")) and bool(has.get("createTakeProfitOrder"))
+        )
+
     async def place_order(
         self, signal: Signal, account: DestinationAccount, quantity: float, symbol: str
     ) -> OrderResult:
@@ -118,10 +134,22 @@ class CCXTBroker(BrokerAdapter):
             )
 
         params = {}
-        if signal.stop_loss:
-            params["stopLossPrice"] = signal.stop_loss
-        if signal.take_profit:
-            params["takeProfitPrice"] = signal.take_profit
+        if signal.stop_loss or signal.take_profit:
+            if not self._exchange_declares_attached_bracket_support(exchange):
+                return OrderResult(
+                    account_id=account.account_id,
+                    status=OrderStatus.REJECTED,
+                    signal_id=signal.id,
+                    message=(
+                        f"exchange '{self.exchange_id}' does not declare verified support for an "
+                        "attached stop/target bracket (exchange.has) -- refusing to send unqualified "
+                        "flat trigger parameters that may not create the intended attached order"
+                    ),
+                )
+            if signal.stop_loss:
+                params["stopLoss"] = signal.stop_loss
+            if signal.take_profit:
+                params["takeProfit"] = signal.take_profit
 
         try:
             order = await exchange.create_order(
