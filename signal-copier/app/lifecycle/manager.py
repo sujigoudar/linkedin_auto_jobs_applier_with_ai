@@ -261,6 +261,23 @@ class PositionLifecycleManager:
                 f"resolved stop-loss ({plan.initial_stop!r}) is not a valid positive price — "
                 "refusing to enter unprotected"
             )
+        if plan.max_risk is not None:
+            # RISK-02: `max_risk` is a per-trade loss budget the caller
+            # intends to be enforced, but nothing in this codebase actually
+            # consumes it -- there is no entry/reference price on
+            # PositionPlan to compute (entry - stop) * quantity against,
+            # no reservation ledger, no account/portfolio-level cap. A plan
+            # that names a risk bound but has no way to enforce it must not
+            # be silently admitted as if that bound were honored -- that
+            # would let a caller believe their loss is capped at `max_risk`
+            # when it is not bounded at all. Refuse outright, same posture
+            # as a missing stop, rather than accept it and ignore the field.
+            return (
+                f"max_risk={plan.max_risk!r} was requested but this engine has no risk-allocator "
+                "implementation to enforce it (no entry/reference price, no reservation ledger, no "
+                "account/portfolio cap) — refusing to admit a plan whose stated risk bound would be "
+                "silently ignored rather than honored"
+            )
         broker = self.brokers.get(plan.broker)
         if broker is None:
             return f"no broker adapter registered for '{plan.broker}' — refusing to enter"
