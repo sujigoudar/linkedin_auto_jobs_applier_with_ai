@@ -221,6 +221,18 @@ class PositionLifecycleManager:
                 "no stop-loss resolved for this entry (no provider stop and no "
                 "released fallback) — refusing to enter unprotected"
             )
+        if (
+            isinstance(plan.initial_stop, bool)
+            or not math.isfinite(plan.initial_stop)
+            or plan.initial_stop <= 0
+        ):
+            # RISK-01: a resolved stop of 0, negative, NaN/inf, or a stray
+            # boolean is not a real protective level -- it must not be
+            # treated as "a stop is set" just because it's not None.
+            return (
+                f"resolved stop-loss ({plan.initial_stop!r}) is not a valid positive price — "
+                "refusing to enter unprotected"
+            )
         broker = self.brokers.get(plan.broker)
         if broker is None:
             return f"no broker adapter registered for '{plan.broker}' — refusing to enter"

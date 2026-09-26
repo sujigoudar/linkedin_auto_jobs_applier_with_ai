@@ -373,7 +373,14 @@ async def receive_webhook(
     if x_webhook_secret != config.WEBHOOK_SHARED_SECRET:
         raise HTTPException(status_code=401, detail="invalid webhook secret")
 
-    payload = await request.json()
+    try:
+        payload = await request.json()
+    except ValueError as exc:
+        # RISK-01: a malformed (non-JSON, truncated, wrong-content-type) body
+        # must 400, not fall through to an unhandled exception and 500.
+        raise HTTPException(status_code=400, detail=f"invalid JSON body: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="request body must be a JSON object")
     try:
         signal = webhook_source.parse(payload, source_override=source_name)
     except SignalValidationError as exc:
