@@ -512,11 +512,23 @@ async def close_single_position(
     replay the original result instead of submitting a second close — this
     is on top of, not instead of, the engine's own per-(account, symbol)
     lock, which already prevents two genuinely concurrent requests from
-    both executing."""
+    both executing.
+
+    EXE-11: the key is scoped to THIS action and target (close of this
+    exact account/symbol) — reusing the same key for a different close, or
+    for `POST /accounts/.../flatten`, is a changed intent under the same
+    key and gets a 409 rather than silently replaying the unrelated first
+    response."""
+    fingerprint = f"close:{account_id}:{symbol}"
     if idempotency_key:
-        cached = store.get_idempotent_response(idempotency_key)
+        cached = store.get_idempotent_record(idempotency_key)
         if cached is not None:
-            return cached
+            if cached["fingerprint"] != fingerprint:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Idempotency-Key was already used for a different action/target",
+                )
+            return cached["response"]
 
     account = routing_config.accounts.get(account_id)
     if account is None:
@@ -531,7 +543,7 @@ async def close_single_position(
         "message": result.message,
     }
     if idempotency_key:
-        store.save_idempotent_response(idempotency_key, response)
+        store.save_idempotent_response(idempotency_key, response, fingerprint=fingerprint)
     return response
 
 
@@ -553,11 +565,20 @@ async def flatten_account(
     and doing it sequentially keeps `SignalStore`'s recorded order simple
     to read. One symbol failing to close does not stop the rest — the
     response reports each symbol's own outcome. See the per-position
-    endpoint's docstring for what `Idempotency-Key` does."""
+    endpoint's docstring for what `Idempotency-Key` does and how EXE-11
+    scopes it to this action/target -- reusing a key from a `close` call
+    (or a flatten of a different account) here is a changed intent and
+    gets a 409, not a silent replay of the unrelated first response."""
+    fingerprint = f"flatten:{account_id}"
     if idempotency_key:
-        cached = store.get_idempotent_response(idempotency_key)
+        cached = store.get_idempotent_record(idempotency_key)
         if cached is not None:
-            return cached
+            if cached["fingerprint"] != fingerprint:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Idempotency-Key was already used for a different action/target",
+                )
+            return cached["response"]
 
     account = routing_config.accounts.get(account_id)
     if account is None:
@@ -577,7 +598,7 @@ async def flatten_account(
         )
     response = {"account_id": account_id, "closed": closed}
     if idempotency_key:
-        store.save_idempotent_response(idempotency_key, response)
+        store.save_idempotent_response(idempotency_key, response, fingerprint=fingerprint)
     return response
 
 

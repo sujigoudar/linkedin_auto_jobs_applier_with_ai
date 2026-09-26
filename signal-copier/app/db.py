@@ -138,7 +138,8 @@ CREATE TABLE IF NOT EXISTS sessions (
 CREATE TABLE IF NOT EXISTS idempotency_records (
     idempotency_key TEXT PRIMARY KEY,
     response_json TEXT NOT NULL,
-    created_at TEXT NOT NULL
+    created_at TEXT NOT NULL,
+    fingerprint TEXT
 );
 
 -- Cross-process/cross-instance mutual exclusion for a plain-account close
@@ -174,6 +175,7 @@ _COLUMN_MIGRATIONS = [
     ("signals", "take_profit", "REAL"),
     ("signals", "analyst", "TEXT"),
     ("sessions", "credential_epoch", "TEXT"),
+    ("idempotency_records", "fingerprint", "TEXT"),
 ]
 
 
@@ -881,10 +883,26 @@ class SignalStore:
             ).fetchone()
         return json.loads(row[0]) if row else None
 
-    def save_idempotent_response(self, idempotency_key: str, response: dict) -> None:
+    def get_idempotent_record(self, idempotency_key: str) -> dict | None:
+        """Like `get_idempotent_response`, but also returns the fingerprint
+        the caller stored alongside it (EXE-11): the same idempotency key
+        reused for a DIFFERENT action/target must not silently replay the
+        first action's response as if it were this one's -- the caller
+        compares this record's `fingerprint` against its own before
+        deciding whether to replay or refuse the reuse."""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT response_json, fingerprint FROM idempotency_records WHERE idempotency_key = ?",
+                (idempotency_key,),
+            ).fetchone()
+        if row is None:
+            return None
+        return {"response": json.loads(row[0]), "fingerprint": row[1]}
+
+    def save_idempotent_response(self, idempotency_key: str, response: dict, fingerprint: str = "") -> None:
         with self._connect() as conn:
             conn.execute(
-                """INSERT OR IGNORE INTO idempotency_records (idempotency_key, response_json, created_at)
-                   VALUES (?, ?, ?)""",
-                (idempotency_key, json.dumps(response), datetime.now(timezone.utc).isoformat()),
+                """INSERT OR IGNORE INTO idempotency_records (idempotency_key, response_json, created_at, fingerprint)
+                   VALUES (?, ?, ?, ?)""",
+                (idempotency_key, json.dumps(response), datetime.now(timezone.utc).isoformat(), fingerprint),
             )
