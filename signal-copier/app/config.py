@@ -36,6 +36,14 @@ SESSION_TTL_SECONDS = float(os.getenv("SESSION_TTL_SECONDS", str(60 * 60 * 12)))
 
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 
+# Standby mode (see deploy/RUNBOOK.md): when true, this process serves only
+# GET/HEAD/OPTIONS -- no signal ingestion, no background reconciliation/price
+# polling, no financial command can reach the engine, regardless of what any
+# individual route's own logic does. A promotion is a deliberate, separate
+# restart with this unset (or false) AND real broker credentials configured --
+# never a config flip on an already-running process.
+STANDBY_MODE = os.getenv("STANDBY_MODE", "false").strip().lower() in ("1", "true", "yes")
+
 # Optional pull-based sources: each only starts if its required env vars are
 # all set (see .env.example). Push-based sources (webhook, SMS) need no
 # startup config beyond their own route.

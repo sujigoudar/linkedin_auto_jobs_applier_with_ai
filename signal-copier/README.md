@@ -1032,6 +1032,20 @@ Verified: the image builds and runs, `/health` responds, and a webhook
 signal correctly routes through to the paper broker and updates
 `/positions` inside the running container.
 
+## Multi-site deployment (guarded active/passive, draft)
+
+`deploy/` has a design draft and IaC for running this as one active site
+plus one inactive warm standby — **none of it has been applied against a
+real cloud account**; it's reviewable Terraform/cloud-init/systemd/Worker
+source, not an executed deployment. See `deploy/README.md` for the
+recommended topology (existing VPS active, Oracle Always Free A1 standby,
+Cloudflare for independent monitoring + off-host backup) and
+`deploy/RUNBOOK.md` for the actual promotion procedure — a human-executed
+checklist, not automatic failover. `STANDBY_MODE=true` (see
+`app/config.py`) is the real, tested mechanism a standby uses to refuse
+every financial command independent of any single route's own auth logic
+(`tests/test_standby_mode.py`).
+
 ## Security notes for when this goes live
 
 - **Owner authentication is mandatory, not optional, once you set `OWNER_PASSWORD`

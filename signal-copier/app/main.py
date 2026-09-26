@@ -15,7 +15,7 @@ from pathlib import Path
 
 import httpx
 from fastapi import Cookie, Depends, FastAPI, Form, Header, HTTPException, Query, Request, Response
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
 from app import config
@@ -146,6 +146,17 @@ if config.RITHMIC_USER and config.RITHMIC_SYSTEM_NAME and config.RITHMIC_GATEWAY
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    if config.STANDBY_MODE:
+        # A standby serves the read-only status/health surface only -- it must
+        # not ingest signals, poll broker order status, or resize/replace a
+        # protective stop, all of which are things only the single active
+        # writer may do (see deploy/RUNBOOK.md). This is enforced here, not
+        # merely by omitting broker credentials, so a misconfigured standby
+        # can't silently become a second writer.
+        logger.warning("STANDBY_MODE is set -- not starting signal ingestion, reconciliation, or price polling")
+        yield
+        return
+
     await webhook_source.start()
     for source in _background_sources:
         try:
@@ -167,6 +178,23 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Trading Signal Copier", lifespan=lifespan)
+
+
+@app.middleware("http")
+async def _standby_read_only_gate(request: Request, call_next):
+    """Independent of any route's own logic: in STANDBY_MODE, refuse every
+    request that isn't a plain read (GET/HEAD/OPTIONS) with 503, before it
+    reaches any handler. A release guard that denies effects, not a
+    convention every endpoint has to remember to honor -- see
+    deploy/RUNBOOK.md on why a restored/copied config flag must never be
+    what makes a standby a writer."""
+    if config.STANDBY_MODE and request.method not in ("GET", "HEAD", "OPTIONS"):
+        return JSONResponse(
+            status_code=503,
+            content={"detail": "standby mode: read-only, no financial commands accepted"},
+        )
+    return await call_next(request)
+
 
 require_owner = RequireOwner(lambda: store)
 require_owner_read = RequireOwner(lambda: store, require_csrf=False)  # GET-only routes: session, no CSRF needed

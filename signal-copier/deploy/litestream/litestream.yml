@@ -1,0 +1,33 @@
+# Litestream replicates the active site's SQLite WAL to one private R2
+# bucket. This is asynchronous DR (a measured RPO, not zero) -- see
+# deploy/RUNBOOK.md and docs review notes: it is NOT active-active SQLite,
+# and a "successful" replication cadence claim must be measured against
+# R2's Class A operation allowance (10 GB-month / 1M Class A ops on
+# Standard), not assumed free. Test the restore path in a disposable
+# directory before trusting this for anything.
+#
+# Secrets (LITESTREAM_ACCESS_KEY_ID / LITESTREAM_SECRET_ACCESS_KEY) come
+# from environment variables (see litestream.env.example) -- never commit
+# real R2 credentials here.
+
+dbs:
+  - path: /var/lib/signal-copier/signal_copier.db
+    replicas:
+      - type: s3
+        endpoint: ${LITESTREAM_R2_ENDPOINT}   # e.g. https://<account_id>.r2.cloudflarestorage.com
+        bucket: signal-copier-backup
+        path: primary
+        region: auto
+        access-key-id: ${LITESTREAM_ACCESS_KEY_ID}
+        secret-access-key: ${LITESTREAM_SECRET_ACCESS_KEY}
+        # Sync interval -- see deploy/README.md's cost note: a naive 1s
+        # interval sustained for a month can exceed R2's free Class A
+        # operation allowance on its own before snapshots/multipart/list
+        # calls. Start conservative and measure actual PUT volume via R2's
+        # own usage dashboard before tightening this.
+        sync-interval: 10s
+        retention: 72h
+        # Client-side encryption is NOT provided by Litestream v0.5+ (the
+        # old built-in Age encryption was removed). R2's provider-side
+        # encryption-at-rest is not the same as end-to-end/client
+        # encryption -- see deploy/RUNBOOK.md before claiming either.
