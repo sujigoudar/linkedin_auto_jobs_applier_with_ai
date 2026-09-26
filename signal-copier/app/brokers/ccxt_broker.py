@@ -74,6 +74,17 @@ class CCXTBroker(BrokerAdapter):
         self._ccxt = ccxt
         self.exchange_id = exchange_id
         self._exchanges: dict[str, "ccxt.Exchange"] = {}
+        # ADP-03: many exchanges' cancel_order REQUIRES a symbol (ccxt's own
+        # signature is cancel_order(id, symbol=None, params={}) precisely
+        # because it isn't optional everywhere) -- calling it with none at
+        # all works only on exchanges lenient enough not to need it.
+        # BrokerAdapter.cancel_order's interface doesn't carry a symbol
+        # (only account + broker_order_id), so this remembers which symbol
+        # each order id was placed/submitted for, in-process, since
+        # place_order/place_protective_stop both already know it at
+        # submission time. In-memory only -- lost on restart, same
+        # documented limitation as this file's other per-process state.
+        self._order_symbols: dict[str, str] = {}
 
     def _exchange_for(self, account: DestinationAccount):
         if account.account_id in self._exchanges:
@@ -151,11 +162,13 @@ class CCXTBroker(BrokerAdapter):
             # what gets applied, not a guess.
             new_status = OrderStatus.PENDING
 
+        order_id = str(order.get("id"))
+        self._order_symbols[order_id] = symbol
         return OrderResult(
             account_id=account.account_id,
             status=new_status,
             signal_id=signal.id,
-            broker_order_id=str(order.get("id")),
+            broker_order_id=order_id,
             filled_quantity=filled,
             filled_price=order.get("average") or order.get("price"),
             message=f"ccxt order status={ccxt_status!r}",
@@ -176,18 +189,24 @@ class CCXTBroker(BrokerAdapter):
         except Exception as exc:  # noqa: BLE001 - includes ccxt's NotSupported for this exchange
             return OrderResult(account_id=account.account_id, status=OrderStatus.ERROR, signal_id="", message=str(exc))
 
+        order_id = str(order.get("id"))
+        self._order_symbols[order_id] = symbol
         return OrderResult(
             account_id=account.account_id,
             status=OrderStatus.PENDING,
             signal_id="",
-            broker_order_id=str(order.get("id")),
+            broker_order_id=order_id,
             message="ccxt stop resting",
         )
 
     async def cancel_order(self, account: DestinationAccount, broker_order_id: str) -> bool:
         exchange = self._exchange_for(account)
+        symbol = self._order_symbols.get(broker_order_id)
         try:
-            await exchange.cancel_order(broker_order_id)
+            if symbol is not None:
+                await exchange.cancel_order(broker_order_id, symbol)
+            else:
+                await exchange.cancel_order(broker_order_id)
         except Exception:  # noqa: BLE001 - already filled/gone, or genuinely unsupported — either way, not a confirmed cancel
             return False
         return True
