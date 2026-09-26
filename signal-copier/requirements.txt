@@ -14,7 +14,7 @@ python-multipart>=0.0.9  # required by FastAPI's Form() parsing, used by the /sm
 # twilio>=9.0                  # SMS source (request signature validation)
 # tweepy>=4.14                 # Twitter/X source
 # MetaTrader5>=5.0.45          # MT5Broker, same-host Windows only
-# ib_insync>=0.9.86            # IBKR broker
+# ib_async>=2.0                # IBKR broker (ib-api-reloaded/ib_async -- ib_insync's maintained community fork; ib_insync itself is archived upstream)
 # metaapi-cloud-sdk>=27.0      # MetaApiSource / MetaApiBroker, MT4/MT5 via metaapi.cloud (github.com/metaapi/metaapi-python-sdk)
 # async_rithmic>=1.2           # RithmicSource / RithmicBroker (github.com/rundef/async_rithmic) — also needs licensed Rithmic credentials
 # NinjaTraderBroker needs no extra Python package (plain httpx), but does need

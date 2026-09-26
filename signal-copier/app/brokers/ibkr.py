@@ -1,7 +1,17 @@
-"""Interactive Brokers execution destination, via ib_insync.
+"""Interactive Brokers execution destination, via ib_async.
+
+C08 (component adoption plan): this used to depend on ib_insync, whose
+upstream repository is archived (erdewit/ib_insync, last real release
+2023) -- ib_async (ib-api-reloaded/ib_async) is the maintained community
+successor, a fork that kept the same public API (IB, Stock, MarketOrder,
+LimitOrder, StopOrder, Trade, client.getReqId -- every name this module
+uses), so this migration is a rename, not a rewrite. It is a community
+fork, not IBKR-official software, and doesn't grant or verify account
+permissions/entitlements on its own -- those remain whatever your actual
+Gateway/TWS login and account are configured for.
 
 Setup:
-    pip install ib_insync
+    pip install ib_async
     1. Run IB Gateway or Trader Workstation with the API enabled
        (Configuration -> API -> Settings -> Enable ActiveX and Socket
        Clients), on a host/port this service can reach.
@@ -22,7 +32,7 @@ A Signal carrying `stop_loss` and/or `take_profit` is sent as a bracket:
 a market parent order (`transmit=False`) plus one or two child exit orders
 (`parentId` pointing at the parent, only the last one `transmit=True` so
 the whole group submits together) — the same parent/child/transmit
-pattern `IB.bracketOrder()` uses (verified against ib_insync's source),
+pattern `IB.bracketOrder()` uses (verified against ib_async's source),
 just with a market rather than limit parent since this service only
 places market entries.
 """
@@ -38,26 +48,26 @@ class IBKRBroker(BrokerAdapter):
     # app-side workaround) — see module docstring and _build_bracket below.
     supports_native_bracket = True
     # This module's own docstring: "Only equities are wired up (a plain
-    # market order on a STK contract)" — ib_insync/IBKR itself supports far
+    # market order on a STK contract)" — ib_async/IBKR itself supports far
     # more, but _contract_for here doesn't. See BrokerAdapter.supported_asset_classes.
     supported_asset_classes = frozenset({AssetClass.EQUITY})
 
     def __init__(self, host: str = "127.0.0.1", port: int = 7497, client_id: int = 1):
         try:
-            import ib_insync
+            import ib_async
         except ImportError as exc:  # pragma: no cover
-            raise RuntimeError("ib_insync is not installed; run `pip install ib_insync`") from exc
+            raise RuntimeError("ib_async is not installed; run `pip install ib_async`") from exc
 
-        self._ib_insync = ib_insync
+        self._ib_async = ib_async
         self.host = host
         self.port = port
         self.client_id = client_id
         self._ib = None
-        self._trades: dict[str, object] = {}  # order id -> ib_insync Trade, for get_order_status
+        self._trades: dict[str, object] = {}  # order id -> ib_async Trade, for get_order_status
 
     async def _connected_ib(self):
         if self._ib is None:
-            ib = self._ib_insync.IB()
+            ib = self._ib_async.IB()
             await ib.connectAsync(self.host, self.port, clientId=self.client_id)
             self._ib = ib
         return self._ib
@@ -83,7 +93,7 @@ class IBKRBroker(BrokerAdapter):
                 message=f"could not connect to IB Gateway/TWS: {exc}",
             )
 
-        contract = self._ib_insync.Stock(symbol, "SMART", "USD")
+        contract = self._ib_async.Stock(symbol, "SMART", "USD")
         action = signal.side.value.upper()
 
         try:
@@ -99,7 +109,7 @@ class IBKRBroker(BrokerAdapter):
                 trades = [ib.placeOrder(contract, o) for o in orders]
                 parent_trade = trades[0]
             else:
-                order = self._ib_insync.MarketOrder(action, quantity)
+                order = self._ib_async.MarketOrder(action, quantity)
                 order.account = account.account_id
                 parent_trade = ib.placeOrder(contract, order)
         except Exception as exc:  # noqa: BLE001
@@ -110,10 +120,10 @@ class IBKRBroker(BrokerAdapter):
                 message=str(exc),
             )
 
-        # IBKR order status (ack/fill/reject) arrives asynchronously via ib_insync's
+        # IBKR order status (ack/fill/reject) arrives asynchronously via ib_async's
         # own event loop integration; this reports PENDING immediately rather than
         # trying to block on a fill here. The Trade object keeps updating itself in
-        # the background (ib_insync wires it to IB's event stream) — get_order_status
+        # the background (ib_async wires it to IB's event stream) — get_order_status
         # below reads its current state rather than making a fresh network call.
         self._trades[str(parent_trade.order.orderId)] = parent_trade
 
@@ -129,21 +139,21 @@ class IBKRBroker(BrokerAdapter):
         """A market parent plus whichever exit legs are present, linked via
         parentId with only the last order transmit=True — see module docstring."""
         reverse_action = "SELL" if action == "BUY" else "BUY"
-        parent = self._ib_insync.MarketOrder(
+        parent = self._ib_async.MarketOrder(
             action, quantity, orderId=ib.client.getReqId(), transmit=False
         )
 
         children = []
         if take_profit:
             children.append(
-                self._ib_insync.LimitOrder(
+                self._ib_async.LimitOrder(
                     reverse_action, quantity, take_profit,
                     orderId=ib.client.getReqId(), parentId=parent.orderId, transmit=False,
                 )
             )
         if stop_loss:
             children.append(
-                self._ib_insync.StopOrder(
+                self._ib_async.StopOrder(
                     reverse_action, quantity, stop_loss,
                     orderId=ib.client.getReqId(), parentId=parent.orderId, transmit=False,
                 )

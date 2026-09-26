@@ -1,6 +1,6 @@
 import pytest
 
-pytest.importorskip("ib_insync")
+pytest.importorskip("ib_async")
 
 from app.brokers.ibkr import IBKRBroker
 from app.models import DestinationAccount, OrderStatus, Signal, Side

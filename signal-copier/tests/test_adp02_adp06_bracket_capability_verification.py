@@ -22,7 +22,7 @@ from app.models import DestinationAccount, Side
 
 
 def test_audits_exact_case_ibkr_bracket_capability_does_not_claim_standalone_stop():
-    pytest.importorskip("ib_insync")
+    pytest.importorskip("ib_async")
     from app.brokers.ibkr import IBKRBroker
 
     broker = IBKRBroker()

@@ -240,7 +240,7 @@ reverses it if the order was actually rejected, or trues it up if the
 confirmed fill quantity differs from the optimistic guess. Only brokers
 that implement `get_order_status()` are covered this way — currently
 **Alpaca** (a REST GET on the order) and **IBKR** (reads the locally
-cached `Trade` object, which ib_insync keeps live-updated via its own
+cached `Trade` object, which ib_async keeps live-updated via its own
 event stream). SignalStack, NinjaTrader, and Rithmic have no confirmed
 order-status-read API wired up yet, so their PENDING orders stay
 optimistic until that's added. The reconciler's poll interval is
@@ -267,7 +267,7 @@ each library/API's real source or docs, not guessed):
   linked via `parentId`, only the last `transmit=True` so the whole group
   submits together — the same parent/child/transmit pattern
   `IB.bracketOrder()` uses, just with a market rather than limit parent
-  (verified against ib_insync's source).
+  (verified against ib_async's source).
 
 Still not forwarded: **Rithmic** (its `submit_order` takes stop/target
 distance in *ticks*, not the prices a `Signal` carries — converting
@@ -930,7 +930,7 @@ an environment with normal internet access before relying on this.
 | Telegram, Discord, Slack sources | ✅ Working (needs `pip install python-telegram-bot` / `discord.py` / `slack-bolt` + a bot token; only starts if its env vars are set) |
 | SMS source (Twilio) | ✅ Working (needs a public URL + `TWILIO_AUTH_TOKEN`/`TWILIO_WEBHOOK_URL` for signature validation; route is always mounted at `/sms/twilio`) |
 | Twitter/X source | ✅ Working, but needs X API v2 filtered-stream access (a paid tier as of X's current pricing — verify current terms) and is the least reliable parser of the bunch since tweets are free text |
-| IBKR broker | ✅ Working, tested (needs `pip install ib_insync` + a running IB Gateway/TWS with the API enabled; reports PENDING, not a confirmed fill, since IBKR confirms asynchronously — but see "Monitoring" for how PENDING gets reconciled). Native stop-loss/take-profit via bracket orders. |
+| IBKR broker | ✅ Working, tested (needs `pip install ib_async` + a running IB Gateway/TWS with the API enabled; reports PENDING, not a confirmed fill, since IBKR confirms asynchronously — but see "Monitoring" for how PENDING gets reconciled). Native stop-loss/take-profit via bracket orders. |
 | MT5 broker (same-host only) | ✅ Working (needs `pip install MetaTrader5`, Windows, and the service running on the same host as a logged-in MT5 terminal — one terminal process per account). Native stop-loss/take-profit via `sl`/`tp` request fields. |
 | MT4/MT5 source & broker, via [MetaApi](https://github.com/metaapi/metaapi-python-sdk) | ✅ Working (needs `pip install metaapi-cloud-sdk` + a MetaApi account — free tier covers 1 MT4/MT5 account; no local terminal needed at all). Preferred over the same-host MT5 broker above unless you specifically want to avoid the cloud dependency. The source polls deal history on an interval rather than a real-time push callback — see its docstring for why. Native stop-loss/take-profit via `stop_loss`/`take_profit` params. |
 | Rithmic source & broker, via [async_rithmic](https://github.com/rundef/async_rithmic) | ✅ Working (needs `pip install async_rithmic` + licensed Rithmic credentials from your broker — there's no self-serve signup, this is a paid/licensed service regardless of which library talks to it) |
