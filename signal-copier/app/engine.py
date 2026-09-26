@@ -233,7 +233,13 @@ class SignalCopierEngine:
 
             applied_quantity = None
             if result.status in (OrderStatus.FILLED, OrderStatus.PENDING):
-                applied_quantity = result.filled_quantity or quantity
+                # An explicit, reported zero fill must stay zero -- `x or
+                # quantity` treats 0.0 as falsy and silently substitutes the
+                # full requested quantity, exactly the "zero fill becomes a
+                # fictitious full fill" bug (EXE-04). Only a genuinely
+                # unknown fill (`None` -- the broker hasn't said anything
+                # yet) falls back to the optimistic full-quantity guess.
+                applied_quantity = quantity if result.filled_quantity is None else result.filled_quantity
                 self.store.record_fill(account.account_id, symbol, order_signal.side, applied_quantity)
 
             self.store.save_order_result(
@@ -289,7 +295,9 @@ class SignalCopierEngine:
             )
         applied_quantity = None
         if result.status in (OrderStatus.FILLED, OrderStatus.PENDING):
-            applied_quantity = result.filled_quantity or quantity
+            # See handle_signal's identical fix -- an explicit zero fill
+            # must stay zero, never fall back to the requested quantity.
+            applied_quantity = quantity if result.filled_quantity is None else result.filled_quantity
             self.store.record_fill(account.account_id, symbol, order_signal.side, applied_quantity)
         return result, applied_quantity
 

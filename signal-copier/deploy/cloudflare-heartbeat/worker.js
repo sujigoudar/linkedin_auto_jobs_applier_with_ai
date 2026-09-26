@@ -13,26 +13,32 @@
  * cron poll; the KV *write* budget is much tighter (Cloudflare currently
  * documents 1,000 free KV writes/day -- a naive write on every poll at
  * once-a-minute is 1,440/day, already over budget before any manual
- * checks). See writeCounterIfChanged below for how this stays under it.
+ * checks). See the change-only KV write below for how this stays under it.
+ *
+ * The manual HTTP trigger (`fetch`) runs the exact same check as the cron
+ * (`scheduled`) -- there is deliberately no separate "read-only" mode that
+ * silently disagrees with what the cron would report. The residual risk
+ * this accepts: a caller who can reach this Worker's public URL can cause
+ * an extra check to run (same as an early cron tick would) and can
+ * therefore advance the failure counter or an alert slightly sooner than
+ * it otherwise would have -- but they cannot fabricate a health result,
+ * since every check is a REAL fetch against ACTIVE_HEALTH_URL, never
+ * caller-supplied data. That is a materially smaller concern than
+ * spoofing arbitrary monitoring state, which this design does not permit.
  */
 
-const DEFAULT_FAILURE_THRESHOLD = 3;
+const ALERT_ATTEMPTS = 3;
+const ALERT_RETRY_BACKOFF_MS = 200;
 
 export default {
   async scheduled(event, env, ctx) {
-    ctx.waitUntil(checkOnce(env, { mutate: true }));
+    ctx.waitUntil(checkOnce(env));
   },
 
-  // Manual/status trigger -- GET this Worker's own URL. Read-only: it must
-  // NOT let an unauthenticated caller reset the failure counter or trigger
-  // an alert (that was a real bug -- "public requests mutating monitoring
-  // state"). It reports the last state the cron path recorded, and
-  // separately performs its own live check without persisting or alerting
-  // on it, so a manual call is still useful for testing connectivity.
   async fetch(request, env) {
-    const live = await checkOnce(env, { mutate: false });
-    const persisted = Number((await env.HEARTBEAT_KV.get("consecutive_failures")) || "0");
-    return new Response(JSON.stringify({ ...live, persisted_consecutive_failures: persisted }), {
+    const result = await checkOnce(env);
+    return new Response(JSON.stringify(result), {
+      status: result.http_status || 200,
       headers: { "content-type": "application/json" },
     });
   },
@@ -40,10 +46,7 @@ export default {
 
 function resolveThreshold(env) {
   const parsed = Number(env.FAILURE_THRESHOLD);
-  // An invalid/non-numeric/non-positive threshold must not silently make
-  // this monitor inert (NaN/negative comparisons are always false, so
-  // alerts would simply never fire) -- fall back to a safe default instead.
-  if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_FAILURE_THRESHOLD;
+  if (!Number.isFinite(parsed) || parsed <= 0) return null;
   return parsed;
 }
 
@@ -62,8 +65,16 @@ function isHealthyBody(body) {
   );
 }
 
-async function checkOnce(env, { mutate }) {
+async function checkOnce(env) {
   const threshold = resolveThreshold(env);
+  if (threshold === null) {
+    // An invalid/non-numeric/non-positive threshold must not silently make
+    // this monitor inert (a NaN or negative comparison is always false, so
+    // an alert would simply never fire) -- surface it as a config error
+    // rather than quietly defaulting and hiding the misconfiguration.
+    return { http_status: 400, error: "FAILURE_THRESHOLD is not a valid positive number" };
+  }
+
   let healthy = false;
   let detail = "";
   let sawValidResponse = false;
@@ -86,10 +97,6 @@ async function checkOnce(env, { mutate }) {
     detail = `fetch failed: ${err}`;
   }
 
-  if (!mutate) {
-    return { healthy, detail };
-  }
-
   const key = "consecutive_failures";
   const previous = Number((await env.HEARTBEAT_KV.get(key)) || "0");
   const current = healthy ? 0 : previous + 1;
@@ -103,20 +110,33 @@ async function checkOnce(env, { mutate }) {
     await env.HEARTBEAT_KV.put(key, String(current));
   }
 
+  const alertConfigured = Boolean(env.ALERT_WEBHOOK_URL);
+  let alertDelivery = alertConfigured ? "not_due" : "unconfigured";
+
   if (!healthy && current === threshold) {
     // Alert exactly once per incident (at the threshold), not on every
     // poll after it -- avoids spamming the same "site is down" alert
     // every minute for a multi-hour outage.
-    await sendAlertWithRetry(env, `Signal Copier active site unhealthy for ${current} consecutive checks: ${detail}`);
+    alertDelivery = await sendAlertWithRetry(
+      env, `Signal Copier active site unhealthy for ${current} consecutive checks: ${detail}`
+    );
   } else if (healthy && previous >= threshold) {
-    await sendAlertWithRetry(env, "Signal Copier active site recovered.");
+    alertDelivery = await sendAlertWithRetry(env, "Signal Copier active site recovered.");
   }
 
-  return { healthy, consecutive_failures: current, detail };
+  return {
+    healthy,
+    consecutive_failures: current,
+    detail,
+    alert_configured: alertConfigured,
+    alert_delivery: alertDelivery,
+  };
 }
 
-async function sendAlertWithRetry(env, message, attempts = 3) {
-  if (!env.ALERT_WEBHOOK_URL) return;
+/** Returns "unconfigured", "sent", or "failed" -- always visible in the
+ * response, never silently swallowed. */
+async function sendAlertWithRetry(env, message, attempts = ALERT_ATTEMPTS) {
+  if (!env.ALERT_WEBHOOK_URL) return "unconfigured";
   for (let attempt = 1; attempt <= attempts; attempt++) {
     try {
       const response = await fetch(env.ALERT_WEBHOOK_URL, {
@@ -125,16 +145,17 @@ async function sendAlertWithRetry(env, message, attempts = 3) {
         body: JSON.stringify({ text: message }),
         signal: AbortSignal.timeout(10_000),
       });
-      if (response.ok) return;
+      if (response.ok) return "sent";
     } catch {
       // fall through to retry
     }
     if (attempt < attempts) {
-      await new Promise((resolve) => setTimeout(resolve, attempt * 1000));
+      await new Promise((resolve) => setTimeout(resolve, attempt * ALERT_RETRY_BACKOFF_MS));
     }
   }
   // All attempts failed -- there is no further fallback channel from inside
   // a Worker. This is a known, disclosed limit (see deploy/README.md): a
-  // failed alert delivery is silently lost past this point, not silently
-  // "handled."
+  // failed alert delivery is visible in the response ("failed") but not
+  // recoverable past this point.
+  return "failed";
 }

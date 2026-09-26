@@ -310,29 +310,20 @@ class PositionLifecycleManager:
                     if lifecycle.stop.desired_price is None and lifecycle.plan.initial_stop is not None:
                         lifecycle.stop.desired_price = lifecycle.plan.initial_stop
 
-                if broker is not None and not has_unresolved_exit:
-                    # Handles both "no stop yet" (places a fresh one sized to
-                    # `new_owned`) and "already protected at a smaller
-                    # quantity" (resizes in place) — see _replace_stop_price.
-                    # Skipped entirely while an exit is unresolved: that
-                    # exit already reserved/cancelled against the old
-                    # protection, and a fresh stop here would re-cover
-                    # quantity the exit's own resolution is responsible for
-                    # (see F02's regression test).
-                    await self._replace_stop_price(lifecycle, account)
-
-                # Advance the checkpoint, then commit it atomically with the
-                # tracked-position delta in one local transaction (see
-                # SignalStore.record_fill's `lifecycle_state` parameter) —
-                # anything persisted *before* this point (inside
-                # _replace_stop_price, if it ran) still shows the OLD
-                # checkpoint, so an interruption before this line leaves
-                # recovery re-observing the same delta rather than silently
-                # treating it as already applied; an interruption at or
-                # after this line's own commit leaves both the checkpoint
-                # and the position durably advanced together, so recovery
-                # sees a now-stale (not new) observation and no-ops (see the
-                # F07/T07 regression tests).
+                # Advance the checkpoint and commit it atomically with the
+                # tracked position BEFORE attempting any broker protection
+                # I/O below (EXE-02: this used to happen AFTER
+                # _replace_stop_price, whose own internal persist already
+                # writes the ADVANCED confirmed_owned_quantity/stop state to
+                # disk while the checkpoint here was still the OLD one — an
+                # interruption between that persist and this commit left
+                # recovery re-observing and re-applying the same delta,
+                # producing a lifecycle/stop total the real position/venue
+                # never reached). Committing this pair first means a crash
+                # during/after the stop placement below can only ever leave
+                # protection temporarily stale for an already-correct,
+                # already-durable owned quantity — never a duplicated or
+                # corrupted position.
                 pending.confirmed_filled_quantity = confirmed_filled_quantity
                 if self.store is not None:
                     state = _lifecycle_to_state(lifecycle, self.arbiter.snapshot(account.account_id, symbol))
@@ -341,6 +332,19 @@ class PositionLifecycleManager:
                     )
                 else:
                     self._persist(lifecycle)
+
+                if broker is not None and not has_unresolved_exit:
+                    # Handles both "no stop yet" (places a fresh one sized to
+                    # `new_owned`) and "already protected at a smaller
+                    # quantity" (resizes in place) — see _replace_stop_price.
+                    # Skipped entirely while an exit is unresolved: that
+                    # exit already reserved/cancelled against the old
+                    # protection, and a fresh stop here would re-cover
+                    # quantity the exit's own resolution is responsible for
+                    # (see F02's regression test). Its own internal persist
+                    # (after this point) only ever advances protection state
+                    # on top of an already-durable, already-correct position.
+                    await self._replace_stop_price(lifecycle, account)
 
             if not remainder_cancelled and confirmed_filled_quantity < pending.requested_quantity:
                 self._persist(lifecycle)
@@ -359,19 +363,41 @@ class PositionLifecycleManager:
         self, account: DestinationAccount, symbol: str, filled_quantity: float, filled_price: float | None = None
     ) -> None:
         """Call when the broker reports the protective stop itself filled
-        (reconciliation, or PaperBroker.simulate_price in tests)."""
+        (reconciliation, or PaperBroker.simulate_price in tests). A stop
+        execution is an exit like any other -- it must apply to
+        `SignalStore.positions` through the same single execution-owner
+        path as request_exit/resolve_pending_exit (EXE-05: this used to
+        only update the in-memory/persisted lifecycle ledger, leaving
+        SignalStore's tracked position stale -- local holdings could stay
+        open after the venue was actually flat)."""
         async with self.arbiter.transition(account.account_id, symbol) as tx:
             lifecycle = self._lifecycles.get((account.account_id, symbol))
             if lifecycle is None:
                 return
             tx.settle(reserved_quantity=0.0, filled_quantity=filled_quantity)
-            lifecycle.stop.protected_quantity = 0.0
-            lifecycle.stop.status = ProtectionStatus.UNPROTECTED
-            lifecycle.stop.broker_order_id = None
             lifecycle.confirmed_owned_quantity = tx.owned
             if tx.owned <= 0:
-                lifecycle.closed = True
-        self._persist(lifecycle)
+                # Flat right now is not the same as fully done -- a still-
+                # working entry order (has_unresolved_entry) may yet fill
+                # more, which must find this lifecycle still here to
+                # protect it (see EXE-07's regression test).
+                lifecycle.closed = not lifecycle.has_unresolved_entry
+                lifecycle.stop.protected_quantity = 0.0
+                lifecycle.stop.status = ProtectionStatus.UNPROTECTED
+                lifecycle.stop.broker_order_id = None
+            else:
+                # A stop notification can itself be a partial fill of the
+                # stop order -- the remainder may still be resting at the
+                # broker under the SAME order id. Clearing broker_order_id/
+                # marking UNPROTECTED unconditionally (as this used to)
+                # loses track of that still-working order and reports zero
+                # coverage even though some protection may remain.
+                remaining_protected = max(0.0, lifecycle.stop.protected_quantity - filled_quantity)
+                lifecycle.stop.protected_quantity = remaining_protected
+                if remaining_protected <= 0:
+                    lifecycle.stop.status = ProtectionStatus.UNPROTECTED
+                    lifecycle.stop.broker_order_id = None
+        self._apply_exit_fill(lifecycle, account, symbol, filled_quantity)
 
     async def on_price_update(self, account: DestinationAccount, symbol: str, price: float) -> list[OrderResult]:
         """Evaluate logical targets and trailing against a new price. Call this
@@ -490,7 +516,9 @@ class PositionLifecycleManager:
             lifecycle.confirmed_owned_quantity = remaining
 
             if remaining <= 0:
-                lifecycle.closed = True
+                # See on_stop_filled's identical guard (EXE-07): a
+                # still-working entry order may yet deliver more units.
+                lifecycle.closed = not lifecycle.has_unresolved_entry
             elif had_stop and lifecycle.stop.desired_price is not None:
                 await self._place_stop_locked(lifecycle, account, broker, remaining, lifecycle.stop.desired_price)
 
@@ -537,7 +565,9 @@ class PositionLifecycleManager:
             lifecycle.pending_exit = None
 
             if remaining <= 0:
-                lifecycle.closed = True
+                # See on_stop_filled's identical guard (EXE-07): a
+                # still-working entry order may yet deliver more units.
+                lifecycle.closed = not lifecycle.has_unresolved_entry
             elif lifecycle.stop.desired_price is not None and broker is not None:
                 await self._place_stop_locked(lifecycle, account, broker, remaining, lifecycle.stop.desired_price)
 

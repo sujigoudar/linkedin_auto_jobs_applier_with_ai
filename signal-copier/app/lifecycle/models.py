@@ -192,3 +192,15 @@ class PositionLifecycle:
     @property
     def uncovered_quantity(self) -> float:
         return max(0.0, self.confirmed_owned_quantity - self.covered_quantity)
+
+    @property
+    def has_unresolved_entry(self) -> bool:
+        """A still-working entry order (e.g. 30 of a 100-unit buy confirmed
+        so far, 70 still out) whose eventual remaining fill is not yet
+        known. `closed` must never become true while this is -- being flat
+        RIGHT NOW is not the same as having no remaining obligation (EXE-07:
+        selling everything confirmed so far used to close and delete the
+        lifecycle outright, discarding the record of the still-outstanding
+        70 units; a later fill for them then had nothing tracking it,
+        unprotected and invisible to monitoring)."""
+        return self.pending_entry is not None and not self.pending_entry.remainder_resolved

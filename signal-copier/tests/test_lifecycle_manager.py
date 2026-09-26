@@ -172,6 +172,54 @@ async def test_stop_fill_closes_lifecycle(manager, account, broker):
 
 
 @pytest.mark.asyncio
+async def test_stop_fill_applies_to_the_tracked_position(account, broker, tmp_path):
+    """EXE-05: on_stop_filled used to only update the in-memory/persisted
+    lifecycle ledger, never SignalStore.positions -- local holdings could
+    stay open after the venue was actually flat."""
+    from app.db import SignalStore
+
+    store = SignalStore(tmp_path / "test.db")
+    manager = PositionLifecycleManager(brokers={"paper": broker}, store=store)
+    await _enter(manager, broker, account, _plan(planned_quantity=62.0, initial_stop=48.50), 62.0)
+    # _enter() mirrors on_entry_fill directly, bypassing the engine's own
+    # store.record_fill() call for the entry -- seed the store the way the
+    # real engine would have, so this test isolates on_stop_filled's own
+    # store-application behavior.
+    store.record_fill("acct1", "AAPL", Side.BUY, 62.0)
+
+    fills = broker.simulate_price("AAPL", 48.00)
+    await manager.on_stop_filled(account, "AAPL", filled_quantity=fills[0].filled_quantity, filled_price=48.00)
+
+    assert store.get_position("acct1", "AAPL") == 0.0
+
+
+@pytest.mark.asyncio
+async def test_partial_stop_fill_preserves_remaining_coverage_and_order_id(account, broker, tmp_path, monkeypatch):
+    """EXE-05: a stop notification can itself be a partial fill -- the
+    remainder may still be resting at the broker under the same order id.
+    Unconditionally clearing broker_order_id/marking UNPROTECTED would lose
+    track of that still-working order and report zero coverage even though
+    some protection remains."""
+    from app.db import SignalStore
+
+    store = SignalStore(tmp_path / "test.db")
+    manager = PositionLifecycleManager(brokers={"paper": broker}, store=store)
+    await _enter(manager, broker, account, _plan(planned_quantity=62.0, initial_stop=48.50), 62.0)
+    store.record_fill("acct1", "AAPL", Side.BUY, 62.0)  # see the full-fill test above for why
+    lifecycle = manager.get_lifecycle("acct1", "AAPL")
+    original_stop_id = lifecycle.stop.broker_order_id
+
+    await manager.on_stop_filled(account, "AAPL", filled_quantity=20.0, filled_price=48.00)
+
+    assert lifecycle.closed is False
+    assert lifecycle.confirmed_owned_quantity == 42.0
+    assert lifecycle.stop.protected_quantity == 42.0  # 62 - 20, remainder still covered
+    assert lifecycle.stop.broker_order_id == original_stop_id  # still the same resting order
+    assert lifecycle.stop.status == ProtectionStatus.STOP_CONFIRMED
+    assert store.get_position("acct1", "AAPL") == 42.0
+
+
+@pytest.mark.asyncio
 async def test_exit_after_stop_already_filled_is_rejected_not_oversold(manager, account, broker):
     """Design section 7: a target firing after the stop already filled must not
     also execute — the arbiter must have nothing left to sell."""

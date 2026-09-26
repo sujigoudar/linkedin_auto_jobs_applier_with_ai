@@ -376,6 +376,44 @@ async def test_crash_after_position_commit_before_fill_checkpoint_does_not_doubl
 
 
 @pytest.mark.asyncio
+async def test_crash_during_protection_work_after_position_commit_does_not_double_apply(world, monkeypatch):
+    """EXE-02: the reviewed ordering committed the checkpoint/position pair
+    AFTER attempting the protective-stop placement -- an interruption during
+    that placement (which had already durably advanced
+    confirmed_owned_quantity/stop via its own persist) left the checkpoint
+    stale, so recovery re-observed and re-applied the same fill (lifecycle/
+    stop reaching 60 while the venue and position stayed at 30). The
+    position+checkpoint commit must happen BEFORE any broker protection I/O,
+    so an interruption during that I/O can only ever leave protection
+    stale for an already-correct, already-durable position -- never a
+    re-applied fill."""
+    entry = await start_entry(world)
+    world.broker.report(entry, 30.0, OrderStatus.PENDING)
+
+    async def interrupt_during_protection(*args, **kwargs):
+        raise SimulatedProcessLoss("crashed while placing the protective stop")
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(world.broker, "place_protective_stop", interrupt_during_protection)
+        with pytest.raises(SimulatedProcessLoss):
+            await world.reconciler.reconcile_once()
+
+    # The position/checkpoint pair must already be durable even though the
+    # crash happened before protection completed.
+    assert world.store.get_position(ACCOUNT, SYMBOL) == 30.0
+
+    restored_store = SignalStore(world.database_path)
+    restored_manager = PositionLifecycleManager(brokers={"paper": world.broker}, store=restored_store)
+    restored_manager.restore_from_store()
+    restored_reconciler = OrderReconciler(restored_store, {"paper": world.broker}, lifecycle_manager=restored_manager)
+    await restored_reconciler.reconcile_once()
+
+    assert world.broker.owned() == 30.0
+    assert restored_store.get_position(ACCOUNT, SYMBOL) == 30.0
+    assert restored_manager.get_lifecycle(ACCOUNT, SYMBOL).confirmed_owned_quantity == 30.0
+
+
+@pytest.mark.asyncio
 async def test_missing_terminal_quantity_cannot_erase_an_already_owned_lifecycle(world):
     """F06: omitted cumulative data is not an authoritative reversal to zero."""
     entry = await start_entry(world)
@@ -424,3 +462,30 @@ async def test_simultaneous_identical_fill_observations_do_not_duplicate_stops_o
     assert world.store.get_position(ACCOUNT, SYMBOL) == 30.0
     assert world.broker.standing_stop_quantity() == 30.0
     assert len(world.broker._stop_orders) == 1
+
+
+@pytest.mark.asyncio
+async def test_full_exit_of_confirmed_entry_does_not_delete_a_still_working_entry_lifecycle(world):
+    """EXE-07: 30 of a 100-unit entry confirmed and fully sold must not
+    delete the lifecycle -- 70 entry units are still outstanding and may
+    yet fill, needing protection and visibility when they do."""
+    entry = await start_entry(world, quantity=100.0)
+    await progress(world, entry, 30.0)  # 30 confirmed, 70 still pending
+
+    world.broker.fill_next_immediately = True
+    result = await world.manager.request_exit(world.account, SYMBOL, 30.0, source="manual")
+    assert result.status is OrderStatus.FILLED
+    assert world.broker.owned() == 0.0
+
+    lifecycle = manager_lifecycle = world.manager.get_lifecycle(ACCOUNT, SYMBOL)
+    assert lifecycle is not None, "the still-working 70-unit entry lost its management record"
+    assert lifecycle.closed is False
+    assert lifecycle in world.manager.list_open_lifecycles()
+
+    # The remaining 70 entry units now confirm-fill.
+    await progress(world, entry, 100.0, OrderStatus.FILLED)
+
+    assert world.broker.owned() == 70.0
+    assert world.store.get_position(ACCOUNT, SYMBOL) == 70.0
+    assert manager_lifecycle.confirmed_owned_quantity == 70.0
+    assert world.broker.standing_stop_quantity() == 70.0  # the late fill is protected, not orphaned
