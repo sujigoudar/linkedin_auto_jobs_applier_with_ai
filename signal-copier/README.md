@@ -1131,6 +1131,22 @@ every financial command independent of any single route's own auth logic
   (A DOMPurify-style library wasn't the fix here — this was a broken
   hand-written escaping function, not a missing sanitizer for rendered
   HTML fragments.)
+- **C33/C34 (bounded accessibility check):** an axe-core run against the
+  real rendered dashboard
+  (`tests/test_c33_c34_dashboard_accessibility.py`) found four
+  violations. Two were fixed directly — `landmark-one-main` and `region`,
+  by wrapping the dashboard's content in a real `<main>` landmark instead
+  of a plain `<div id="app">` — and are asserted gone on every CI run.
+  Two are disclosed, known limitations, not fixed in this pass:
+  `aria-required-children` (Tabulator, the vendored orders-table library,
+  sets `role="grid"` on its container but its virtualized body rows are
+  plain unrowed divs, an incomplete ARIA grid pattern; stripping the
+  roles from outside Tabulator's own rendering was tried and reverted —
+  it chased a moving target across Tabulator's internal re-renders rather
+  than converging on a stable fix), and `color-contrast` (~29 nodes
+  below WCAG AA thresholds, needing a real palette audit, not a
+  one-line change). The test's job is catching new regressions beyond
+  this disclosed baseline, not claiming zero violations.
 - Never commit `.env` or real `config/routing.yaml` /
   `config/accounts.yaml` if they end up containing anything
   account-identifying (they're gitignored by default).

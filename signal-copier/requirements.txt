@@ -35,3 +35,4 @@ mutmut>=3.0              # test-only: mutation testing config scoped to app/auth
 playwright>=1.40         # test-only: real-browser dashboard tests (C14 XSS regression, C33/C34 accessibility).
                          # CI installs the matching browser separately (`playwright install chromium`) --
                          # see .github/workflows/signal-copier-ci.yml.
+axe-playwright-python>=0.1.8  # test-only: C33/C34 -- runs axe-core against the real rendered dashboard
