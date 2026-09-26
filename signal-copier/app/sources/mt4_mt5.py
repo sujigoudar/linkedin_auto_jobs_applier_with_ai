@@ -23,6 +23,7 @@ latency against API load.
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 
 from app.models import AssetClass, Signal, Side
@@ -50,6 +51,7 @@ class MetaApiSource(SourceAdapter):
         self._connection = None
         self._poll_task: asyncio.Task | None = None
         self._seen_deal_ids: set[str] = set()
+        self._in_flight_tasks: set[asyncio.Task] = set()
 
     async def start(self) -> None:
         try:
@@ -96,7 +98,19 @@ class MetaApiSource(SourceAdapter):
             if deal_type not in ("DEAL_TYPE_BUY", "DEAL_TYPE_SELL"):
                 continue  # skip balance/credit/etc. entries that aren't trades
 
-            side = Side.BUY if deal_type == "DEAL_TYPE_BUY" else Side.SELL
+            # SIG-05: a BUY deal isn't always opening a long -- MetaApi tags
+            # each deal's `entryType`, and DEAL_ENTRY_OUT/OUT_BY mean this
+            # deal CLOSED an existing position (e.g. buying back a short),
+            # not a new entry in that direction. Treating every BUY deal as
+            # "enter long" regardless would tell the copier to open a fresh
+            # position in the direction the source account was actually
+            # exiting from -- the opposite of what happened there.
+            entry_type = deal.get("entryType", "")
+            if entry_type in ("DEAL_ENTRY_OUT", "DEAL_ENTRY_OUT_BY"):
+                side = Side.CLOSE
+            else:
+                side = Side.BUY if deal_type == "DEAL_TYPE_BUY" else Side.SELL
+
             signal = Signal(
                 source=self.name,
                 symbol=deal.get("symbol", ""),
@@ -106,10 +120,31 @@ class MetaApiSource(SourceAdapter):
                 price=deal.get("price"),
                 raw=deal,
             )
-            asyncio.create_task(self.on_signal(signal))
+            # SIG-05: `asyncio.create_task` alone is fire-and-forget -- an
+            # exception inside `on_signal` (a broker call failing in a way
+            # the engine doesn't already catch, a bug in a downstream
+            # handler) would otherwise be silently dropped ("Task exception
+            # was never retrieved") with no record that this deal's signal
+            # ever failed to process, and nothing here would await it on
+            # shutdown either. Track it so a failure is at least logged
+            # against this specific deal, and so `stop()` can wait for
+            # in-flight ones instead of abandoning them mid-flight.
+            task = asyncio.create_task(self.on_signal(signal))
+            self._in_flight_tasks.add(task)
+            task.add_done_callback(functools.partial(self._on_signal_task_done, deal_id=deal_id))
+
+    def _on_signal_task_done(self, task: asyncio.Task, *, deal_id: str) -> None:
+        self._in_flight_tasks.discard(task)
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            logger.error("processing MetaApi deal id=%s failed", deal_id, exc_info=exc)
 
     async def stop(self) -> None:
         if self._poll_task is not None:
             self._poll_task.cancel()
+        if self._in_flight_tasks:
+            await asyncio.gather(*self._in_flight_tasks, return_exceptions=True)
         if self._connection is not None:
             await self._connection.close()

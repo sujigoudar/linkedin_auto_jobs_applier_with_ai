@@ -32,6 +32,16 @@ from app.sources.text_parser import parse_text_signal
 
 logger = logging.getLogger(__name__)
 
+# SIG-05: a bare `stream.delete_rules([rule.id for rule in existing])`
+# deleted EVERY rule the bearer token's account had, including ones this
+# app never created (another app sharing the same token, or rules the
+# owner set up by hand outside this service) -- required_repair calls for
+# changing only application-owned source rules. Tagging every rule this
+# adapter adds with this constant, and on startup only ever deleting rules
+# that carry the SAME tag, is what makes "application-owned" checkable
+# rather than assumed.
+_MANAGED_RULE_TAG = "signal_copier_managed"
+
 
 class TwitterSource(SourceAdapter):
     name = "twitter"
@@ -78,8 +88,12 @@ class TwitterSource(SourceAdapter):
 
         if self.rules:
             existing = stream.get_rules().data or []
-            stream.delete_rules([rule.id for rule in existing])
-            stream.add_rules([tweepy.StreamRule(value=rule) for rule in self.rules])
+            app_owned_rule_ids = [rule.id for rule in existing if getattr(rule, "tag", None) == _MANAGED_RULE_TAG]
+            if app_owned_rule_ids:
+                stream.delete_rules(app_owned_rule_ids)
+            stream.add_rules(
+                [tweepy.StreamRule(value=rule, tag=_MANAGED_RULE_TAG) for rule in self.rules]
+            )
 
         self._stream = stream
         # stream.filter() blocks forever running the stream loop, so it's run in a
