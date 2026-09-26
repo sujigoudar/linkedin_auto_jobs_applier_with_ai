@@ -61,7 +61,7 @@ import asyncio
 import logging
 import math
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timezone
 
 from app.brokers.base import BrokerAdapter
 from app.lifecycle.close_arbiter import CloseArbiter
@@ -136,6 +136,34 @@ class PositionLifecycleManager:
             await self._replace_stop_price(lifecycle, account)
             retried += 1
         return retried
+
+    async def check_time_exits(self) -> int:
+        """PRO-02: `plan.time_exit`, once set, was persisted and reloaded on
+        restart (see the save/restore round-trip below) but nothing ever
+        compared it against the clock — a plan with a time-based exit would
+        sit past its deadline forever, never actually closed. Closes the
+        full remaining owned quantity of every open lifecycle whose
+        deadline has passed, via the same `request_exit` path a logical
+        target or trailing stop uses (design section: "a time exit" is one
+        of the intents CloseArbiter serializes). app/reconciliation.py
+        calls this every pass, same as `retry_unprotected_positions`."""
+        now = datetime.now(timezone.utc)
+        triggered = 0
+        for lifecycle in list(self._lifecycles.values()):
+            deadline = lifecycle.plan.time_exit
+            if deadline is None or lifecycle.closed:
+                continue
+            if deadline.tzinfo is None:
+                deadline = deadline.replace(tzinfo=timezone.utc)
+            if now < deadline:
+                continue
+            available = self.arbiter.available_to_sell(lifecycle.plan.account_id, lifecycle.plan.symbol)
+            if available <= 0:
+                continue
+            account = DestinationAccount(account_id=lifecycle.plan.account_id, broker=lifecycle.plan.broker)
+            await self.request_exit(account, lifecycle.plan.symbol, available, source="time_exit", reason=f"time exit reached ({deadline.isoformat()})")
+            triggered += 1
+        return triggered
 
     def list_pending_exits(self) -> list[tuple[str, str, str, PendingExit]]:
         """Every (account_id, symbol, broker, PendingExit) whose remainder
@@ -520,6 +548,21 @@ class PositionLifecycleManager:
                 target.fired = True
                 if lifecycle.plan.trailing:
                     lifecycle.plan.trailing.active = True
+
+        trailing = lifecycle.plan.trailing
+        if trailing and not trailing.active and trailing.activate_at_price is not None:
+            # PRO-02: `activate_at_price` was stored on every persisted plan
+            # (see the save/restore round-trip below) but nothing ever read
+            # it back to actually flip the trail on -- the only way it could
+            # activate was via an explicit ACTIVATE_TRAIL target above. A
+            # plan with a trailing policy but no such target could set
+            # activate_at_price and it would sit there forever, inert.
+            if lifecycle.plan.side == Side.BUY:
+                crossed = price >= trailing.activate_at_price
+            else:
+                crossed = price <= trailing.activate_at_price
+            if crossed:
+                trailing.active = True
 
         if lifecycle.plan.trailing and lifecycle.plan.trailing.active:
             await self._update_trailing(lifecycle, account, price)

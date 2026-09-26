@@ -145,6 +145,10 @@ class OrderReconciler:
             # lifecycle every pass, independent of whether a new fill
             # increment ever arrives to trigger it otherwise.
             corrected += await self.lifecycle_manager.retry_unprotected_positions()
+            # PRO-02: a plan's time_exit is otherwise never checked against
+            # the clock anywhere else -- this periodic pass is what actually
+            # enforces it.
+            corrected += await self.lifecycle_manager.check_time_exits()
         return corrected
 
     async def _reconcile_pending_entries(self) -> int:
