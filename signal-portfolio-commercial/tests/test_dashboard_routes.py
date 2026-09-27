@@ -1229,3 +1229,52 @@ def test_customer_detail_shows_real_eligibility_and_cases_over_real_http(db_sess
     assert staff_response.status_code == 200
     assert "ELIGIBLE" in staff_response.text
     assert "Billing question HTTP" in staff_response.text
+
+
+def test_integrations_page_requires_owner_or_publisher_operator(db_session):
+    client = _client(db_session)
+    response = client.get("/ops/integrations", headers=_auth_headers(role=MembershipRole.RESEARCHER))
+    assert response.status_code == 403
+
+
+def test_integrations_page_shows_the_real_empty_state(db_session):
+    client = _client(db_session)
+    response = client.get("/ops/integrations", headers=_auth_headers())
+    assert response.status_code == 200
+    assert "No commercial integrations are configured." in response.text
+
+
+def test_save_then_view_integration_configuration_over_real_http(db_session):
+    client = _client(db_session)
+    headers = _auth_headers()
+    create_response = client.post(
+        "/ops/integrations",
+        data={
+            "provider_registry_id": "stripe",
+            "purpose": "billing",
+            "environment": "test",
+            "quota_profile_id": "qp-http-1",
+        },
+        headers=headers,
+    )
+    assert create_response.status_code == 303
+
+    response = client.get("/ops/integrations", headers=headers)
+    assert "stripe" in response.text
+    assert "qp-http-1" in response.text
+
+
+def test_save_integration_configuration_rejects_an_unreviewed_provider_over_real_http(db_session):
+    client = _client(db_session)
+    response = client.post(
+        "/ops/integrations",
+        data={
+            "provider_registry_id": "some-random-service",
+            "purpose": "research",
+            "environment": "test",
+            "quota_profile_id": "qp-1",
+        },
+        headers=_auth_headers(),
+    )
+    assert response.status_code == 400
+    assert "REVIEWED_PROVIDER_NOT_FOUND" in response.text

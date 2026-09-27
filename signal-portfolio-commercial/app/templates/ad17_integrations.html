@@ -1,0 +1,79 @@
+{% extends "_base.html" %}
+{% block title %}Integrations, data rights and quotas{% endblock %}
+{% block content %}
+<h1>Integrations, data rights and quotas</h1>
+
+{% if error %}<div class="conflict">{{ error }}</div>{% endif %}
+
+<div class="panel">
+  <h2>Integration inventory</h2>
+  {% if configurations %}
+  <table>
+    <thead><tr><th>Provider</th><th>Purpose</th><th>Mode</th><th>Quota profile</th></tr></thead>
+    <tbody>
+      {% for c in configurations %}
+      <tr>
+        <td>{{ c.provider_registry_id }}</td>
+        <td>{{ c.purpose.value }}</td>
+        <td>{{ c.environment.value }}</td>
+        <td>{{ c.quota_profile_id }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="empty-state">
+    <p>No commercial integrations are configured.</p>
+  </div>
+  {% endif %}
+</div>
+
+<div class="panel">
+  <h2>Save inactive configuration</h2>
+  <p>Saving a configuration has no live effect -- nothing in this build reads this table to make a real outbound request.</p>
+  <form method="post" action="/ops/integrations">
+    <label for="purpose">Purpose</label>
+    <select id="purpose" name="purpose">
+      {% for p in all_purposes %}<option value="{{ p }}">{{ p }}</option>{% endfor %}
+    </select>
+    <p><small>Only "billing" (stripe) and "publication" (collective2, etoro, copyfactory) have a reviewed provider in this build.</small></p>
+
+    <label for="provider_registry_id">Provider</label>
+    <input type="text" id="provider_registry_id" name="provider_registry_id" required>
+
+    <label for="environment">Environment</label>
+    <select id="environment" name="environment">
+      {% for e in all_environments %}<option value="{{ e }}">{{ e }}</option>{% endfor %}
+    </select>
+    <p><small>Only "test" is accepted -- no real demo/live credentials exist in this environment.</small></p>
+
+    <label for="quota_profile_id">Quota/cost profile ID</label>
+    <input type="text" id="quota_profile_id" name="quota_profile_id" required>
+
+    <label for="entitlement_evidence_id">Entitlement/use terms ID (optional)</label>
+    <input type="text" id="entitlement_evidence_id" name="entitlement_evidence_id">
+
+    <p><button type="submit">Save inactive configuration</button></p>
+  </form>
+</div>
+
+<div class="panel">
+  <h2>Entitlements/use</h2>
+  <p>Each configuration's entitlement_evidence_id (if set) references the evidence for its data-use rights -- no free software/free data assumption is made when it is absent.</p>
+</div>
+
+<div class="panel">
+  <h2>Freshness/history</h2>
+  <p><span class="badge badge-unknown">UNSUPPORTED</span> -- no observation-freshness tracking exists in this build.</p>
+</div>
+
+<div class="panel">
+  <h2>Quota/cost</h2>
+  <p><span class="badge badge-unknown">UNSUPPORTED</span> -- no real usage/cost tracking exists against these quota profiles yet.</p>
+</div>
+
+<div class="panel">
+  <h2>Credential lifecycle</h2>
+  <p><span class="badge badge-unknown">UNSUPPORTED</span> -- no credential rotation/expiry tracking exists in this build; credential_ref is stored only as an opaque reference.</p>
+</div>
+{% endblock %}

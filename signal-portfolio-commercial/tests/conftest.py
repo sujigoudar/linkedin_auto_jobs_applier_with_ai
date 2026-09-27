@@ -44,6 +44,7 @@ from app.db import (
 import app.models.api_key  # noqa: F401
 import app.models.billing  # noqa: F401
 import app.models.eligibility  # noqa: F401
+import app.models.integration_configuration  # noqa: F401
 import app.models.ledger  # noqa: F401
 import app.models.portfolio_version  # noqa: F401
 import app.models.product  # noqa: F401

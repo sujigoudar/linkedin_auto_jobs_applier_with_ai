@@ -90,6 +90,11 @@ _ALLOWED: dict[str, frozenset[Role]] = {
     #: facts/support cases is a support/ownership decision, not a
     #: research, billing or publisher concern.
     "view_customer_support_record": frozenset({Role.OWNER, Role.SUPPORT_READONLY}),
+    #: AD-17 "Integrations, data rights and quotas" -- exactly this
+    #: screen's own access list. Same trio of concerns as AD-09's own
+    #: destinations (a research/release/ops decision, not billing/
+    #: support/customer).
+    "manage_integration_configurations": frozenset({Role.OWNER, Role.PUBLISHER_OPERATOR}),
 }
 
 

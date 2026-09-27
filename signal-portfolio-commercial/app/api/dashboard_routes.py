@@ -102,6 +102,13 @@ what is and is not implemented yet.
   cases). A cross-tenant/non-customer user_id returns a scoped 404.
   Subscription/Mandates/Audit panels are NOT implemented -- no
   per-customer subscription, copy-mandate or audit-log model exists.
+- AD-17 "Integrations, data rights and quotas": a real "save inactive
+  config" gated by a reviewed provider allowlist (only the adapter
+  modules this codebase actually has -- Stripe for billing, Collective2/
+  eToro/CopyFactory for publication; every other purpose has no
+  reviewed provider at all yet) and by environment (only "test" is
+  accepted). Quota/cost and Freshness/history are NOT implemented -- no
+  real usage-tracking model exists.
 """
 from __future__ import annotations
 
@@ -145,6 +152,11 @@ from app.services.api_key import (
 )
 from app.services.business_economics import get_business_economics
 from app.services.customer_support_view import get_customer_support_record, list_customers
+from app.services.integration_configuration import (
+    InvalidIntegrationConfigurationError,
+    create_integration_configuration,
+    list_integration_configurations,
+)
 from app.services.publisher_destination import (
     InvalidPublisherDestinationError,
     create_publisher_destination,
@@ -1184,3 +1196,81 @@ def customer_detail_page(
     if record is None:
         raise HTTPException(status_code=404, detail="not found")
     return templates.TemplateResponse(request, "ad11_customer_detail.html", {"record": record})
+
+
+_ALL_INTEGRATION_PURPOSES = ["research", "quotes", "reference", "publication", "billing", "monitoring"]
+_ALL_INTEGRATION_ENVIRONMENTS = ["test", "demo", "live"]
+
+
+def _require_integration_configurations(scope: TenantScope) -> None:
+    try:
+        require_permission(scope.role, "manage_integration_configurations")
+    except PermissionDenied as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+
+@router.get("/ops/integrations")
+def integrations_page(
+    request: Request,
+    scope: TenantScope = Depends(get_current_scope),
+    session: Session = Depends(get_db_session),
+    error: str | None = None,
+):
+    """AD-17 "Integrations, data rights and quotas" -- see this route
+    module's own docstring above for what is and is not implemented."""
+    _require_integration_configurations(scope)
+    set_tenant_scope(session, scope.tenant_id)
+    configurations = list_integration_configurations(session, tenant_id=scope.tenant_id)
+    return templates.TemplateResponse(
+        request,
+        "ad17_integrations.html",
+        {
+            "configurations": configurations,
+            "all_purposes": _ALL_INTEGRATION_PURPOSES,
+            "all_environments": _ALL_INTEGRATION_ENVIRONMENTS,
+            "error": error,
+        },
+    )
+
+
+@router.post("/ops/integrations")
+def create_integration_page(
+    request: Request,
+    provider_registry_id: str = Form(...),
+    purpose: str = Form(...),
+    environment: str = Form("test"),
+    credential_ref: str = Form(""),
+    entitlement_evidence_id: str = Form(""),
+    quota_profile_id: str = Form(...),
+    scope: TenantScope = Depends(get_current_scope),
+    session: Session = Depends(get_db_session),
+):
+    _require_integration_configurations(scope)
+    set_tenant_scope(session, scope.tenant_id)
+    try:
+        create_integration_configuration(
+            session,
+            tenant_id=scope.tenant_id,
+            provider_registry_id=provider_registry_id,
+            purpose=purpose,
+            environment=environment,
+            credential_ref=credential_ref or None,
+            entitlement_evidence_id=entitlement_evidence_id or None,
+            quota_profile_id=quota_profile_id,
+        )
+    except InvalidIntegrationConfigurationError as exc:
+        session.rollback()
+        configurations = list_integration_configurations(session, tenant_id=scope.tenant_id)
+        return templates.TemplateResponse(
+            request,
+            "ad17_integrations.html",
+            {
+                "configurations": configurations,
+                "all_purposes": _ALL_INTEGRATION_PURPOSES,
+                "all_environments": _ALL_INTEGRATION_ENVIRONMENTS,
+                "error": str(exc),
+            },
+            status_code=400,
+        )
+    session.commit()
+    return RedirectResponse(url="/ops/integrations", status_code=303)

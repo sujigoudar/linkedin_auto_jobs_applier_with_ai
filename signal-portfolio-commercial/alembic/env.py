@@ -20,6 +20,7 @@ from app.db import Base
 import app.models.api_key  # noqa: E402,F401
 import app.models.billing  # noqa: E402,F401
 import app.models.eligibility  # noqa: E402,F401
+import app.models.integration_configuration  # noqa: E402,F401
 import app.models.ledger  # noqa: E402,F401
 import app.models.portfolio_version  # noqa: E402,F401
 import app.models.product  # noqa: E402,F401
