@@ -34,6 +34,7 @@ import logging
 from datetime import datetime, timezone
 
 from app.brokers.base import BrokerAdapter
+from app.capital_allocator import CapitalAllocator
 from app.db import SignalStore
 from app.lifecycle.manager import PositionLifecycleManager
 from app.models import DestinationAccount, OrderResult, OrderStatus, Side
@@ -48,11 +49,19 @@ class OrderReconciler:
         brokers: dict[str, BrokerAdapter],
         interval_seconds: float = 30.0,
         lifecycle_manager: PositionLifecycleManager | None = None,
+        capital_allocator: CapitalAllocator | None = None,
     ):
         self.store = store
         self.brokers = brokers
         self.interval_seconds = interval_seconds
         self.lifecycle_manager = lifecycle_manager
+        # E03 (bounded): released in `_correct_position` once a PENDING
+        # order this reserved capital for reaches a confirmed terminal
+        # status -- see app/capital_allocator.py's "Known gap" section.
+        # None (the default) is a safe no-op: every order's own
+        # `reserved_notional` is then just never released here, same as
+        # before this reservation-timing fix existed.
+        self.capital_allocator = capital_allocator
         self._task: asyncio.Task | None = None
         #: See PriceMonitor.last_success_at (app/pricing.py) -- same contract,
         #: surfaced by app/main.py's /health.
@@ -349,6 +358,7 @@ class OrderReconciler:
     ) -> None:
         if not order["symbol"] or not order["side"]:
             self.store.update_order_status(order["id"], result)
+            self._release_reservation_if_any(order)
             return  # nothing was optimistically recorded for this order to correct
 
         side = Side(order["side"])
@@ -383,3 +393,16 @@ class OrderReconciler:
         self.store.correct_position_and_update_order_status(
             order["id"], order["account_id"], order["symbol"], signed_delta, result
         )
+        self._release_reservation_if_any(order)
+
+    def _release_reservation_if_any(self, order: dict) -> None:
+        """E03 (bounded): `order`'s status is now confirmed terminal
+        (REJECTED/FILLED) -- release the notional it reserved, if any,
+        exactly once. `order` only ever carries a `reserved_notional` when
+        it was set at admission time specifically because this exact
+        poll-and-resolve path was guaranteed to eventually run (see
+        `save_order_result`'s docstring) -- so this is the one place
+        allowed to release it."""
+        reserved_notional = order.get("reserved_notional")
+        if self.capital_allocator is not None and reserved_notional:
+            self.capital_allocator.release(order["account_id"], reserved_notional)

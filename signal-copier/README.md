@@ -1222,23 +1222,39 @@ every financial command independent of any single route's own auth logic
   readback to eventually resolve), and only a broker-confirmed
   `REJECTED` unregisters the plan. See
   `tests/test_exe01b_error_result_response_lost.py`.
-- **E03 capital allocator — known, disclosed gap, not yet closed:** the
-  provisional notional reservation is released as soon as `place_order`
-  returns, for every outcome including `PENDING` — but a `PENDING` order
-  isn't part of confirmed exposure yet (that only counts orders whose
-  stored status is actually `FILLED`). Between "broker accepted,
-  reported PENDING" and "reconciliation later confirms the fill," that
-  notional counts toward neither the reservation ledger nor confirmed
-  exposure, so a second signal admitted in that window can push real
-  combined exposure past the configured ceiling. See
-  `app/capital_allocator.py`'s docstring and
+- **E03 capital allocator reservation timing (fixed for the pollable
+  case, bounded):** a provisional notional reservation used to be
+  released as soon as `place_order` returned, for every outcome
+  including `PENDING` — but a `PENDING` order isn't part of confirmed
+  exposure yet (that only counts orders whose stored status is actually
+  `FILLED`), so releasing it immediately briefly counted that notional
+  toward neither the reservation ledger nor confirmed exposure, letting
+  a second signal push real combined exposure past the configured
+  ceiling. Now: a `PENDING` result that carries a real `broker_order_id`
+  keeps its reservation until `app/reconciliation.py`'s polling loop
+  confirms that exact order's terminal status (`FILLED`/`REJECTED`) —
+  `app/db.py`'s `orders.reserved_notional` column for a plain account,
+  `app/lifecycle/manager.py`'s `PendingEntry.reserved_notional` for a
+  `managed_lifecycle` one. A `PENDING` result with no `broker_order_id`
+  at all (the same ambiguous "may have reached the venue before an
+  error" situation `EXE-01`/`EXE-01b` already handle) still releases
+  immediately, same as before this fix — deferring release there has
+  nothing that's guaranteed to ever revisit it, which risks a
+  reservation that's never released, worse than the timing gap it would
+  close. See `app/capital_allocator.py`'s docstring and
   `tests/test_e03_capital_exposure_gate.py`'s
-  `test_known_gap_two_sequential_pending_orders_can_both_be_admitted_past_the_ceiling`
-  (a regression-catcher for the eventual fix, not a claim this is fine).
-  Correctly closing it needs the reservation to survive until
-  reconciliation resolves the order to a terminal state; not attempted
-  here since doing it wrong risks a reservation that's never released,
-  worse than the gap it would close.
+  `test_pending_with_a_broker_order_id_keeps_its_reservation_and_blocks_a_second_entry`,
+  `test_reservation_releases_once_reconciliation_confirms_the_pending_order_is_rejected`,
+  `test_managed_lifecycle_pending_entry_with_a_broker_order_id_keeps_its_reservation`,
+  and `test_pending_with_no_broker_order_id_still_releases_immediately_a_narrower_remaining_gap`
+  (the last one documents what's still not closed, not a claim it's
+  fine). This adds `orders.reserved_notional` (nullable, additive) via
+  `alembic/versions/0002_add_reserved_notional_to_orders.py` — a fresh
+  database gets it automatically from `app/db.py`'s `SCHEMA`, but an
+  existing, already-Alembic-stamped deployment needs an operator to run
+  `alembic upgrade head` once after upgrading (see that migration's own
+  docstring and `_stamp_alembic_head_if_needed`'s, which explains why
+  `SignalStore`'s own bootstrap can't do this automatically).
 - Never commit `.env` or real `config/routing.yaml` /
   `config/accounts.yaml` if they end up containing anything
   account-identifying (they're gitignored by default).

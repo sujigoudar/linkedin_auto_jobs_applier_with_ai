@@ -64,6 +64,7 @@ from collections import defaultdict
 from datetime import datetime, timezone
 
 from app.brokers.base import BrokerAdapter
+from app.capital_allocator import CapitalAllocator
 from app.lifecycle.close_arbiter import CloseArbiter
 from app.lifecycle.models import (
     PendingEntry,
@@ -96,6 +97,14 @@ class PositionLifecycleManager:
         # concurrent observations of the same broker order can both read the
         # checkpoint before either advances it and both apply the same fill.
         self._pending_entry_locks: dict[tuple[str, str], asyncio.Lock] = defaultdict(asyncio.Lock)
+        # E03 (bounded): set by app/engine.py's Engine.__init__ right after
+        # it constructs its own CapitalAllocator (this manager is often
+        # constructed first, by app/main.py, before that exists) --
+        # `resolve_pending_entry` uses it to release a pending entry's
+        # reservation once its outcome is confirmed terminal. None (never
+        # wired in) is a safe no-op: reservations then just aren't
+        # released here, same as before this fix existed.
+        self.capital_allocator: CapitalAllocator | None = None
 
     def get_lifecycle(self, account_id: str, symbol: str) -> PositionLifecycle | None:
         return self._lifecycles.get((account_id, symbol))
@@ -365,7 +374,12 @@ class PositionLifecycleManager:
         return lifecycle
 
     def register_pending_entry(
-        self, account: DestinationAccount, symbol: str, broker_order_id: str | None, requested_quantity: float
+        self,
+        account: DestinationAccount,
+        symbol: str,
+        broker_order_id: str | None,
+        requested_quantity: float,
+        reserved_notional: float = 0.0,
     ) -> None:
         """Call instead of `on_entry_fill` when the entry order's broker
         response is PENDING rather than a synchronous fill: retains the
@@ -374,11 +388,22 @@ class PositionLifecycleManager:
         PendingEntry's docstring for why guessing here is exactly the bug
         this exists to avoid. `app/reconciliation.py` polls
         `list_pending_entries()` and eventually calls
-        `resolve_pending_entry` once the broker's final word is known."""
+        `resolve_pending_entry` once the broker's final word is known.
+
+        `reserved_notional` (E03, bounded): the caller's still-held
+        app/capital_allocator.py reservation for this entry -- pass it ONLY
+        when `broker_order_id` is set (see PendingEntry's docstring on why
+        that's the one case `resolve_pending_entry` is guaranteed to
+        eventually release it for); every other caller releases
+        immediately at the call site instead and leaves this 0.0."""
         lifecycle = self._lifecycles.get((account.account_id, symbol))
         if lifecycle is None:
             return
-        lifecycle.pending_entry = PendingEntry(broker_order_id=broker_order_id, requested_quantity=requested_quantity)
+        lifecycle.pending_entry = PendingEntry(
+            broker_order_id=broker_order_id,
+            requested_quantity=requested_quantity,
+            reserved_notional=reserved_notional,
+        )
         self._persist(lifecycle)
 
     async def resolve_pending_entry(
@@ -498,6 +523,16 @@ class PositionLifecycleManager:
 
             pending.remainder_resolved = True
             lifecycle.pending_entry = None
+
+            # E03 (bounded): this pending entry's outcome is now confirmed
+            # terminal -- release whatever notional it still held, exactly
+            # once (a repeated resolve_pending_entry call for the same
+            # entry can't reach here again: `lifecycle.pending_entry` above
+            # is already None, so the "lifecycle.pending_entry is None"
+            # guard at this method's top returns before this point on any
+            # later call).
+            if self.capital_allocator is not None and pending.reserved_notional:
+                self.capital_allocator.release(account.account_id, pending.reserved_notional)
 
             # PRO-07: use `pending.confirmed_filled_quantity` (the highest
             # value ever actually confirmed and applied), not the raw
@@ -1164,6 +1199,7 @@ def _lifecycle_to_state(lifecycle: PositionLifecycle, ledger: dict) -> dict:
             "requested_quantity": lifecycle.pending_entry.requested_quantity,
             "confirmed_filled_quantity": lifecycle.pending_entry.confirmed_filled_quantity,
             "remainder_resolved": lifecycle.pending_entry.remainder_resolved,
+            "reserved_notional": lifecycle.pending_entry.reserved_notional,
         },
         "ledger": ledger,
     }
@@ -1237,6 +1273,7 @@ def _lifecycle_from_state(row: dict) -> PositionLifecycle:
             requested_quantity=pending_entry_row["requested_quantity"],
             confirmed_filled_quantity=pending_entry_row.get("confirmed_filled_quantity", 0.0),
             remainder_resolved=pending_entry_row.get("remainder_resolved", False),
+            reserved_notional=pending_entry_row.get("reserved_notional", 0.0),
         )
     )
 

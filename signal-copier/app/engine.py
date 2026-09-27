@@ -114,6 +114,13 @@ class SignalCopierEngine:
         # app/capital_allocator.py's module docstring for exactly what this
         # does and doesn't enforce.
         self.capital_allocator = CapitalAllocator()
+        # Wired in after construction (app/lifecycle/manager.py's own
+        # __init__ can't take this: main.py often constructs a
+        # PositionLifecycleManager before this Engine, and so before this
+        # CapitalAllocator, exists) -- lets `resolve_pending_entry` release
+        # a managed entry's reservation once its outcome is confirmed
+        # terminal. See PendingEntry's docstring for why.
+        self.lifecycle_manager.capital_allocator = self.capital_allocator
 
     def _effective_settings(self, signal: Signal, account: DestinationAccount) -> SettingsOverride:
         account_defaults = SettingsOverride(
@@ -300,7 +307,20 @@ class SignalCopierEngine:
                     signal_id=signal.id,
                     message=str(exc),
                 )
-            finally:
+
+            # E03 (bounded): a PENDING result with a real broker_order_id is
+            # the one case app/reconciliation.py's per-pending-order loop is
+            # guaranteed to eventually poll to a terminal status and release
+            # this reservation for (via _correct_position) -- everything
+            # else (REJECTED/ERROR/FILLED, or a PENDING with no
+            # broker_order_id to ever poll) releases immediately instead,
+            # since nothing else guarantees a later release and deferring
+            # it would risk a reservation that's never released (see
+            # app/capital_allocator.py's "Known gap").
+            reserved_notional = None
+            if result.status == OrderStatus.PENDING and result.broker_order_id is not None:
+                reserved_notional = notional
+            else:
                 self.capital_allocator.release(account.account_id, notional)
 
             applied_quantity = None
@@ -321,6 +341,7 @@ class SignalCopierEngine:
                 side=order_signal.side,
                 requested_quantity=quantity,
                 applied_quantity=applied_quantity,
+                reserved_notional=reserved_notional,
             )
             results.append(result)
 
@@ -333,10 +354,18 @@ class SignalCopierEngine:
         if configured. Returns (admitted, notional_reserved, rejection_or_None).
         `notional_reserved` is always the caller's responsibility to release
         via `self.capital_allocator.release(account.account_id, notional)`
-        once the broker call this admission was gating has returned (0.0 is
-        a safe no-op release when nothing was actually reserved, i.e. the
-        check was skipped). See app/capital_allocator.py for what this
-        does and doesn't enforce."""
+        once the broker call this admission was gating has returned AND the
+        result isn't a PENDING order with a real broker_order_id -- that one
+        case defers the release instead, carrying `notional` forward
+        (`save_order_result(reserved_notional=...)` for the plain path,
+        `register_pending_entry(reserved_notional=...)` for managed_lifecycle)
+        so it survives until app/reconciliation.py confirms a terminal
+        status, closing the window where a PENDING order's notional counted
+        toward neither this reservation nor confirmed exposure. See both
+        callers and app/capital_allocator.py's "Known gap" section for why
+        every OTHER outcome still releases immediately (0.0 is a safe no-op
+        release when nothing was actually reserved, i.e. the check was
+        skipped)."""
         if account.max_notional_exposure is None or order_signal.price is None:
             return True, 0.0, None
         notional = abs(quantity) * order_signal.price
@@ -558,18 +587,24 @@ class SignalCopierEngine:
                 account.account_id,
                 symbol,
             )
+            # E03 (bounded): release now, not defer -- a broker_order_id=None
+            # entry is never polled by app/reconciliation.py's
+            # _reconcile_pending_entries (it has nothing to poll), so
+            # nothing guarantees resolve_pending_entry is ever called for
+            # this one. Deferring here risks a reservation that's never
+            # released -- see app/capital_allocator.py's "Known gap".
+            self.capital_allocator.release(account.account_id, notional)
             self.lifecycle_manager.register_pending_entry(account, symbol, None, quantity)
             return OrderResult(
                 account_id=account.account_id, status=OrderStatus.ERROR, signal_id=signal.id, message=str(exc)
             )
-        finally:
-            self.capital_allocator.release(account.account_id, notional)
 
         if result.status == OrderStatus.REJECTED:
             # A broker-confirmed rejection (or a client-side validation
             # failure that never reached the network) is the one case that
             # definitely never happened -- nothing to protect, so nothing
             # to keep registered.
+            self.capital_allocator.release(account.account_id, notional)
             self.lifecycle_manager.unregister_plan(account.account_id, symbol)
         elif result.status == OrderStatus.ERROR:
             # Same ambiguity as the raised-exception branch above, just
@@ -590,8 +625,15 @@ class SignalCopierEngine:
                 symbol,
                 result.message,
             )
+            # E03 (bounded): same "release now, not defer" reasoning as the
+            # raised-exception branch above -- an ERROR result is never
+            # polled by _reconcile_pending_entries either.
+            self.capital_allocator.release(account.account_id, notional)
             self.lifecycle_manager.register_pending_entry(account, symbol, None, quantity)
         elif result.status == OrderStatus.FILLED:
+            # Confirmed exposure now includes this fill, so the provisional
+            # reservation's job is done.
+            self.capital_allocator.release(account.account_id, notional)
             filled_quantity = result.filled_quantity if result.filled_quantity is not None else quantity
             self.store.record_fill(account.account_id, symbol, signal.side, filled_quantity)
             await self.lifecycle_manager.on_entry_fill(account, symbol, filled_quantity)
@@ -611,7 +653,20 @@ class SignalCopierEngine:
                 account.account_id,
                 symbol,
             )
-            self.lifecycle_manager.register_pending_entry(account, symbol, result.broker_order_id, quantity)
+            # E03 (bounded): this is the one case that actually closes the
+            # reservation-timing gap -- a real broker_order_id means
+            # _reconcile_pending_entries is guaranteed to eventually poll
+            # this and call resolve_pending_entry, which releases the
+            # reservation then instead of now. No broker_order_id at all is
+            # the same "nothing will ever revisit this" situation as the
+            # ERROR/exception branches above, so it releases immediately.
+            if result.broker_order_id is not None:
+                self.lifecycle_manager.register_pending_entry(
+                    account, symbol, result.broker_order_id, quantity, reserved_notional=notional
+                )
+            else:
+                self.capital_allocator.release(account.account_id, notional)
+                self.lifecycle_manager.register_pending_entry(account, symbol, None, quantity)
             if result.filled_quantity is not None and result.filled_quantity > 0:
                 # The initial synchronous response can itself already carry
                 # a confirmed partial fill (e.g. some brokers report

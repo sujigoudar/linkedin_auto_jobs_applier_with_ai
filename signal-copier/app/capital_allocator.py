@@ -27,28 +27,35 @@ allowance and legal-units checklist before every admission):
   a per-account asyncio.Lock across "read confirmed exposure, check,
   provisionally reserve" so the second concurrent caller sees the
   first's reservation before deciding. The provisional reservation is
-  released as soon as that order call returns, for every outcome
-  (REJECTED/ERROR/FILLED/PENDING alike) -- for REJECTED/ERROR that's
-  correct (nothing happened, nothing to keep reserved), and for FILLED
-  the fill is immediately part of the confirmed exposure the next
-  admission call will see.
-- **Known gap, not yet closed: a PENDING result's notional is released
-  the same way, but a PENDING order is NOT yet part of confirmed
-  exposure** (confirmed exposure only counts a symbol once its
+  released as soon as that order call returns for REJECTED/ERROR
+  (nothing happened, nothing to keep reserved) and for FILLED (the fill
+  is immediately part of the confirmed exposure the next admission call
+  will see).
+- **PENDING reservation timing (previously a known gap, now closed for
+  the pollable case):** a PENDING order is NOT yet part of confirmed
+  exposure (confirmed exposure only counts a symbol once its
   `average_cost` is resolvable from an actual recorded fill -- see
-  `confirmed_open_notional` below). Between "broker accepted, reported
-  PENDING" and "reconciliation later confirms the fill," this specific
-  notional briefly counts toward neither the reservation ledger nor
-  confirmed exposure -- a second signal admitted in that window could
-  push real total exposure past the configured ceiling. Correctly
-  closing this needs the reservation to survive until reconciliation
-  resolves the order to a terminal state (dropped on a confirmed
-  rejection/cancellation, or handed off to confirmed exposure exactly
-  once on a confirmed fill) rather than being released unconditionally
-  right after the synchronous call returns -- deliberately not attempted
-  in this pass: doing it wrong risks a reservation that's never
-  released, which would be worse (silently blocking all future
-  admissions for that account) than the gap it would close.
+  `confirmed_open_notional` below), so releasing its reservation
+  immediately, the same as REJECTED/ERROR/FILLED, would briefly count it
+  toward neither the reservation ledger nor confirmed exposure -- a
+  second signal admitted in that window could push real total exposure
+  past the configured ceiling. When the PENDING result carries a real
+  `broker_order_id`, app/reconciliation.py's polling loop is guaranteed
+  to eventually observe this exact order reach a terminal status
+  (FILLED/REJECTED) and is the one place allowed to release the
+  reservation then -- see app/engine.py's `_try_reserve_capital`
+  docstring and both its callers, `app/db.py`'s
+  `save_order_result(reserved_notional=...)` for a plain account, and
+  `app/lifecycle/manager.py`'s `PendingEntry.reserved_notional` /
+  `resolve_pending_entry` for a managed_lifecycle account.
+  **Still not closed:** a PENDING result with no `broker_order_id` at
+  all (nothing to poll -- the same ambiguous case as EXE-01/EXE-01b's
+  raised-or-returned ERROR) still releases immediately, same as before
+  this fix. Deferring release for an order nothing is guaranteed to ever
+  revisit would risk a reservation that's never released, which would be
+  worse (silently blocking all future admissions for that account) than
+  the timing gap it would close -- this is a narrower, deliberately
+  bounded slice of the original gap, not the whole thing.
 - This provisional ledger is in-memory and process-lifetime only, same
   as e.g. app/pricing.py's PriceMonitor cache -- a restart has no
   in-flight admissions to lose (nothing survives a request that never

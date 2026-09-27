@@ -62,6 +62,13 @@ CREATE TABLE IF NOT EXISTS orders (
     filled_price REAL,
     message TEXT,
     executed_at TEXT NOT NULL,
+    -- E03 (bounded): the capital_allocator.py notional this specific order
+    -- reserved, set only while its status is 'pending' and there's a real
+    -- broker_order_id to poll -- see app/capital_allocator.py's "Known gap"
+    -- section and app/reconciliation.py's _correct_position, the one place
+    -- that releases it once this row's status is confirmed terminal. NULL
+    -- for every other order (nothing to release).
+    reserved_notional REAL,
     FOREIGN KEY (signal_id) REFERENCES signals (id)
 );
 
@@ -296,8 +303,22 @@ class SignalStore:
         side: Side | None = None,
         requested_quantity: float | None = None,
         applied_quantity: float | None = None,
+        reserved_notional: float | None = None,
     ) -> int:
         """Persist an order result and return its row id.
+
+        `reserved_notional` (E03, bounded): pass this order's
+        app/capital_allocator.py reservation ONLY when `result.status` is
+        PENDING and there's a real `result.broker_order_id` to poll --
+        i.e. only when app/reconciliation.py's per-pending-order loop is
+        guaranteed to eventually observe this order's terminal status and
+        release it via `_correct_position`. Every other outcome (REJECTED/
+        ERROR/FILLED, or a PENDING with no broker_order_id to ever poll)
+        must release its reservation immediately at the call site instead
+        and pass None here -- deferring release for an order nothing will
+        ever revisit would leak the reservation forever, which
+        app/capital_allocator.py's own docstring calls out as worse than
+        the gap this closes.
 
         `broker`/`symbol`/`side`/`requested_quantity` are what was actually
         sent to the broker for this order (not just the original signal —
@@ -325,8 +346,8 @@ class SignalStore:
             cursor = conn.execute(
                 """INSERT INTO orders
                    (account_id, broker, symbol, side, requested_quantity, signal_id, status,
-                    broker_order_id, filled_quantity, filled_price, message, executed_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    broker_order_id, filled_quantity, filled_price, message, executed_at, reserved_notional)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     result.account_id,
                     broker,
@@ -340,6 +361,7 @@ class SignalStore:
                     result.filled_price,
                     result.message,
                     result.executed_at.isoformat(),
+                    reserved_notional,
                 ),
             )
             # lastrowid is None only for a statement that isn't a rowid-table
@@ -355,7 +377,7 @@ class SignalStore:
         with self._connect() as conn:
             rows = conn.execute(
                 """SELECT id, account_id, broker, symbol, side, requested_quantity,
-                          filled_quantity, broker_order_id
+                          filled_quantity, broker_order_id, reserved_notional
                    FROM orders WHERE status = 'pending' AND broker_order_id IS NOT NULL"""
             ).fetchall()
         return [
@@ -368,6 +390,7 @@ class SignalStore:
                 "requested_quantity": r[5],
                 "filled_quantity": r[6],
                 "broker_order_id": r[7],
+                "reserved_notional": r[8],
             }
             for r in rows
         ]

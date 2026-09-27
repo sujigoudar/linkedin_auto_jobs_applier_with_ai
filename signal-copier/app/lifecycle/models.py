@@ -164,6 +164,15 @@ class PendingEntry:
     requested_quantity: float
     confirmed_filled_quantity: float = 0.0
     remainder_resolved: bool = False
+    #: E03 (bounded): the app/capital_allocator.py notional this entry
+    #: reserved, carried forward from admission time ONLY when
+    #: `broker_order_id` is set (so app/reconciliation.py's
+    #: `_reconcile_pending_entries` is guaranteed to eventually poll this
+    #: and call `resolve_pending_entry`, which releases it). 0.0 for a
+    #: `broker_order_id=None` entry (an ambiguous lost/errored response) --
+    #: that case releases immediately at the call site instead, since
+    #: nothing guarantees this will ever be polled to a terminal state.
+    reserved_notional: float = 0.0
 
 
 @dataclass

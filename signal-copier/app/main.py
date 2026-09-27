@@ -129,6 +129,7 @@ reconciler = OrderReconciler(
     brokers=brokers,
     interval_seconds=config.RECONCILE_INTERVAL_SECONDS,
     lifecycle_manager=lifecycle_manager,
+    capital_allocator=engine.capital_allocator,
 )
 price_monitor = PriceMonitor(
     lifecycle_manager=lifecycle_manager,
