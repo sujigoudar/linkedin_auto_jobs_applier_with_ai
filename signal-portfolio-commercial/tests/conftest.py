@@ -62,6 +62,7 @@ import app.models.sleeve  # noqa: F401
 import app.models.support_case  # noqa: F401
 import app.models.tenancy  # noqa: F401
 import app.models.webhook_event  # noqa: F401
+import app.models.workspace_settings  # noqa: F401
 
 _PG_BIN = Path("/usr/lib/postgresql/16/bin")
 

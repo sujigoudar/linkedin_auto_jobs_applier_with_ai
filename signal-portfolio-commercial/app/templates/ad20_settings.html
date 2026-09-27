@@ -1,0 +1,71 @@
+{% extends "_base.html" %}
+{% block title %}Workspace customization and configuration{% endblock %}
+{% block content %}
+<h1>Workspace customization and configuration</h1>
+
+{% if error %}<div class="conflict">{{ error }}</div>{% endif %}
+
+<div class="panel">
+  <h2>Current shared default</h2>
+  {% if settings %}
+  <table>
+    <tbody>
+      <tr><th>Workspace name</th><td>{{ settings.workspace_name }}</td></tr>
+      <tr><th>Theme</th><td>{{ settings.theme.value }}</td></tr>
+      <tr><th>Density</th><td>{{ settings.density.value }}</td></tr>
+      <tr><th>Visible panels</th><td>{{ settings.visible_panel_ids | join(", ") }}</td></tr>
+      <tr><th>Column order</th><td>{{ settings.column_order | join(", ") }}</td></tr>
+      <tr><th>Notification route</th><td>{{ settings.notification_route_id or "(none)" }}</td></tr>
+    </tbody>
+  </table>
+  {% else %}
+  <div class="empty-state">
+    <p>No workspace default has been saved for this tenant yet.</p>
+  </div>
+  {% endif %}
+</div>
+
+<div class="panel">
+  <h2>Editor</h2>
+  <form method="post" action="/ops/settings">
+    <label for="workspace_name">Workspace name</label>
+    <input type="text" id="workspace_name" name="workspace_name" maxlength="80"
+      value="{{ settings.workspace_name if settings else '' }}" required>
+
+    <label for="theme">Theme</label>
+    <select id="theme" name="theme">
+      {% for t in all_themes %}<option value="{{ t }}">{{ t }}</option>{% endfor %}
+    </select>
+
+    <label for="density">Density</label>
+    <select id="density" name="density">
+      {% for d in all_densities %}<option value="{{ d }}">{{ d }}</option>{% endfor %}
+    </select>
+
+    <label for="visible_panel_ids">Visible panels (comma-separated)</label>
+    <input type="text" id="visible_panel_ids" name="visible_panel_ids"
+      value="{{ settings.visible_panel_ids | join(', ') if settings else '' }}">
+    <p>Mandatory safety/fees/origin panels cannot hide: {{ mandatory_panel_ids | join(", ") }}.</p>
+
+    <label for="column_order">Column order (comma-separated)</label>
+    <input type="text" id="column_order" name="column_order"
+      value="{{ settings.column_order | join(', ') if settings else '' }}">
+
+    <label for="notification_route_id">Notification route id (optional)</label>
+    <input type="text" id="notification_route_id" name="notification_route_id"
+      value="{{ settings.notification_route_id or '' if settings else '' }}">
+
+    <p><button type="submit">Save workspace default</button></p>
+  </form>
+</div>
+
+<div class="panel">
+  <h2>Scope</h2>
+  <p>This is the tenant's own shared admin default, not a per-user personal view. Cosmetic configuration never changes policy, financial permissions, or required disclosure visibility -- no field here touches any of those.</p>
+</div>
+
+<div class="panel">
+  <h2>Personal view</h2>
+  <p><span class="badge badge-unknown">UNSUPPORTED</span> -- a per-user personal view override is a separate, not-yet-built scope; every user currently sees this shared tenant default.</p>
+</div>
+{% endblock %}

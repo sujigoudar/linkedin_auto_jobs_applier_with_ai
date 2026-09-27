@@ -38,6 +38,7 @@ import app.models.sleeve  # noqa: E402,F401
 import app.models.support_case  # noqa: E402,F401
 import app.models.tenancy  # noqa: E402,F401
 import app.models.webhook_event  # noqa: E402,F401
+import app.models.workspace_settings  # noqa: E402,F401
 
 config = context.config
 if config.config_file_name is not None:

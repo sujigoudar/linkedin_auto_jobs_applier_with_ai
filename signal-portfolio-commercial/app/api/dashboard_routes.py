@@ -207,6 +207,12 @@ from app.services.publisher_destination import (
     list_publisher_destinations,
 )
 from app.services.support_case import InvalidSupportCaseError, create_support_case, list_support_cases
+from app.services.workspace_settings import (
+    MANDATORY_PANEL_IDS,
+    InvalidWorkspaceSettingsError,
+    get_workspace_settings,
+    save_workspace_settings,
+)
 from app.services.product_admin import (
     InvalidProductDraftError,
     SlugAlreadyExistsError,
@@ -1636,3 +1642,86 @@ def audit_log_page(
             "action": action or "",
         },
     )
+
+
+_ALL_WORKSPACE_THEMES = ["system", "dark", "light"]
+_ALL_WORKSPACE_DENSITIES = ["comfortable", "compact"]
+
+
+def _require_workspace_settings(scope: TenantScope) -> None:
+    try:
+        require_permission(scope.role, "manage_workspace_settings")
+    except PermissionDenied as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+
+@router.get("/ops/settings")
+def workspace_settings_page(
+    request: Request,
+    scope: TenantScope = Depends(get_current_scope),
+    session: Session = Depends(get_db_session),
+    error: str | None = None,
+):
+    """AD-20 "Workspace customization and configuration" -- see this
+    route module's own docstring above for what is and is not
+    implemented."""
+    _require_workspace_settings(scope)
+    set_tenant_scope(session, scope.tenant_id)
+    settings = get_workspace_settings(session, tenant_id=scope.tenant_id)
+    return templates.TemplateResponse(
+        request,
+        "ad20_settings.html",
+        {
+            "settings": settings,
+            "all_themes": _ALL_WORKSPACE_THEMES,
+            "all_densities": _ALL_WORKSPACE_DENSITIES,
+            "mandatory_panel_ids": sorted(MANDATORY_PANEL_IDS),
+            "error": error,
+        },
+    )
+
+
+@router.post("/ops/settings")
+def save_workspace_settings_page(
+    request: Request,
+    workspace_name: str = Form(...),
+    theme: str = Form(...),
+    density: str = Form(...),
+    visible_panel_ids: str = Form(""),
+    column_order: str = Form(""),
+    notification_route_id: str = Form(""),
+    scope: TenantScope = Depends(get_current_scope),
+    session: Session = Depends(get_db_session),
+):
+    _require_workspace_settings(scope)
+    set_tenant_scope(session, scope.tenant_id)
+    panel_ids = [v.strip() for v in visible_panel_ids.split(",") if v.strip()]
+    columns = [v.strip() for v in column_order.split(",") if v.strip()]
+    try:
+        save_workspace_settings(
+            session,
+            tenant_id=scope.tenant_id,
+            workspace_name=workspace_name,
+            theme=theme,
+            density=density,
+            visible_panel_ids=panel_ids,
+            column_order=columns,
+            notification_route_id=notification_route_id or None,
+        )
+    except InvalidWorkspaceSettingsError as exc:
+        session.rollback()
+        settings = get_workspace_settings(session, tenant_id=scope.tenant_id)
+        return templates.TemplateResponse(
+            request,
+            "ad20_settings.html",
+            {
+                "settings": settings,
+                "all_themes": _ALL_WORKSPACE_THEMES,
+                "all_densities": _ALL_WORKSPACE_DENSITIES,
+                "mandatory_panel_ids": sorted(MANDATORY_PANEL_IDS),
+                "error": str(exc),
+            },
+            status_code=400,
+        )
+    session.commit()
+    return RedirectResponse(url="/ops/settings", status_code=303)

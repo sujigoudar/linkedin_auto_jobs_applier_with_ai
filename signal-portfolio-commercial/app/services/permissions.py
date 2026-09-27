@@ -107,6 +107,11 @@ _ALLOWED: dict[str, frozenset[Role]] = {
     #: AD-18 "Audit log and release evidence" -- exactly this screen's
     #: own access list.
     "view_audit_log": frozenset({Role.OWNER, Role.REVIEWER}),
+    #: AD-20 "Workspace customization and configuration" -- exactly this
+    #: screen's own access list. Cosmetic as the fields are, changing the
+    #: tenant-wide shared default is an ownership decision, not one any
+    #: other operator role should carry.
+    "manage_workspace_settings": frozenset({Role.OWNER}),
 }
 
 

@@ -1516,3 +1516,56 @@ def test_revoke_staff_member_appends_a_real_audit_event(db_session):
     )
     assert response.status_code == 200
     assert "revoke_staff_member" in response.text
+
+
+def test_workspace_settings_page_requires_owner(db_session):
+    client = _client(db_session)
+    response = client.get("/ops/settings", headers=_auth_headers(role=MembershipRole.REVIEWER))
+    assert response.status_code == 403
+
+
+def test_workspace_settings_page_shows_the_real_empty_state(db_session):
+    client = _client(db_session)
+    response = client.get("/ops/settings", headers=_auth_headers(role=MembershipRole.OWNER))
+    assert response.status_code == 200
+    assert "No workspace default has been saved" in response.text
+
+
+def test_save_workspace_settings_rejects_hiding_a_mandatory_panel_over_real_http(db_session):
+    client = _client(db_session)
+    response = client.post(
+        "/ops/settings",
+        data={
+            "workspace_name": "Ops desk",
+            "theme": "system",
+            "density": "comfortable",
+            "visible_panel_ids": "research_queue",
+            "column_order": "",
+            "notification_route_id": "",
+        },
+        headers=_auth_headers(role=MembershipRole.OWNER),
+    )
+    assert response.status_code == 400
+    assert "mandatory panels cannot be hidden" in response.text
+
+
+def test_save_then_reload_workspace_settings_over_real_http(db_session):
+    client = _client(db_session)
+    headers = _auth_headers(role=MembershipRole.OWNER)
+    create_response = client.post(
+        "/ops/settings",
+        data={
+            "workspace_name": "HTTP Ops desk",
+            "theme": "dark",
+            "density": "compact",
+            "visible_panel_ids": "release_blockers, business_indicators",
+            "column_order": "name, state",
+            "notification_route_id": "",
+        },
+        headers=headers,
+    )
+    assert create_response.status_code == 303
+
+    final_response = client.get("/ops/settings", headers=headers)
+    assert "HTTP Ops desk" in final_response.text
+    assert "dark" in final_response.text

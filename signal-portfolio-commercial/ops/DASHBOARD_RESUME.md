@@ -154,8 +154,15 @@ Seven slices are DONE:
   live cluster, not just asserted. Also fixed a latent version of the
   same migration-ordering bug found during AD-08, this time in
   `_apply_append_only` rather than `_apply_row_level_security`.
+- AD-20 Workspace customization and configuration: `GET`/`POST /ops/
+  settings` (OWNER only) -- a real shared tenant-wide cosmetic default
+  (one row per tenant, like `CustomerProfile`'s own precedent, not a
+  per-user personal view). `MANDATORY_PANEL_IDS` (AD-01's own two real
+  panel headings) can never be hidden via `visible_panel_ids` -- "no
+  field here touches a permission, policy, or financial value" holds by
+  construction, not by a runtime check.
 
-Full suite is 468 tests, ruff and mypy both green (**use `python3 -m
+Full suite is 481 tests, ruff and mypy both green (**use `python3 -m
 ruff`/`python3 -m mypy`/`python3 -m pytest` explicitly** -- this sandbox
 has a stray `uv tool`-installed `ruff`/`mypy` shadowing the project's
 real declared versions on bare `PATH`, which produced a false-negative
@@ -176,11 +183,12 @@ See `dashboard_state.json`'s `current_slice`/`second_slice`/
 `twelfth_slice`/`thirteenth_slice`/`fourteenth_slice`/`fifteenth_slice`/
 `sixteenth_slice`/`seventeenth_slice`/`eighteenth_slice`/
 `nineteenth_slice`/`twentieth_slice`/`twentyfirst_slice`/
-`twentysecond_slice` for the exact file lists and what was deliberately
-left unbuilt in each. 43 of 66 screens (AD-01, AD-02, AD-03, AD-04,
-AD-08, PU-03, PU-05, ID-04, AD-16, CU-14, AD-09, CU-16, AD-12, AD-11,
-AD-17, AD-13, AD-19, AD-14, AD-18 partially done) remain -- pick the
-next one following the steps below. **If you add a new table to
+`twentysecond_slice`/`twentythird_slice` for the exact file lists and
+what was deliberately left unbuilt in each. 42 of 66 screens (AD-01,
+AD-02, AD-03, AD-04, AD-08, PU-03, PU-05, ID-04, AD-16, CU-14, AD-09,
+CU-16, AD-12, AD-11, AD-17, AD-13, AD-19, AD-14, AD-18, AD-20 partially
+done) remain -- pick the next one following the steps below. **If you
+add a new table to
 `_TENANT_SCOPED_TABLES` in app/db.py, pin any EARLIER migration that
 already calls `_apply_row_level_security` with no explicit `tables`
 argument to its own frozen snapshot of the tables that existed at that
