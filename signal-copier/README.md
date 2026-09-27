@@ -184,15 +184,23 @@ while a stock alert from that same source still routes normally.
 credentials (env vars per `account_id`) and `PositionLifecycleManager`/
 `CloseArbiter` track protection and available-to-sell state per
 `(account_id, symbol)` independently — nothing here ever pools or
-commingles state across accounts or brokers. That said: **there is no
-unified balance or margin tracking at all yet.** Position sizing
-(`app/risk.py`) uses a flat `multiplier`/`fixed_quantity`/provider-
-override, not a live read of buying power or margin at any broker — an
-undersized/oversized order relative to actual available capital isn't
-caught here. `get_broker_position` (position readback) exists as an
-optional broker capability; a matching `get_account_balance`/margin
-capability does not exist yet — a real, scoped follow-up, not
-implemented in this round.
+commingles state across accounts or brokers. `get_broker_position`
+(position readback) and `get_account_balance` (cash/equity/buying-power/
+margin — see `app/models.py`'s `AccountBalance` and
+`app/brokers/base.py`'s docstring) both exist as optional, per-broker
+capabilities, real (not stubbed) for `AlpacaBroker` (`GET /v2/account`)
+and exposed at `GET /accounts/{account_id}/balance`; `GET /brokers`'
+`has_balance_capability` says which registered brokers actually have it.
+**Deliberately still not implemented for `CCXTBroker`** (spot crypto has
+no single account-wide balance/buying-power figure the way an equity
+account does — see that module's own docstring) — an account on ccxt
+gets `null` for every field, never an invented number. **This is
+read-only observability, not enforcement:** position sizing (`app/risk.py`)
+still uses a flat `multiplier`/`fixed_quantity`/provider-override, never
+a live balance/margin read, and an undersized/oversized order relative to
+actual available capital still isn't caught before submission — closing
+that gap would mean wiring `get_account_balance` into the admission path
+itself, which is a separate, larger change not attempted here.
 
 An account can still opt into one narrower ceiling: `max_notional_exposure`
 (`app/capital_allocator.py`) rejects an entry that would push this
@@ -637,12 +645,16 @@ the table only ever holds what's actually still open.
 Being explicit about what this round did *not* close, rather than
 implying broader coverage than exists:
 
-- **A live price feed driving `on_price_update()` in production.**
-  Nothing calls it outside tests — wiring a real feed per broker (or per
-  exchange) is future work, and profitability claims for a trailing/target
-  strategy shouldn't be trusted until they account for real feed latency
-  and the cancel/replace delays above, not an idealized instant-fill
-  assumption.
+- **A lower-latency, per-broker live price feed.** `app/pricing.py`'s
+  `PriceMonitor` does drive `on_price_update()` in production now (see
+  "Continuous monitoring" below), but only via REST/RPC polling on a
+  fixed interval for the brokers that have a `get_last_price`
+  implementation (ccxt, Alpaca, IBKR) — a genuine websocket/tick stream
+  (ccxt's "pro" support, Alpaca's market-data websocket, an MT5
+  terminal's tick feed, IBKR's persistent `reqMktData` subscription) is
+  future work, and profitability claims for a trailing/target strategy
+  shouldn't be trusted until they account for real feed latency and the
+  cancel/replace delays above, not an idealized instant-fill assumption.
 - **Per-order-family accounting for genuinely independent broker orders**
   (as opposed to this manager's own cancel-then-exit sequence). Everything
   routed through `PositionLifecycleManager` goes through the single
@@ -692,26 +704,30 @@ a tested capability nothing exercises live.
 
 Be precise about what's real here: each broker's optional
 `get_last_price()` (`app/brokers/base.py`) is the only source `PriceMonitor`
-uses — no separate custom price-feed infrastructure. **`CCXTBroker` is
-the only broker with a real implementation**, using ccxt's own unified
-`fetch_ticker` REST call (an existing, broadly-verified library
-capability — not something built from scratch, per this project's
-leverage-existing-solutions principle). It's REST polling on a fixed
-interval (`PRICE_MONITOR_INTERVAL_SECONDS`, default 15s) — **not a
-websocket/tick stream.** ccxt's own websocket ("pro") support, Alpaca's
-market-data websocket, an MT5 terminal's tick feed, and IBKR's
-`reqMktData` would all be real, lower-latency options for the brokers
-that have them, and are a documented next step, not implemented yet.
-Each pass runs its lookups with bounded concurrency (at most 10 in
-flight at once, not fully sequential and not unbounded) so the pass
-doesn't take longer, position by position, as the number of tracked
+uses — no separate custom price-feed infrastructure. **Three brokers have
+a real implementation**: `CCXTBroker` (ccxt's own unified `fetch_ticker`
+REST call), `AlpacaBroker` (`GET /v2/stocks/{symbol}/trades/latest` on
+Alpaca's market-data host), and `IBKRBroker` (`reqTickersAsync`, ib_async's
+one-shot market-data snapshot — falls back to the last close when this
+account has no live/delayed trade-tick entitlement). Every one of these is
+an existing, broadly-verified library capability, not something built
+from scratch, per this project's leverage-existing-solutions principle.
+All three are REST/RPC polling on a fixed interval
+(`PRICE_MONITOR_INTERVAL_SECONDS`, default 15s) — **not a websocket/tick
+stream.** ccxt's own websocket ("pro") support, Alpaca's market-data
+websocket, an MT5 terminal's tick feed, and IBKR's persistent
+`reqMktData` subscription would all be real, lower-latency options for
+the brokers that have them, and remain a documented next step, not
+implemented yet. Each pass runs its lookups with bounded concurrency (at
+most 10 in flight at once, not fully sequential and not unbounded) so the
+pass doesn't take longer, position by position, as the number of tracked
 positions grows.
 `GET /brokers`' `has_last_price_capability` field shows exactly which
-brokers are actually being polled today (currently: ccxt only) — a
-managed-lifecycle position on any other broker is correctly protected on
-entry and on every exit/target event, but its trailing stop won't move
-between those events until that broker also gets a `get_last_price`
-implementation.
+brokers are actually being polled today — a managed-lifecycle position on
+any other broker (SignalStack, MT5, MetaApi, NinjaTrader, Rithmic) is
+correctly protected on entry and on every exit/target event, but its
+trailing stop won't move between those events until that broker also gets
+a `get_last_price` implementation.
 
 `tests/test_price_monitor.py` drives the exact scenario end-to-end
 through `PriceMonitor.poll_once()` (not by calling the lifecycle manager
@@ -972,8 +988,8 @@ an environment with normal internet access before relying on this.
 | NinjaTrader broker, via [TradeRouter](https://github.com/roydufek/traderouter)'s `WebhookOrderStrategy.cs` | ✅ Working (needs TradeRouter's NinjaScript strategy file installed and compiled inside NinjaTrader itself — this service just POSTs to its local HTTP listener; see the broker's docstring) |
 | NinjaTrader signal *source* | 🚧 Stub — every open-source NinjaTrader bridge found (TradeRouter, ninja-webhook, tv-ninjatrader-bridge) is one-way (external signal → NinjaTrader order); none reads trade/fill events back out. Doing that needs a custom NinjaScript AddOn this project can't write and verify without the actual platform. See the file's docstring. |
 | Asset-class routing gate (a signal can't reach a broker that can't trade its asset class) | ✅ Working, tested — declared for Alpaca/IBKR (equity-only) and ccxt (crypto-only); undeclared (unrestricted) elsewhere pending verification. See "Multi-asset routing" above. |
-| Balance/margin tracking per broker | 🚧 Not implemented — `get_broker_position` (position readback) exists; a matching balance/margin capability doesn't yet. Sizing doesn't read live buying power. |
-| Live price feed driving trailing/target monitoring (`PriceMonitor`) | ✅ Working, tested for **ccxt only** (REST polling via `fetch_ticker`, not a websocket). Other brokers' managed-lifecycle positions stay protected but their trailing stop doesn't move between fill/exit events yet — see "Continuous monitoring" above. |
+| Balance/margin tracking per broker | ✅ Working, tested for **Alpaca** (`GET /v2/account` — cash/equity/buying_power/maintenance_margin) via `get_account_balance`/`GET /accounts/{account_id}/balance`. Deliberately not implemented for **ccxt** (spot crypto has no single account-wide balance figure — see `CCXTBroker`'s docstring). Read-only observability only — sizing (`app/risk.py`) still doesn't read live buying power before submitting an order. |
+| Live price feed driving trailing/target monitoring (`PriceMonitor`) | ✅ Working, tested for **ccxt, Alpaca, and IBKR** (REST/RPC polling, not a websocket/persistent subscription). Other brokers' (SignalStack/MT5/MetaApi/NinjaTrader/Rithmic) managed-lifecycle positions stay protected but their trailing stop doesn't move between fill/exit events yet — see "Continuous monitoring" above. |
 
 The Telegram/Discord/Slack/SMS/Twitter parsers all share one generic
 free-text parser (`app/sources/text_parser.py`) that handles the common

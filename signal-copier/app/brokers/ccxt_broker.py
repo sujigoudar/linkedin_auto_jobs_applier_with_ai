@@ -43,6 +43,18 @@ silently placing the entry without its exit.
   production — REST polling on an interval, not a websocket stream
   (ccxt's websocket/"pro" support would need separate per-exchange
   verification and isn't wired up here).
+- `get_account_balance` — **not implemented.** ccxt's unified
+  `fetch_balance()` reports free/used/total PER CURRENCY, not a single
+  account-wide cash/equity/buying-power figure the way Alpaca's `GET
+  /v2/account` does (this project's example config trades spot, which
+  has no margin/buying-power concept at all). Picking one currency to
+  report (the quote currency of whichever symbol happens to be asked
+  about? a hardcoded "USDT"?) would be inventing a number this method's
+  contract doesn't ask for, not reporting a real one -- see
+  app/models.py's `AccountBalance` docstring on why every field is
+  `None`, never a guess, when a broker doesn't genuinely have it. Left
+  as the base class's default (`None` — unsupported) rather than
+  returning something misleading.
 """
 from __future__ import annotations
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import abc
 
-from app.models import AssetClass, DestinationAccount, OrderResult, Side, Signal
+from app.models import AccountBalance, AssetClass, DestinationAccount, OrderResult, Side, Signal
 
 
 class BrokerAdapter(abc.ABC):
@@ -132,6 +132,23 @@ class BrokerAdapter(abc.ABC):
         stop monitoring the position entirely."""
         return None
 
+    async def get_account_balance(self, account: DestinationAccount) -> AccountBalance | None:
+        """Query this account's real, live cash/equity/buying-power/margin
+        directly from the broker (see app/models.py's `AccountBalance` for
+        what each field means and why every one of them is `None`, never an
+        invented 0.0, when this broker/account doesn't report it). Return
+        None if this broker has no verified way to read it at all — the
+        caller must not treat that as "zero balance."
+
+        Deliberately NOT used by app/capital_allocator.py's notional
+        ceiling, which enforces a strictly narrower, already-disclosed
+        check against this service's own confirmed-fill replay
+        (`confirmed_open_notional`) -- a live broker balance covers
+        margin/buying-power the ceiling was never designed to reason
+        about, and conflating the two would silently change what
+        `max_notional_exposure` means."""
+        return None
+
     # --- Capability introspection (computed, not declared) ---
     #
     # These answer "does this adapter have a REAL implementation of X" by
@@ -166,6 +183,10 @@ class BrokerAdapter(abc.ABC):
     @property
     def has_last_price_capability(self) -> bool:
         return type(self).get_last_price is not BrokerAdapter.get_last_price
+
+    @property
+    def has_balance_capability(self) -> bool:
+        return type(self).get_account_balance is not BrokerAdapter.get_account_balance
 
     def can_protect_a_managed_position(self) -> bool:
         """Whether `PositionLifecycleManager` can actually keep a position

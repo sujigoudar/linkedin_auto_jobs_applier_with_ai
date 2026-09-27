@@ -53,7 +53,7 @@ from app.logging_config import configure_structlog
 from app.metrics import render_metrics
 from app.errors import SignalValidationError
 from app.lifecycle.manager import PositionLifecycleManager
-from app.models import AssetClass
+from app.models import AccountBalance, AssetClass
 from app.pricing import PriceMonitor
 from app.providers import SettingsOverride, load_provider_registry_from_store
 from app.rate_limit import INGRESS_RATE_LIMIT, limiter
@@ -682,6 +682,31 @@ async def get_account_economics(account_id: str, _owner: dict = Depends(require_
     return compute_account_economics(store, account_id).to_dict()
 
 
+@app.get("/accounts/{account_id}/balance")
+async def get_account_balance(account_id: str, _owner: dict = Depends(require_owner_read)) -> dict:
+    """A live read of this account's actual cash/equity/buying-power/
+    margin directly from its broker (see app/brokers/base.py's
+    `get_account_balance` and app/models.py's `AccountBalance`) -- NOT
+    this service's own tracked position/economics replay, and
+    deliberately not what app/capital_allocator.py's notional ceiling
+    reads either (see both those modules' docstrings for why).
+
+    404 for an unknown account; 200 with every `AccountBalance` field
+    `null` (never a broker lookup error) for a real account whose broker
+    has no verified way to report this at all -- `has_balance_capability`
+    on `GET /brokers` says which brokers that's true for up front."""
+    account = routing_config.accounts.get(account_id)
+    if account is None:
+        raise HTTPException(status_code=404, detail=f"no account '{account_id}'")
+    broker = brokers.get(account.broker)
+    if broker is None:
+        return AccountBalance(account_id=account_id).to_dict()
+    balance = await broker.get_account_balance(account)
+    if balance is None:
+        return AccountBalance(account_id=account_id).to_dict()
+    return balance.to_dict()
+
+
 @app.get("/accounts/{account_id}/execution-quality")
 async def get_account_execution_quality(account_id: str, _owner: dict = Depends(require_owner_read)) -> dict:
     """E05: signal-to-fill latency per symbol, computed from this schema's
@@ -827,6 +852,7 @@ async def list_broker_capabilities(_owner: dict = Depends(require_owner_read)) -
                 "has_position_readback_capability": broker.has_position_readback_capability,
                 "has_order_status_capability": broker.has_order_status_capability,
                 "has_last_price_capability": broker.has_last_price_capability,
+                "has_balance_capability": broker.has_balance_capability,
                 "can_protect_a_managed_position": broker.can_protect_a_managed_position(),
                 "supported_asset_classes": (
                     sorted(a.value for a in broker.supported_asset_classes)

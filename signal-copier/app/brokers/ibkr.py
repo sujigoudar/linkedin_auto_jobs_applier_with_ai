@@ -35,8 +35,18 @@ the whole group submits together) — the same parent/child/transmit
 pattern `IB.bracketOrder()` uses (verified against ib_async's source),
 just with a market rather than limit parent since this service only
 places market entries.
+
+`get_last_price` — `IB.reqTickersAsync()`, a one-shot market-data
+snapshot (verified against ib_async's installed source: it requests,
+awaits the first update, then cancels the subscription itself), reading
+`last` (falling back to `close`) — what app/pricing.py's `PriceMonitor`
+polls to drive managed-lifecycle targets/trailing/stop resizing for IBKR
+positions. `last` needs a live/delayed market-data subscription
+entitlement your account may or may not have; `close` doesn't.
 """
 from __future__ import annotations
+
+import math
 
 from app.brokers.base import BrokerAdapter
 from app.models import AssetClass, DestinationAccount, OrderResult, OrderStatus, Signal
@@ -194,6 +204,38 @@ class IBKRBroker(BrokerAdapter):
             filled_price=trade.orderStatus.avgFillPrice or None,
             message=f"IBKR order status: {status}",
         )
+
+    async def get_last_price(self, account: DestinationAccount, symbol: str) -> float | None:
+        # `reqTickersAsync` is ib_async's one-shot snapshot request (verified
+        # against its installed source: it requests a snapshot, awaits the
+        # first update, then cancels the subscription itself) -- unlike
+        # `reqMktData`'s persistent streaming subscription, this fits
+        # app/pricing.py's PriceMonitor polling-on-an-interval model without
+        # this adapter having to separately manage subscribe/cancel
+        # lifecycles per symbol.
+        try:
+            ib = await self._connected_ib()
+        except Exception:  # noqa: BLE001 - genuinely unknown right now, not "unchanged"
+            return None
+
+        contract = self._ib_async.Stock(symbol, "SMART", "USD")
+        try:
+            [ticker] = await ib.reqTickersAsync(contract)
+        except Exception:  # noqa: BLE001 - e.g. no market data subscription entitlement for this symbol
+            return None
+
+        # ib_async represents "no value reported" as NaN, not None, for
+        # numeric ticker fields (verified against its Ticker dataclass) --
+        # `last` needs a live/delayed trade tick permission that not every
+        # account has; `close` (yesterday's settle) is reported far more
+        # reliably and is the same kind of "last known price" fallback
+        # CCXTBroker's get_last_price already uses.
+        price = ticker.last
+        if price is None or math.isnan(price):
+            price = ticker.close
+        if price is None or math.isnan(price):
+            return None
+        return float(price)
 
     async def close(self) -> None:
         if self._ib is not None:

@@ -35,6 +35,12 @@ app/lifecycle/manager.py), this implements the real endpoints:
   callers (app/lifecycle/manager.py) must track it instead of the old one.
 - `get_broker_position` — `GET /v2/positions/{symbol}`; a 404 means flat
   (returns 0.0), not an error.
+- `get_account_balance` — `GET /v2/account`; reports cash, equity,
+  buying_power and maintenance_margin exactly as Alpaca's own account
+  object reports them (never derived from this service's own tracked
+  positions). Deliberately not read by app/capital_allocator.py's
+  notional ceiling -- see that module's and `get_account_balance`'s own
+  docstrings for why those are two intentionally separate checks.
 """
 from __future__ import annotations
 
@@ -43,7 +49,7 @@ import os
 import httpx
 
 from app.brokers.base import BrokerAdapter
-from app.models import AssetClass, DestinationAccount, OrderResult, OrderStatus, Side, Signal
+from app.models import AccountBalance, AssetClass, DestinationAccount, OrderResult, OrderStatus, Side, Signal
 
 
 class AlpacaBroker(BrokerAdapter):
@@ -355,6 +361,39 @@ class AlpacaBroker(BrokerAdapter):
 
         price = response.json().get("trade", {}).get("p")
         return float(price) if price is not None else None
+
+    async def get_account_balance(self, account: DestinationAccount) -> AccountBalance | None:
+        # ADP-08: `GET /v2/account` -- cash/equity/buying_power/
+        # maintenance_margin are all real fields on Alpaca's account
+        # object (docs.alpaca.markets/reference/getaccount), not guessed
+        # or derived from anything else this adapter tracks.
+        try:
+            api_key, api_secret, base_url = self._credentials_for(account)
+        except RuntimeError:
+            return None
+
+        try:
+            response = await self._client.get(
+                f"{base_url}/v2/account",
+                headers={"APCA-API-KEY-ID": api_key, "APCA-API-SECRET-KEY": api_secret},
+            )
+            response.raise_for_status()
+        except httpx.HTTPError:
+            return None
+
+        data = response.json()
+
+        def _float_or_none(key: str) -> float | None:
+            value = data.get(key)
+            return float(value) if value is not None else None
+
+        return AccountBalance(
+            account_id=account.account_id,
+            cash=_float_or_none("cash"),
+            equity=_float_or_none("equity"),
+            buying_power=_float_or_none("buying_power"),
+            maintenance_margin=_float_or_none("maintenance_margin"),
+        )
 
     async def close(self) -> None:
         await self._client.aclose()

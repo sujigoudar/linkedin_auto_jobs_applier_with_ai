@@ -78,6 +78,46 @@ class OrderResult:
 
 
 @dataclass
+class AccountBalance:
+    """A broker's own real-time answer to "what does this account actually
+    have" -- see app/brokers/base.py's `get_account_balance` for what this
+    is and isn't a substitute for (in particular: `app/capital_allocator.py`
+    deliberately does NOT read this; it enforces a ceiling against this
+    service's own confirmed-fill replay, never a live broker balance read).
+
+    Every field is `None`, not 0.0, when this broker/account genuinely
+    didn't report it -- a spot/cash account with no margin concept at all
+    (e.g. Alpaca's non-margin accounts) reports `maintenance_margin=None`,
+    never an invented 0.0 that would look identical to "no margin used
+    right now" for one that DOES have margin.
+    """
+
+    account_id: str
+    #: Free cash, in the account's base currency.
+    cash: Optional[float] = None
+    #: Total account value (cash + market value of open positions).
+    equity: Optional[float] = None
+    #: What Alpaca calls "buying power" -- how much more could be
+    #: deployed right now, already netting out any margin in use. Not a
+    #: universal concept (e.g. ccxt spot has no single account-wide
+    #: figure like this — see CCXTBroker's docstring on why it doesn't
+    #: implement this method at all).
+    buying_power: Optional[float] = None
+    #: Margin currently held against open positions, if this is a margin
+    #: account and the broker reports it.
+    maintenance_margin: Optional[float] = None
+
+    def to_dict(self) -> dict:
+        return {
+            "account_id": self.account_id,
+            "cash": self.cash,
+            "equity": self.equity,
+            "buying_power": self.buying_power,
+            "maintenance_margin": self.maintenance_margin,
+        }
+
+
+@dataclass
 class DestinationAccount:
     """One account a signal can be routed to, plus how to size the trade."""
 

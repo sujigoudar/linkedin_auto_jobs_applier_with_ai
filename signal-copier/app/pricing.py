@@ -13,17 +13,19 @@ interval, calling into the existing engine rather than reimplementing it.
 
 Each broker's optional `get_last_price()` (see app/brokers/base.py) is
 the source of truth per position — no separate custom price-feed
-infrastructure. The only real implementation shipped is `CCXTBroker`'s,
-using ccxt's own unified `fetch_ticker` REST call
-(https://github.com/ccxt/ccxt) — an existing, broadly-verified library
-capability, not something built from scratch here. This is REST polling
-on a fixed interval, not a websocket/tick stream: ccxt's own websocket
-("pro") support, Alpaca's market-data websocket, an MT5 terminal's tick
-feed, and IBKR's `reqMktData` are all real, better options for brokers
-that have them, and are a documented next step — not implemented yet.
-Until a broker declares `has_last_price_capability`, its managed-
-lifecycle positions simply aren't polled (visible via `GET /brokers`),
-which is honest: no feed is not the same as "nothing needs monitoring."
+infrastructure. Real implementations shipped: `CCXTBroker`'s (ccxt's
+unified `fetch_ticker` REST call, https://github.com/ccxt/ccxt),
+`AlpacaBroker`'s (`GET /v2/stocks/{symbol}/trades/latest` on Alpaca's
+market-data host), and `IBKRBroker`'s (`reqTickersAsync`, ib_async's
+one-shot market-data snapshot). All three are REST/RPC polling on a
+fixed interval, not a persistent websocket/tick stream: ccxt's own
+websocket ("pro") support, Alpaca's market-data websocket, an MT5
+terminal's tick feed, and IBKR's persistent `reqMktData` subscription
+are all real, better options for brokers that have them, and remain a
+documented next step — not implemented yet. Until a broker declares
+`has_last_price_capability`, its managed-lifecycle positions simply
+aren't polled (visible via `GET /brokers`), which is honest: no feed is
+not the same as "nothing needs monitoring."
 """
 from __future__ import annotations
 
