@@ -1,0 +1,79 @@
+{% extends "_base.html" %}
+{% block title %}Content and disclosure publishing{% endblock %}
+{% block content %}
+<h1>Content and disclosure publishing</h1>
+
+{% if error %}<div class="conflict">{{ error }}</div>{% endif %}
+
+<div class="panel">
+  <h2>Content register</h2>
+  {% if documents %}
+  <table>
+    <thead><tr><th>Document</th><th>Type</th><th>Audience</th><th>State</th><th></th></tr></thead>
+    <tbody>
+      {% for d in documents %}
+      <tr>
+        <td>{{ d.title }}</td>
+        <td>{{ d.document_type.value }}</td>
+        <td>{{ d.audience_policy_id }}</td>
+        <td>{{ d.state.value }}</td>
+        <td>
+          {% if d.state.value == "DRAFT" %}
+          <form method="post" action="/ops/content/{{ d.document_id }}/request-review" style="display:inline;">
+            <button type="submit">Submit content review</button>
+          </form>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="empty-state">
+    <p>No public content has been approved.</p>
+  </div>
+  {% endif %}
+</div>
+
+<div class="panel">
+  <h2>Editor</h2>
+  <form method="post" action="/ops/content">
+    <label for="document_type">Type</label>
+    <select id="document_type" name="document_type">
+      {% for t in all_document_types %}<option value="{{ t }}">{{ t }}</option>{% endfor %}
+    </select>
+
+    <label for="locale">Language</label>
+    <input type="text" id="locale" name="locale" value="en-US" required>
+
+    <label for="title">Title</label>
+    <input type="text" id="title" name="title" maxlength="120" required>
+
+    <label for="body">Content (plain text -- no HTML)</label>
+    <input type="text" id="body" name="body" maxlength="20000" required>
+
+    <label for="audience_policy_id">Audience</label>
+    <input type="text" id="audience_policy_id" name="audience_policy_id" required>
+
+    <label for="source_evidence_ids">Supporting evidence (comma-separated, required for methodology/status)</label>
+    <input type="text" id="source_evidence_ids" name="source_evidence_ids">
+
+    <p><button type="submit">Save draft</button></p>
+  </form>
+</div>
+
+<div class="panel">
+  <h2>Disclosure references</h2>
+  <p>Each document's source_evidence_ids reference the evidence for any factual claim it makes -- no model-invented citation is ever inserted.</p>
+</div>
+
+<div class="panel">
+  <h2>Review</h2>
+  <p>Submitting for review moves a draft to SUBMITTED_FOR_REVIEW only. Publishing is a separate, not-yet-built approved command this screen has no authority over.</p>
+</div>
+
+<div class="panel">
+  <h2>Versioned preview</h2>
+  <p><span class="badge badge-unknown">UNSUPPORTED</span> -- no separate immutable version history exists per document yet; the current draft is its own only version.</p>
+</div>
+{% endblock %}

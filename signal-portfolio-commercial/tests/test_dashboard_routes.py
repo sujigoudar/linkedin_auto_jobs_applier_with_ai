@@ -1332,3 +1332,68 @@ def test_save_price_version_rejects_live_mode_over_real_http(db_session):
     )
     assert response.status_code == 400
     assert "LIVE_MODE_NOT_AUTHORIZED" in response.text
+
+
+def test_content_documents_page_requires_owner_or_reviewer(db_session):
+    client = _client(db_session)
+    response = client.get("/ops/content", headers=_auth_headers(role=MembershipRole.BILLING_OPERATOR))
+    assert response.status_code == 403
+
+
+def test_content_documents_page_shows_the_real_empty_state(db_session):
+    client = _client(db_session)
+    response = client.get("/ops/content", headers=_auth_headers(role=MembershipRole.REVIEWER))
+    assert response.status_code == 200
+    assert "No public content has been approved." in response.text
+
+
+def test_save_content_draft_rejects_html_over_real_http(db_session):
+    client = _client(db_session)
+    response = client.post(
+        "/ops/content",
+        data={
+            "document_type": "help",
+            "locale": "en-US",
+            "title": "Help page",
+            "body": "<script>bad</script>",
+            "audience_policy_id": "audience-1",
+            "source_evidence_ids": "",
+        },
+        headers=_auth_headers(),
+    )
+    assert response.status_code == 400
+    assert "raw HTML" in response.text
+
+
+def test_save_then_submit_content_draft_for_review_over_real_http(db_session):
+    client = _client(db_session)
+    headers = _auth_headers()
+    create_response = client.post(
+        "/ops/content",
+        data={
+            "document_type": "help",
+            "locale": "en-US",
+            "title": "Help page HTTP",
+            "body": "Contact support for questions.",
+            "audience_policy_id": "audience-1",
+            "source_evidence_ids": "",
+        },
+        headers=headers,
+    )
+    assert create_response.status_code == 303
+
+    list_response = client.get("/ops/content", headers=headers)
+    assert "Help page HTTP" in list_response.text
+    assert "DRAFT" in list_response.text
+
+    import re
+
+    match = re.search(r"/ops/content/([^/]+)/request-review", list_response.text)
+    assert match is not None
+    document_id = match.group(1)
+
+    review_response = client.post(f"/ops/content/{document_id}/request-review", headers=headers)
+    assert review_response.status_code == 303
+
+    final_response = client.get("/ops/content", headers=headers)
+    assert "SUBMITTED_FOR_REVIEW" in final_response.text

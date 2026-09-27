@@ -43,6 +43,7 @@ from app.db import (
 # in the same session/run depend on existing.
 import app.models.api_key  # noqa: F401
 import app.models.billing  # noqa: F401
+import app.models.content_document  # noqa: F401
 import app.models.eligibility  # noqa: F401
 import app.models.integration_configuration  # noqa: F401
 import app.models.ledger  # noqa: F401

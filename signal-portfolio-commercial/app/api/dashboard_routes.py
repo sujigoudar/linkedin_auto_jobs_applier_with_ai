@@ -117,6 +117,12 @@ what is and is not implemented yet.
   right. Subscription changes/Webhook reconciliation/Processor identity
   are NOT implemented -- no per-price subscription linkage or webhook-
   event store exists in this build.
+- AD-19 "Content and disclosure publishing": a real content draft +
+  submit-for-review. Body is refused outright if it contains any `<`/`>`
+  character -- no raw HTML/script editor. methodology/status documents
+  (inherently factual claims) require at least one source_evidence_id.
+  Actual publication remains a separate, not-yet-built admission
+  decision this screen has no authority over.
 """
 from __future__ import annotations
 
@@ -159,6 +165,14 @@ from app.services.api_key import (
     revoke_api_key,
 )
 from app.services.business_economics import get_business_economics
+from app.services.content_document import (
+    ContentNotEligibleForReviewError,
+    InvalidContentDraftError,
+    get_content_document,
+    list_content_documents,
+    request_content_review,
+    save_content_draft,
+)
 from app.services.customer_support_view import get_customer_support_record, list_customers
 from app.services.integration_configuration import (
     InvalidIntegrationConfigurationError,
@@ -1371,3 +1385,98 @@ def create_price_version_page(
         )
     session.commit()
     return RedirectResponse(url="/ops/billing", status_code=303)
+
+
+_ALL_CONTENT_DOCUMENT_TYPES = ["methodology", "risk", "billing_terms", "privacy", "help", "status"]
+
+
+def _require_content_documents(scope: TenantScope) -> None:
+    try:
+        require_permission(scope.role, "manage_content_documents")
+    except PermissionDenied as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+
+@router.get("/ops/content")
+def content_documents_page(
+    request: Request,
+    scope: TenantScope = Depends(get_current_scope),
+    session: Session = Depends(get_db_session),
+    error: str | None = None,
+):
+    """AD-19 "Content and disclosure publishing" -- see this route
+    module's own docstring above for what is and is not implemented."""
+    _require_content_documents(scope)
+    set_tenant_scope(session, scope.tenant_id)
+    documents = list_content_documents(session, tenant_id=scope.tenant_id)
+    return templates.TemplateResponse(
+        request,
+        "ad19_content.html",
+        {"documents": documents, "all_document_types": _ALL_CONTENT_DOCUMENT_TYPES, "error": error},
+    )
+
+
+@router.post("/ops/content")
+def save_content_draft_page(
+    request: Request,
+    document_type: str = Form(...),
+    locale: str = Form("en-US"),
+    title: str = Form(...),
+    body: str = Form(...),
+    audience_policy_id: str = Form(...),
+    source_evidence_ids: str = Form(""),
+    scope: TenantScope = Depends(get_current_scope),
+    session: Session = Depends(get_db_session),
+):
+    _require_content_documents(scope)
+    set_tenant_scope(session, scope.tenant_id)
+    evidence_ids = [v.strip() for v in source_evidence_ids.split(",") if v.strip()]
+    try:
+        save_content_draft(
+            session,
+            tenant_id=scope.tenant_id,
+            document_type=document_type,
+            locale=locale,
+            title=title,
+            body=body,
+            audience_policy_id=audience_policy_id,
+            source_evidence_ids=evidence_ids,
+        )
+    except InvalidContentDraftError as exc:
+        session.rollback()
+        documents = list_content_documents(session, tenant_id=scope.tenant_id)
+        return templates.TemplateResponse(
+            request,
+            "ad19_content.html",
+            {"documents": documents, "all_document_types": _ALL_CONTENT_DOCUMENT_TYPES, "error": str(exc)},
+            status_code=400,
+        )
+    session.commit()
+    return RedirectResponse(url="/ops/content", status_code=303)
+
+
+@router.post("/ops/content/{document_id}/request-review")
+def request_content_review_page(
+    document_id: str,
+    request: Request,
+    scope: TenantScope = Depends(get_current_scope),
+    session: Session = Depends(get_db_session),
+):
+    _require_content_documents(scope)
+    set_tenant_scope(session, scope.tenant_id)
+    document = get_content_document(session, document_id, tenant_id=scope.tenant_id)
+    if document is None:
+        raise HTTPException(status_code=404, detail="not found")
+    try:
+        request_content_review(session, document)
+    except ContentNotEligibleForReviewError as exc:
+        session.rollback()
+        documents = list_content_documents(session, tenant_id=scope.tenant_id)
+        return templates.TemplateResponse(
+            request,
+            "ad19_content.html",
+            {"documents": documents, "all_document_types": _ALL_CONTENT_DOCUMENT_TYPES, "error": str(exc)},
+            status_code=400,
+        )
+    session.commit()
+    return RedirectResponse(url="/ops/content", status_code=303)

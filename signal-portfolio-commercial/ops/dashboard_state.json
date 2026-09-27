@@ -239,8 +239,21 @@
     ],
     "deliberately_not_built": "Processor identity, Subscription changes and Webhook reconciliation are all NOT implemented -- no real Stripe processor connection, no per-price Subscription linkage, and no webhook-event store exist in this build. 'Preview entitlement change'/active-subscriber impact is not built -- there is no way to compute it honestly without the missing per-price subscription linkage."
   },
-  "screens_done": ["AD-07", "PU-02", "AD-02 (read-only slice)", "AD-03 (create/list slice)", "AD-01 (overview slice)", "AD-08 (review queue/decision slice)", "AD-04 (run declaration/preview slice)", "PU-01", "PU-08", "PU-03 (detail slice)", "PU-05 (pricing slice)", "ID-04 (eligibility slice)", "AD-16 (invite/revoke slice)", "CU-14 (support case slice)", "AD-09 (publisher destination slice)", "CU-16 (API key slice)", "AD-12 (business economics slice)", "AD-11 (customer support view slice)", "AD-17 (integration configuration slice)", "AD-13 (price version slice)"],
-  "screens_not_started": "46 of 66 (AD-01, AD-02, AD-03, AD-04, AD-08, PU-03, PU-05, ID-04, AD-16, CU-14, AD-09, CU-16, AD-12, AD-11, AD-17, AD-13 partially done) -- see signal_platform_dashboard_v2/catalog/screens.json for the full list.",
+  "twentieth_slice": {
+    "name": "AD-19 (Content and disclosure publishing) -- plain-text drafts, real submit-for-review",
+    "status": "done, deliberately partial",
+    "why_this_slice": "A real, bounded content-management slice mirroring AD-07's own draft->submit-for-review shape. 'No raw HTML/script editor' (AD-19's own acceptance text) is enforced literally: a body containing any '<' or '>' character is always refused, never sanitized and silently accepted -- this is plain text only, not a markup renderer to secure.",
+    "what_was_built": [
+      "app/models/content_document.py -- ContentDocument (tenant-scoped, mutable while DRAFT like Product's own precedent)",
+      "app/services/content_document.py -- save_content_draft (refuses any '<'/'>' character in body; requires at least one source_evidence_id for methodology/status document types, since those are inherently factual claims) + request_content_review (DRAFT -> SUBMITTED_FOR_REVIEW only; actual publication remains a separate, not-yet-built admission decision) + list/get",
+      "app/api/dashboard_routes.py + app/templates/ad19_content.html -- GET/POST /ops/content + POST /ops/content/{document_id}/request-review, gated by a new 'manage_content_documents' permission (OWNER, REVIEWER)",
+      "alembic/versions/b149fadfc60c_add_content_documents_table.py -- real migration, verified end-to-end against a live disposable Postgres cluster (full alembic upgrade head chain replayed clean; table + tenant_isolation RLS policy confirmed via psql)",
+      "tests/test_content_document.py (9 tests) + tests/test_dashboard_routes.py (+4) -- covers the HTML-markup refusal, the methodology/status evidence requirement, cross-tenant scoped-not-found, and the full draft->submit-for-review round trip over real HTTP. The no-raw-HTML guard was load-bearing-verified (temporarily removed it, confirmed both the unit test and the HTTP test failed with a `<script>` tag silently accepted, restored)."
+    ],
+    "deliberately_not_built": "Versioned preview is NOT implemented -- no separate immutable per-document version history exists; the current draft is its own only version. Actual publication (making a reviewed document publicly live) is a separate, not-yet-built admission decision, matching AD-07/AD-08's own established draft-vs-release-vs-publish separation."
+  },
+  "screens_done": ["AD-07", "PU-02", "AD-02 (read-only slice)", "AD-03 (create/list slice)", "AD-01 (overview slice)", "AD-08 (review queue/decision slice)", "AD-04 (run declaration/preview slice)", "PU-01", "PU-08", "PU-03 (detail slice)", "PU-05 (pricing slice)", "ID-04 (eligibility slice)", "AD-16 (invite/revoke slice)", "CU-14 (support case slice)", "AD-09 (publisher destination slice)", "CU-16 (API key slice)", "AD-12 (business economics slice)", "AD-11 (customer support view slice)", "AD-17 (integration configuration slice)", "AD-13 (price version slice)", "AD-19 (content document slice)"],
+  "screens_not_started": "45 of 66 (AD-01, AD-02, AD-03, AD-04, AD-08, PU-03, PU-05, ID-04, AD-16, CU-14, AD-09, CU-16, AD-12, AD-11, AD-17, AD-13, AD-19 partially done) -- see signal_platform_dashboard_v2/catalog/screens.json for the full list.",
   "standing_constraints_from_master_prompt": [
     "No live orders/cancellations, customer charges/subscriptions, live publication, production resets, credential rotation, or unapproved infrastructure spending.",
     "Isolated synthetic fixtures are authorized only in test/browser databases, never seeded into production.",
