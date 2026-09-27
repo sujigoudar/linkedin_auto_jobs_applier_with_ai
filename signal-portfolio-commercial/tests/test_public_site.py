@@ -1,8 +1,18 @@
-"""PU-01 "Public home" / PU-08 "Help and compatibility guide" --
-get_service_status/get_channel_compatibility's own tests. Pure
-functions, no database needed."""
+"""PU-01 "Public home" / PU-08 "Help and compatibility guide" / PU-03
+"Portfolio detail" -- get_service_status/get_channel_compatibility/
+get_published_portfolio_detail's own tests."""
+from datetime import datetime, timezone
+from decimal import Decimal
+
 from app import config
-from app.services.public_site import get_channel_compatibility, get_service_status
+from app.models.portfolio_version import PortfolioVersion, PortfolioVersionSleeve
+from app.models.product import Product, ProductLifecycleState
+from app.models.sleeve import Sleeve
+from app.services.public_site import (
+    get_channel_compatibility,
+    get_published_portfolio_detail,
+    get_service_status,
+)
 
 
 def test_environment_status_reflects_the_real_configured_environment(monkeypatch):
@@ -30,3 +40,68 @@ def test_channel_compatibility_names_every_real_adapter_and_its_real_limitation(
     assert "eToro" in channels
     assert "demo account mode" in channels["eToro"] or "demo" in channels["eToro"]
     assert "MetaApi CopyFactory (close-only)" in channels
+
+
+def test_a_draft_products_slug_returns_scoped_not_found(db_session):
+    db_session.add(Product(tenant_id="tenant-a", product_name="Still Draft", slug="still-draft"))
+    db_session.commit()
+    assert get_published_portfolio_detail(db_session, "still-draft") is None
+
+
+def test_an_unknown_slug_returns_scoped_not_found(db_session):
+    assert get_published_portfolio_detail(db_session, "never-existed") is None
+
+
+def test_a_published_product_with_a_version_returns_its_real_facts(db_session):
+    now = datetime.now(timezone.utc)
+    sleeve = Sleeve(
+        tenant_id="tenant-a",
+        provider="acme-research",
+        analyst="jane",
+        strategy_horizon="swing",
+        asset_class="equity",
+        parser_version="v1",
+        execution_policy_id="ep-1",
+        cost_model_id="cm-1",
+        capacity_policy_id="cap-1",
+        risk_unit_id="ru-1",
+        history_origin="acme-research",
+    )
+    db_session.add(sleeve)
+    db_session.flush()
+    pv = PortfolioVersion(
+        tenant_id="tenant-a",
+        portfolio_id="p-detail",
+        version_number=3,
+        cash_weight=Decimal("0"),
+        research_cutoff=now,
+        max_subscriber_capacity=250,
+        consent_disclosure_version="v1",
+    )
+    db_session.add(pv)
+    db_session.flush()
+    db_session.add(
+        PortfolioVersionSleeve(portfolio_version_id=pv.portfolio_version_id, sleeve_id=sleeve.sleeve_id, weight=Decimal("1.0"))
+    )
+    db_session.add(
+        Product(
+            tenant_id="tenant-a",
+            product_name="Detail Product",
+            slug="detail-product",
+            portfolio_version_id=pv.portfolio_version_id,
+            cash_bps=500,
+            service_modes=["alerts"],
+            methodology_document_id="method-1",
+            research_report_id="report-1",
+            lifecycle_state=ProductLifecycleState.PUBLISHED,
+        )
+    )
+    db_session.commit()
+
+    detail = get_published_portfolio_detail(db_session, "detail-product")
+    assert detail is not None
+    assert detail.product_name == "Detail Product"
+    assert detail.portfolio_version_number == 3
+    assert detail.sleeve_count == 1
+    assert detail.max_subscriber_capacity == 250
+    assert detail.methodology_document_id == "method-1"

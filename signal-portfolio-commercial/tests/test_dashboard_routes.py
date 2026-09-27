@@ -703,3 +703,56 @@ def test_help_page_lists_the_real_compatibility_directory(db_session):
     assert "Collective2" in response.text
     assert "eToro" in response.text
     assert "Only verified capabilities appear here" in response.text
+
+
+def test_portfolio_detail_returns_scoped_404_for_a_draft_products_slug(db_session):
+    client = _client(db_session)
+    headers = _auth_headers()
+    client.post("/ops/products", data={"product_name": "Still Draft", "slug": "still-draft-http"}, headers=headers)
+
+    response = client.get("/portfolios/still-draft-http")
+    assert response.status_code == 404
+
+
+def test_portfolio_detail_returns_scoped_404_for_an_unknown_slug(db_session):
+    client = _client(db_session)
+    response = client.get("/portfolios/never-existed")
+    assert response.status_code == 404
+
+
+def test_portfolio_detail_shows_real_facts_for_a_published_product(db_session):
+    client = _client(db_session)
+    headers = _auth_headers()
+    pv_id = _seed_ready_product_for_review(db_session, slug="detail-http")
+    create_response = client.post(
+        "/ops/products", data={"product_name": "Detail Product HTTP", "slug": "detail-product-http"}, headers=headers
+    )
+    detail_url = create_response.headers["location"]
+    client.post(
+        detail_url,
+        data={
+            "expected_revision": "1",
+            "product_name": "Detail Product HTTP",
+            "portfolio_version_id": pv_id,
+            "cash_bps": "500",
+            "service_modes": ["alerts"],
+            "audience_policy_id": "audience-1",
+            "research_report_id": "report-1",
+            "methodology_document_id": "method-1",
+        },
+        headers=headers,
+    )
+    from app.models.product import Product, ProductLifecycleState
+
+    product_id = detail_url.rsplit("/", 1)[-1]
+    product = db_session.get(Product, product_id)
+    product.lifecycle_state = ProductLifecycleState.PUBLISHED
+    db_session.commit()
+
+    response = client.get("/portfolios/detail-product-http")
+    assert response.status_code == 200
+    assert "Detail Product HTTP" in response.text
+    assert "500 bps" in response.text
+    assert "method-1" in response.text
+    assert "A released track record is not available for this version." in response.text
+    assert "Collective2" in response.text

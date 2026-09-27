@@ -46,6 +46,14 @@ what is and is not implemented yet.
   `list_published_products` query; a real, computed "Service status"
   checklist (environment tag, whether billing is genuinely connected)
   rather than a decorative "all systems operational" banner.
+- PU-08 "Help and compatibility guide": a real compatibility directory
+  grounded in the already-audited state of the publisher adapters.
+- PU-03 "Portfolio detail": one published product's real identity,
+  risk/capacity facts and methodology/research document references.
+  No NAV/marks-history model exists for a standard portfolio product,
+  so the performance/drawdown panel always honestly reports the track
+  record as unavailable, never a guessed curve. A draft/unpublished
+  slug returns a scoped 404, never its content.
 """
 from __future__ import annotations
 
@@ -84,7 +92,11 @@ from app.services.release_review import (
     list_release_reviews,
     request_release_review,
 )
-from app.services.public_site import get_channel_compatibility, get_service_status
+from app.services.public_site import (
+    get_channel_compatibility,
+    get_published_portfolio_detail,
+    get_service_status,
+)
 from app.services.research_run import (
     InvalidResearchRunError,
     compute_research_run_preview,
@@ -605,3 +617,21 @@ def public_help_page(request: Request):
     app/services/public_site.py's own docstring), not live data."""
     channels = get_channel_compatibility()
     return templates.TemplateResponse(request, "pu08_help.html", {"channels": channels})
+
+
+@router.get("/portfolios/{slug}")
+def public_portfolio_detail_page(slug: str, request: Request, session: Session = Depends(get_db_session)):
+    """PU-03 "Portfolio detail" -- anonymous, no tenant scope. A slug
+    belonging to a DRAFT/VALIDATED/APPROVED (not yet PUBLISHED) product,
+    or no product at all, is indistinguishable here -- both return a
+    scoped 404, per PU-03's own "draft/retired restricted slugs return
+    scoped not-found" (never a 403, which would confirm the slug
+    exists). No NAV/marks-history model exists for a standard portfolio
+    product in this build, so the performance/drawdown panel always
+    honestly reports the track record as unavailable rather than a
+    guessed or zero-filled curve."""
+    detail = get_published_portfolio_detail(session, slug)
+    if detail is None:
+        raise HTTPException(status_code=404, detail="not found")
+    channels = get_channel_compatibility()
+    return templates.TemplateResponse(request, "pu03_portfolio_detail.html", {"detail": detail, "channels": channels})

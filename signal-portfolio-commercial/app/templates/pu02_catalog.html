@@ -25,7 +25,7 @@
       <tbody>
         {% for product in products %}
         <tr>
-          <td>{{ product.product_name }}</td>
+          <td><a href="/portfolios/{{ product.slug }}">{{ product.product_name }}</a></td>
           <td>{{ product.service_modes | join(", ") }}</td>
         </tr>
         {% endfor %}

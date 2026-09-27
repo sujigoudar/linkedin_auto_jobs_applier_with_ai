@@ -104,8 +104,20 @@
     ],
     "deliberately_not_built": "No live support-ticket system (support entry is static text pointing at the support_readonly staff role). No document downloads or per-topic help articles beyond the single compatibility directory and task-based links to already-built pages."
   },
-  "screens_done": ["AD-07", "PU-02", "AD-02 (read-only slice)", "AD-03 (create/list slice)", "AD-01 (overview slice)", "AD-08 (review queue/decision slice)", "AD-04 (run declaration/preview slice)", "PU-01", "PU-08"],
-  "screens_not_started": "57 of 66 (AD-01, AD-02, AD-03, AD-04, AD-08 partially done) -- see signal_platform_dashboard_v2/catalog/screens.json for the full list.",
+  "ninth_slice": {
+    "name": "PU-03 (Portfolio detail) -- anonymous single-product page",
+    "status": "done, deliberately partial",
+    "why_this_slice": "PU-03 is the natural destination for PU-02's catalog rows -- a real published product's identity, portfolio-version facts and methodology/research references, linked from the catalog for the first time. No NAV/marks-history model exists for a standard portfolio product in this build (PAMM/MAM accounting is a separate, unrelated model), so the performance/drawdown panel and its metrics always honestly report the track record as unavailable, exactly matching PU-03's own acceptance criterion ('No guessed zero curve').",
+    "what_was_built": [
+      "app/services/public_site.py -- PortfolioDetail dataclass + get_published_portfolio_detail: returns None both for an unknown slug and for a DRAFT/VALIDATED/APPROVED (not yet PUBLISHED) product's slug, so a caller always turns None into a scoped 404, never leaking a draft's content by URL guess",
+      "app/api/dashboard_routes.py + app/templates/pu03_portfolio_detail.html -- GET /portfolios/{slug} (anonymous); reuses get_channel_compatibility for the Compatibility panel rather than inventing a per-product duplicate",
+      "app/templates/pu02_catalog.html -- catalog rows now link to their own /portfolios/{slug} page",
+      "tests/test_public_site.py (+3) + tests/test_dashboard_routes.py (+3) -- scoped-not-found for an unknown slug and for a draft product's slug, and a full published-product detail render with real portfolio-version/sleeve-count facts. The scoped-not-found guard was load-bearing-verified (temporarily removed the PUBLISHED filter, confirmed both the unit test and the HTTP test failed with a draft leaking as 200, restored)."
+    ],
+    "deliberately_not_built": "Enrollment action (PU-03-A01/A02, linking to ID-04 eligibility and PU-06 disclosures) is rendered as an explicit unsupported note, not a dead link -- neither ID-04 nor PU-06 exist yet. Methodology and change history has no immutable event/audit-log timeline (AD-18 doesn't exist yet) -- only the current methodology/research document references are shown."
+  },
+  "screens_done": ["AD-07", "PU-02", "AD-02 (read-only slice)", "AD-03 (create/list slice)", "AD-01 (overview slice)", "AD-08 (review queue/decision slice)", "AD-04 (run declaration/preview slice)", "PU-01", "PU-08", "PU-03 (detail slice)"],
+  "screens_not_started": "56 of 66 (AD-01, AD-02, AD-03, AD-04, AD-08, PU-03 partially done) -- see signal_platform_dashboard_v2/catalog/screens.json for the full list.",
   "standing_constraints_from_master_prompt": [
     "No live orders/cancellations, customer charges/subscriptions, live publication, production resets, credential rotation, or unapproved infrastructure spending.",
     "Isolated synthetic fixtures are authorized only in test/browser databases, never seeded into production.",
