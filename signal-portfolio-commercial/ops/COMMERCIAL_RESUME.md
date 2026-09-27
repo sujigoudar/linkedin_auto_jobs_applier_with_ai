@@ -120,9 +120,15 @@ readable companion: how to actually pick the work back up.
 ## Where this build actually stands (read this first if picking up cold)
 
 **This build has NOT reached a state ready for any live/real activity.**
-Read `docs/12_validation_report.md` in full before doing anything that
-could be mistaken for "finishing" this project -- it is the authoritative,
-line-by-line account of what is real versus what is still open. In
+Read `docs/12_validation_report.md` AND
+`docs/12_addendum_post_phase12_work.md` (the latter covers real,
+tested work added after the Phase 12 report, at the user's explicit
+request to build everything possible short of external accounts/
+infrastructure -- a real FastAPI app, real Alembic migrations, and
+several more closed requirement gaps) before doing anything that could
+be mistaken for "finishing" this project -- together they are the
+authoritative, line-by-line account of what is real versus what is
+still open. In
 short: strong, tested, real coverage of the tenancy/rights/permission/
 accounting-invariant layer (Phases 00-03, 08, 10-11's boundary pieces);
 essentially nothing yet on the parts that need real licensed market

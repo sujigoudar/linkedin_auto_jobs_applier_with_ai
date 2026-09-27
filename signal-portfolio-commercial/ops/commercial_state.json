@@ -1,6 +1,7 @@
 {
   "package_version": "Signal_Portfolio_Commercial_Platform_Claude_Code_Pack_v1",
   "build_scope_decision": "user selected 'Do all' -- full 13-phase build, not a narrower slice, not paused",
+  "post_phase12_addendum": "docs/12_addendum_post_phase12_work.md -- after the Phase 12 report, the user asked for everything possible short of external accounts/infrastructure. Read that file for the current, accurate requirement statuses; the per-phase notes below are the ORIGINAL Phase 00-12 snapshot and are not individually rewritten. Net effect: CP-002/003/009/028/036/045/051/071 moved to PASSED, CP-087 to PARTIAL, a real FastAPI app (app/main.py, app/api/) and real verified Alembic migrations (alembic/) now exist, package test count is 227 (was 129).",
   "phases": {
     "00_discovery": {
       "status": "done",
