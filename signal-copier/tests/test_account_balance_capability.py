@@ -46,6 +46,7 @@ async def test_alpaca_declares_balance_capability():
 
 @pytest.mark.asyncio
 async def test_ccxt_does_not_declare_balance_capability(monkeypatch):
+    pytest.importorskip("ccxt")  # optional dependency -- not installed in CI (see requirements.txt)
     monkeypatch.setenv("CCXT_ACCT1_API_KEY", "key")
     monkeypatch.setenv("CCXT_ACCT1_API_SECRET", "secret")
     broker = CCXTBroker(exchange_id="binance")
