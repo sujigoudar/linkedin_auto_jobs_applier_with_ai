@@ -51,3 +51,24 @@ jobs:
 
       - name: Run tests
         run: pytest -q
+
+      # Real migration verification, separate from the test suite's own
+      # per-test disposable schema (tests/conftest.py never runs Alembic
+      # -- it uses Base.metadata.create_all directly): starts one more
+      # disposable cluster and runs the actual `alembic upgrade head`
+      # a real deployment would run, so a broken migration (e.g. the
+      # transaction-visibility bug the RLS/append-only revision hit
+      # during development) fails CI instead of surfacing only at
+      # deploy time.
+      - name: Verify Alembic migrations apply cleanly
+        run: |
+          set -e
+          export PATH="/usr/lib/postgresql/16/bin:$PATH"
+          PGDATA=$(mktemp -d)
+          PORT=55433
+          initdb --auth=trust -D "$PGDATA"
+          pg_ctl -D "$PGDATA" -o "-p $PORT -k $PGDATA -c listen_addresses=127.0.0.1" -l "$PGDATA/server.log" -w start
+          createdb -h 127.0.0.1 -p $PORT -U "$(whoami)" commercial_migration_check
+          ALEMBIC_DATABASE_URL="postgresql+psycopg://$(whoami)@127.0.0.1:$PORT/commercial_migration_check" python -m alembic upgrade head
+          pg_ctl -D "$PGDATA" -m fast stop
+          rm -rf "$PGDATA"

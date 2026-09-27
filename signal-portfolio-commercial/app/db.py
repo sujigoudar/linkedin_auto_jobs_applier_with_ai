@@ -45,24 +45,51 @@ _TENANT_SCOPED_TABLES: tuple[str, ...] = (
 _APPEND_ONLY_TABLES: tuple[str, ...] = ("ledger_entries", "portfolio_versions", "portfolio_version_sleeves")
 
 
+def _apply_row_level_security(conn) -> None:
+    for table in _TENANT_SCOPED_TABLES:
+        conn.execute(text(f"ALTER TABLE {table} ENABLE ROW LEVEL SECURITY"))
+        conn.execute(text(f"ALTER TABLE {table} FORCE ROW LEVEL SECURITY"))
+        conn.execute(text(f"DROP POLICY IF EXISTS tenant_isolation ON {table}"))
+        conn.execute(
+            text(
+                f"CREATE POLICY tenant_isolation ON {table} "
+                "USING (tenant_id = current_setting('app.tenant_id', true))"
+            )
+        )
+
+
 def enable_row_level_security(engine) -> None:
     """Enable and FORCE row-level security on every tenant-scoped table, with
     a policy that only ever permits rows matching the session's
     `app.tenant_id` setting -- and permits none at all when that setting is
     unset (fail-closed: no scope set means no visibility, not "everything").
 
-    Idempotent: safe to call every time the schema is (re)created."""
+    Idempotent: safe to call every time the schema is (re)created. Opens
+    its own connection/transaction on `engine` -- for a caller (e.g. an
+    Alembic migration) that must apply this within an ALREADY-OPEN
+    transaction/connection that hasn't committed yet (so a fresh
+    connection wouldn't see its uncommitted DDL), call
+    `_apply_row_level_security(connection)` directly instead."""
     with engine.begin() as conn:
-        for table in _TENANT_SCOPED_TABLES:
-            conn.execute(text(f"ALTER TABLE {table} ENABLE ROW LEVEL SECURITY"))
-            conn.execute(text(f"ALTER TABLE {table} FORCE ROW LEVEL SECURITY"))
-            conn.execute(text(f"DROP POLICY IF EXISTS tenant_isolation ON {table}"))
-            conn.execute(
-                text(
-                    f"CREATE POLICY tenant_isolation ON {table} "
-                    "USING (tenant_id = current_setting('app.tenant_id', true))"
-                )
+        _apply_row_level_security(conn)
+
+
+def _apply_append_only(conn) -> None:
+    conn.execute(
+        text(
+            "CREATE OR REPLACE FUNCTION forbid_ledger_mutation() RETURNS trigger AS $$ "
+            "BEGIN RAISE EXCEPTION 'this table is append-only: % is not permitted', TG_OP; "
+            "END; $$ LANGUAGE plpgsql"
+        )
+    )
+    for table in _APPEND_ONLY_TABLES:
+        conn.execute(text(f"DROP TRIGGER IF EXISTS append_only_guard ON {table}"))
+        conn.execute(
+            text(
+                f"CREATE TRIGGER append_only_guard BEFORE UPDATE OR DELETE ON {table} "
+                "FOR EACH ROW EXECUTE FUNCTION forbid_ledger_mutation()"
             )
+        )
 
 
 def enforce_append_only(engine) -> None:
@@ -71,23 +98,10 @@ def enforce_append_only(engine) -> None:
     for a caller who forgot (or a future refactor that removed) the
     application-level `append_entry`/`append_correction` discipline in
     `app/services/ledger.py`. Idempotent: safe to call every time the
-    schema is (re)created."""
+    schema is (re)created. See `enable_row_level_security`'s docstring
+    for when to call `_apply_append_only(connection)` directly instead."""
     with engine.begin() as conn:
-        conn.execute(
-            text(
-                "CREATE OR REPLACE FUNCTION forbid_ledger_mutation() RETURNS trigger AS $$ "
-                "BEGIN RAISE EXCEPTION 'this table is append-only: % is not permitted', TG_OP; "
-                "END; $$ LANGUAGE plpgsql"
-            )
-        )
-        for table in _APPEND_ONLY_TABLES:
-            conn.execute(text(f"DROP TRIGGER IF EXISTS append_only_guard ON {table}"))
-            conn.execute(
-                text(
-                    f"CREATE TRIGGER append_only_guard BEFORE UPDATE OR DELETE ON {table} "
-                    "FOR EACH ROW EXECUTE FUNCTION forbid_ledger_mutation()"
-                )
-            )
+        _apply_append_only(conn)
 
 
 def set_tenant_scope(session: Session, tenant_id: str) -> None:
