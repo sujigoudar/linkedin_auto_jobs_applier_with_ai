@@ -99,7 +99,16 @@ readable companion: how to actually pick the work back up.
   conversion). No AllocationProgram persistence, no real broker
   integration -- see `commercial_state.json`'s
   `10_pamm_mam_domain_model` notes.
-- **Phase 11-12**: not started. See `commercial_state.json` for phase-specific
+- **Phase 11 (optional model/LLM assistance)**: partially done --
+  `app/services/model_gateway.py` builds the permission boundary
+  (allowed purposes, a hard unconfigurable deny-list covering every
+  documented disallowed action, mandatory human review, a typed gateway
+  config validator, read-only-research-only API key roles). No real
+  model provider is called anywhere -- this phase is the boundary/
+  contract only, per docs/11's own "Omit this dependency when no model
+  feature is selected." See `commercial_state.json`'s
+  `11_llm_assistance` notes.
+- **Phase 12**: not started. See `commercial_state.json` for phase-specific
   notes carried forward from the original request.
 
 ## Standing directive from the user (2026-09-27)
@@ -149,15 +158,16 @@ directory of pytest's tmp dir (this bit us once; the fix is in
 
 ## Next step
 
-Phase 11: optional model/LLM assistance (docs/11_models_skills_and_optional_ai.md)
--- build the narrow, reviewed research/support aid boundary the master
-prompt insists on: an LLM has no rights/risk/fee/NAV/publishing/cross-
-tenant/self-approval authority, ever. This is well-specified as a
-permission/capability boundary (similar in kind to
-app/services/permissions.py from Phase 02) and buildable without any
-real model API key -- the boundary itself, and what it structurally
-forbids, is the deliverable, not a working model integration. This is
-also a natural point to add a FastAPI `commercial_api` app skeleton and
-real Alembic migrations, since the ledger/tenancy/rights/sleeve/
-publication/billing schemas are now stable enough to give a first
-migration something real to cover.
+Phase 12: full validation, deployment, and the six owner-only action
+cards (docs/12_validation_and_acceptance.md). This is the phase where
+the build genuinely needs the user: CARD-1 through CARD-6 (legal
+entity/jurisdiction, source rights contracts, platform agreements,
+payment processor/merchant approval, customer agreements/disclosures,
+and the exact financial production release) cannot be fabricated or
+assumed -- they must be surfaced to the user as explicit asks, not
+built around. What CAN still be done without them: a real, honest
+end-to-end validation pass over everything built so far (Phases 00-11),
+a FastAPI `commercial_api` app skeleton wiring the existing services
+together, and real Alembic migrations, since the ledger/tenancy/rights/
+sleeve/publication/billing schemas are now stable enough to give a
+first migration something real to cover.
