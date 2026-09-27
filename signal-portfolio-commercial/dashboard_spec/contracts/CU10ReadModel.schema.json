@@ -1,0 +1,143 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "CU10ReadModel.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "screen_id",
+    "state",
+    "snapshot_id",
+    "schema_version",
+    "generated_at",
+    "origin_label",
+    "summary",
+    "rows",
+    "metrics",
+    "capabilities",
+    "next_cursor",
+    "panels"
+  ],
+  "properties": {
+    "screen_id": {
+      "const": "CU-10"
+    },
+    "schema_version": {
+      "const": "ui-v2"
+    },
+    "state": {
+      "enum": [
+        "loading",
+        "ready",
+        "empty",
+        "denied",
+        "stale",
+        "partial",
+        "timeout",
+        "error",
+        "unsupported",
+        "conflict",
+        "session_expired",
+        "maintenance"
+      ]
+    },
+    "snapshot_id": {
+      "type": "string"
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "origin_label": {
+      "type": "string"
+    },
+    "summary": {
+      "type": "string"
+    },
+    "rows": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "row_id",
+          "episode",
+          "owned",
+          "may_still_execute",
+          "protection",
+          "allowed_disposition"
+        ],
+        "properties": {
+          "episode": {
+            "$ref": "ui-contracts.schema.json#/$defs/Cell",
+            "description": "Episode; server formats semantics as typed value, not prebuilt HTML."
+          },
+          "owned": {
+            "$ref": "ui-contracts.schema.json#/$defs/Cell",
+            "description": "Owned; server formats semantics as typed value, not prebuilt HTML."
+          },
+          "may_still_execute": {
+            "$ref": "ui-contracts.schema.json#/$defs/Cell",
+            "description": "May still execute; server formats semantics as typed value, not prebuilt HTML."
+          },
+          "protection": {
+            "$ref": "ui-contracts.schema.json#/$defs/Cell",
+            "description": "Protection; server formats semantics as typed value, not prebuilt HTML."
+          },
+          "allowed_disposition": {
+            "$ref": "ui-contracts.schema.json#/$defs/Cell",
+            "description": "Allowed disposition; server formats semantics as typed value, not prebuilt HTML."
+          },
+          "row_id": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "metrics": {
+      "type": "array",
+      "items": {
+        "$ref": "ui-contracts.schema.json#/$defs/Metric"
+      }
+    },
+    "capabilities": {
+      "type": "array",
+      "items": {
+        "$ref": "ui-contracts.schema.json#/$defs/Capability"
+      }
+    },
+    "next_cursor": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "total_rows": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 0
+    },
+    "scope_label": {
+      "type": "string"
+    },
+    "object_revision": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "blockers": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "panels": {
+      "type": "array",
+      "items": {
+        "$ref": "ui-contracts.schema.json#/$defs/Panel"
+      }
+    }
+  }
+}

@@ -1,0 +1,62 @@
+[
+  {
+    "id": "SRC-REPO",
+    "url": "https://github.com/sujigoudar/linkedin_auto_jobs_applier_with_ai/tree/2de2d7e2522af2554d438de580a5e0635e23899b",
+    "purpose": "Pinned application scope;read-only inspection, not audit execution"
+  },
+  {
+    "id": "SRC-MAIN",
+    "url": "https://github.com/sujigoudar/linkedin_auto_jobs_applier_with_ai/blob/2de2d7e2522af2554d438de580a5e0635e23899b/signal-portfolio-commercial/app/main.py",
+    "purpose": "Three commercial routes confirmed"
+  },
+  {
+    "id": "SRC-REPORT",
+    "url": "https://github.com/sujigoudar/linkedin_auto_jobs_applier_with_ai/blob/2de2d7e2522af2554d438de580a5e0635e23899b/signal-portfolio-commercial/docs/12_validation_report.md",
+    "purpose": "Recorded missing API/GUI and domain work;counts are builder report not independently rerun"
+  },
+  {
+    "id": "SRC-FASTAPI",
+    "url": "https://fastapi.tiangolo.com/advanced/templates/",
+    "purpose": "Jinja2Templates integration"
+  },
+  {
+    "id": "SRC-WCAG",
+    "url": "https://www.w3.org/TR/WCAG22/",
+    "purpose": "Normative accessibility target"
+  },
+  {
+    "id": "SRC-CHART",
+    "url": "https://www.chartjs.org/docs/latest/general/accessibility.html",
+    "purpose": "Canvas requires accessible alternatives"
+  },
+  {
+    "id": "SRC-TABLE",
+    "url": "https://www.tabulator.info/docs/6.x/page/",
+    "purpose": "Remote pagination and totals caveats"
+  },
+  {
+    "id": "SRC-AUTH",
+    "url": "https://supabase.com/docs/guides/auth/server-side/advanced-guide",
+    "purpose": "SSR identity/cookie/cache behavior;BFF design does not claim browser supabase-js tokens are HttpOnly"
+  },
+  {
+    "id": "SRC-STRIPE",
+    "url": "https://docs.stripe.com/customer-management",
+    "purpose": "Hosted customer billing;actual merchant approval separate"
+  },
+  {
+    "id": "SRC-PLAYWRIGHT",
+    "url": "https://playwright.dev/docs/test-projects",
+    "purpose": "Separate browser and configuration projects"
+  },
+  {
+    "id": "SRC-SKILLS",
+    "url": "https://code.claude.com/docs/en/skills",
+    "purpose": "Scoped project skills"
+  },
+  {
+    "id": "SRC-CLAUDE",
+    "url": "https://code.claude.com/docs/en/best-practices",
+    "purpose": "Bounded context,verification,phase checkpoints"
+  }
+]

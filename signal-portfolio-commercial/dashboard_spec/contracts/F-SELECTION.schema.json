@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "F-SELECTION.schema.json",
+  "title": "Select a portfolio",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "product_id": {
+      "description": "published and audience-visible. Draft IDs rejected",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "portfolio_version_id": {
+      "description": "belongs to product;released. Version binding preserved",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "subscription_id": {
+      "description": "owned and entitlement-compatible. required for paid access only",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "start_mode": {
+      "description": "only new_entries_only here. Existing-position sync is a separate mandate flow",
+      "type": "string",
+      "enum": [
+        "new_entries_only"
+      ]
+    }
+  },
+  "required": [
+    "product_id",
+    "portfolio_version_id",
+    "start_mode"
+  ],
+  "description": "Ready-input schema plus server business validation. Draft input uses identical property types but permits missing required fields; missingness must be displayed. Identity/password forms never saved as drafts."
+}

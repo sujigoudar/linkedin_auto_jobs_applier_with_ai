@@ -1,0 +1,62 @@
+{
+  "loading": {
+    "heading": "Loading verified data",
+    "render": "Neutral skeleton with aria-busy=true. No0 values or prior-account rows. Navigation and help remain available.",
+    "effects": "none"
+  },
+  "ready": {
+    "heading": "Data available",
+    "render": "Render complete scoped projection with origin,as-of,currency and allowed actions. Ready data does not imply trade authorization.",
+    "effects": "only explicit authorized commands"
+  },
+  "empty": {
+    "heading": "Screen-specific empty state",
+    "render": "Use exact screen empty_heading and next route. No charts with fake series. A domain-confirmed zero can be displayed as0 separately from an absent dataset.",
+    "effects": "only explicit draft/config actions"
+  },
+  "denied": {
+    "heading": "Access unavailable",
+    "render": "401 identity flow or403 action denial;404 for concealed cross-tenant objects. Do not include object count/title or existence leakage.",
+    "effects": "none"
+  },
+  "stale": {
+    "heading": "Last verified data is stale",
+    "render": "Retain same-scope last-good snapshot with timestamp and stale labels; disable new risk and stale-preview confirmation, retain allowed reconciliation/safety paths.",
+    "effects": "revalidated permitted actions only"
+  },
+  "partial": {
+    "heading": "Some data is unavailable",
+    "render": "Panel-level status and missing fields. Do not sum incomplete items into a falsely complete total. Distinguish omitted basis from measured zero.",
+    "effects": "according to independent fresh capabilities"
+  },
+  "timeout": {
+    "heading": "The response was not received",
+    "render": "GET can offer bounded retry; command timeout shows UNKNOWN plus operation ID and status read, never blind resubmit.",
+    "effects": "none until reconciled"
+  },
+  "error": {
+    "heading": "This request could not complete",
+    "render": "Sanitized reason and correlation ID; retain draft; bounded recovery action. No raw trace, secret URL or server-success toast.",
+    "effects": "none by error handler"
+  },
+  "unsupported": {
+    "heading": "This capability is not available for this scope",
+    "render": "Explain missing integration/rights/eligibility/data/profile. Configuration/read-only work remains usable. Blocked gate is not passing implementation evidence.",
+    "effects": "none for unavailable capability"
+  },
+  "conflict": {
+    "heading": "This record changed",
+    "render": "Show authorized old/new field diff; preserve local draft; require explicit reconciliation and fresh preview.",
+    "effects": "none until resolved"
+  },
+  "session_expired": {
+    "heading": "Your session has expired",
+    "render": "Mask personal data, stop polling, preserve only safe server draft. Reauthenticate and revalidate, never replay mutation automatically.",
+    "effects": "worker continues already-authorized management"
+  },
+  "maintenance": {
+    "heading": "Service maintenance",
+    "render": "Separate UI pause from ongoing trade-management status. Show approved status and safe contact. No assumption that restart closed positions.",
+    "effects": "no new action through disabled interface"
+  }
+}

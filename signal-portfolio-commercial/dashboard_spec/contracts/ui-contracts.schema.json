@@ -1,0 +1,475 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ui-contracts.schema.json",
+  "$defs": {
+    "Scalar": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "Canonical decimal/text value; monetary/quantity numbers never binary floats in transport"
+    },
+    "Metric": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "value",
+        "unit",
+        "origin",
+        "quality",
+        "as_of",
+        "definition_id"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "value": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^-?(?:0|[1-9][0-9]*)(?:\\.[0-9]+)?$",
+              "maxLength": 80
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "unit": {
+          "type": "string"
+        },
+        "currency": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "origin": {
+          "enum": [
+            "actual",
+            "model",
+            "platform",
+            "source",
+            "business"
+          ]
+        },
+        "quality": {
+          "enum": [
+            "verified",
+            "stale",
+            "partial",
+            "unavailable",
+            "not_applicable"
+          ]
+        },
+        "as_of": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "definition_id": {
+          "type": "string"
+        },
+        "reason_code": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "period_start": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "period_end": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "evidence_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "Capability": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "action_id",
+        "allowed",
+        "reason_codes",
+        "effect"
+      ],
+      "properties": {
+        "action_id": {
+          "type": "string"
+        },
+        "allowed": {
+          "type": "boolean"
+        },
+        "reason_codes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "effect": {
+          "enum": [
+            "read",
+            "identity",
+            "draft",
+            "config",
+            "research",
+            "billing",
+            "publication",
+            "financial",
+            "review",
+            "export",
+            "attachment",
+            "reconciliation",
+            "support"
+          ]
+        },
+        "expires_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "Error": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "code",
+        "message",
+        "correlation_id",
+        "field_errors"
+      ],
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        },
+        "correlation_id": {
+          "type": "string"
+        },
+        "field_errors": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "field",
+              "code",
+              "message"
+            ],
+            "properties": {
+              "field": {
+                "type": "string"
+              },
+              "code": {
+                "type": "string"
+              },
+              "message": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "operation_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "retry_after_seconds": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      }
+    },
+    "Cell": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "value",
+        "quality"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "text",
+            "identity",
+            "timestamp",
+            "decimal",
+            "money",
+            "percentage",
+            "status",
+            "count",
+            "duration"
+          ]
+        },
+        "value": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "quality": {
+          "enum": [
+            "verified",
+            "stale",
+            "partial",
+            "unavailable",
+            "not_applicable"
+          ]
+        },
+        "unit": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "currency": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "reason_code": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "link_route_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "link_object_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "ActionPreview": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "preview_id",
+        "action_id",
+        "object_id",
+        "revision",
+        "expires_at",
+        "allowed",
+        "blockers",
+        "scope_hash",
+        "effect"
+      ],
+      "properties": {
+        "preview_id": {
+          "type": "string"
+        },
+        "action_id": {
+          "type": "string"
+        },
+        "object_id": {
+          "type": "string"
+        },
+        "revision": {
+          "type": "string"
+        },
+        "expires_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "allowed": {
+          "type": "boolean"
+        },
+        "blockers": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "scope_hash": {
+          "type": "string"
+        },
+        "effect": {
+          "type": "string"
+        },
+        "current_snapshot_id": {
+          "type": "string"
+        },
+        "stepup_required": {
+          "type": "boolean"
+        }
+      }
+    },
+    "Operation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "operation_id",
+        "action_id",
+        "state",
+        "scope_hash",
+        "last_updated"
+      ],
+      "properties": {
+        "operation_id": {
+          "type": "string"
+        },
+        "action_id": {
+          "type": "string"
+        },
+        "state": {
+          "enum": [
+            "accepted",
+            "queued",
+            "running",
+            "awaiting_external",
+            "unknown",
+            "reconciling",
+            "completed",
+            "rejected",
+            "failed",
+            "canceled"
+          ]
+        },
+        "scope_hash": {
+          "type": "string"
+        },
+        "last_updated": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "reason_codes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "Panel": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "panel_id",
+        "kind",
+        "state",
+        "summary",
+        "records",
+        "actions"
+      ],
+      "properties": {
+        "panel_id": {
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "context",
+            "chart",
+            "form",
+            "timeline",
+            "checklist",
+            "table",
+            "information"
+          ]
+        },
+        "state": {
+          "enum": [
+            "loading",
+            "ready",
+            "empty",
+            "denied",
+            "stale",
+            "partial",
+            "timeout",
+            "error",
+            "unsupported",
+            "conflict",
+            "session_expired",
+            "maintenance"
+          ]
+        },
+        "summary": {
+          "type": "string"
+        },
+        "records": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "record_id",
+              "fields"
+            ],
+            "properties": {
+              "record_id": {
+                "type": "string"
+              },
+              "fields": {
+                "type": "object",
+                "additionalProperties": {
+                  "$ref": "#/$defs/Cell"
+                }
+              },
+              "evidence_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            }
+          }
+        },
+        "actions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Capability"
+          }
+        },
+        "report_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "document_version_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "next_cursor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    }
+  }
+}

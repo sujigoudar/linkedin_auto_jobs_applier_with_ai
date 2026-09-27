@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "F-WINDDOWN.schema.json",
+  "title": "Copy pause, exit and handoff",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "mandate_id": {
+      "description": "owned and existing. Can be accessible during valid wind-down after billing expiry",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "action": {
+      "description": "operation compatible with mandate and platform. No general account flatten",
+      "type": "string",
+      "enum": [
+        "pause_new_entries",
+        "drain",
+        "close_owned_cohort",
+        "request_handoff",
+        "revoke"
+      ]
+    },
+    "cohort_revision": {
+      "description": "fresh server-issued immutable cohort. No newly opened/manual positions added",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "reason": {
+      "description": "1..500 plain-text characters. Audit only",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "acknowledge_remaining": {
+      "description": "required for non-pause actions. No claim closed until confirmed",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "mandate_id",
+    "action",
+    "cohort_revision",
+    "reason",
+    "acknowledge_remaining"
+  ],
+  "description": "Ready-input schema plus server business validation. Draft input uses identical property types but permits missing required fields; missingness must be displayed. Identity/password forms never saved as drafts."
+}

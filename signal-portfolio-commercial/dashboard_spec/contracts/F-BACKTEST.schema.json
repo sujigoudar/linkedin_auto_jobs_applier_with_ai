@@ -1,0 +1,87 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "F-BACKTEST.schema.json",
+  "title": "Historical copier replay",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "dataset_version_ids": {
+      "description": "authorized immutable history snapshots. Missing originals and revisions remain visible",
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 200
+      },
+      "uniqueItems": true,
+      "maxItems": 100
+    },
+    "policy_version_ids": {
+      "description": "compatible baseline/candidate recipes. Do not change live policy",
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 200
+      },
+      "uniqueItems": true,
+      "maxItems": 100
+    },
+    "account_profile_id": {
+      "description": "declared shared capital and product limits. No full capital independently assigned to each signal",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "period_start": {
+      "description": "UTC before end;within dataset. Use information availability",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500,
+      "format": "date-time"
+    },
+    "period_end": {
+      "description": "UTC after start;not future. Full selected range",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500,
+      "format": "date-time"
+    },
+    "cost_scenario_ids": {
+      "description": "qualified fee/funding/latency assumptions. No silently zero costs",
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 200
+      },
+      "uniqueItems": true,
+      "maxItems": 100
+    },
+    "ambiguity_policy": {
+      "description": "never select favorable path silently. Bounds labeled hypothetical",
+      "type": "string",
+      "enum": [
+        "bound_outcomes",
+        "require_finer_data"
+      ]
+    },
+    "resource_profile_id": {
+      "description": "approved job limits. Worker isolated from protection",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    }
+  },
+  "required": [
+    "dataset_version_ids",
+    "policy_version_ids",
+    "account_profile_id",
+    "period_start",
+    "period_end",
+    "cost_scenario_ids",
+    "ambiguity_policy",
+    "resource_profile_id"
+  ],
+  "description": "Ready-input schema plus server business validation. Draft input uses identical property types but permits missing required fields; missingness must be displayed. Identity/password forms never saved as drafts."
+}

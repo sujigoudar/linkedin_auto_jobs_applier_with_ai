@@ -26,7 +26,14 @@ from pathlib import Path
 import pytest
 from sqlalchemy import text
 
-from app.db import Base, enable_row_level_security, enforce_append_only, make_engine, make_session_factory
+from app.db import (
+    Base,
+    enable_product_visibility_policy,
+    enable_row_level_security,
+    enforce_append_only,
+    make_engine,
+    make_session_factory,
+)
 
 # Importing every model module (even ones this particular test file never
 # references) is required so `Base.metadata` is fully populated before
@@ -37,6 +44,7 @@ from app.db import Base, enable_row_level_security, enforce_append_only, make_en
 import app.models.billing  # noqa: F401
 import app.models.ledger  # noqa: F401
 import app.models.portfolio_version  # noqa: F401
+import app.models.product  # noqa: F401
 import app.models.publication  # noqa: F401
 import app.models.publisher_writer_claim  # noqa: F401
 import app.models.rights  # noqa: F401
@@ -166,6 +174,7 @@ def db_session(postgres_cluster):
     with engine.begin() as conn:
         conn.execute(text("GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO app_role"))
     enable_row_level_security(engine)
+    enable_product_visibility_policy(engine)
     enforce_append_only(engine)
     session_factory = make_session_factory(engine)
     session = session_factory()

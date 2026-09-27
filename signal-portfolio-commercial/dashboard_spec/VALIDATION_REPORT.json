@@ -1,0 +1,72 @@
+{
+  "version": "dashboard-v2",
+  "reviewed_source": "2de2d7e2522af2554d438de580a5e0635e23899b",
+  "scope": "Screen/field/interaction/API design and design-artifact validation. No changes to either GitHub application.",
+  "design": {
+    "screens": 66,
+    "forms": 41,
+    "fields": 284,
+    "actions": 170,
+    "panels": 340,
+    "api_bindings": 280,
+    "case_specifications": 1270,
+    "inherited_gui_requirements_mapped": 24,
+    "original_requirements_preserved": 114,
+    "journeys": 36,
+    "json_schemas": 108,
+    "browser_projects_required_for_application": 9,
+    "declared_application_instances": 11430
+  },
+  "executed": {
+    "package_pytest": {
+      "passed": 231,
+      "failed": 0,
+      "skipped": 0
+    },
+    "atlas_chromium": {
+      "scope": "Offline design atlas only, not either application",
+      "document": "SCREEN_ATLAS.html",
+      "engine": "system Chromium",
+      "browser_version": "144.0.7559.96",
+      "tests": 1860,
+      "passed": 1860,
+      "failed": 0,
+      "javascript_errors": [],
+      "external_requests": [],
+      "elapsed_seconds": 4.603,
+      "setup_note": "file:// navigation blocked by container policy; exact document rendered using Playwright set_content; network blocked.",
+      "actual_application_tests": 0
+    },
+    "actual_application": {
+      "executed": 0,
+      "status": "NOT_RUN"
+    },
+    "actual_database_or_vendor_or_live": {
+      "executed": 0,
+      "status": "NOT_RUN"
+    }
+  },
+  "environment": {
+    "python": "3.13.5",
+    "pytest": "9.0.2",
+    "jsonschema": "4.26.0",
+    "referencing": "0.37.0",
+    "playwright": "1.57.0"
+  },
+  "remaining_obligations": [
+    "Implement real screens, new query/command handlers and missing persisted domains in current checkout.",
+    "Bind each application test to collected drivers; execute complete field/role/browser/workflow scope.",
+    "External auth, billing, copying and broker qualification requires permitted account access; design and local protocol tests do not establish it.",
+    "No live authorization or production readiness is conferred."
+  ],
+  "preparation_issues": {
+    "initial_browser_harness": "Reused page realm caused redeclaration; fixed by creating fresh pages.",
+    "atlas_search": "Added form titles and field labels so policy-field searches find parent screen.",
+    "file_navigation": "file:// blocked by container policy; exact HTML tested via set_content with network blocked."
+  },
+  "fresh_extraction": {
+    "package_test_result": "231 passed in 3.27s",
+    "manifest_files_checked": 256,
+    "zip_integrity": "PASS"
+  }
+}

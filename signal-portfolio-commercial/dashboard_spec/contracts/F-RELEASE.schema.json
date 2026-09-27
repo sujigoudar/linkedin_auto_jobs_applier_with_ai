@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "F-RELEASE.schema.json",
+  "title": "Release review",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "object_version_id": {
+      "description": "immutable current review target. Exact hash shown",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "evidence_manifest_id": {
+      "description": "complete mapped tests/rights/data/report. Structural hashes not truth by themselves",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "audience_policy_id": {
+      "description": "approved exact service/channel/geography. No broadened audience",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "scheduled_at": {
+      "description": "future within approval validity. Open allocations retain original binding",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500,
+      "format": "date-time"
+    },
+    "decision": {
+      "description": "per-role reviewer authorization. Cannot approve own proposal where independence required",
+      "type": "string",
+      "enum": [
+        "request_changes",
+        "reject",
+        "approve"
+      ]
+    },
+    "reason": {
+      "description": "1..4000 characters. Audit evidence",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    }
+  },
+  "required": [
+    "object_version_id",
+    "evidence_manifest_id",
+    "audience_policy_id",
+    "decision",
+    "reason"
+  ],
+  "description": "Ready-input schema plus server business validation. Draft input uses identical property types but permits missing required fields; missingness must be displayed. Identity/password forms never saved as drafts."
+}

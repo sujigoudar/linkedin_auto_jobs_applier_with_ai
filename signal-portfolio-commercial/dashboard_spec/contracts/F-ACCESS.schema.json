@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "F-ACCESS.schema.json",
+  "title": "Commercial role membership",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "user_id": {
+      "description": "verified existing or invited identity. No arbitrary JWT claims",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "role": {
+      "description": "explicit named role. Owner grants not through self-service form",
+      "type": "string",
+      "enum": [
+        "researcher",
+        "reviewer",
+        "publisher_operator",
+        "billing_operator",
+        "support_readonly"
+      ]
+    },
+    "scope_ids": {
+      "description": "minimum necessary objects/tenants. No implicit global scope",
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 200
+      },
+      "uniqueItems": true,
+      "maxItems": 100
+    },
+    "expires_at": {
+      "description": "required for temporary support grant. Current time server-side",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500,
+      "format": "date-time"
+    },
+    "purpose": {
+      "description": "1..1000 characters. Audited access",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    }
+  },
+  "required": [
+    "user_id",
+    "role",
+    "scope_ids",
+    "purpose"
+  ],
+  "description": "Ready-input schema plus server business validation. Draft input uses identical property types but permits missing required fields; missingness must be displayed. Identity/password forms never saved as drafts."
+}

@@ -1,0 +1,12 @@
+{
+  "screen_state_cases": 792,
+  "form_cases": 410,
+  "journey_cases": 36,
+  "cross_boundary_cases": 32,
+  "specification_count": 1270,
+  "browser_projects": 9,
+  "full_declared_browser_instances": 11430,
+  "application_executed": 0,
+  "all_initial_status": "NOT_RUN",
+  "note": "Each form case expands to its entire declared field/mode domain and every used scope;these totals are not counts of executed application tests. Isolated test fixtures are not production data."
+}

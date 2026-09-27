@@ -1,0 +1,84 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "F-SOURCE.schema.json",
+  "title": "Signal provider and parser",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "transport_instance_id": {
+      "description": "authorized shared collector instance. No duplicate bot for same transport unless required",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "provider_id": {
+      "description": "stable registered source identity. Not just telegram/discord",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "channel_product_id": {
+      "description": "stable external source identity;max200. Preserve channel-level lineage",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "analyst_mapping": {
+      "description": "reviewed deterministic mapping. No ambiguous display-name matching",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "allowed_products": {
+      "description": "explicit source scope. No default all crypto",
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 200
+      },
+      "uniqueItems": true,
+      "maxItems": 100
+    },
+    "parser_version_id": {
+      "description": "reviewed parser registry. No arbitrary code",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "rights_grant_id": {
+      "description": "required for selected commercial/model uses. Personal receipt not resale grant",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "history_start": {
+      "description": "authorized range;before end. Do not invent original revisions",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500,
+      "format": "date-time"
+    },
+    "history_end": {
+      "description": "not future;paired range. Save does not start import",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500,
+      "format": "date-time"
+    },
+    "entry_enabled": {
+      "description": "activation separate reviewed transition. Management of old trades separate",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "transport_instance_id",
+    "provider_id",
+    "channel_product_id",
+    "analyst_mapping",
+    "allowed_products",
+    "parser_version_id",
+    "entry_enabled"
+  ],
+  "description": "Ready-input schema plus server business validation. Draft input uses identical property types but permits missing required fields; missingness must be displayed. Identity/password forms never saved as drafts."
+}

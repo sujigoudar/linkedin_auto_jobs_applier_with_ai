@@ -1,0 +1,81 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "F-MANDATE.schema.json",
+  "title": "Copy mandate",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "selection_id": {
+      "description": "owned and eligible. Locked in preview",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "connection_id": {
+      "description": "owned;current verified scope/mode. Account cannot change after preview",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "allocation_amount": {
+      "description": "positive within released min/max and verified capacity. Currency separate, no browser sizing",
+      "type": "string",
+      "pattern": "^-?(?:0|[1-9][0-9]*)(?:\\.[0-9]+)?$",
+      "maxLength": 80
+    },
+    "allocation_currency": {
+      "description": "matches approved account profile. Cross-currency unsupported ->blocked",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500,
+      "pattern": "^[A-Z]{3}$"
+    },
+    "max_trade_risk": {
+      "description": "only values within released account/product ceiling. No guessed default",
+      "type": "string",
+      "pattern": "^-?(?:0|[1-9][0-9]*)(?:\\.[0-9]+)?$",
+      "maxLength": 80
+    },
+    "max_loss": {
+      "description": "unit and period from approved profile. required when profile requires",
+      "type": "string",
+      "pattern": "^-?(?:0|[1-9][0-9]*)(?:\\.[0-9]+)?$",
+      "maxLength": 80
+    },
+    "start_mode": {
+      "description": "sync_existing requires separate fresh price/exposure preview. No historical replay",
+      "type": "string",
+      "enum": [
+        "new_entries_only",
+        "sync_existing"
+      ]
+    },
+    "policy_version_id": {
+      "description": "released and compatible with portfolio/account. No editable raw algorithm",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "consent_version": {
+      "description": "exact current approved version. Payment is not consent",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "acknowledge_scope": {
+      "description": "required true only at confirmation. Step-up is separate challenge",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "selection_id",
+    "connection_id",
+    "allocation_amount",
+    "allocation_currency",
+    "start_mode",
+    "policy_version_id",
+    "consent_version",
+    "acknowledge_scope"
+  ],
+  "description": "Ready-input schema plus server business validation. Draft input uses identical property types but permits missing required fields; missingness must be displayed. Identity/password forms never saved as drafts."
+}

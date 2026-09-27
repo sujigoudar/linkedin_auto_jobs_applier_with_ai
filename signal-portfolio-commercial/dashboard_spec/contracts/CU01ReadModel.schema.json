@@ -1,0 +1,148 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "CU01ReadModel.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "screen_id",
+    "state",
+    "snapshot_id",
+    "schema_version",
+    "generated_at",
+    "origin_label",
+    "summary",
+    "rows",
+    "metrics",
+    "capabilities",
+    "next_cursor",
+    "panels"
+  ],
+  "properties": {
+    "screen_id": {
+      "const": "CU-01"
+    },
+    "schema_version": {
+      "const": "ui-v2"
+    },
+    "state": {
+      "enum": [
+        "loading",
+        "ready",
+        "empty",
+        "denied",
+        "stale",
+        "partial",
+        "timeout",
+        "error",
+        "unsupported",
+        "conflict",
+        "session_expired",
+        "maintenance"
+      ]
+    },
+    "snapshot_id": {
+      "type": "string"
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "origin_label": {
+      "type": "string"
+    },
+    "summary": {
+      "type": "string"
+    },
+    "rows": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "row_id",
+          "portfolio",
+          "subscription",
+          "mandate",
+          "platform",
+          "last_usable_update",
+          "required_action"
+        ],
+        "properties": {
+          "portfolio": {
+            "$ref": "ui-contracts.schema.json#/$defs/Cell",
+            "description": "Portfolio; server formats semantics as typed value, not prebuilt HTML."
+          },
+          "subscription": {
+            "$ref": "ui-contracts.schema.json#/$defs/Cell",
+            "description": "Subscription; server formats semantics as typed value, not prebuilt HTML."
+          },
+          "mandate": {
+            "$ref": "ui-contracts.schema.json#/$defs/Cell",
+            "description": "Mandate; server formats semantics as typed value, not prebuilt HTML."
+          },
+          "platform": {
+            "$ref": "ui-contracts.schema.json#/$defs/Cell",
+            "description": "Platform; server formats semantics as typed value, not prebuilt HTML."
+          },
+          "last_usable_update": {
+            "$ref": "ui-contracts.schema.json#/$defs/Cell",
+            "description": "Last usable update; server formats semantics as typed value, not prebuilt HTML."
+          },
+          "required_action": {
+            "$ref": "ui-contracts.schema.json#/$defs/Cell",
+            "description": "Required action; server formats semantics as typed value, not prebuilt HTML."
+          },
+          "row_id": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "metrics": {
+      "type": "array",
+      "items": {
+        "$ref": "ui-contracts.schema.json#/$defs/Metric"
+      }
+    },
+    "capabilities": {
+      "type": "array",
+      "items": {
+        "$ref": "ui-contracts.schema.json#/$defs/Capability"
+      }
+    },
+    "next_cursor": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "total_rows": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 0
+    },
+    "scope_label": {
+      "type": "string"
+    },
+    "object_revision": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "blockers": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "panels": {
+      "type": "array",
+      "items": {
+        "$ref": "ui-contracts.schema.json#/$defs/Panel"
+      }
+    }
+  }
+}

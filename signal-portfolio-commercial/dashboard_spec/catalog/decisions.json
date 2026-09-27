@@ -1,0 +1,32 @@
+{
+  "version": "dashboard-v2",
+  "baseline_commit": "2de2d7e2522af2554d438de580a5e0635e23899b",
+  "reviewed_on": "2026-09-27",
+  "scope": "UI design, configuration workflows, required application wiring and isolated acceptance; not live authorization",
+  "frontend": "FastAPI/Jinja2 autoescaped HTML + locally pinned ES modules, Chart.js and Tabulator; no React/Dash/admin framework rewrite",
+  "private_origin": "separate restricted origin for private trading; separate auth and credentials; no private-execution API proxy in commercial service",
+  "commercial_origin": "public /; identity /auth; customer /app; staff /ops with independent action scopes",
+  "api_prefix": "Retain actual /api/v1/me and /api/v1/billing/webhook/stripe. New commercial routes use /api/v1, not the old unimplemented /api/commercial/v1 catalog. Update mappings; no duplicate financial command endpoint.",
+  "data": "Existing private SQLite unchanged; commercial PostgreSQL/RLS reused. UI reads projection services, not direct browser database admin access.",
+  "authentication": "Commercial BFF maps provider-validated identities to revocable opaque HttpOnly same-origin sessions. No browser localStorage access/refresh tokens. Existing bearer /me clients remain scoped. Private owner session remains separate.",
+  "provisioning": "Create real empty tables, drafts and query paths locally. No public synthetic portfolios, unapproved claims or fake paid/live success. Isolated test fixtures explicitly allowed.",
+  "phasing": "Complete UI/service integration before asking for research results. External approval blocks that effect/qualification, not page construction.",
+  "signed_effects": "Preview, confirm, operation outcome: exact object revision, server identity, expiring scope, current gates and durable idempotency. No financial JS logic.",
+  "polling": "10s visible critical view fallback,30s admin table,60s approved public catalog;one outstanding request per resource;abort stale scope;no zero-delay polling.",
+  "preview_ttl_seconds": 120,
+  "stepup_max_age_seconds": 300,
+  "table_limits": [
+    25,
+    50,
+    100
+  ],
+  "search_debounce_ms": 250,
+  "network_get_timeout_seconds": 10,
+  "max_automatic_get_retries": 2,
+  "effect_retry": "No automatic POST effect replay. Stable-key operation lookup after uncertain response; server controls recovery.",
+  "no_live_change": "No change to financial limits, trading policy, source rights, real prices, subscriptions, mandates, payouts, or infrastructure authority by this design task.",
+  "charts": "Null means unavailable;known zero is0. Pure rendering may convert validated decimal strings to approximate axis coordinates only; financial totals remain server-defined exact strings.",
+  "saved_layouts": "Role/principal/workspace/environment scoped;visual only. Mandatory identity,origin,fees,drawdown,staleness and urgent safety panels cannot be hidden.",
+  "ai": "No LLM required. Optional draft research prose has evidence/review. Never compute P&L,grant rights,activate copying or generate fabricated performance via LLM.",
+  "all_implementation_tests_initial_status": "NOT_RUN"
+}

@@ -1,0 +1,158 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "TR04ReadModel.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "screen_id",
+    "state",
+    "snapshot_id",
+    "schema_version",
+    "generated_at",
+    "origin_label",
+    "summary",
+    "rows",
+    "metrics",
+    "capabilities",
+    "next_cursor",
+    "panels"
+  ],
+  "properties": {
+    "screen_id": {
+      "const": "TR-04"
+    },
+    "schema_version": {
+      "const": "ui-v2"
+    },
+    "state": {
+      "enum": [
+        "loading",
+        "ready",
+        "empty",
+        "denied",
+        "stale",
+        "partial",
+        "timeout",
+        "error",
+        "unsupported",
+        "conflict",
+        "session_expired",
+        "maintenance"
+      ]
+    },
+    "snapshot_id": {
+      "type": "string"
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "origin_label": {
+      "type": "string"
+    },
+    "summary": {
+      "type": "string"
+    },
+    "rows": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "row_id",
+          "event_revision",
+          "provider",
+          "analyst",
+          "observed",
+          "interpreted_action",
+          "instrument",
+          "disposition",
+          "reason"
+        ],
+        "properties": {
+          "event_revision": {
+            "$ref": "ui-contracts.schema.json#/$defs/Cell",
+            "description": "Event/revision; server formats semantics as typed value, not prebuilt HTML."
+          },
+          "provider": {
+            "$ref": "ui-contracts.schema.json#/$defs/Cell",
+            "description": "Provider; server formats semantics as typed value, not prebuilt HTML."
+          },
+          "analyst": {
+            "$ref": "ui-contracts.schema.json#/$defs/Cell",
+            "description": "Analyst; server formats semantics as typed value, not prebuilt HTML."
+          },
+          "observed": {
+            "$ref": "ui-contracts.schema.json#/$defs/Cell",
+            "description": "Observed; server formats semantics as typed value, not prebuilt HTML."
+          },
+          "interpreted_action": {
+            "$ref": "ui-contracts.schema.json#/$defs/Cell",
+            "description": "Interpreted action; server formats semantics as typed value, not prebuilt HTML."
+          },
+          "instrument": {
+            "$ref": "ui-contracts.schema.json#/$defs/Cell",
+            "description": "Instrument; server formats semantics as typed value, not prebuilt HTML."
+          },
+          "disposition": {
+            "$ref": "ui-contracts.schema.json#/$defs/Cell",
+            "description": "Disposition; server formats semantics as typed value, not prebuilt HTML."
+          },
+          "reason": {
+            "$ref": "ui-contracts.schema.json#/$defs/Cell",
+            "description": "Reason; server formats semantics as typed value, not prebuilt HTML."
+          },
+          "row_id": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "metrics": {
+      "type": "array",
+      "items": {
+        "$ref": "ui-contracts.schema.json#/$defs/Metric"
+      }
+    },
+    "capabilities": {
+      "type": "array",
+      "items": {
+        "$ref": "ui-contracts.schema.json#/$defs/Capability"
+      }
+    },
+    "next_cursor": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "total_rows": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 0
+    },
+    "scope_label": {
+      "type": "string"
+    },
+    "object_revision": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "blockers": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "panels": {
+      "type": "array",
+      "items": {
+        "$ref": "ui-contracts.schema.json#/$defs/Panel"
+      }
+    }
+  }
+}

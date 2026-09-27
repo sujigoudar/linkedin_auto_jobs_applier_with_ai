@@ -104,6 +104,41 @@ def enforce_append_only(engine) -> None:
         _apply_append_only(conn)
 
 
+def _apply_product_visibility_policy(conn) -> None:
+    conn.execute(text("ALTER TABLE products ENABLE ROW LEVEL SECURITY"))
+    conn.execute(text("ALTER TABLE products FORCE ROW LEVEL SECURITY"))
+    conn.execute(text("DROP POLICY IF EXISTS product_visibility ON products"))
+    conn.execute(
+        text(
+            "CREATE POLICY product_visibility ON products "
+            "USING (tenant_id = current_setting('app.tenant_id', true) "
+            "OR lifecycle_state = 'PUBLISHED')"
+        )
+    )
+
+
+def enable_product_visibility_policy(engine) -> None:
+    """Bespoke RLS for `products`, deliberately NOT part of
+    `_TENANT_SCOPED_TABLES`/`_apply_row_level_security`: that generic
+    policy only ever lets a session see its own tenant's rows, but the
+    public catalog (PU-02) must let an anonymous, no-tenant-scope session
+    see every tenant's PUBLISHED products, while an admin session (AD-07)
+    must still see its own tenant's rows in any lifecycle state. A single
+    uniform per-table policy can't express both, so `products` gets its
+    own policy: visible if it's this session's tenant, OR if it's
+    published (visible to everyone, scoped or not). An unscoped session
+    (no `app.tenant_id` set) can only ever match the second clause, so it
+    sees published rows only -- never another tenant's drafts.
+
+    Idempotent, same connection-vs-engine split as
+    `enable_row_level_security` -- call `_apply_product_visibility_policy(
+    connection)` directly from within an already-open transaction (e.g. an
+    Alembic migration), this wrapper otherwise.
+    """
+    with engine.begin() as conn:
+        _apply_product_visibility_policy(conn)
+
+
 def set_tenant_scope(session: Session, tenant_id: str) -> None:
     """Set the Postgres session variable the RLS policies above key off of.
     Must be called (with a real, authenticated tenant_id) at the start of

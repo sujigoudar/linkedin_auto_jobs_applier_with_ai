@@ -1,0 +1,50 @@
+{% extends "_base.html" %}
+{% block title %}Products and portfolio versions{% endblock %}
+{% block content %}
+<h1>Products and portfolio versions</h1>
+<p class="help">Tenant: <strong>{{ tenant_id }}</strong> &middot; Role: <strong>{{ role }}</strong></p>
+
+{% if error %}
+<div class="conflict">{{ error }}</div>
+{% endif %}
+
+<div class="panel">
+  <h2>Product catalog</h2>
+  {% if products %}
+  <table>
+    <thead>
+      <tr><th>Product</th><th>Lifecycle</th><th>Slug</th><th></th></tr>
+    </thead>
+    <tbody>
+      {% for product in products %}
+      <tr>
+        <td>{{ product.product_name }}</td>
+        <td><span class="badge badge-{{ product.lifecycle_state.value.lower() }}">{{ product.lifecycle_state.value }}</span></td>
+        <td>{{ product.slug }}</td>
+        <td><a href="/ops/products/{{ product.product_id }}">Edit version &rarr;</a></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="empty-state">
+    <p>No products exist. Create a draft; it will not appear publicly.</p>
+  </div>
+  {% endif %}
+</div>
+
+<div class="panel">
+  <h2>Create product draft</h2>
+  <form method="post" action="/ops/products">
+    <label for="product_name">Product name</label>
+    <input id="product_name" name="product_name" type="text" maxlength="100" required>
+    <p class="help">1..100 plain text. No unsupported promotional claims.</p>
+
+    <label for="slug">Public slug</label>
+    <input id="slug" name="slug" type="text" pattern="[a-z0-9]+(-[a-z0-9]+)*" required>
+    <p class="help">Unique lower-case URL slug. Draft slug not public.</p>
+
+    <button type="submit">Create product draft</button>
+  </form>
+</div>
+{% endblock %}

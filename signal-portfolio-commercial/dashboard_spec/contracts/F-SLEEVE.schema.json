@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "F-SLEEVE.schema.json",
+  "title": "Strategy sleeve",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "provider_id": {
+      "description": "registered source. Rights checked separately",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "analyst_id": {
+      "description": "verified mapping. Stable ID",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "strategy_id": {
+      "description": "reviewed strategy identity. Not arbitrary marketing label",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "parser_version_id": {
+      "description": "reviewed exact version. No latest alias",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "policy_version_id": {
+      "description": "compatible released recipe. Original risk semantics retained",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "product_profile_id": {
+      "description": "verified instrument family. No mixed financial math",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "dataset_version_id": {
+      "description": "required for research eligibility, not saving draft. No fabricated performance",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "cluster_id": {
+      "description": "reviewed context label. Does not merge source events",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    }
+  },
+  "required": [
+    "provider_id",
+    "analyst_id",
+    "strategy_id",
+    "parser_version_id",
+    "policy_version_id",
+    "product_profile_id"
+  ],
+  "description": "Ready-input schema plus server business validation. Draft input uses identical property types but permits missing required fields; missingness must be displayed. Identity/password forms never saved as drafts."
+}

@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "F-ROUTING.schema.json",
+  "title": "Routing rule",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "source_id": {
+      "description": "registered source. Exact provider identity",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "analyst_ids": {
+      "description": "within source. Null=all authorized analysts, not all providers",
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 200
+      },
+      "uniqueItems": true,
+      "maxItems": 100
+    },
+    "product_ids": {
+      "description": "explicit qualified scope. Not ticker heuristic",
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 200
+      },
+      "uniqueItems": true,
+      "maxItems": 100
+    },
+    "instrument_filter": {
+      "description": "verified instruments. No regex code execution",
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 200
+      },
+      "uniqueItems": true,
+      "maxItems": 100
+    },
+    "destination_ids": {
+      "description": "distinct owned accounts. Duplicate rules do not duplicate intents",
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 200
+      },
+      "uniqueItems": true,
+      "maxItems": 100
+    },
+    "priority": {
+      "description": "0..10000 deterministic conflict rule. No silently conflicting overrides",
+      "type": "integer"
+    },
+    "entry_enabled": {
+      "description": "true only with release. Exit ownership stays on original account",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "source_id",
+    "product_ids",
+    "destination_ids",
+    "priority",
+    "entry_enabled"
+  ],
+  "description": "Ready-input schema plus server business validation. Draft input uses identical property types but permits missing required fields; missingness must be displayed. Identity/password forms never saved as drafts."
+}

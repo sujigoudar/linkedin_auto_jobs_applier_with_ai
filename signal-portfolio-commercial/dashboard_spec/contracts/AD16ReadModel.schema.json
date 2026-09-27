@@ -1,0 +1,148 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "AD16ReadModel.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "screen_id",
+    "state",
+    "snapshot_id",
+    "schema_version",
+    "generated_at",
+    "origin_label",
+    "summary",
+    "rows",
+    "metrics",
+    "capabilities",
+    "next_cursor",
+    "panels"
+  ],
+  "properties": {
+    "screen_id": {
+      "const": "AD-16"
+    },
+    "schema_version": {
+      "const": "ui-v2"
+    },
+    "state": {
+      "enum": [
+        "loading",
+        "ready",
+        "empty",
+        "denied",
+        "stale",
+        "partial",
+        "timeout",
+        "error",
+        "unsupported",
+        "conflict",
+        "session_expired",
+        "maintenance"
+      ]
+    },
+    "snapshot_id": {
+      "type": "string"
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "origin_label": {
+      "type": "string"
+    },
+    "summary": {
+      "type": "string"
+    },
+    "rows": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "row_id",
+          "user",
+          "role",
+          "scope",
+          "expiry",
+          "grantor",
+          "last_review"
+        ],
+        "properties": {
+          "user": {
+            "$ref": "ui-contracts.schema.json#/$defs/Cell",
+            "description": "User; server formats semantics as typed value, not prebuilt HTML."
+          },
+          "role": {
+            "$ref": "ui-contracts.schema.json#/$defs/Cell",
+            "description": "Role; server formats semantics as typed value, not prebuilt HTML."
+          },
+          "scope": {
+            "$ref": "ui-contracts.schema.json#/$defs/Cell",
+            "description": "Scope; server formats semantics as typed value, not prebuilt HTML."
+          },
+          "expiry": {
+            "$ref": "ui-contracts.schema.json#/$defs/Cell",
+            "description": "Expiry; server formats semantics as typed value, not prebuilt HTML."
+          },
+          "grantor": {
+            "$ref": "ui-contracts.schema.json#/$defs/Cell",
+            "description": "Grantor; server formats semantics as typed value, not prebuilt HTML."
+          },
+          "last_review": {
+            "$ref": "ui-contracts.schema.json#/$defs/Cell",
+            "description": "Last review; server formats semantics as typed value, not prebuilt HTML."
+          },
+          "row_id": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "metrics": {
+      "type": "array",
+      "items": {
+        "$ref": "ui-contracts.schema.json#/$defs/Metric"
+      }
+    },
+    "capabilities": {
+      "type": "array",
+      "items": {
+        "$ref": "ui-contracts.schema.json#/$defs/Capability"
+      }
+    },
+    "next_cursor": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "total_rows": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 0
+    },
+    "scope_label": {
+      "type": "string"
+    },
+    "object_revision": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "blockers": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "panels": {
+      "type": "array",
+      "items": {
+        "$ref": "ui-contracts.schema.json#/$defs/Panel"
+      }
+    }
+  }
+}

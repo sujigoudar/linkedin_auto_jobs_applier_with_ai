@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "F-API-ACCESS.schema.json",
+  "title": "Scoped API delivery access",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "label": {
+      "description": "1..80 plain text. Not a secret",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "scopes": {
+      "description": "subset of entitlement and rights. No trading/admin scope",
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "alerts_read",
+          "reports_read",
+          "delivery_receive"
+        ]
+      },
+      "uniqueItems": true,
+      "maxItems": 100
+    },
+    "expires_at": {
+      "description": "future within server maximum. No never-expire by default",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500,
+      "format": "date-time"
+    },
+    "destination_id": {
+      "description": "owned validated endpoint. No arbitrary outbound URL",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    }
+  },
+  "required": [
+    "label",
+    "scopes",
+    "expires_at"
+  ],
+  "description": "Ready-input schema plus server business validation. Draft input uses identical property types but permits missing required fields; missingness must be displayed. Identity/password forms never saved as drafts."
+}

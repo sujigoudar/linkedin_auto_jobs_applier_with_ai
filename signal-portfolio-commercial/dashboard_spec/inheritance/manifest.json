@@ -1,0 +1,5 @@
+{
+  "source": "Signal_Portfolio_Commercial_Platform_Claude_Code_Pack_v1.zip",
+  "sha256": "ebf7cef0e8c06e0074088427d4af4932dfa26b71e34341347cdca8b79249b096",
+  "rule": "Preserve all CP-001..114. This package expands UI requirements and updates only UI/API binding decisions; no financial or legal approval is implied."
+}

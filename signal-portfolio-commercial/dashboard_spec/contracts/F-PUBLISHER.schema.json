@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "F-PUBLISHER.schema.json",
+  "title": "Publisher destination",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "platform": {
+      "description": "implemented approved adapter. Not proprietary SignalStack self-hosting",
+      "type": "string",
+      "enum": [
+        "collective2",
+        "etoro",
+        "copyfactory",
+        "broker_native"
+      ]
+    },
+    "external_strategy_id": {
+      "description": "read-verified account strategy. Unique financial authority binding",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "environment": {
+      "description": "vendor-specific evidence;C2 external_test not sandbox. No subscribers/autotrade for test without verification",
+      "type": "string",
+      "enum": [
+        "local_simulation",
+        "external_test",
+        "demo",
+        "live"
+      ]
+    },
+    "credential_ref": {
+      "description": "scoped preprovisioned reference. Never disclose key",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "capability_manifest_id": {
+      "description": "required before external action. Exact platform version/evidence",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "publication_mode": {
+      "description": "one approved path per external account/strategy. No double publisher",
+      "type": "string",
+      "enum": [
+        "api_strategy_publisher",
+        "approved_master_copy"
+      ]
+    }
+  },
+  "required": [
+    "platform",
+    "external_strategy_id",
+    "environment",
+    "publication_mode"
+  ],
+  "description": "Ready-input schema plus server business validation. Draft input uses identical property types but permits missing required fields; missingness must be displayed. Identity/password forms never saved as drafts."
+}

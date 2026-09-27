@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "F-WORKSPACE.schema.json",
+  "title": "Workspace and saved views",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "workspace_name": {
+      "description": "1..80 plain text. No impersonating another entity",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "theme": {
+      "description": "known theme. Shared visual tokens only",
+      "type": "string",
+      "enum": [
+        "system",
+        "dark",
+        "light"
+      ]
+    },
+    "density": {
+      "description": "accessible minimum controls. Not a risk policy",
+      "type": "string",
+      "enum": [
+        "comfortable",
+        "compact"
+      ]
+    },
+    "visible_panel_ids": {
+      "description": "allowlisted current role panels. Mandatory safety/fees/origin cannot hide",
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 200
+      },
+      "uniqueItems": true,
+      "maxItems": 100
+    },
+    "column_order": {
+      "description": "allowlisted;required identity columns retained. Move via buttons not drag-only",
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 200
+      },
+      "uniqueItems": true,
+      "maxItems": 100
+    },
+    "notification_route_id": {
+      "description": "verified recipient/channel policy. Test notice non-actionable",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    }
+  },
+  "required": [
+    "workspace_name",
+    "theme",
+    "density"
+  ],
+  "description": "Ready-input schema plus server business validation. Draft input uses identical property types but permits missing required fields; missingness must be displayed. Identity/password forms never saved as drafts."
+}

@@ -1,0 +1,17 @@
+# Testing the actual screens and workflows
+
+Inherit all CP-091..114 commercial GUI scenarios and the execution/privacy/rights rules they consume. The package adds explicit66-screen tests,41 form contracts and phase-specific journeys. catalog/test_cases.json is an application test specification,not a passing suite. tests/test_pack.py checks this design artifact only. The design atlas is not a substitute for actual HTTP/auth/database/browser tests.
+
+Full declared matrix:all66 screens x12 specified states x Chromium/Firefox/WebKit x desktop1440x900/tablet768x1024/phone390x844. Include supplementary320px,200% zoom,keyboard and reduced-motion checks. Native mobile Safari/hardware tests are separate external device qualification;WebKit desktop is not an iPhone hardware claim.
+
+Each materialized state-case needs real application setup through fixture factories and service boundaries. Named states must be elicited,not selected by an insecure production query parameter. Guest/protected,wrong tenant/role,empty valid datasets,slow reads,expired auth,stale snapshots,partial panels,conflict and external outage all assert backend effects as well as visible DOM.
+
+Mandatory fixture families:empty clean database;private draft only;released synthetic test product;customerA/customerB;staff role matrix;valid and expired rights;active/past-due/canceled subscriptions;connected but unmandated account;mandated demo route;open partial-fill transfer;outstanding UNKNOWN command;missing fee/mark;contradictory/revised billing events;old/incomplete report;managed NAV correction;standby role. All synthetic fixtures have explicit test origin,isolated issuer/database and no live credentials/egress. Production fixture loading must fail.
+
+Use actual PostgreSQL under non-superuser RLS;actual FastAPI browser routes;real session/CSRF handling;independent protocol stubs for vendor responses. Identity and payment protocol simulators must not become production fallbacks. Query/command logs assert no effects on GET/preview/nav,one operation on duplicate submit,correct scope on delayed response,zero cross-tenant rows. Do not have application import reference expected answers.
+
+Each schema-bound form tests valid create/update,missing required fields,invalid types/enum/currency/numeric values,extra keys,stale revision,duplicate idempotency key,different body same key,token expiry and unauthorized IDs. Conditional requiredness is checked by selected mode. Empty values are not coerced to0/false. Test lost response after commit and before UI response by status lookup rather than resubmit.
+
+A11y:axe on real rendered states;visible labels,error focus,keyboard tables/dialogs,reorder alternatives,focus restoration,no hover-only controls,text equivalent for charts,contrast,dynamic regions,reduced motion and200% zoom. Automated checks supplement manual AT tasks. Browser artifacts must redact PII/secrets.
+
+Scope/result registry records case,screen,form,journey,browser,viewport,fixture,commit,config,schema,driver,Junit,status and evidence paths. Completion requires exact union of selected expected IDs,nonempty drivers,actual observations and zero unaccounted skips. Failing/blocked cases stay in denominator. UIs with unavailable external credentials may pass isolated tests but cannot claim external qualification. Unknown code changes invalidate relevant evidence. No test count guarantees all future defects absent.

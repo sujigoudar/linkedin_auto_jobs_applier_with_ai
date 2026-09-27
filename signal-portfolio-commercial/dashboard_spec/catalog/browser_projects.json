@@ -1,0 +1,83 @@
+[
+  {
+    "id": "chromium-desktop",
+    "engine": "chromium",
+    "viewport": {
+      "width": 1440,
+      "height": 900
+    },
+    "device_claim": "Browser viewport emulation, not physical-device certification"
+  },
+  {
+    "id": "chromium-tablet",
+    "engine": "chromium",
+    "viewport": {
+      "width": 768,
+      "height": 1024
+    },
+    "device_claim": "Browser viewport emulation, not physical-device certification"
+  },
+  {
+    "id": "chromium-phone",
+    "engine": "chromium",
+    "viewport": {
+      "width": 390,
+      "height": 844
+    },
+    "device_claim": "Browser viewport emulation, not physical-device certification"
+  },
+  {
+    "id": "firefox-desktop",
+    "engine": "firefox",
+    "viewport": {
+      "width": 1440,
+      "height": 900
+    },
+    "device_claim": "Browser viewport emulation, not physical-device certification"
+  },
+  {
+    "id": "firefox-tablet",
+    "engine": "firefox",
+    "viewport": {
+      "width": 768,
+      "height": 1024
+    },
+    "device_claim": "Browser viewport emulation, not physical-device certification"
+  },
+  {
+    "id": "firefox-phone",
+    "engine": "firefox",
+    "viewport": {
+      "width": 390,
+      "height": 844
+    },
+    "device_claim": "Browser viewport emulation, not physical-device certification"
+  },
+  {
+    "id": "webkit-desktop",
+    "engine": "webkit",
+    "viewport": {
+      "width": 1440,
+      "height": 900
+    },
+    "device_claim": "Browser viewport emulation, not physical-device certification"
+  },
+  {
+    "id": "webkit-tablet",
+    "engine": "webkit",
+    "viewport": {
+      "width": 768,
+      "height": 1024
+    },
+    "device_claim": "Browser viewport emulation, not physical-device certification"
+  },
+  {
+    "id": "webkit-phone",
+    "engine": "webkit",
+    "viewport": {
+      "width": 390,
+      "height": 844
+    },
+    "device_claim": "Browser viewport emulation, not physical-device certification"
+  }
+]

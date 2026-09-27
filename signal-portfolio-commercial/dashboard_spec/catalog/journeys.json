@@ -1,0 +1,1329 @@
+[
+  {
+    "id": "J-PUBLIC_CATALOG",
+    "requirement_id": "CP-091",
+    "screens": [
+      "PU-01",
+      "PU-02",
+      "PU-04"
+    ],
+    "prerequisites": "Fresh database; anonymous visitor; one private Product draft; then publish a synthetic licensed test projection in isolated test DB",
+    "steps": [
+      "Read catalog empty and exclusions",
+      " create draft via authorized staff service",
+      " verify still absent publicly",
+      " release isolated fixture",
+      " filter and compare permitted products"
+    ],
+    "expected_outcomes": [
+      "Only released audience-safe versions visible",
+      " empty/missing/error distinct",
+      " compare tray performs no financial or billing command"
+    ],
+    "states": [
+      "loading",
+      "ready",
+      "empty",
+      "denied",
+      "stale",
+      "partial",
+      "timeout",
+      "error",
+      "unsupported",
+      "conflict",
+      "session_expired",
+      "maintenance"
+    ],
+    "case_evidence": "Actual browser/network plus database,job/operation records and independent vendor protocol observations;render-only is insufficient.",
+    "status": "NOT_RUN"
+  },
+  {
+    "id": "J-PUBLIC_DETAIL",
+    "requirement_id": "CP-092",
+    "screens": [
+      "PU-02",
+      "PU-03",
+      "PU-06"
+    ],
+    "prerequisites": "Released test projection with actual/model datasets, a missing fee interval and two approved legal versions",
+    "steps": [
+      "Open version",
+      " switch period and origin",
+      " inspect drawdown and table",
+      " request export",
+      " follow methodology"
+    ],
+    "expected_outcomes": [
+      "Origin, fee basis, coverage and version survive each view",
+      " no fabricated net curve or raw provider contract exposure"
+    ],
+    "states": [
+      "loading",
+      "ready",
+      "empty",
+      "denied",
+      "stale",
+      "partial",
+      "timeout",
+      "error",
+      "unsupported",
+      "conflict",
+      "session_expired",
+      "maintenance"
+    ],
+    "case_evidence": "Actual browser/network plus database,job/operation records and independent vendor protocol observations;render-only is insufficient.",
+    "status": "NOT_RUN"
+  },
+  {
+    "id": "J-SIGNUP",
+    "requirement_id": "CP-093",
+    "screens": [
+      "ID-01",
+      "ID-02",
+      "ID-03",
+      "ID-04"
+    ],
+    "prerequisites": "Controlled identity issuer with email verification,expired callbacks and replayable fixture token;no production secret",
+    "steps": [
+      "Signup",
+      "verify email",
+      "consume callback once",
+      "reauthenticate",
+      "recover with expired and valid challenge",
+      "sign out"
+    ],
+    "expected_outcomes": [
+      "Real session/tenant row created only from verified identity",
+      "no trade,invoice or entitlement solely from login"
+    ],
+    "states": [
+      "loading",
+      "ready",
+      "empty",
+      "denied",
+      "stale",
+      "partial",
+      "timeout",
+      "error",
+      "unsupported",
+      "conflict",
+      "session_expired",
+      "maintenance"
+    ],
+    "case_evidence": "Actual browser/network plus database,job/operation records and independent vendor protocol observations;render-only is insufficient.",
+    "status": "NOT_RUN"
+  },
+  {
+    "id": "J-ELIGIBILITY",
+    "requirement_id": "CP-094",
+    "screens": [
+      "ID-04",
+      "PU-02",
+      "CU-09"
+    ],
+    "prerequisites": "Approved jurisdiction/service matrix;allowed,restricted and review-pending residences",
+    "steps": [
+      "Submit facts",
+      "inspect independent service verdicts",
+      "revise facts",
+      "acknowledge current document",
+      "attempt stale-approval reuse"
+    ],
+    "expected_outcomes": [
+      "Backend enforces current eligibility",
+      "customer cannot write approved=true or infer eligibility from IP alone"
+    ],
+    "states": [
+      "loading",
+      "ready",
+      "empty",
+      "denied",
+      "stale",
+      "partial",
+      "timeout",
+      "error",
+      "unsupported",
+      "conflict",
+      "session_expired",
+      "maintenance"
+    ],
+    "case_evidence": "Actual browser/network plus database,job/operation records and independent vendor protocol observations;render-only is insufficient.",
+    "status": "NOT_RUN"
+  },
+  {
+    "id": "J-CHECKOUT",
+    "requirement_id": "CP-095",
+    "screens": [
+      "PU-05",
+      "CU-11",
+      "CU-01"
+    ],
+    "prerequisites": "Approved test price,customer and Stripe protocol simulator with signed canonical events",
+    "steps": [
+      "Preview selected price",
+      "open hosted test checkout",
+      "return without webhook",
+      "deliver duplicate and reordered events",
+      "refresh"
+    ],
+    "expected_outcomes": [
+      "Return URL alone grants nothing",
+      "verified canonical processor state updates allowed entitlement once",
+      "no trading mandate"
+    ],
+    "states": [
+      "loading",
+      "ready",
+      "empty",
+      "denied",
+      "stale",
+      "partial",
+      "timeout",
+      "error",
+      "unsupported",
+      "conflict",
+      "session_expired",
+      "maintenance"
+    ],
+    "case_evidence": "Actual browser/network plus database,job/operation records and independent vendor protocol observations;render-only is insufficient.",
+    "status": "NOT_RUN"
+  },
+  {
+    "id": "J-SUBSCRIPTIONS",
+    "requirement_id": "CP-096",
+    "screens": [
+      "CU-11",
+      "CU-02",
+      "CU-10"
+    ],
+    "prerequisites": "Customer with three portfolio selections,one active mandate and paid test subscription",
+    "steps": [
+      "Preview downgrade",
+      "choose retained future scope",
+      "cancel at period end",
+      "simulate past_due/dispute",
+      "inspect existing open obligation"
+    ],
+    "expected_outcomes": [
+      "No new selection beyond entitlement",
+      "billing transitions never blindly flatten or remove existing protection"
+    ],
+    "states": [
+      "loading",
+      "ready",
+      "empty",
+      "denied",
+      "stale",
+      "partial",
+      "timeout",
+      "error",
+      "unsupported",
+      "conflict",
+      "session_expired",
+      "maintenance"
+    ],
+    "case_evidence": "Actual browser/network plus database,job/operation records and independent vendor protocol observations;render-only is insufficient.",
+    "status": "NOT_RUN"
+  },
+  {
+    "id": "J-PORTFOLIO_SELECT",
+    "requirement_id": "CP-097",
+    "screens": [
+      "PU-02",
+      "CU-02",
+      "CU-03"
+    ],
+    "prerequisites": "Eligible customer with paid entitlement and no selections;one licensed published version",
+    "steps": [
+      "Select version",
+      "save",
+      "reload",
+      "duplicate same operation",
+      "attempt restricted version",
+      "inspect limits"
+    ],
+    "expected_outcomes": [
+      "Selection persists once",
+      "no current historical position copied by mere selection"
+    ],
+    "states": [
+      "loading",
+      "ready",
+      "empty",
+      "denied",
+      "stale",
+      "partial",
+      "timeout",
+      "error",
+      "unsupported",
+      "conflict",
+      "session_expired",
+      "maintenance"
+    ],
+    "case_evidence": "Actual browser/network plus database,job/operation records and independent vendor protocol observations;render-only is insufficient.",
+    "status": "NOT_RUN"
+  },
+  {
+    "id": "J-ALERTS",
+    "requirement_id": "CP-098",
+    "screens": [
+      "CU-04",
+      "CU-05"
+    ],
+    "prerequisites": "TenantA/TenantB alerts with originals,revisions,cancel,tombstone and delayed delivery",
+    "steps": [
+      "Page/scroll",
+      "change filters during incoming event",
+      "open revision",
+      "reconnect",
+      "inspect outcomes"
+    ],
+    "expected_outcomes": [
+      "No cross-tenant rows or duplicates",
+      "delivery and actual execution statuses remain distinct"
+    ],
+    "states": [
+      "loading",
+      "ready",
+      "empty",
+      "denied",
+      "stale",
+      "partial",
+      "timeout",
+      "error",
+      "unsupported",
+      "conflict",
+      "session_expired",
+      "maintenance"
+    ],
+    "case_evidence": "Actual browser/network plus database,job/operation records and independent vendor protocol observations;render-only is insufficient.",
+    "status": "NOT_RUN"
+  },
+  {
+    "id": "J-DELIVERY_PREFS",
+    "requirement_id": "CP-099",
+    "screens": [
+      "CU-12",
+      "CU-13",
+      "CU-16"
+    ],
+    "prerequisites": "Verified and unverified delivery targets;quota and quiet-hours policy",
+    "steps": [
+      "Change preference",
+      "verify endpoint",
+      "send labeled test",
+      "mute marketing",
+      "attempt to suppress mandatory notice"
+    ],
+    "expected_outcomes": [
+      "No investment order sent",
+      "secret masked",
+      "mandatory safety channel policy preserved and explained"
+    ],
+    "states": [
+      "loading",
+      "ready",
+      "empty",
+      "denied",
+      "stale",
+      "partial",
+      "timeout",
+      "error",
+      "unsupported",
+      "conflict",
+      "session_expired",
+      "maintenance"
+    ],
+    "case_evidence": "Actual browser/network plus database,job/operation records and independent vendor protocol observations;render-only is insufficient.",
+    "status": "NOT_RUN"
+  },
+  {
+    "id": "J-PLATFORM_CONNECT",
+    "requirement_id": "CP-100",
+    "screens": [
+      "CU-07",
+      "CU-08",
+      "CU-07"
+    ],
+    "prerequisites": "Configured provider redirect allowlist and controlled OAuth/protocol endpoints;no live keys",
+    "steps": [
+      "Begin connection",
+      "reject tampered callback",
+      "verify exact account/environment",
+      "save",
+      "reauthorize",
+      "inspect unavailable capability"
+    ],
+    "expected_outcomes": [
+      "Connection identity proven",
+      "no trade/membership purchase",
+      "external scope never inferred from display broker name"
+    ],
+    "states": [
+      "loading",
+      "ready",
+      "empty",
+      "denied",
+      "stale",
+      "partial",
+      "timeout",
+      "error",
+      "unsupported",
+      "conflict",
+      "session_expired",
+      "maintenance"
+    ],
+    "case_evidence": "Actual browser/network plus database,job/operation records and independent vendor protocol observations;render-only is insufficient.",
+    "status": "NOT_RUN"
+  },
+  {
+    "id": "J-COPY_ACTIVATE",
+    "requirement_id": "CP-101",
+    "screens": [
+      "CU-03",
+      "CU-09",
+      "CU-07"
+    ],
+    "prerequisites": "Eligible customer + paid selection + connected demo account + source rights + candidate mandate",
+    "steps": [
+      "Draft new-only setup",
+      "preview account,size,version",
+      "expire preview",
+      "refresh",
+      "confirm same key twice",
+      "read operation"
+    ],
+    "expected_outcomes": [
+      "Exactly one authorized activation operation",
+      "no existing-position sync unless separately requested and validated"
+    ],
+    "states": [
+      "loading",
+      "ready",
+      "empty",
+      "denied",
+      "stale",
+      "partial",
+      "timeout",
+      "error",
+      "unsupported",
+      "conflict",
+      "session_expired",
+      "maintenance"
+    ],
+    "case_evidence": "Actual browser/network plus database,job/operation records and independent vendor protocol observations;render-only is insufficient.",
+    "status": "NOT_RUN"
+  },
+  {
+    "id": "J-CUSTOMER_PERFORMANCE",
+    "requirement_id": "CP-102",
+    "screens": [
+      "CU-01",
+      "CU-06",
+      "CU-05"
+    ],
+    "prerequisites": "Follower actual data plus model report,deposit,partial trims,unresolved fee and stale mark",
+    "steps": [
+      "Switch origin/account/period while responses reverse",
+      "open episode",
+      "export",
+      "inspect unavailable metrics"
+    ],
+    "expected_outcomes": [
+      "No deposit as profit",
+      "no model return in actual card",
+      "trade episodes distinct from closing fills",
+      "all labels preserved"
+    ],
+    "states": [
+      "loading",
+      "ready",
+      "empty",
+      "denied",
+      "stale",
+      "partial",
+      "timeout",
+      "error",
+      "unsupported",
+      "conflict",
+      "session_expired",
+      "maintenance"
+    ],
+    "case_evidence": "Actual browser/network plus database,job/operation records and independent vendor protocol observations;render-only is insufficient.",
+    "status": "NOT_RUN"
+  },
+  {
+    "id": "J-TRADE_DETAIL",
+    "requirement_id": "CP-103",
+    "screens": [
+      "CU-04",
+      "CU-05",
+      "TR-03"
+    ],
+    "prerequisites": "Customer-scoped and separate private-owner fixtures of100 request,partial fill30,target10 pending,remaining entry fills30",
+    "steps": [
+      "Open order family",
+      "inspect actual50 or60 according to confirmed exit",
+      "inspect commitments and protection",
+      "attempt cross-scope access"
+    ],
+    "expected_outcomes": [
+      "No full requested quantity invented",
+      "views follow backend execution ledger",
+      "customer cannot enter private console"
+    ],
+    "states": [
+      "loading",
+      "ready",
+      "empty",
+      "denied",
+      "stale",
+      "partial",
+      "timeout",
+      "error",
+      "unsupported",
+      "conflict",
+      "session_expired",
+      "maintenance"
+    ],
+    "case_evidence": "Actual browser/network plus database,job/operation records and independent vendor protocol observations;render-only is insufficient.",
+    "status": "NOT_RUN"
+  },
+  {
+    "id": "J-SAFETY_EXIT",
+    "requirement_id": "CP-104",
+    "screens": [
+      "CU-03",
+      "CU-10",
+      "CU-05"
+    ],
+    "prerequisites": "Active mandate with pending order and open position;payment past_due and later mandate revocation",
+    "steps": [
+      "Pause new-only",
+      "preview termination choices",
+      "retain unresolved obligations",
+      "request permitted handoff",
+      "inspect progress"
+    ],
+    "expected_outcomes": [
+      "No unqualified automatic flatten",
+      "revocation does not extend authority beyond contract",
+      "existing obligations remain visible"
+    ],
+    "states": [
+      "loading",
+      "ready",
+      "empty",
+      "denied",
+      "stale",
+      "partial",
+      "timeout",
+      "error",
+      "unsupported",
+      "conflict",
+      "session_expired",
+      "maintenance"
+    ],
+    "case_evidence": "Actual browser/network plus database,job/operation records and independent vendor protocol observations;render-only is insufficient.",
+    "status": "NOT_RUN"
+  },
+  {
+    "id": "J-SUPPORT",
+    "requirement_id": "CP-105",
+    "screens": [
+      "CU-14",
+      "AD-11",
+      "AD-21"
+    ],
+    "prerequisites": "Customer support case plus scoped support_readonly membership;redacted attachment",
+    "steps": [
+      "Create case",
+      "upload bounded document",
+      "request operator help",
+      "attempt account impersonation and secrets export",
+      "resolve with evidence"
+    ],
+    "expected_outcomes": [
+      "Support sees only permitted scope and cannot publish/release or reveal private credentials"
+    ],
+    "states": [
+      "loading",
+      "ready",
+      "empty",
+      "denied",
+      "stale",
+      "partial",
+      "timeout",
+      "error",
+      "unsupported",
+      "conflict",
+      "session_expired",
+      "maintenance"
+    ],
+    "case_evidence": "Actual browser/network plus database,job/operation records and independent vendor protocol observations;render-only is insufficient.",
+    "status": "NOT_RUN"
+  },
+  {
+    "id": "J-LAB_UNIVERSE",
+    "requirement_id": "CP-106",
+    "screens": [
+      "AD-02",
+      "AD-03",
+      "AD-04"
+    ],
+    "prerequisites": "Authorized histories and rights grants including expired/model-prohibited sources",
+    "steps": [
+      "Create sleeve with parser/policy/version lineage",
+      "inspect full coverage",
+      "include source in universe",
+      "check grants"
+    ],
+    "expected_outcomes": [
+      "Every chosen sleeve retains exact source and data lineage",
+      "ineligible component excluded with reason,not silently guessed"
+    ],
+    "states": [
+      "loading",
+      "ready",
+      "empty",
+      "denied",
+      "stale",
+      "partial",
+      "timeout",
+      "error",
+      "unsupported",
+      "conflict",
+      "session_expired",
+      "maintenance"
+    ],
+    "case_evidence": "Actual browser/network plus database,job/operation records and independent vendor protocol observations;render-only is insufficient.",
+    "status": "NOT_RUN"
+  },
+  {
+    "id": "J-LAB_RUN",
+    "requirement_id": "CP-107",
+    "screens": [
+      "AD-04",
+      "AD-05"
+    ],
+    "prerequisites": "Frozen universe with finite candidate set,compute budget,point-in-time dataset and controlled job runner",
+    "steps": [
+      "Save run",
+      "validate full candidate denominator",
+      "start",
+      "interrupt shard",
+      "resume",
+      "cancel separate job"
+    ],
+    "expected_outcomes": [
+      "Each candidate succeeds/fails/blocks explicitly",
+      "resume no duplicates",
+      "no live policy or external publication effect"
+    ],
+    "states": [
+      "loading",
+      "ready",
+      "empty",
+      "denied",
+      "stale",
+      "partial",
+      "timeout",
+      "error",
+      "unsupported",
+      "conflict",
+      "session_expired",
+      "maintenance"
+    ],
+    "case_evidence": "Actual browser/network plus database,job/operation records and independent vendor protocol observations;render-only is insufficient.",
+    "status": "NOT_RUN"
+  },
+  {
+    "id": "J-LAB_COMPARE",
+    "requirement_id": "CP-108",
+    "screens": [
+      "AD-05",
+      "AD-06",
+      "AD-07"
+    ],
+    "prerequisites": "Candidate results with different common windows,holdouts,fee stress and forward sample sizes",
+    "steps": [
+      "Compare exact versions",
+      "inspect rejected candidates",
+      "select one",
+      "create private version draft"
+    ],
+    "expected_outcomes": [
+      "Retrospective composite labeled hypothetical",
+      "no hidden cherry-picking,auto-approval or public result creation"
+    ],
+    "states": [
+      "loading",
+      "ready",
+      "empty",
+      "denied",
+      "stale",
+      "partial",
+      "timeout",
+      "error",
+      "unsupported",
+      "conflict",
+      "session_expired",
+      "maintenance"
+    ],
+    "case_evidence": "Actual browser/network plus database,job/operation records and independent vendor protocol observations;render-only is insufficient.",
+    "status": "NOT_RUN"
+  },
+  {
+    "id": "J-RELEASE_REVIEW",
+    "requirement_id": "CP-109",
+    "screens": [
+      "AD-07",
+      "AD-08",
+      "AD-09"
+    ],
+    "prerequisites": "Draft Product/PortfolioVersion with rights/data/platform/merchant/review evidence;one expired dependency",
+    "steps": [
+      "Preview diff",
+      "deny stale evidence",
+      "request changes",
+      "refresh evidence",
+      "separate reviewer approves released scope"
+    ],
+    "expected_outcomes": [
+      "Release approval not automatic live activation",
+      "record reviewer independence or explicit permitted owner self-review limitation"
+    ],
+    "states": [
+      "loading",
+      "ready",
+      "empty",
+      "denied",
+      "stale",
+      "partial",
+      "timeout",
+      "error",
+      "unsupported",
+      "conflict",
+      "session_expired",
+      "maintenance"
+    ],
+    "case_evidence": "Actual browser/network plus database,job/operation records and independent vendor protocol observations;render-only is insufficient.",
+    "status": "NOT_RUN"
+  },
+  {
+    "id": "J-PUBLISHER",
+    "requirement_id": "CP-110",
+    "screens": [
+      "AD-09",
+      "AD-10",
+      "AD-21"
+    ],
+    "prerequisites": "Qualified protocol simulator with acknowledgment,response loss,external children and fair cohort version",
+    "steps": [
+      "Inspect destination",
+      "publish only in isolated authorized mode",
+      "lose response",
+      "reconcile",
+      "prepare scoped correction"
+    ],
+    "expected_outcomes": [
+      "One publication identity",
+      "unknown never blind replay",
+      "future subscribers cannot join a previously frozen new-entry cohort"
+    ],
+    "states": [
+      "loading",
+      "ready",
+      "empty",
+      "denied",
+      "stale",
+      "partial",
+      "timeout",
+      "error",
+      "unsupported",
+      "conflict",
+      "session_expired",
+      "maintenance"
+    ],
+    "case_evidence": "Actual browser/network plus database,job/operation records and independent vendor protocol observations;render-only is insufficient.",
+    "status": "NOT_RUN"
+  },
+  {
+    "id": "J-RIGHTS",
+    "requirement_id": "CP-111",
+    "screens": [
+      "AD-02",
+      "AD-08",
+      "AD-21"
+    ],
+    "prerequisites": "Grant geography/channel/asset windows,revocation and still-open managed exposure",
+    "steps": [
+      "Create draft evidence",
+      "review",
+      "evaluate every sleeve intersection",
+      "expire grant before confirm",
+      "manage disclosed obligations"
+    ],
+    "expected_outcomes": [
+      "Payment or reviewer role cannot grant nonexistent rights",
+      "new publication blocked at exact effect boundary"
+    ],
+    "states": [
+      "loading",
+      "ready",
+      "empty",
+      "denied",
+      "stale",
+      "partial",
+      "timeout",
+      "error",
+      "unsupported",
+      "conflict",
+      "session_expired",
+      "maintenance"
+    ],
+    "case_evidence": "Actual browser/network plus database,job/operation records and independent vendor protocol observations;render-only is insufficient.",
+    "status": "NOT_RUN"
+  },
+  {
+    "id": "J-BUSINESS",
+    "requirement_id": "CP-112",
+    "screens": [
+      "AD-12",
+      "AD-13",
+      "AD-18"
+    ],
+    "prerequisites": "Subscription invoice/refund/cost/royalty events with distinct currencies and restatements",
+    "steps": [
+      "Filter book/period",
+      "reconcile totals",
+      "inspect invoice",
+      "export frozen report"
+    ],
+    "expected_outcomes": [
+      "Investment P&L not business revenue",
+      "unknown charges excluded only with explicit incomplete totals",
+      "no payout from chart"
+    ],
+    "states": [
+      "loading",
+      "ready",
+      "empty",
+      "denied",
+      "stale",
+      "partial",
+      "timeout",
+      "error",
+      "unsupported",
+      "conflict",
+      "session_expired",
+      "maintenance"
+    ],
+    "case_evidence": "Actual browser/network plus database,job/operation records and independent vendor protocol observations;render-only is insufficient.",
+    "status": "NOT_RUN"
+  },
+  {
+    "id": "J-MANAGED_ACCOUNT",
+    "requirement_id": "CP-113",
+    "screens": [
+      "AD-14",
+      "AD-15",
+      "CU-15"
+    ],
+    "prerequisites": "Broker-managed test program,precommitted allocation,NAV,cutoff,open trades and cashflow ambiguity",
+    "steps": [
+      "Preview dealing request",
+      "review units/fees",
+      "reject unsupported cashflow fee convention",
+      "inspect correction",
+      "show investor statement"
+    ],
+    "expected_outcomes": [
+      "No SaaS investment custody",
+      "allocation fixed before outcome",
+      "no guessed fee or live broker operation without approved program"
+    ],
+    "states": [
+      "loading",
+      "ready",
+      "empty",
+      "denied",
+      "stale",
+      "partial",
+      "timeout",
+      "error",
+      "unsupported",
+      "conflict",
+      "session_expired",
+      "maintenance"
+    ],
+    "case_evidence": "Actual browser/network plus database,job/operation records and independent vendor protocol observations;render-only is insufficient.",
+    "status": "NOT_RUN"
+  },
+  {
+    "id": "J-RECOVERY",
+    "requirement_id": "CP-114",
+    "screens": [
+      "AD-22",
+      "AD-21",
+      "TR-16"
+    ],
+    "prerequisites": "Inactive standby,restored generation,expired session,unknown publication and unreachable old writer",
+    "steps": [
+      "Inspect health",
+      "prepare restore evidence",
+      "deny unfenced promotion",
+      "verify current rights",
+      "restore customer views scoped"
+    ],
+    "expected_outcomes": [
+      "Web reachability not financial readiness",
+      "no second writer,restored active flag or public secrets",
+      "real external recovery qualification remains separate"
+    ],
+    "states": [
+      "loading",
+      "ready",
+      "empty",
+      "denied",
+      "stale",
+      "partial",
+      "timeout",
+      "error",
+      "unsupported",
+      "conflict",
+      "session_expired",
+      "maintenance"
+    ],
+    "case_evidence": "Actual browser/network plus database,job/operation records and independent vendor protocol observations;render-only is insufficient.",
+    "status": "NOT_RUN"
+  },
+  {
+    "id": "JT-01",
+    "requirement_id": "UI-PRIVATE-01",
+    "title": "No accounts -> inactive account -> confirmed partial inventory",
+    "screens": [
+      "TR-01",
+      "TR-02",
+      "TR-03"
+    ],
+    "prerequisites": "Live credentials absent;temporary SQLite and independent venue book",
+    "steps": [
+      "Create inactive account",
+      "inspect clean empty dashboard",
+      "load controlled30-share fill",
+      "open details",
+      "verify coverage and UNKNOWN flags"
+    ],
+    "expected_outcomes": [
+      "No optimistic holdings;status panel explains each independent readiness dimension"
+    ],
+    "states": [
+      "loading",
+      "ready",
+      "empty",
+      "denied",
+      "stale",
+      "partial",
+      "timeout",
+      "error",
+      "unsupported",
+      "conflict",
+      "session_expired",
+      "maintenance"
+    ],
+    "case_evidence": "actual private application, temporary store, separate independent venue book, permitted browser",
+    "status": "NOT_RUN"
+  },
+  {
+    "id": "JT-02",
+    "requirement_id": "UI-PRIVATE-02",
+    "title": "Message review and duplicate suppression",
+    "screens": [
+      "TR-04",
+      "TR-05",
+      "TR-06"
+    ],
+    "prerequisites": "Negated message,revision,duplicate external event and normal entry",
+    "steps": [
+      "Classify each",
+      "inspect evidence",
+      "replay duplicate",
+      "verify exact broker command count"
+    ],
+    "expected_outcomes": [
+      "Negated history cannot enter;one intended destination one effect"
+    ],
+    "states": [
+      "loading",
+      "ready",
+      "empty",
+      "denied",
+      "stale",
+      "partial",
+      "timeout",
+      "error",
+      "unsupported",
+      "conflict",
+      "session_expired",
+      "maintenance"
+    ],
+    "case_evidence": "actual private application, temporary store, separate independent venue book, permitted browser",
+    "status": "NOT_RUN"
+  },
+  {
+    "id": "JT-03",
+    "requirement_id": "UI-PRIVATE-03",
+    "title": "Exact account capability setup",
+    "screens": [
+      "TR-07",
+      "TR-08",
+      "TR-01"
+    ],
+    "prerequisites": "Two accounts at same adapter;one missing stop amendment capability",
+    "steps": [
+      "Save independently",
+      "verify immutable identity",
+      "preview qualification",
+      "try copied readiness state"
+    ],
+    "expected_outcomes": [
+      "Capability badges bound to actual account/product/version;one account cannot certify other"
+    ],
+    "states": [
+      "loading",
+      "ready",
+      "empty",
+      "denied",
+      "stale",
+      "partial",
+      "timeout",
+      "error",
+      "unsupported",
+      "conflict",
+      "session_expired",
+      "maintenance"
+    ],
+    "case_evidence": "actual private application, temporary store, separate independent venue book, permitted browser",
+    "status": "NOT_RUN"
+  },
+  {
+    "id": "JT-04",
+    "requirement_id": "UI-PRIVATE-04",
+    "title": "Provider history and parser version validation",
+    "screens": [
+      "TR-09",
+      "TR-10",
+      "TR-05"
+    ],
+    "prerequisites": "Authorized100-message test corpus including all defined classes and revisions",
+    "steps": [
+      "Import all pages",
+      "interrupt/resume",
+      "classify every record",
+      "compare versions",
+      "reject unknown grammar"
+    ],
+    "expected_outcomes": [
+      "Coverage denominator preserved;missing data remains gap;no live replay"
+    ],
+    "states": [
+      "loading",
+      "ready",
+      "empty",
+      "denied",
+      "stale",
+      "partial",
+      "timeout",
+      "error",
+      "unsupported",
+      "conflict",
+      "session_expired",
+      "maintenance"
+    ],
+    "case_evidence": "actual private application, temporary store, separate independent venue book, permitted browser",
+    "status": "NOT_RUN"
+  },
+  {
+    "id": "JT-05",
+    "requirement_id": "UI-PRIVATE-05",
+    "title": "Routing rule preview and scoped release",
+    "screens": [
+      "TR-11",
+      "TR-05",
+      "TR-06"
+    ],
+    "prerequisites": "Two overlapping rules;manual existing holding;entry pause",
+    "steps": [
+      "Save rule draft",
+      "preview destinations",
+      "deduplicate",
+      "release approved config",
+      "receive exit after pause"
+    ],
+    "expected_outcomes": [
+      "One destination effect;existing-position exit follows original ownership;manual holding not swept"
+    ],
+    "states": [
+      "loading",
+      "ready",
+      "empty",
+      "denied",
+      "stale",
+      "partial",
+      "timeout",
+      "error",
+      "unsupported",
+      "conflict",
+      "session_expired",
+      "maintenance"
+    ],
+    "case_evidence": "actual private application, temporary store, separate independent venue book, permitted browser",
+    "status": "NOT_RUN"
+  },
+  {
+    "id": "JT-06",
+    "requirement_id": "UI-PRIVATE-06",
+    "title": "Policy inheritance and missing stop handling",
+    "screens": [
+      "TR-12",
+      "TR-05",
+      "TR-03"
+    ],
+    "prerequisites": "Provider no-stop case and released fallback;hard account risk ceiling",
+    "steps": [
+      "Reset override to inherit",
+      "preview source basis",
+      "attempt wider lower-level limit",
+      "submit config review"
+    ],
+    "expected_outcomes": [
+      "Inherited constraints respected;missing fallback blocks entry;no arbitrary new default stop"
+    ],
+    "states": [
+      "loading",
+      "ready",
+      "empty",
+      "denied",
+      "stale",
+      "partial",
+      "timeout",
+      "error",
+      "unsupported",
+      "conflict",
+      "session_expired",
+      "maintenance"
+    ],
+    "case_evidence": "actual private application, temporary store, separate independent venue book, permitted browser",
+    "status": "NOT_RUN"
+  },
+  {
+    "id": "JT-07",
+    "requirement_id": "UI-PRIVATE-07",
+    "title": "Partial profit protection transfer",
+    "screens": [
+      "TR-02",
+      "TR-03",
+      "TR-06"
+    ],
+    "prerequisites": "62 owned,stop62,target15;8 then3 fills while cancel unresolved",
+    "steps": [
+      "Preview trim",
+      "confirm once",
+      "inspect each transfer state",
+      "reconcile final result"
+    ],
+    "expected_outcomes": [
+      "54 remains after8;pending7 counted;51 after3 more;no excess full stop or duplicate sell"
+    ],
+    "states": [
+      "loading",
+      "ready",
+      "empty",
+      "denied",
+      "stale",
+      "partial",
+      "timeout",
+      "error",
+      "unsupported",
+      "conflict",
+      "session_expired",
+      "maintenance"
+    ],
+    "case_evidence": "actual private application, temporary store, separate independent venue book, permitted browser",
+    "status": "NOT_RUN"
+  },
+  {
+    "id": "JT-08",
+    "requirement_id": "UI-PRIVATE-08",
+    "title": "Lost response and restart",
+    "screens": [
+      "TR-06",
+      "TR-13",
+      "TR-03"
+    ],
+    "prerequisites": "Durably recorded command accepted by controlled venue with response lost",
+    "steps": [
+      "Trigger unknown",
+      "restart application",
+      "open same operation",
+      "readback resolves ID"
+    ],
+    "expected_outcomes": [
+      "No second command;UI never announces successful cancellation/filled based on timeout"
+    ],
+    "states": [
+      "loading",
+      "ready",
+      "empty",
+      "denied",
+      "stale",
+      "partial",
+      "timeout",
+      "error",
+      "unsupported",
+      "conflict",
+      "session_expired",
+      "maintenance"
+    ],
+    "case_evidence": "actual private application, temporary store, separate independent venue book, permitted browser",
+    "status": "NOT_RUN"
+  },
+  {
+    "id": "JT-09",
+    "requirement_id": "UI-PRIVATE-09",
+    "title": "Financial metrics and partial exits",
+    "screens": [
+      "TR-14",
+      "TR-03"
+    ],
+    "prerequisites": "Buy100@10 fee1;sell40@11 fee.4;mark60@12;currencyUSD",
+    "steps": [
+      "Open gross/net report",
+      "inspect actual fills and fee allocations",
+      "export"
+    ],
+    "expected_outcomes": [
+      "Realized39.20,unrealized119.40,combined158.60 under declared linear convention;episode not3wins"
+    ],
+    "states": [
+      "loading",
+      "ready",
+      "empty",
+      "denied",
+      "stale",
+      "partial",
+      "timeout",
+      "error",
+      "unsupported",
+      "conflict",
+      "session_expired",
+      "maintenance"
+    ],
+    "case_evidence": "actual private application, temporary store, separate independent venue book, permitted browser",
+    "status": "NOT_RUN"
+  },
+  {
+    "id": "JT-10",
+    "requirement_id": "UI-PRIVATE-10",
+    "title": "Historical run with ambiguous candle",
+    "screens": [
+      "TR-15",
+      "TR-14"
+    ],
+    "prerequisites": "Long100 stop95 target105;bar high106 low94;original event times",
+    "steps": [
+      "Run full fixture",
+      "inspect both path-consistent bounds",
+      "pause/resume job"
+    ],
+    "expected_outcomes": [
+      "No favorable fill order invented;backtest is model,not actual record"
+    ],
+    "states": [
+      "loading",
+      "ready",
+      "empty",
+      "denied",
+      "stale",
+      "partial",
+      "timeout",
+      "error",
+      "unsupported",
+      "conflict",
+      "session_expired",
+      "maintenance"
+    ],
+    "case_evidence": "actual private application, temporary store, separate independent venue book, permitted browser",
+    "status": "NOT_RUN"
+  },
+  {
+    "id": "JT-11",
+    "requirement_id": "UI-PRIVATE-11",
+    "title": "Truthful health and recovery",
+    "screens": [
+      "TR-13",
+      "TR-16"
+    ],
+    "prerequisites": "All required broker reads fail while HTTP stays responsive",
+    "steps": [
+      "Inspect process/task/route/protection individually",
+      "restore feed",
+      "acknowledge incident"
+    ],
+    "expected_outcomes": [
+      "Loop-completed not usable-data;acknowledge not resolve;repair requires current observations"
+    ],
+    "states": [
+      "loading",
+      "ready",
+      "empty",
+      "denied",
+      "stale",
+      "partial",
+      "timeout",
+      "error",
+      "unsupported",
+      "conflict",
+      "session_expired",
+      "maintenance"
+    ],
+    "case_evidence": "actual private application, temporary store, separate independent venue book, permitted browser",
+    "status": "NOT_RUN"
+  },
+  {
+    "id": "JT-12",
+    "requirement_id": "UI-PRIVATE-12",
+    "title": "Inactive site and origin isolation",
+    "screens": [
+      "TR-16",
+      "TR-01"
+    ],
+    "prerequisites": "Inactive role,old writer unproven,read-only owner session",
+    "steps": [
+      "Log into inspection",
+      "attempt financial POST",
+      "review promotion",
+      "inject stale active config"
+    ],
+    "expected_outcomes": [
+      "Read inspection possible but financial authority disabled;no automatic writer on missed heartbeat"
+    ],
+    "states": [
+      "loading",
+      "ready",
+      "empty",
+      "denied",
+      "stale",
+      "partial",
+      "timeout",
+      "error",
+      "unsupported",
+      "conflict",
+      "session_expired",
+      "maintenance"
+    ],
+    "case_evidence": "actual private application, temporary store, separate independent venue book, permitted browser",
+    "status": "NOT_RUN"
+  }
+]

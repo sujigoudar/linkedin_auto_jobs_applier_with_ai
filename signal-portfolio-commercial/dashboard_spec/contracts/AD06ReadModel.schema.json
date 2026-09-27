@@ -1,0 +1,163 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "AD06ReadModel.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "screen_id",
+    "state",
+    "snapshot_id",
+    "schema_version",
+    "generated_at",
+    "origin_label",
+    "summary",
+    "rows",
+    "metrics",
+    "capabilities",
+    "next_cursor",
+    "panels"
+  ],
+  "properties": {
+    "screen_id": {
+      "const": "AD-06"
+    },
+    "schema_version": {
+      "const": "ui-v2"
+    },
+    "state": {
+      "enum": [
+        "loading",
+        "ready",
+        "empty",
+        "denied",
+        "stale",
+        "partial",
+        "timeout",
+        "error",
+        "unsupported",
+        "conflict",
+        "session_expired",
+        "maintenance"
+      ]
+    },
+    "snapshot_id": {
+      "type": "string"
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "origin_label": {
+      "type": "string"
+    },
+    "summary": {
+      "type": "string"
+    },
+    "rows": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "row_id",
+          "candidate",
+          "dataset",
+          "holdout_status",
+          "net",
+          "tail_loss",
+          "turnover",
+          "coverage",
+          "capacity",
+          "decision"
+        ],
+        "properties": {
+          "candidate": {
+            "$ref": "ui-contracts.schema.json#/$defs/Cell",
+            "description": "Candidate; server formats semantics as typed value, not prebuilt HTML."
+          },
+          "dataset": {
+            "$ref": "ui-contracts.schema.json#/$defs/Cell",
+            "description": "Dataset; server formats semantics as typed value, not prebuilt HTML."
+          },
+          "holdout_status": {
+            "$ref": "ui-contracts.schema.json#/$defs/Cell",
+            "description": "Holdout status; server formats semantics as typed value, not prebuilt HTML."
+          },
+          "net": {
+            "$ref": "ui-contracts.schema.json#/$defs/Cell",
+            "description": "Net; server formats semantics as typed value, not prebuilt HTML."
+          },
+          "tail_loss": {
+            "$ref": "ui-contracts.schema.json#/$defs/Cell",
+            "description": "Tail loss; server formats semantics as typed value, not prebuilt HTML."
+          },
+          "turnover": {
+            "$ref": "ui-contracts.schema.json#/$defs/Cell",
+            "description": "Turnover; server formats semantics as typed value, not prebuilt HTML."
+          },
+          "coverage": {
+            "$ref": "ui-contracts.schema.json#/$defs/Cell",
+            "description": "Coverage; server formats semantics as typed value, not prebuilt HTML."
+          },
+          "capacity": {
+            "$ref": "ui-contracts.schema.json#/$defs/Cell",
+            "description": "Capacity; server formats semantics as typed value, not prebuilt HTML."
+          },
+          "decision": {
+            "$ref": "ui-contracts.schema.json#/$defs/Cell",
+            "description": "Decision; server formats semantics as typed value, not prebuilt HTML."
+          },
+          "row_id": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "metrics": {
+      "type": "array",
+      "items": {
+        "$ref": "ui-contracts.schema.json#/$defs/Metric"
+      }
+    },
+    "capabilities": {
+      "type": "array",
+      "items": {
+        "$ref": "ui-contracts.schema.json#/$defs/Capability"
+      }
+    },
+    "next_cursor": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "total_rows": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 0
+    },
+    "scope_label": {
+      "type": "string"
+    },
+    "object_revision": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "blockers": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "panels": {
+      "type": "array",
+      "items": {
+        "$ref": "ui-contracts.schema.json#/$defs/Panel"
+      }
+    }
+  }
+}

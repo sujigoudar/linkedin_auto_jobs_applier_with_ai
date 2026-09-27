@@ -1,0 +1,81 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "F-PRODUCT.schema.json",
+  "title": "Product and portfolio version",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "product_name": {
+      "description": "1..100 plain text. No unsupported promotional claims",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "slug": {
+      "description": "unique lower-case URL slug. Draft slug not public",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500,
+      "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+    },
+    "portfolio_version_id": {
+      "description": "editable draft only. Released changes create new version",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "sleeve_weights": {
+      "description": "nonnegative integer bps;plus cash10000 when complete. Draft can be incomplete",
+      "type": "object",
+      "additionalProperties": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 10000
+      },
+      "maxProperties": 100
+    },
+    "cash_bps": {
+      "description": "0..10000;weight conservation before eligibility. New empty draft all cash is not a trading recommendation",
+      "type": "integer"
+    },
+    "service_modes": {
+      "description": "rights/platform/legal intersections. No auto-enable unsupported mode",
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "alerts",
+          "copying",
+          "managed_program"
+        ]
+      },
+      "uniqueItems": true,
+      "maxItems": 100
+    },
+    "audience_policy_id": {
+      "description": "required before release. No inferred jurisdictions",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "research_report_id": {
+      "description": "required for claims;can save without. No invented track record",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "methodology_document_id": {
+      "description": "required before public publication. Versioned approved content",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    }
+  },
+  "required": [
+    "product_name",
+    "slug",
+    "cash_bps",
+    "service_modes"
+  ],
+  "description": "Ready-input schema plus server business validation. Draft input uses identical property types but permits missing required fields; missingness must be displayed. Identity/password forms never saved as drafts."
+}

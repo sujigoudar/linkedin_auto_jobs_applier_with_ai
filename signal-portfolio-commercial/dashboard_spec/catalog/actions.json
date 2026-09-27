@@ -1,0 +1,2636 @@
+[
+  {
+    "id": "PU-01-A01",
+    "screen": "PU-01",
+    "label": "Browse portfolios",
+    "service": "commercial",
+    "intent": "PU-02",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "navigate",
+    "target_screen": "PU-02",
+    "behavior": "Use route registry and exact selected ID. Cross-origin private/commercial navigation requires independent authentication. Missing selection displays a prompt, never guesses."
+  },
+  {
+    "id": "PU-01-A02",
+    "screen": "PU-01",
+    "label": "Read methodology",
+    "service": "commercial",
+    "intent": "PU-06",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "navigate",
+    "target_screen": "PU-06",
+    "behavior": "Use route registry and exact selected ID. Cross-origin private/commercial navigation requires independent authentication. Missing selection displays a prompt, never guesses."
+  },
+  {
+    "id": "PU-02-A01",
+    "screen": "PU-02",
+    "label": "Open portfolio",
+    "service": "commercial",
+    "intent": "PU-03",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "navigate",
+    "target_screen": "PU-03",
+    "behavior": "Use route registry and exact selected ID. Cross-origin private/commercial navigation requires independent authentication. Missing selection displays a prompt, never guesses."
+  },
+  {
+    "id": "PU-02-A02",
+    "screen": "PU-02",
+    "label": "Compare selected",
+    "service": "commercial",
+    "intent": "PU-04",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "navigate",
+    "target_screen": "PU-04",
+    "behavior": "Use route registry and exact selected ID. Cross-origin private/commercial navigation requires independent authentication. Missing selection displays a prompt, never guesses."
+  },
+  {
+    "id": "PU-03-A01",
+    "screen": "PU-03",
+    "label": "Check eligibility",
+    "service": "commercial",
+    "intent": "ID-04",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "navigate",
+    "target_screen": "ID-04",
+    "behavior": "Use route registry and exact selected ID. Cross-origin private/commercial navigation requires independent authentication. Missing selection displays a prompt, never guesses."
+  },
+  {
+    "id": "PU-03-A02",
+    "screen": "PU-03",
+    "label": "View disclosures",
+    "service": "commercial",
+    "intent": "PU-06",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "navigate",
+    "target_screen": "PU-06",
+    "behavior": "Use route registry and exact selected ID. Cross-origin private/commercial navigation requires independent authentication. Missing selection displays a prompt, never guesses."
+  },
+  {
+    "id": "PU-04-A01",
+    "screen": "PU-04",
+    "label": "Add portfolio",
+    "service": "commercial",
+    "intent": "PU-02",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "navigate",
+    "target_screen": "PU-02",
+    "behavior": "Use route registry and exact selected ID. Cross-origin private/commercial navigation requires independent authentication. Missing selection displays a prompt, never guesses."
+  },
+  {
+    "id": "PU-04-A02",
+    "screen": "PU-04",
+    "label": "Remove selection",
+    "service": "commercial",
+    "intent": "LOCAL_REMOVE_COMPARE",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "read_or_view",
+    "behavior": "Use the same scoped immutable read model and selected object. Changes to filters/compare tray/panel view affect presentation only. Downloads go through authenticated export service with all quality labels.",
+    "detail_route_key": "local_remove_compare"
+  },
+  {
+    "id": "PU-05-A01",
+    "screen": "PU-05",
+    "label": "Check eligibility",
+    "service": "commercial",
+    "intent": "ID-04",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "navigate",
+    "target_screen": "ID-04",
+    "behavior": "Use route registry and exact selected ID. Cross-origin private/commercial navigation requires independent authentication. Missing selection displays a prompt, never guesses."
+  },
+  {
+    "id": "PU-05-A02",
+    "screen": "PU-05",
+    "label": "Read billing terms",
+    "service": "commercial",
+    "intent": "PU-06",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "navigate",
+    "target_screen": "PU-06",
+    "behavior": "Use route registry and exact selected ID. Cross-origin private/commercial navigation requires independent authentication. Missing selection displays a prompt, never guesses."
+  },
+  {
+    "id": "PU-06-A01",
+    "screen": "PU-06",
+    "label": "Read document",
+    "service": "commercial",
+    "intent": "LOCAL_DOCUMENT",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "read_or_view",
+    "behavior": "Use the same scoped immutable read model and selected object. Changes to filters/compare tray/panel view affect presentation only. Downloads go through authenticated export service with all quality labels.",
+    "detail_route_key": "local_document"
+  },
+  {
+    "id": "PU-06-A02",
+    "screen": "PU-06",
+    "label": "Download permitted document",
+    "service": "commercial",
+    "intent": "LOCAL_DOWNLOAD",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "read_or_view",
+    "behavior": "Use the same scoped immutable read model and selected object. Changes to filters/compare tray/panel view affect presentation only. Downloads go through authenticated export service with all quality labels.",
+    "detail_route_key": "local_download"
+  },
+  {
+    "id": "PU-07-A01",
+    "screen": "PU-07",
+    "label": "Open incident",
+    "service": "commercial",
+    "intent": "LOCAL_PUBLIC_INCIDENT",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "read_or_view",
+    "behavior": "Use the same scoped immutable read model and selected object. Changes to filters/compare tray/panel view affect presentation only. Downloads go through authenticated export service with all quality labels.",
+    "detail_route_key": "local_public_incident"
+  },
+  {
+    "id": "PU-07-A02",
+    "screen": "PU-07",
+    "label": "Open support",
+    "service": "commercial",
+    "intent": "CU-14",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "navigate",
+    "target_screen": "CU-14",
+    "behavior": "Use route registry and exact selected ID. Cross-origin private/commercial navigation requires independent authentication. Missing selection displays a prompt, never guesses."
+  },
+  {
+    "id": "PU-08-A01",
+    "screen": "PU-08",
+    "label": "Read article",
+    "service": "commercial",
+    "intent": "LOCAL_HELP_ARTICLE",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "read_or_view",
+    "behavior": "Use the same scoped immutable read model and selected object. Changes to filters/compare tray/panel view affect presentation only. Downloads go through authenticated export service with all quality labels.",
+    "detail_route_key": "local_help_article"
+  },
+  {
+    "id": "PU-08-A02",
+    "screen": "PU-08",
+    "label": "Contact support",
+    "service": "commercial",
+    "intent": "CU-14",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "navigate",
+    "target_screen": "CU-14",
+    "behavior": "Use route registry and exact selected ID. Cross-origin private/commercial navigation requires independent authentication. Missing selection displays a prompt, never guesses."
+  },
+  {
+    "id": "ID-01-A01",
+    "screen": "ID-01",
+    "label": "Sign in",
+    "service": "commercial",
+    "intent": "FORM",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "form",
+    "form_ids": [
+      "F-IDENTITY"
+    ],
+    "behavior": "Open named form step appropriate to label; save/validate/preview/confirm are distinct bound operations. Do not bypass earlier validation with a confirm-labelled button."
+  },
+  {
+    "id": "ID-01-A02",
+    "screen": "ID-01",
+    "label": "Create account",
+    "service": "commercial",
+    "intent": "FORM",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "form",
+    "form_ids": [
+      "F-IDENTITY"
+    ],
+    "behavior": "Open named form step appropriate to label; save/validate/preview/confirm are distinct bound operations. Do not bypass earlier validation with a confirm-labelled button."
+  },
+  {
+    "id": "ID-01-A03",
+    "screen": "ID-01",
+    "label": "Recover account",
+    "service": "commercial",
+    "intent": "ID-03",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "navigate",
+    "target_screen": "ID-03",
+    "behavior": "Use route registry and exact selected ID. Cross-origin private/commercial navigation requires independent authentication. Missing selection displays a prompt, never guesses."
+  },
+  {
+    "id": "ID-02-A01",
+    "screen": "ID-02",
+    "label": "Resend verification",
+    "service": "commercial",
+    "intent": "DIRECT_RESEND",
+    "effect": "identity",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "scoped_command",
+    "behavior": "Request one bounded provider verification resend. Use generic response and anti-enumeration; no local email fabrication.",
+    "api_id": "ACTION-ID-02-A01",
+    "roles": [
+      "anonymous"
+    ]
+  },
+  {
+    "id": "ID-02-A02",
+    "screen": "ID-02",
+    "label": "Continue to eligibility",
+    "service": "commercial",
+    "intent": "ID-04",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "navigate",
+    "target_screen": "ID-04",
+    "behavior": "Use route registry and exact selected ID. Cross-origin private/commercial navigation requires independent authentication. Missing selection displays a prompt, never guesses."
+  },
+  {
+    "id": "ID-03-A01",
+    "screen": "ID-03",
+    "label": "Verify identity",
+    "service": "commercial",
+    "intent": "FORM",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "form",
+    "form_ids": [
+      "F-RECOVERY"
+    ],
+    "behavior": "Open named form step appropriate to label; save/validate/preview/confirm are distinct bound operations. Do not bypass earlier validation with a confirm-labelled button."
+  },
+  {
+    "id": "ID-03-A02",
+    "screen": "ID-03",
+    "label": "Return to sign in",
+    "service": "commercial",
+    "intent": "ID-01",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "navigate",
+    "target_screen": "ID-01",
+    "behavior": "Use route registry and exact selected ID. Cross-origin private/commercial navigation requires independent authentication. Missing selection displays a prompt, never guesses."
+  },
+  {
+    "id": "ID-04-A01",
+    "screen": "ID-04",
+    "label": "Save facts",
+    "service": "commercial",
+    "intent": "FORM",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "form",
+    "form_ids": [
+      "F-ELIGIBILITY"
+    ],
+    "behavior": "Open named form step appropriate to label; save/validate/preview/confirm are distinct bound operations. Do not bypass earlier validation with a confirm-labelled button."
+  },
+  {
+    "id": "ID-04-A02",
+    "screen": "ID-04",
+    "label": "Review decision",
+    "service": "commercial",
+    "intent": "LOCAL_ELIGIBILITY_RESULT",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "read_or_view",
+    "behavior": "Use the same scoped immutable read model and selected object. Changes to filters/compare tray/panel view affect presentation only. Downloads go through authenticated export service with all quality labels.",
+    "detail_route_key": "local_eligibility_result"
+  },
+  {
+    "id": "CU-01-A01",
+    "screen": "CU-01",
+    "label": "Browse portfolios",
+    "service": "commercial",
+    "intent": "PU-02",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "navigate",
+    "target_screen": "PU-02",
+    "behavior": "Use route registry and exact selected ID. Cross-origin private/commercial navigation requires independent authentication. Missing selection displays a prompt, never guesses."
+  },
+  {
+    "id": "CU-01-A02",
+    "screen": "CU-01",
+    "label": "Review setup",
+    "service": "commercial",
+    "intent": "CU-07",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "navigate",
+    "target_screen": "CU-07",
+    "behavior": "Use route registry and exact selected ID. Cross-origin private/commercial navigation requires independent authentication. Missing selection displays a prompt, never guesses."
+  },
+  {
+    "id": "CU-02-A01",
+    "screen": "CU-02",
+    "label": "Select portfolio",
+    "service": "commercial",
+    "intent": "FORM",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "form",
+    "form_ids": [
+      "F-SELECTION"
+    ],
+    "behavior": "Open named form step appropriate to label; save/validate/preview/confirm are distinct bound operations. Do not bypass earlier validation with a confirm-labelled button."
+  },
+  {
+    "id": "CU-02-A02",
+    "screen": "CU-02",
+    "label": "Open selection",
+    "service": "commercial",
+    "intent": "CU-03",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "navigate",
+    "target_screen": "CU-03",
+    "behavior": "Use route registry and exact selected ID. Cross-origin private/commercial navigation requires independent authentication. Missing selection displays a prompt, never guesses."
+  },
+  {
+    "id": "CU-03-A01",
+    "screen": "CU-03",
+    "label": "Open connection",
+    "service": "commercial",
+    "intent": "CU-07",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "navigate",
+    "target_screen": "CU-07",
+    "behavior": "Use route registry and exact selected ID. Cross-origin private/commercial navigation requires independent authentication. Missing selection displays a prompt, never guesses."
+  },
+  {
+    "id": "CU-03-A02",
+    "screen": "CU-03",
+    "label": "Change future selection",
+    "service": "commercial",
+    "intent": "CU-02",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "navigate",
+    "target_screen": "CU-02",
+    "behavior": "Use route registry and exact selected ID. Cross-origin private/commercial navigation requires independent authentication. Missing selection displays a prompt, never guesses."
+  },
+  {
+    "id": "CU-03-A03",
+    "screen": "CU-03",
+    "label": "Pause new copying",
+    "service": "commercial",
+    "intent": "CU-10",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "navigate",
+    "target_screen": "CU-10",
+    "behavior": "Use route registry and exact selected ID. Cross-origin private/commercial navigation requires independent authentication. Missing selection displays a prompt, never guesses."
+  },
+  {
+    "id": "CU-04-A01",
+    "screen": "CU-04",
+    "label": "Open alert",
+    "service": "commercial",
+    "intent": "CU-05",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "navigate",
+    "target_screen": "CU-05",
+    "behavior": "Use route registry and exact selected ID. Cross-origin private/commercial navigation requires independent authentication. Missing selection displays a prompt, never guesses."
+  },
+  {
+    "id": "CU-04-A02",
+    "screen": "CU-04",
+    "label": "Pause display updates",
+    "service": "commercial",
+    "intent": "LOCAL_PAUSE_DISPLAY",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "read_or_view",
+    "behavior": "Use the same scoped immutable read model and selected object. Changes to filters/compare tray/panel view affect presentation only. Downloads go through authenticated export service with all quality labels.",
+    "detail_route_key": "local_pause_display"
+  },
+  {
+    "id": "CU-05-A01",
+    "screen": "CU-05",
+    "label": "Download scoped record",
+    "service": "commercial",
+    "intent": "DIRECT_EXPORT",
+    "effect": "export",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "scoped_command",
+    "behavior": "Create redacted export job from frozen permitted filters and object versions; reauthorize download; no financial action.",
+    "api_id": "ACTION-CU-05-A01",
+    "roles": [
+      "customer"
+    ]
+  },
+  {
+    "id": "CU-05-A02",
+    "screen": "CU-05",
+    "label": "Report discrepancy",
+    "service": "commercial",
+    "intent": "CU-14",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "navigate",
+    "target_screen": "CU-14",
+    "behavior": "Use route registry and exact selected ID. Cross-origin private/commercial navigation requires independent authentication. Missing selection displays a prompt, never guesses."
+  },
+  {
+    "id": "CU-06-A01",
+    "screen": "CU-06",
+    "label": "Export report",
+    "service": "commercial",
+    "intent": "FORM",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "form",
+    "form_ids": [
+      "F-REPORT"
+    ],
+    "behavior": "Open named form step appropriate to label; save/validate/preview/confirm are distinct bound operations. Do not bypass earlier validation with a confirm-labelled button."
+  },
+  {
+    "id": "CU-06-A02",
+    "screen": "CU-06",
+    "label": "Inspect reconciliation",
+    "service": "commercial",
+    "intent": "LOCAL_RECONCILIATION",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "read_or_view",
+    "behavior": "Use the same scoped immutable read model and selected object. Changes to filters/compare tray/panel view affect presentation only. Downloads go through authenticated export service with all quality labels.",
+    "detail_route_key": "local_reconciliation"
+  },
+  {
+    "id": "CU-07-A01",
+    "screen": "CU-07",
+    "label": "Connect platform",
+    "service": "commercial",
+    "intent": "CU-08",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "navigate",
+    "target_screen": "CU-08",
+    "behavior": "Use route registry and exact selected ID. Cross-origin private/commercial navigation requires independent authentication. Missing selection displays a prompt, never guesses."
+  },
+  {
+    "id": "CU-07-A02",
+    "screen": "CU-07",
+    "label": "Reauthorize",
+    "service": "commercial",
+    "intent": "CU-08",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "navigate",
+    "target_screen": "CU-08",
+    "behavior": "Use route registry and exact selected ID. Cross-origin private/commercial navigation requires independent authentication. Missing selection displays a prompt, never guesses."
+  },
+  {
+    "id": "CU-07-A03",
+    "screen": "CU-07",
+    "label": "Review disconnect",
+    "service": "commercial",
+    "intent": "CU-10",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "navigate",
+    "target_screen": "CU-10",
+    "behavior": "Use route registry and exact selected ID. Cross-origin private/commercial navigation requires independent authentication. Missing selection displays a prompt, never guesses."
+  },
+  {
+    "id": "CU-08-A01",
+    "screen": "CU-08",
+    "label": "Begin authorization",
+    "service": "commercial",
+    "intent": "FORM",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "form",
+    "form_ids": [
+      "F-CONNECTION"
+    ],
+    "behavior": "Open named form step appropriate to label; save/validate/preview/confirm are distinct bound operations. Do not bypass earlier validation with a confirm-labelled button."
+  },
+  {
+    "id": "CU-08-A02",
+    "screen": "CU-08",
+    "label": "Verify connection",
+    "service": "commercial",
+    "intent": "FORM",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "form",
+    "form_ids": [
+      "F-CONNECTION"
+    ],
+    "behavior": "Open named form step appropriate to label; save/validate/preview/confirm are distinct bound operations. Do not bypass earlier validation with a confirm-labelled button."
+  },
+  {
+    "id": "CU-08-A03",
+    "screen": "CU-08",
+    "label": "Save verified connection",
+    "service": "commercial",
+    "intent": "FORM",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "form",
+    "form_ids": [
+      "F-CONNECTION"
+    ],
+    "behavior": "Open named form step appropriate to label; save/validate/preview/confirm are distinct bound operations. Do not bypass earlier validation with a confirm-labelled button."
+  },
+  {
+    "id": "CU-09-A01",
+    "screen": "CU-09",
+    "label": "Save mandate draft",
+    "service": "commercial",
+    "intent": "FORM",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "form",
+    "form_ids": [
+      "F-MANDATE"
+    ],
+    "behavior": "Open named form step appropriate to label; save/validate/preview/confirm are distinct bound operations. Do not bypass earlier validation with a confirm-labelled button."
+  },
+  {
+    "id": "CU-09-A02",
+    "screen": "CU-09",
+    "label": "Preview activation",
+    "service": "commercial",
+    "intent": "FORM",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "form",
+    "form_ids": [
+      "F-MANDATE"
+    ],
+    "behavior": "Open named form step appropriate to label; save/validate/preview/confirm are distinct bound operations. Do not bypass earlier validation with a confirm-labelled button."
+  },
+  {
+    "id": "CU-09-A03",
+    "screen": "CU-09",
+    "label": "Confirm authorized activation",
+    "service": "commercial",
+    "intent": "FORM",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "form",
+    "form_ids": [
+      "F-MANDATE"
+    ],
+    "behavior": "Open named form step appropriate to label; save/validate/preview/confirm are distinct bound operations. Do not bypass earlier validation with a confirm-labelled button."
+  },
+  {
+    "id": "CU-10-A01",
+    "screen": "CU-10",
+    "label": "Pause new entries",
+    "service": "commercial",
+    "intent": "FORM",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "form",
+    "form_ids": [
+      "F-WINDDOWN"
+    ],
+    "behavior": "Open named form step appropriate to label; save/validate/preview/confirm are distinct bound operations. Do not bypass earlier validation with a confirm-labelled button."
+  },
+  {
+    "id": "CU-10-A02",
+    "screen": "CU-10",
+    "label": "Review owned-position wind-down",
+    "service": "commercial",
+    "intent": "FORM",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "form",
+    "form_ids": [
+      "F-WINDDOWN"
+    ],
+    "behavior": "Open named form step appropriate to label; save/validate/preview/confirm are distinct bound operations. Do not bypass earlier validation with a confirm-labelled button."
+  },
+  {
+    "id": "CU-10-A03",
+    "screen": "CU-10",
+    "label": "Request handoff",
+    "service": "commercial",
+    "intent": "FORM",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "form",
+    "form_ids": [
+      "F-WINDDOWN"
+    ],
+    "behavior": "Open named form step appropriate to label; save/validate/preview/confirm are distinct bound operations. Do not bypass earlier validation with a confirm-labelled button."
+  },
+  {
+    "id": "CU-11-A01",
+    "screen": "CU-11",
+    "label": "Start hosted checkout",
+    "service": "commercial",
+    "intent": "FORM",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "form",
+    "form_ids": [
+      "F-BILLING"
+    ],
+    "behavior": "Open named form step appropriate to label; save/validate/preview/confirm are distinct bound operations. Do not bypass earlier validation with a confirm-labelled button."
+  },
+  {
+    "id": "CU-11-A02",
+    "screen": "CU-11",
+    "label": "Manage subscription",
+    "service": "commercial",
+    "intent": "FORM",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "form",
+    "form_ids": [
+      "F-BILLING"
+    ],
+    "behavior": "Open named form step appropriate to label; save/validate/preview/confirm are distinct bound operations. Do not bypass earlier validation with a confirm-labelled button."
+  },
+  {
+    "id": "CU-11-A03",
+    "screen": "CU-11",
+    "label": "Download invoice",
+    "service": "commercial",
+    "intent": "DIRECT_INVOICE",
+    "effect": "read",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "read",
+    "behavior": "Read short-lived allowlisted hosted invoice URL belonging to current customer; no arbitrary redirect or other customer invoice.",
+    "api_id": "ACTION-CU-11-A03",
+    "roles": [
+      "customer"
+    ]
+  },
+  {
+    "id": "CU-12-A01",
+    "screen": "CU-12",
+    "label": "Save preferences",
+    "service": "commercial",
+    "intent": "FORM",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "form",
+    "form_ids": [
+      "F-DELIVERY"
+    ],
+    "behavior": "Open named form step appropriate to label; save/validate/preview/confirm are distinct bound operations. Do not bypass earlier validation with a confirm-labelled button."
+  },
+  {
+    "id": "CU-12-A02",
+    "screen": "CU-12",
+    "label": "Verify endpoint",
+    "service": "commercial",
+    "intent": "FORM",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "form",
+    "form_ids": [
+      "F-DELIVERY"
+    ],
+    "behavior": "Open named form step appropriate to label; save/validate/preview/confirm are distinct bound operations. Do not bypass earlier validation with a confirm-labelled button."
+  },
+  {
+    "id": "CU-12-A03",
+    "screen": "CU-12",
+    "label": "Send labeled test",
+    "service": "commercial",
+    "intent": "FORM",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "form",
+    "form_ids": [
+      "F-DELIVERY"
+    ],
+    "behavior": "Open named form step appropriate to label; save/validate/preview/confirm are distinct bound operations. Do not bypass earlier validation with a confirm-labelled button."
+  },
+  {
+    "id": "CU-13-A01",
+    "screen": "CU-13",
+    "label": "Save preferences",
+    "service": "commercial",
+    "intent": "FORM",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "form",
+    "form_ids": [
+      "F-PREFERENCES"
+    ],
+    "behavior": "Open named form step appropriate to label; save/validate/preview/confirm are distinct bound operations. Do not bypass earlier validation with a confirm-labelled button."
+  },
+  {
+    "id": "CU-13-A02",
+    "screen": "CU-13",
+    "label": "Revoke session",
+    "service": "commercial",
+    "intent": "DIRECT_REVOKE_SESSION",
+    "effect": "identity",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "scoped_command",
+    "behavior": "Revoke selected owned session after scoped confirmation; current worker mandate remains independent; invalid session immediately rejected.",
+    "api_id": "ACTION-CU-13-A02",
+    "roles": [
+      "customer"
+    ]
+  },
+  {
+    "id": "CU-13-A03",
+    "screen": "CU-13",
+    "label": "Request data export",
+    "service": "commercial",
+    "intent": "DIRECT_EXPORT",
+    "effect": "export",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "scoped_command",
+    "behavior": "Create redacted export job from frozen permitted filters and object versions; reauthorize download; no financial action.",
+    "api_id": "ACTION-CU-13-A03",
+    "roles": [
+      "customer"
+    ]
+  },
+  {
+    "id": "CU-14-A01",
+    "screen": "CU-14",
+    "label": "Create case",
+    "service": "commercial",
+    "intent": "FORM",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "form",
+    "form_ids": [
+      "F-SUPPORT"
+    ],
+    "behavior": "Open named form step appropriate to label; save/validate/preview/confirm are distinct bound operations. Do not bypass earlier validation with a confirm-labelled button."
+  },
+  {
+    "id": "CU-14-A02",
+    "screen": "CU-14",
+    "label": "Attach redacted evidence",
+    "service": "commercial",
+    "intent": "DIRECT_UPLOAD",
+    "effect": "attachment",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "scoped_command",
+    "behavior": "Create bounded private upload intent. Verify MIME/size, hash, malware/content status and tenant. Never execute attachment content; clean server-generated basename.",
+    "api_id": "ACTION-CU-14-A02",
+    "roles": [
+      "customer"
+    ]
+  },
+  {
+    "id": "CU-15-A01",
+    "screen": "CU-15",
+    "label": "Open broker program",
+    "service": "commercial",
+    "intent": "DIRECT_BROKER_PORTAL",
+    "effect": "read",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "read",
+    "behavior": "Return a verified platform/broker allowlisted URL for this connected account; no tokens in page URL or arbitrary redirect.",
+    "api_id": "ACTION-CU-15-A01",
+    "roles": [
+      "customer"
+    ]
+  },
+  {
+    "id": "CU-15-A02",
+    "screen": "CU-15",
+    "label": "Review statement",
+    "service": "commercial",
+    "intent": "LOCAL_STATEMENT",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "read_or_view",
+    "behavior": "Use the same scoped immutable read model and selected object. Changes to filters/compare tray/panel view affect presentation only. Downloads go through authenticated export service with all quality labels.",
+    "detail_route_key": "local_statement"
+  },
+  {
+    "id": "CU-15-A03",
+    "screen": "CU-15",
+    "label": "Request permitted dealing action",
+    "service": "commercial",
+    "intent": "FORM",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "form",
+    "form_ids": [
+      "F-MANAGED-REQUEST"
+    ],
+    "behavior": "Open named form step appropriate to label; save/validate/preview/confirm are distinct bound operations. Do not bypass earlier validation with a confirm-labelled button."
+  },
+  {
+    "id": "CU-16-A01",
+    "screen": "CU-16",
+    "label": "Create scoped key",
+    "service": "commercial",
+    "intent": "FORM",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "form",
+    "form_ids": [
+      "F-API-ACCESS"
+    ],
+    "behavior": "Open named form step appropriate to label; save/validate/preview/confirm are distinct bound operations. Do not bypass earlier validation with a confirm-labelled button."
+  },
+  {
+    "id": "CU-16-A02",
+    "screen": "CU-16",
+    "label": "Revoke key",
+    "service": "commercial",
+    "intent": "FORM",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "form",
+    "form_ids": [
+      "F-API-ACCESS"
+    ],
+    "behavior": "Open named form step appropriate to label; save/validate/preview/confirm are distinct bound operations. Do not bypass earlier validation with a confirm-labelled button."
+  },
+  {
+    "id": "CU-16-A03",
+    "screen": "CU-16",
+    "label": "Request scoped export",
+    "service": "commercial",
+    "intent": "FORM",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "form",
+    "form_ids": [
+      "F-API-ACCESS"
+    ],
+    "behavior": "Open named form step appropriate to label; save/validate/preview/confirm are distinct bound operations. Do not bypass earlier validation with a confirm-labelled button."
+  },
+  {
+    "id": "TR-01-A01",
+    "screen": "TR-01",
+    "label": "Open account",
+    "service": "private_execution",
+    "intent": "TR-07",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "navigate",
+    "target_screen": "TR-07",
+    "behavior": "Use route registry and exact selected ID. Cross-origin private/commercial navigation requires independent authentication. Missing selection displays a prompt, never guesses."
+  },
+  {
+    "id": "TR-01-A02",
+    "screen": "TR-01",
+    "label": "Open incident",
+    "service": "private_execution",
+    "intent": "TR-13",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "navigate",
+    "target_screen": "TR-13",
+    "behavior": "Use route registry and exact selected ID. Cross-origin private/commercial navigation requires independent authentication. Missing selection displays a prompt, never guesses."
+  },
+  {
+    "id": "TR-02-A01",
+    "screen": "TR-02",
+    "label": "Open position",
+    "service": "private_execution",
+    "intent": "TR-03",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "navigate",
+    "target_screen": "TR-03",
+    "behavior": "Use route registry and exact selected ID. Cross-origin private/commercial navigation requires independent authentication. Missing selection displays a prompt, never guesses."
+  },
+  {
+    "id": "TR-02-A02",
+    "screen": "TR-02",
+    "label": "Preview owned-cohort action",
+    "service": "private_execution",
+    "intent": "TR-03",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "navigate",
+    "target_screen": "TR-03",
+    "behavior": "Use route registry and exact selected ID. Cross-origin private/commercial navigation requires independent authentication. Missing selection displays a prompt, never guesses."
+  },
+  {
+    "id": "TR-03-A01",
+    "screen": "TR-03",
+    "label": "Preview partial reduction",
+    "service": "private_execution",
+    "intent": "FORM",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "form",
+    "form_ids": [
+      "F-POSITION-ACTION"
+    ],
+    "behavior": "Open named form step appropriate to label; save/validate/preview/confirm are distinct bound operations. Do not bypass earlier validation with a confirm-labelled button."
+  },
+  {
+    "id": "TR-03-A02",
+    "screen": "TR-03",
+    "label": "Preview stop change",
+    "service": "private_execution",
+    "intent": "FORM",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "form",
+    "form_ids": [
+      "F-POSITION-ACTION"
+    ],
+    "behavior": "Open named form step appropriate to label; save/validate/preview/confirm are distinct bound operations. Do not bypass earlier validation with a confirm-labelled button."
+  },
+  {
+    "id": "TR-03-A03",
+    "screen": "TR-03",
+    "label": "Request reconciliation",
+    "service": "private_execution",
+    "intent": "DIRECT_RECONCILE",
+    "effect": "reconciliation",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "scoped_command",
+    "behavior": "Enqueue permitted authoritative readback. It may record observed facts but does not independently create or retry an order.",
+    "api_id": "ACTION-TR-03-A03",
+    "roles": [
+      "private_owner"
+    ]
+  },
+  {
+    "id": "TR-04-A01",
+    "screen": "TR-04",
+    "label": "Inspect event",
+    "service": "private_execution",
+    "intent": "TR-05",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "navigate",
+    "target_screen": "TR-05",
+    "behavior": "Use route registry and exact selected ID. Cross-origin private/commercial navigation requires independent authentication. Missing selection displays a prompt, never guesses."
+  },
+  {
+    "id": "TR-04-A02",
+    "screen": "TR-04",
+    "label": "Open source",
+    "service": "private_execution",
+    "intent": "TR-09",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "navigate",
+    "target_screen": "TR-09",
+    "behavior": "Use route registry and exact selected ID. Cross-origin private/commercial navigation requires independent authentication. Missing selection displays a prompt, never guesses."
+  },
+  {
+    "id": "TR-05-A01",
+    "screen": "TR-05",
+    "label": "Reclassify in sandbox",
+    "service": "private_execution",
+    "intent": "DIRECT_CLASSIFY",
+    "effect": "research",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "scoped_command",
+    "behavior": "Evaluate the selected source event with a reviewed parser in a no-effects sandbox. Persist assessment, not a new live signal.",
+    "api_id": "ACTION-TR-05-A01",
+    "roles": [
+      "private_owner"
+    ]
+  },
+  {
+    "id": "TR-05-A02",
+    "screen": "TR-05",
+    "label": "Compare parser versions",
+    "service": "private_execution",
+    "intent": "LOCAL_PARSER_COMPARE",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "read_or_view",
+    "behavior": "Use the same scoped immutable read model and selected object. Changes to filters/compare tray/panel view affect presentation only. Downloads go through authenticated export service with all quality labels.",
+    "detail_route_key": "local_parser_compare"
+  },
+  {
+    "id": "TR-05-A03",
+    "screen": "TR-05",
+    "label": "Open execution",
+    "service": "private_execution",
+    "intent": "TR-06",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "navigate",
+    "target_screen": "TR-06",
+    "behavior": "Use route registry and exact selected ID. Cross-origin private/commercial navigation requires independent authentication. Missing selection displays a prompt, never guesses."
+  },
+  {
+    "id": "TR-06-A01",
+    "screen": "TR-06",
+    "label": "Open family",
+    "service": "private_execution",
+    "intent": "LOCAL_ORDER_FAMILY",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "read_or_view",
+    "behavior": "Use the same scoped immutable read model and selected object. Changes to filters/compare tray/panel view affect presentation only. Downloads go through authenticated export service with all quality labels.",
+    "detail_route_key": "local_order_family"
+  },
+  {
+    "id": "TR-06-A02",
+    "screen": "TR-06",
+    "label": "Request outcome reconciliation",
+    "service": "private_execution",
+    "intent": "DIRECT_RECONCILE",
+    "effect": "reconciliation",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "scoped_command",
+    "behavior": "Enqueue permitted authoritative readback. It may record observed facts but does not independently create or retry an order.",
+    "api_id": "ACTION-TR-06-A02",
+    "roles": [
+      "private_owner"
+    ]
+  },
+  {
+    "id": "TR-07-A01",
+    "screen": "TR-07",
+    "label": "Add account",
+    "service": "private_execution",
+    "intent": "TR-08",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "navigate",
+    "target_screen": "TR-08",
+    "behavior": "Use route registry and exact selected ID. Cross-origin private/commercial navigation requires independent authentication. Missing selection displays a prompt, never guesses."
+  },
+  {
+    "id": "TR-07-A02",
+    "screen": "TR-07",
+    "label": "Open capability evidence",
+    "service": "private_execution",
+    "intent": "LOCAL_CAPABILITY",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "read_or_view",
+    "behavior": "Use the same scoped immutable read model and selected object. Changes to filters/compare tray/panel view affect presentation only. Downloads go through authenticated export service with all quality labels.",
+    "detail_route_key": "local_capability"
+  },
+  {
+    "id": "TR-07-A03",
+    "screen": "TR-07",
+    "label": "Pause new entries",
+    "service": "private_execution",
+    "intent": "DIRECT_PAUSE",
+    "effect": "config",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "scoped_command",
+    "behavior": "Pause new admissions only for exact displayed account/source after versioned preview. Maintain authorized exits, stops and outstanding commands.",
+    "api_id": "ACTION-TR-07-A03",
+    "roles": [
+      "private_owner"
+    ]
+  },
+  {
+    "id": "TR-08-A01",
+    "screen": "TR-08",
+    "label": "Save inactive account",
+    "service": "private_execution",
+    "intent": "FORM",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "form",
+    "form_ids": [
+      "F-BROKER"
+    ],
+    "behavior": "Open named form step appropriate to label; save/validate/preview/confirm are distinct bound operations. Do not bypass earlier validation with a confirm-labelled button."
+  },
+  {
+    "id": "TR-08-A02",
+    "screen": "TR-08",
+    "label": "Run read-only checks",
+    "service": "private_execution",
+    "intent": "FORM",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "form",
+    "form_ids": [
+      "F-BROKER"
+    ],
+    "behavior": "Open named form step appropriate to label; save/validate/preview/confirm are distinct bound operations. Do not bypass earlier validation with a confirm-labelled button."
+  },
+  {
+    "id": "TR-08-A03",
+    "screen": "TR-08",
+    "label": "Review activation",
+    "service": "private_execution",
+    "intent": "FORM",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "form",
+    "form_ids": [
+      "F-BROKER"
+    ],
+    "behavior": "Open named form step appropriate to label; save/validate/preview/confirm are distinct bound operations. Do not bypass earlier validation with a confirm-labelled button."
+  },
+  {
+    "id": "TR-09-A01",
+    "screen": "TR-09",
+    "label": "Add source",
+    "service": "private_execution",
+    "intent": "TR-10",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "navigate",
+    "target_screen": "TR-10",
+    "behavior": "Use route registry and exact selected ID. Cross-origin private/commercial navigation requires independent authentication. Missing selection displays a prompt, never guesses."
+  },
+  {
+    "id": "TR-09-A02",
+    "screen": "TR-09",
+    "label": "Inspect coverage",
+    "service": "private_execution",
+    "intent": "LOCAL_COVERAGE",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "read_or_view",
+    "behavior": "Use the same scoped immutable read model and selected object. Changes to filters/compare tray/panel view affect presentation only. Downloads go through authenticated export service with all quality labels.",
+    "detail_route_key": "local_coverage"
+  },
+  {
+    "id": "TR-09-A03",
+    "screen": "TR-09",
+    "label": "Pause new admissions",
+    "service": "private_execution",
+    "intent": "DIRECT_PAUSE",
+    "effect": "config",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "scoped_command",
+    "behavior": "Pause new admissions only for exact displayed account/source after versioned preview. Maintain authorized exits, stops and outstanding commands.",
+    "api_id": "ACTION-TR-09-A03",
+    "roles": [
+      "private_owner"
+    ]
+  },
+  {
+    "id": "TR-10-A01",
+    "screen": "TR-10",
+    "label": "Save source draft",
+    "service": "private_execution",
+    "intent": "FORM",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "form",
+    "form_ids": [
+      "F-SOURCE"
+    ],
+    "behavior": "Open named form step appropriate to label; save/validate/preview/confirm are distinct bound operations. Do not bypass earlier validation with a confirm-labelled button."
+  },
+  {
+    "id": "TR-10-A02",
+    "screen": "TR-10",
+    "label": "Import authorized history",
+    "service": "private_execution",
+    "intent": "FORM",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "form",
+    "form_ids": [
+      "F-SOURCE"
+    ],
+    "behavior": "Open named form step appropriate to label; save/validate/preview/confirm are distinct bound operations. Do not bypass earlier validation with a confirm-labelled button."
+  },
+  {
+    "id": "TR-10-A03",
+    "screen": "TR-10",
+    "label": "Run parser validation",
+    "service": "private_execution",
+    "intent": "FORM",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "form",
+    "form_ids": [
+      "F-SOURCE"
+    ],
+    "behavior": "Open named form step appropriate to label; save/validate/preview/confirm are distinct bound operations. Do not bypass earlier validation with a confirm-labelled button."
+  },
+  {
+    "id": "TR-11-A01",
+    "screen": "TR-11",
+    "label": "Save draft rule",
+    "service": "private_execution",
+    "intent": "FORM",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "form",
+    "form_ids": [
+      "F-ROUTING"
+    ],
+    "behavior": "Open named form step appropriate to label; save/validate/preview/confirm are distinct bound operations. Do not bypass earlier validation with a confirm-labelled button."
+  },
+  {
+    "id": "TR-11-A02",
+    "screen": "TR-11",
+    "label": "Preview matches",
+    "service": "private_execution",
+    "intent": "FORM",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "form",
+    "form_ids": [
+      "F-ROUTING"
+    ],
+    "behavior": "Open named form step appropriate to label; save/validate/preview/confirm are distinct bound operations. Do not bypass earlier validation with a confirm-labelled button."
+  },
+  {
+    "id": "TR-11-A03",
+    "screen": "TR-11",
+    "label": "Submit config change",
+    "service": "private_execution",
+    "intent": "FORM",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "form",
+    "form_ids": [
+      "F-ROUTING"
+    ],
+    "behavior": "Open named form step appropriate to label; save/validate/preview/confirm are distinct bound operations. Do not bypass earlier validation with a confirm-labelled button."
+  },
+  {
+    "id": "TR-12-A01",
+    "screen": "TR-12",
+    "label": "Save policy draft",
+    "service": "private_execution",
+    "intent": "FORM",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "form",
+    "form_ids": [
+      "F-POLICY",
+      "F-SIZING-RECIPE",
+      "F-STOP-RECIPE",
+      "F-TRAIL-RECIPE",
+      "F-TARGET-RECIPE",
+      "F-HOLD-RECIPE"
+    ],
+    "behavior": "Open named form step appropriate to label; save/validate/preview/confirm are distinct bound operations. Do not bypass earlier validation with a confirm-labelled button."
+  },
+  {
+    "id": "TR-12-A02",
+    "screen": "TR-12",
+    "label": "Preview on signal",
+    "service": "private_execution",
+    "intent": "FORM",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "form",
+    "form_ids": [
+      "F-POLICY",
+      "F-SIZING-RECIPE",
+      "F-STOP-RECIPE",
+      "F-TRAIL-RECIPE",
+      "F-TARGET-RECIPE",
+      "F-HOLD-RECIPE"
+    ],
+    "behavior": "Open named form step appropriate to label; save/validate/preview/confirm are distinct bound operations. Do not bypass earlier validation with a confirm-labelled button."
+  },
+  {
+    "id": "TR-12-A03",
+    "screen": "TR-12",
+    "label": "Request review",
+    "service": "private_execution",
+    "intent": "FORM",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "form",
+    "form_ids": [
+      "F-POLICY",
+      "F-SIZING-RECIPE",
+      "F-STOP-RECIPE",
+      "F-TRAIL-RECIPE",
+      "F-TARGET-RECIPE",
+      "F-HOLD-RECIPE"
+    ],
+    "behavior": "Open named form step appropriate to label; save/validate/preview/confirm are distinct bound operations. Do not bypass earlier validation with a confirm-labelled button."
+  },
+  {
+    "id": "TR-13-A01",
+    "screen": "TR-13",
+    "label": "Acknowledge",
+    "service": "private_execution",
+    "intent": "FORM",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "form",
+    "form_ids": [
+      "F-INCIDENT"
+    ],
+    "behavior": "Open named form step appropriate to label; save/validate/preview/confirm are distinct bound operations. Do not bypass earlier validation with a confirm-labelled button."
+  },
+  {
+    "id": "TR-13-A02",
+    "screen": "TR-13",
+    "label": "Run scoped readback",
+    "service": "private_execution",
+    "intent": "FORM",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "form",
+    "form_ids": [
+      "F-INCIDENT"
+    ],
+    "behavior": "Open named form step appropriate to label; save/validate/preview/confirm are distinct bound operations. Do not bypass earlier validation with a confirm-labelled button."
+  },
+  {
+    "id": "TR-13-A03",
+    "screen": "TR-13",
+    "label": "Review recovery action",
+    "service": "private_execution",
+    "intent": "FORM",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "form",
+    "form_ids": [
+      "F-INCIDENT"
+    ],
+    "behavior": "Open named form step appropriate to label; save/validate/preview/confirm are distinct bound operations. Do not bypass earlier validation with a confirm-labelled button."
+  },
+  {
+    "id": "TR-14-A01",
+    "screen": "TR-14",
+    "label": "Export report",
+    "service": "private_execution",
+    "intent": "FORM",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "form",
+    "form_ids": [
+      "F-REPORT"
+    ],
+    "behavior": "Open named form step appropriate to label; save/validate/preview/confirm are distinct bound operations. Do not bypass earlier validation with a confirm-labelled button."
+  },
+  {
+    "id": "TR-14-A02",
+    "screen": "TR-14",
+    "label": "Inspect episode",
+    "service": "private_execution",
+    "intent": "TR-03",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "navigate",
+    "target_screen": "TR-03",
+    "behavior": "Use route registry and exact selected ID. Cross-origin private/commercial navigation requires independent authentication. Missing selection displays a prompt, never guesses."
+  },
+  {
+    "id": "TR-15-A01",
+    "screen": "TR-15",
+    "label": "Create replay",
+    "service": "private_execution",
+    "intent": "FORM",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "form",
+    "form_ids": [
+      "F-BACKTEST"
+    ],
+    "behavior": "Open named form step appropriate to label; save/validate/preview/confirm are distinct bound operations. Do not bypass earlier validation with a confirm-labelled button."
+  },
+  {
+    "id": "TR-15-A02",
+    "screen": "TR-15",
+    "label": "Resume job",
+    "service": "private_execution",
+    "intent": "DIRECT_JOB_RESUME",
+    "effect": "research",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "scoped_command",
+    "behavior": "Resume only incomplete shards of the same frozen job scope. Reauthorize dataset use and compute budget; do not resubmit external publications.",
+    "api_id": "ACTION-TR-15-A02",
+    "roles": [
+      "private_owner"
+    ]
+  },
+  {
+    "id": "TR-15-A03",
+    "screen": "TR-15",
+    "label": "Compare results",
+    "service": "private_execution",
+    "intent": "LOCAL_BACKTEST_COMPARE",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "read_or_view",
+    "behavior": "Use the same scoped immutable read model and selected object. Changes to filters/compare tray/panel view affect presentation only. Downloads go through authenticated export service with all quality labels.",
+    "detail_route_key": "local_backtest_compare"
+  },
+  {
+    "id": "TR-16-A01",
+    "screen": "TR-16",
+    "label": "Inspect backup",
+    "service": "private_execution",
+    "intent": "LOCAL_BACKUP",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "read_or_view",
+    "behavior": "Use the same scoped immutable read model and selected object. Changes to filters/compare tray/panel view affect presentation only. Downloads go through authenticated export service with all quality labels.",
+    "detail_route_key": "local_backup"
+  },
+  {
+    "id": "TR-16-A02",
+    "screen": "TR-16",
+    "label": "Open non-live restore job",
+    "service": "private_execution",
+    "intent": "FORM",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "form",
+    "form_ids": [
+      "F-RECOVERY-OPS"
+    ],
+    "behavior": "Open named form step appropriate to label; save/validate/preview/confirm are distinct bound operations. Do not bypass earlier validation with a confirm-labelled button."
+  },
+  {
+    "id": "TR-16-A03",
+    "screen": "TR-16",
+    "label": "Prepare promotion review",
+    "service": "private_execution",
+    "intent": "FORM",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "form",
+    "form_ids": [
+      "F-RECOVERY-OPS"
+    ],
+    "behavior": "Open named form step appropriate to label; save/validate/preview/confirm are distinct bound operations. Do not bypass earlier validation with a confirm-labelled button."
+  },
+  {
+    "id": "AD-01-A01",
+    "screen": "AD-01",
+    "label": "Create product draft",
+    "service": "commercial",
+    "intent": "AD-07",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "navigate",
+    "target_screen": "AD-07",
+    "behavior": "Use route registry and exact selected ID. Cross-origin private/commercial navigation requires independent authentication. Missing selection displays a prompt, never guesses."
+  },
+  {
+    "id": "AD-01-A02",
+    "screen": "AD-01",
+    "label": "Open approval queue",
+    "service": "commercial",
+    "intent": "AD-08",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "navigate",
+    "target_screen": "AD-08",
+    "behavior": "Use route registry and exact selected ID. Cross-origin private/commercial navigation requires independent authentication. Missing selection displays a prompt, never guesses."
+  },
+  {
+    "id": "AD-02-A01",
+    "screen": "AD-02",
+    "label": "Create grant draft",
+    "service": "commercial",
+    "intent": "FORM",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "form",
+    "form_ids": [
+      "F-RIGHTS"
+    ],
+    "behavior": "Open named form step appropriate to label; save/validate/preview/confirm are distinct bound operations. Do not bypass earlier validation with a confirm-labelled button."
+  },
+  {
+    "id": "AD-02-A02",
+    "screen": "AD-02",
+    "label": "Attach evidence",
+    "service": "commercial",
+    "intent": "DIRECT_UPLOAD",
+    "effect": "attachment",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "scoped_command",
+    "behavior": "Create bounded private upload intent. Verify MIME/size, hash, malware/content status and tenant. Never execute attachment content; clean server-generated basename.",
+    "api_id": "ACTION-AD-02-A02",
+    "roles": [
+      "owner",
+      "reviewer"
+    ]
+  },
+  {
+    "id": "AD-02-A03",
+    "screen": "AD-02",
+    "label": "Submit approval",
+    "service": "commercial",
+    "intent": "FORM",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "form",
+    "form_ids": [
+      "F-RIGHTS"
+    ],
+    "behavior": "Open named form step appropriate to label; save/validate/preview/confirm are distinct bound operations. Do not bypass earlier validation with a confirm-labelled button."
+  },
+  {
+    "id": "AD-03-A01",
+    "screen": "AD-03",
+    "label": "Create sleeve draft",
+    "service": "commercial",
+    "intent": "FORM",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "form",
+    "form_ids": [
+      "F-SLEEVE"
+    ],
+    "behavior": "Open named form step appropriate to label; save/validate/preview/confirm are distinct bound operations. Do not bypass earlier validation with a confirm-labelled button."
+  },
+  {
+    "id": "AD-03-A02",
+    "screen": "AD-03",
+    "label": "Inspect coverage",
+    "service": "commercial",
+    "intent": "LOCAL_COVERAGE",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "read_or_view",
+    "behavior": "Use the same scoped immutable read model and selected object. Changes to filters/compare tray/panel view affect presentation only. Downloads go through authenticated export service with all quality labels.",
+    "detail_route_key": "local_coverage"
+  },
+  {
+    "id": "AD-03-A03",
+    "screen": "AD-03",
+    "label": "Open portfolio lab",
+    "service": "commercial",
+    "intent": "AD-04",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "navigate",
+    "target_screen": "AD-04",
+    "behavior": "Use route registry and exact selected ID. Cross-origin private/commercial navigation requires independent authentication. Missing selection displays a prompt, never guesses."
+  },
+  {
+    "id": "AD-04-A01",
+    "screen": "AD-04",
+    "label": "Save run draft",
+    "service": "commercial",
+    "intent": "FORM",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "form",
+    "form_ids": [
+      "F-RESEARCH"
+    ],
+    "behavior": "Open named form step appropriate to label; save/validate/preview/confirm are distinct bound operations. Do not bypass earlier validation with a confirm-labelled button."
+  },
+  {
+    "id": "AD-04-A02",
+    "screen": "AD-04",
+    "label": "Validate complete scope",
+    "service": "commercial",
+    "intent": "FORM",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "form",
+    "form_ids": [
+      "F-RESEARCH"
+    ],
+    "behavior": "Open named form step appropriate to label; save/validate/preview/confirm are distinct bound operations. Do not bypass earlier validation with a confirm-labelled button."
+  },
+  {
+    "id": "AD-04-A03",
+    "screen": "AD-04",
+    "label": "Start bounded research",
+    "service": "commercial",
+    "intent": "FORM",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "form",
+    "form_ids": [
+      "F-RESEARCH"
+    ],
+    "behavior": "Open named form step appropriate to label; save/validate/preview/confirm are distinct bound operations. Do not bypass earlier validation with a confirm-labelled button."
+  },
+  {
+    "id": "AD-05-A01",
+    "screen": "AD-05",
+    "label": "Inspect candidate",
+    "service": "commercial",
+    "intent": "AD-06",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "navigate",
+    "target_screen": "AD-06",
+    "behavior": "Use route registry and exact selected ID. Cross-origin private/commercial navigation requires independent authentication. Missing selection displays a prompt, never guesses."
+  },
+  {
+    "id": "AD-05-A02",
+    "screen": "AD-05",
+    "label": "Resume failed shard",
+    "service": "commercial",
+    "intent": "DIRECT_JOB_RESUME",
+    "effect": "research",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "scoped_command",
+    "behavior": "Resume only incomplete shards of the same frozen job scope. Reauthorize dataset use and compute budget; do not resubmit external publications.",
+    "api_id": "ACTION-AD-05-A02",
+    "roles": [
+      "owner",
+      "researcher"
+    ]
+  },
+  {
+    "id": "AD-05-A03",
+    "screen": "AD-05",
+    "label": "Cancel research job",
+    "service": "commercial",
+    "intent": "DIRECT_JOB_CANCEL",
+    "effect": "research",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "scoped_command",
+    "behavior": "Request cancellation of owned research job; join workers and retain completed results and failure record; do not alter live strategy.",
+    "api_id": "ACTION-AD-05-A03",
+    "roles": [
+      "owner",
+      "researcher"
+    ]
+  },
+  {
+    "id": "AD-06-A01",
+    "screen": "AD-06",
+    "label": "Choose candidate for draft",
+    "service": "commercial",
+    "intent": "DIRECT_CANDIDATE_DRAFT",
+    "effect": "draft",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "scoped_command",
+    "behavior": "Create an unreleased portfolio version draft referencing one completed candidate and its immutable evidence; do not publish or activate.",
+    "api_id": "ACTION-AD-06-A01",
+    "roles": [
+      "owner",
+      "researcher"
+    ]
+  },
+  {
+    "id": "AD-06-A02",
+    "screen": "AD-06",
+    "label": "Inspect counterexample",
+    "service": "commercial",
+    "intent": "LOCAL_COUNTEREXAMPLE",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "read_or_view",
+    "behavior": "Use the same scoped immutable read model and selected object. Changes to filters/compare tray/panel view affect presentation only. Downloads go through authenticated export service with all quality labels.",
+    "detail_route_key": "local_counterexample"
+  },
+  {
+    "id": "AD-07-A01",
+    "screen": "AD-07",
+    "label": "Create product draft",
+    "service": "commercial",
+    "intent": "FORM",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "form",
+    "form_ids": [
+      "F-PRODUCT"
+    ],
+    "behavior": "Open named form step appropriate to label; save/validate/preview/confirm are distinct bound operations. Do not bypass earlier validation with a confirm-labelled button."
+  },
+  {
+    "id": "AD-07-A02",
+    "screen": "AD-07",
+    "label": "Edit version",
+    "service": "commercial",
+    "intent": "FORM",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "form",
+    "form_ids": [
+      "F-PRODUCT"
+    ],
+    "behavior": "Open named form step appropriate to label; save/validate/preview/confirm are distinct bound operations. Do not bypass earlier validation with a confirm-labelled button."
+  },
+  {
+    "id": "AD-07-A03",
+    "screen": "AD-07",
+    "label": "Preview audience-safe page",
+    "service": "commercial",
+    "intent": "FORM",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "form",
+    "form_ids": [
+      "F-PRODUCT"
+    ],
+    "behavior": "Open named form step appropriate to label; save/validate/preview/confirm are distinct bound operations. Do not bypass earlier validation with a confirm-labelled button."
+  },
+  {
+    "id": "AD-08-A01",
+    "screen": "AD-08",
+    "label": "Request changes",
+    "service": "commercial",
+    "intent": "FORM",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "form",
+    "form_ids": [
+      "F-RELEASE"
+    ],
+    "behavior": "Open named form step appropriate to label; save/validate/preview/confirm are distinct bound operations. Do not bypass earlier validation with a confirm-labelled button."
+  },
+  {
+    "id": "AD-08-A02",
+    "screen": "AD-08",
+    "label": "Approve scoped release",
+    "service": "commercial",
+    "intent": "FORM",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "form",
+    "form_ids": [
+      "F-RELEASE"
+    ],
+    "behavior": "Open named form step appropriate to label; save/validate/preview/confirm are distinct bound operations. Do not bypass earlier validation with a confirm-labelled button."
+  },
+  {
+    "id": "AD-08-A03",
+    "screen": "AD-08",
+    "label": "Reject review",
+    "service": "commercial",
+    "intent": "FORM",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "form",
+    "form_ids": [
+      "F-RELEASE"
+    ],
+    "behavior": "Open named form step appropriate to label; save/validate/preview/confirm are distinct bound operations. Do not bypass earlier validation with a confirm-labelled button."
+  },
+  {
+    "id": "AD-09-A01",
+    "screen": "AD-09",
+    "label": "Save inactive destination",
+    "service": "commercial",
+    "intent": "FORM",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "form",
+    "form_ids": [
+      "F-PUBLISHER"
+    ],
+    "behavior": "Open named form step appropriate to label; save/validate/preview/confirm are distinct bound operations. Do not bypass earlier validation with a confirm-labelled button."
+  },
+  {
+    "id": "AD-09-A02",
+    "screen": "AD-09",
+    "label": "Verify read-only identity",
+    "service": "commercial",
+    "intent": "FORM",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "form",
+    "form_ids": [
+      "F-PUBLISHER"
+    ],
+    "behavior": "Open named form step appropriate to label; save/validate/preview/confirm are distinct bound operations. Do not bypass earlier validation with a confirm-labelled button."
+  },
+  {
+    "id": "AD-09-A03",
+    "screen": "AD-09",
+    "label": "Prepare qualification",
+    "service": "commercial",
+    "intent": "FORM",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "form",
+    "form_ids": [
+      "F-PUBLISHER"
+    ],
+    "behavior": "Open named form step appropriate to label; save/validate/preview/confirm are distinct bound operations. Do not bypass earlier validation with a confirm-labelled button."
+  },
+  {
+    "id": "AD-10-A01",
+    "screen": "AD-10",
+    "label": "Reconcile unknown",
+    "service": "commercial",
+    "intent": "FORM",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "form",
+    "form_ids": [
+      "F-PUBLISH-ACTION"
+    ],
+    "behavior": "Open named form step appropriate to label; save/validate/preview/confirm are distinct bound operations. Do not bypass earlier validation with a confirm-labelled button."
+  },
+  {
+    "id": "AD-10-A02",
+    "screen": "AD-10",
+    "label": "Preview permitted correction",
+    "service": "commercial",
+    "intent": "FORM",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "form",
+    "form_ids": [
+      "F-PUBLISH-ACTION"
+    ],
+    "behavior": "Open named form step appropriate to label; save/validate/preview/confirm are distinct bound operations. Do not bypass earlier validation with a confirm-labelled button."
+  },
+  {
+    "id": "AD-11-A01",
+    "screen": "AD-11",
+    "label": "Open case",
+    "service": "commercial",
+    "intent": "CU-14",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "navigate",
+    "target_screen": "AD-11",
+    "behavior": "Open scoped support drawer under /ops/customers, not the customer session. Never impersonate /app."
+  },
+  {
+    "id": "AD-11-A02",
+    "screen": "AD-11",
+    "label": "Send approved help",
+    "service": "commercial",
+    "intent": "DIRECT_HELP_NOTICE",
+    "effect": "support",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "scoped_command",
+    "behavior": "Send only an approved template to scoped customer via consent-aware support channel; no investment recommendation or account impersonation.",
+    "api_id": "ACTION-AD-11-A02",
+    "roles": [
+      "owner",
+      "support_readonly"
+    ]
+  },
+  {
+    "id": "AD-12-A01",
+    "screen": "AD-12",
+    "label": "Export business report",
+    "service": "commercial",
+    "intent": "FORM",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "form",
+    "form_ids": [
+      "F-REPORT"
+    ],
+    "behavior": "Open named form step appropriate to label; save/validate/preview/confirm are distinct bound operations. Do not bypass earlier validation with a confirm-labelled button."
+  },
+  {
+    "id": "AD-12-A02",
+    "screen": "AD-12",
+    "label": "Inspect invoice/royalty",
+    "service": "commercial",
+    "intent": "LOCAL_BUSINESS_RECORD",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "read_or_view",
+    "behavior": "Use the same scoped immutable read model and selected object. Changes to filters/compare tray/panel view affect presentation only. Downloads go through authenticated export service with all quality labels.",
+    "detail_route_key": "local_business_record"
+  },
+  {
+    "id": "AD-13-A01",
+    "screen": "AD-13",
+    "label": "Save test price draft",
+    "service": "commercial",
+    "intent": "FORM",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "form",
+    "form_ids": [
+      "F-PRICE"
+    ],
+    "behavior": "Open named form step appropriate to label; save/validate/preview/confirm are distinct bound operations. Do not bypass earlier validation with a confirm-labelled button."
+  },
+  {
+    "id": "AD-13-A02",
+    "screen": "AD-13",
+    "label": "Preview entitlement change",
+    "service": "commercial",
+    "intent": "FORM",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "form",
+    "form_ids": [
+      "F-PRICE"
+    ],
+    "behavior": "Open named form step appropriate to label; save/validate/preview/confirm are distinct bound operations. Do not bypass earlier validation with a confirm-labelled button."
+  },
+  {
+    "id": "AD-13-A03",
+    "screen": "AD-13",
+    "label": "Review processor event",
+    "service": "commercial",
+    "intent": "LOCAL_PROCESSOR_EVENT",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "read_or_view",
+    "behavior": "Use the same scoped immutable read model and selected object. Changes to filters/compare tray/panel view affect presentation only. Downloads go through authenticated export service with all quality labels.",
+    "detail_route_key": "local_processor_event"
+  },
+  {
+    "id": "AD-14-A01",
+    "screen": "AD-14",
+    "label": "Create inactive program",
+    "service": "commercial",
+    "intent": "FORM",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "form",
+    "form_ids": [
+      "F-MANAGED-PROGRAM"
+    ],
+    "behavior": "Open named form step appropriate to label; save/validate/preview/confirm are distinct bound operations. Do not bypass earlier validation with a confirm-labelled button."
+  },
+  {
+    "id": "AD-14-A02",
+    "screen": "AD-14",
+    "label": "Attach broker agreement",
+    "service": "commercial",
+    "intent": "DIRECT_UPLOAD",
+    "effect": "attachment",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "scoped_command",
+    "behavior": "Create bounded private upload intent. Verify MIME/size, hash, malware/content status and tenant. Never execute attachment content; clean server-generated basename.",
+    "api_id": "ACTION-AD-14-A02",
+    "roles": [
+      "owner",
+      "reviewer"
+    ]
+  },
+  {
+    "id": "AD-14-A03",
+    "screen": "AD-14",
+    "label": "Request review",
+    "service": "commercial",
+    "intent": "FORM",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "form",
+    "form_ids": [
+      "F-MANAGED-PROGRAM"
+    ],
+    "behavior": "Open named form step appropriate to label; save/validate/preview/confirm are distinct bound operations. Do not bypass earlier validation with a confirm-labelled button."
+  },
+  {
+    "id": "AD-15-A01",
+    "screen": "AD-15",
+    "label": "Preview allocation",
+    "service": "commercial",
+    "intent": "FORM",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "form",
+    "form_ids": [
+      "F-DEALING"
+    ],
+    "behavior": "Open named form step appropriate to label; save/validate/preview/confirm are distinct bound operations. Do not bypass earlier validation with a confirm-labelled button."
+  },
+  {
+    "id": "AD-15-A02",
+    "screen": "AD-15",
+    "label": "Review NAV discrepancy",
+    "service": "commercial",
+    "intent": "LOCAL_NAV_REVIEW",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "read_or_view",
+    "behavior": "Use the same scoped immutable read model and selected object. Changes to filters/compare tray/panel view affect presentation only. Downloads go through authenticated export service with all quality labels.",
+    "detail_route_key": "local_nav_review"
+  },
+  {
+    "id": "AD-15-A03",
+    "screen": "AD-15",
+    "label": "Export broker-bound instructions",
+    "service": "commercial",
+    "intent": "FORM",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "form",
+    "form_ids": [
+      "F-DEALING"
+    ],
+    "behavior": "Open named form step appropriate to label; save/validate/preview/confirm are distinct bound operations. Do not bypass earlier validation with a confirm-labelled button."
+  },
+  {
+    "id": "AD-16-A01",
+    "screen": "AD-16",
+    "label": "Invite scoped staff",
+    "service": "commercial",
+    "intent": "FORM",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "form",
+    "form_ids": [
+      "F-ACCESS"
+    ],
+    "behavior": "Open named form step appropriate to label; save/validate/preview/confirm are distinct bound operations. Do not bypass earlier validation with a confirm-labelled button."
+  },
+  {
+    "id": "AD-16-A02",
+    "screen": "AD-16",
+    "label": "Revoke membership",
+    "service": "commercial",
+    "intent": "FORM",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "form",
+    "form_ids": [
+      "F-ACCESS"
+    ],
+    "behavior": "Open named form step appropriate to label; save/validate/preview/confirm are distinct bound operations. Do not bypass earlier validation with a confirm-labelled button."
+  },
+  {
+    "id": "AD-16-A03",
+    "screen": "AD-16",
+    "label": "Review access",
+    "service": "commercial",
+    "intent": "FORM",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "form",
+    "form_ids": [
+      "F-ACCESS"
+    ],
+    "behavior": "Open named form step appropriate to label; save/validate/preview/confirm are distinct bound operations. Do not bypass earlier validation with a confirm-labelled button."
+  },
+  {
+    "id": "AD-17-A01",
+    "screen": "AD-17",
+    "label": "Save inactive configuration",
+    "service": "commercial",
+    "intent": "FORM",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "form",
+    "form_ids": [
+      "F-INTEGRATION"
+    ],
+    "behavior": "Open named form step appropriate to label; save/validate/preview/confirm are distinct bound operations. Do not bypass earlier validation with a confirm-labelled button."
+  },
+  {
+    "id": "AD-17-A02",
+    "screen": "AD-17",
+    "label": "Verify permitted reads",
+    "service": "commercial",
+    "intent": "FORM",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "form",
+    "form_ids": [
+      "F-INTEGRATION"
+    ],
+    "behavior": "Open named form step appropriate to label; save/validate/preview/confirm are distinct bound operations. Do not bypass earlier validation with a confirm-labelled button."
+  },
+  {
+    "id": "AD-17-A03",
+    "screen": "AD-17",
+    "label": "Inspect quota",
+    "service": "commercial",
+    "intent": "LOCAL_QUOTA",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "read_or_view",
+    "behavior": "Use the same scoped immutable read model and selected object. Changes to filters/compare tray/panel view affect presentation only. Downloads go through authenticated export service with all quality labels.",
+    "detail_route_key": "local_quota"
+  },
+  {
+    "id": "AD-18-A01",
+    "screen": "AD-18",
+    "label": "Inspect event",
+    "service": "commercial",
+    "intent": "LOCAL_AUDIT_EVENT",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "read_or_view",
+    "behavior": "Use the same scoped immutable read model and selected object. Changes to filters/compare tray/panel view affect presentation only. Downloads go through authenticated export service with all quality labels.",
+    "detail_route_key": "local_audit_event"
+  },
+  {
+    "id": "AD-18-A02",
+    "screen": "AD-18",
+    "label": "Export scoped bundle",
+    "service": "commercial",
+    "intent": "FORM",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "form",
+    "form_ids": [
+      "F-REPORT"
+    ],
+    "behavior": "Open named form step appropriate to label; save/validate/preview/confirm are distinct bound operations. Do not bypass earlier validation with a confirm-labelled button."
+  },
+  {
+    "id": "AD-19-A01",
+    "screen": "AD-19",
+    "label": "Save draft",
+    "service": "commercial",
+    "intent": "FORM",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "form",
+    "form_ids": [
+      "F-CONTENT"
+    ],
+    "behavior": "Open named form step appropriate to label; save/validate/preview/confirm are distinct bound operations. Do not bypass earlier validation with a confirm-labelled button."
+  },
+  {
+    "id": "AD-19-A02",
+    "screen": "AD-19",
+    "label": "Preview",
+    "service": "commercial",
+    "intent": "FORM",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "form",
+    "form_ids": [
+      "F-CONTENT"
+    ],
+    "behavior": "Open named form step appropriate to label; save/validate/preview/confirm are distinct bound operations. Do not bypass earlier validation with a confirm-labelled button."
+  },
+  {
+    "id": "AD-19-A03",
+    "screen": "AD-19",
+    "label": "Submit content review",
+    "service": "commercial",
+    "intent": "FORM",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "form",
+    "form_ids": [
+      "F-CONTENT"
+    ],
+    "behavior": "Open named form step appropriate to label; save/validate/preview/confirm are distinct bound operations. Do not bypass earlier validation with a confirm-labelled button."
+  },
+  {
+    "id": "AD-20-A01",
+    "screen": "AD-20",
+    "label": "Save personal view",
+    "service": "commercial",
+    "intent": "FORM",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "form",
+    "form_ids": [
+      "F-WORKSPACE"
+    ],
+    "behavior": "Open named form step appropriate to label; save/validate/preview/confirm are distinct bound operations. Do not bypass earlier validation with a confirm-labelled button."
+  },
+  {
+    "id": "AD-20-A02",
+    "screen": "AD-20",
+    "label": "Save admin draft",
+    "service": "commercial",
+    "intent": "FORM",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "form",
+    "form_ids": [
+      "F-WORKSPACE"
+    ],
+    "behavior": "Open named form step appropriate to label; save/validate/preview/confirm are distinct bound operations. Do not bypass earlier validation with a confirm-labelled button."
+  },
+  {
+    "id": "AD-20-A03",
+    "screen": "AD-20",
+    "label": "Reset display",
+    "service": "commercial",
+    "intent": "FORM",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "form",
+    "form_ids": [
+      "F-WORKSPACE"
+    ],
+    "behavior": "Open named form step appropriate to label; save/validate/preview/confirm are distinct bound operations. Do not bypass earlier validation with a confirm-labelled button."
+  },
+  {
+    "id": "AD-21-A01",
+    "screen": "AD-21",
+    "label": "Acknowledge",
+    "service": "commercial",
+    "intent": "FORM",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "form",
+    "form_ids": [
+      "F-INCIDENT"
+    ],
+    "behavior": "Open named form step appropriate to label; save/validate/preview/confirm are distinct bound operations. Do not bypass earlier validation with a confirm-labelled button."
+  },
+  {
+    "id": "AD-21-A02",
+    "screen": "AD-21",
+    "label": "Assign",
+    "service": "commercial",
+    "intent": "FORM",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "form",
+    "form_ids": [
+      "F-INCIDENT"
+    ],
+    "behavior": "Open named form step appropriate to label; save/validate/preview/confirm are distinct bound operations. Do not bypass earlier validation with a confirm-labelled button."
+  },
+  {
+    "id": "AD-21-A03",
+    "screen": "AD-21",
+    "label": "Preview approved notice",
+    "service": "commercial",
+    "intent": "FORM",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "form",
+    "form_ids": [
+      "F-INCIDENT"
+    ],
+    "behavior": "Open named form step appropriate to label; save/validate/preview/confirm are distinct bound operations. Do not bypass earlier validation with a confirm-labelled button."
+  },
+  {
+    "id": "AD-22-A01",
+    "screen": "AD-22",
+    "label": "Open recovery evidence",
+    "service": "commercial",
+    "intent": "LOCAL_RECOVERY",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "read_or_view",
+    "behavior": "Use the same scoped immutable read model and selected object. Changes to filters/compare tray/panel view affect presentation only. Downloads go through authenticated export service with all quality labels.",
+    "detail_route_key": "local_recovery"
+  },
+  {
+    "id": "AD-22-A02",
+    "screen": "AD-22",
+    "label": "Run isolated restore check",
+    "service": "commercial",
+    "intent": "FORM",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "form",
+    "form_ids": [
+      "F-RECOVERY-OPS"
+    ],
+    "behavior": "Open named form step appropriate to label; save/validate/preview/confirm are distinct bound operations. Do not bypass earlier validation with a confirm-labelled button."
+  },
+  {
+    "id": "AD-22-A03",
+    "screen": "AD-22",
+    "label": "Prepare release card",
+    "service": "commercial",
+    "intent": "FORM",
+    "effect": "none",
+    "requires_selection": "A selected object ID is required for a detail or row action; global navigation does not infer a first row.",
+    "permission": "Server capabilities plus exact action/tenant/object scope; page visibility is not a grant.",
+    "status": "DESIGNED_NOT_APPLICATION_TESTED",
+    "kind": "form",
+    "form_ids": [
+      "F-RECOVERY-OPS"
+    ],
+    "behavior": "Open named form step appropriate to label; save/validate/preview/confirm are distinct bound operations. Do not bypass earlier validation with a confirm-labelled button."
+  }
+]

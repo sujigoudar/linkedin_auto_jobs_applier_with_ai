@@ -1,0 +1,13 @@
+# Reuse decisions and scope boundaries
+
+Use catalog/components.json as an adoption plan, not an installation list. Inspect actual current versions already vendored by signal-copier before fetching replacements. Record canonical repository, release, commit/hash, license and all notices. The compiled shared assets go into each application's own static namespace with immutable version URLs. Do not copy application code across the private/commercial boundary merely to reuse a template.
+
+Jinja2 supplies layouts, includes and macro reuse through FastAPI's template integration. Chart.js renders visualizations. Tabulator supplies table interaction; the application supplies scoped stable snapshots, safe fields and pagination. Lucide provides only the icon subset actually used. Native HTML selects are enough for small lists. Tom Select may serve large remote-scoped selectors. A fixed allowlisted CSS grid plus accessible move buttons is the baseline; GridStack is optional once persistence and accessibility are tested. Avoid another full admin starter with its own auth, database or role assumptions.
+
+Existing Supabase authentication and PostgreSQL tenant enforcement remain server-side. The BFF must verify real issuer/audience/signature and bind an opaque server session; browser-readable service-role or trade credentials are prohibited. Stripe SDK/hosted pages are reused for payments, not recreated with card-entry fields. Hosted-provider return links and JWT /me do not themselves establish paid entitlement or copying authority.
+
+Playwright's actual app tests cover all browser projects. axe adds automated checks; manual keyboard, focus, zoom, assistive-technology and text-equivalent checks remain. Schemathesis extends API tests only against isolated effects. No live LLM is needed to render a screen, compute a financial value, authorize a tenant or select a mandate. Any future grounded explanatory assistant is a separately scoped feature with rights and evidence review.
+
+A page's read_roles does not grant every form on it. catalog/subaction_permissions.json narrows shared form operations, especially support incidents, report books, release reviews and recovery cards. The backend repeats those predicates at enqueue and effect boundaries. Unsupported or unknown actions deny all roles, including owner.
+
+The UI can display all requested asset classes and channels as capability-bound choices. It cannot certify an unimplemented financial algorithm or external adapter. The broker/program definition controls decimal units, settlement/expiry, trigger basis, amendment support and permitted actions; the UI must not provide enabled generic controls that bypass those differences.

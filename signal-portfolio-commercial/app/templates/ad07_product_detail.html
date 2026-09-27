@@ -1,0 +1,70 @@
+{% extends "_base.html" %}
+{% block title %}{{ product.product_name }} &mdash; version builder{% endblock %}
+{% block content %}
+<p><a href="/ops/products">&larr; Product catalog</a></p>
+<h1>{{ product.product_name }}
+  <span class="badge badge-{{ product.lifecycle_state.value.lower() }}">{{ product.lifecycle_state.value }}</span>
+</h1>
+
+{% if conflict %}
+<div class="conflict">
+  <strong>Someone else saved a newer change to this draft.</strong>
+  This page now shows the current server revision ({{ product.revision }}). Re-apply your edit and save again.
+</div>
+{% endif %}
+
+<div class="panel">
+  <h2>Version builder</h2>
+  <form method="post" action="/ops/products/{{ product.product_id }}">
+    <input type="hidden" name="expected_revision" value="{{ product.revision }}">
+
+    <label for="product_name">Product name</label>
+    <input id="product_name" name="product_name" type="text" maxlength="100" value="{{ product.product_name }}" required>
+
+    <label for="portfolio_version_id">Existing version (portfolio_version_id)</label>
+    <input id="portfolio_version_id" name="portfolio_version_id" type="text" value="{{ product.portfolio_version_id or '' }}">
+    <p class="help">Editable draft only. Released changes create a new version.</p>
+
+    <label for="cash_bps">Cash weight (bps)</label>
+    <input id="cash_bps" name="cash_bps" type="number" min="0" max="10000" value="{{ product.cash_bps }}" required>
+    <p class="help">0..10000; weight conservation required before eligibility.</p>
+
+    <label>Service modes</label>
+    {% for mode in all_service_modes %}
+    <label style="font-weight:normal; display:inline-block; margin-right:1rem;">
+      <input type="checkbox" name="service_modes" value="{{ mode }}" {% if mode in product.service_modes %}checked{% endif %} style="width:auto; display:inline;">
+      {{ mode }}
+    </label>
+    {% endfor %}
+    <p class="help">Rights/platform/legal intersections. No auto-enable of an unsupported mode.</p>
+
+    <label for="audience_policy_id">Audience policy</label>
+    <input id="audience_policy_id" name="audience_policy_id" type="text" value="{{ product.audience_policy_id or '' }}">
+    <p class="help">Required before release. No inferred jurisdictions.</p>
+
+    <label for="research_report_id">Research evidence</label>
+    <input id="research_report_id" name="research_report_id" type="text" value="{{ product.research_report_id or '' }}">
+    <p class="help">Required for claims; can save without. No invented track record.</p>
+
+    <label for="methodology_document_id">Methodology document</label>
+    <input id="methodology_document_id" name="methodology_document_id" type="text" value="{{ product.methodology_document_id or '' }}">
+    <p class="help">Required before public publication. Versioned approved content.</p>
+
+    <button type="submit" style="margin-top:1rem;">Save draft</button>
+  </form>
+</div>
+
+<div class="panel">
+  <h2>Preview: publication prerequisites</h2>
+  {% if blockers %}
+  <ul class="blockers">
+    {% for blocker in blockers %}
+    <li>{{ blocker }}</li>
+    {% endfor %}
+  </ul>
+  <p class="help">A version with no sleeves/evidence may be saved but cannot pass release or appear publicly.</p>
+  {% else %}
+  <p>No known prerequisite is currently missing. This is not a publication action &mdash; release review is separate and out of scope of this screen.</p>
+  {% endif %}
+</div>
+{% endblock %}

@@ -1,0 +1,106 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "F-RIGHTS.schema.json",
+  "title": "Rights-grant evidence",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "source_id": {
+      "description": "registered source/product. Exact rights counterparty",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "uses": {
+      "description": "explicit written grant scope. Combining signals does not grant rights",
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "private_trading",
+          "research",
+          "redistribution",
+          "model_processing"
+        ]
+      },
+      "uniqueItems": true,
+      "maxItems": 100
+    },
+    "jurisdictions": {
+      "description": "explicit approved audience. No implicit worldwide",
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 200
+      },
+      "uniqueItems": true,
+      "maxItems": 100
+    },
+    "channels": {
+      "description": "approved destinations. No arbitrary all-channel",
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 200
+      },
+      "uniqueItems": true,
+      "maxItems": 100
+    },
+    "assets": {
+      "description": "covered by agreement. Exact use scope",
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 200
+      },
+      "uniqueItems": true,
+      "maxItems": 100
+    },
+    "effective_at": {
+      "description": "UTC;before expiry. No retroactive fake permission",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500,
+      "format": "date-time"
+    },
+    "expires_at": {
+      "description": "after effective;ongoing requires separately approved convention. Expiration evaluated at effect",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500,
+      "format": "date-time"
+    },
+    "evidence_ids": {
+      "description": "private reviewed immutable documents. No public raw contract",
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 200
+      },
+      "uniqueItems": true,
+      "maxItems": 100
+    },
+    "attribution_policy_id": {
+      "description": "reviewed policy. Trade secrets/private sources respected",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    }
+  },
+  "required": [
+    "source_id",
+    "uses",
+    "jurisdictions",
+    "channels",
+    "assets",
+    "effective_at",
+    "expires_at",
+    "evidence_ids",
+    "attribution_policy_id"
+  ],
+  "description": "Ready-input schema plus server business validation. Draft input uses identical property types but permits missing required fields; missingness must be displayed. Identity/password forms never saved as drafts."
+}

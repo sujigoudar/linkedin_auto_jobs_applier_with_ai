@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "F-DEALING.schema.json",
+  "title": "Dealing and allocation review",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "program_id": {
+      "description": "approved scoped program. No generic account multiplier",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "nav_generation_id": {
+      "description": "verified current broker generation. Immutable",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "request_ids": {
+      "description": "eligible cutoff cohort. No add after allocation outcome known",
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 200
+      },
+      "uniqueItems": true,
+      "maxItems": 100
+    },
+    "allocation_manifest_id": {
+      "description": "deterministic policy and tie-break bound. Conserves units/amounts",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "reason": {
+      "description": "1..2000 plain text. Required audit",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    }
+  },
+  "required": [
+    "program_id",
+    "nav_generation_id",
+    "request_ids",
+    "allocation_manifest_id",
+    "reason"
+  ],
+  "description": "Ready-input schema plus server business validation. Draft input uses identical property types but permits missing required fields; missingness must be displayed. Identity/password forms never saved as drafts."
+}

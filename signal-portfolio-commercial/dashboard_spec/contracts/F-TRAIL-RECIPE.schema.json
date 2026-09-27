@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "F-TRAIL-RECIPE.schema.json",
+  "title": "Trailing and profit-lock recipe",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "recipe_name": {
+      "description": "max100. Versioned draft",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "activation_rule_id": {
+      "description": "compatible reviewed rule;explicit trigger basis. A target can activate a trail only through policy",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "activation_value": {
+      "description": "typed units and bounds supplied by rule. Missing value is not zero",
+      "type": "string",
+      "pattern": "^-?(?:0|[1-9][0-9]*)(?:\\.[0-9]+)?$",
+      "maxLength": 80
+    },
+    "trail_method_id": {
+      "description": "fixed percent price volatility or other implemented method ID. Only installed qualified formulas offered",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "trail_distance": {
+      "description": "required by method;unit/bounds from recipe schema. Never an untyped generic percent",
+      "type": "string",
+      "pattern": "^-?(?:0|[1-9][0-9]*)(?:\\.[0-9]+)?$",
+      "maxLength": 80
+    },
+    "minimum_improvement_ticks": {
+      "description": "integer>=1;compatible tick metadata. Optimization cannot suppress a breached active threshold",
+      "type": "integer"
+    },
+    "update_cooldown_ms": {
+      "description": "integer>=0;bounded by released policy. Urgent risk-reducing behavior has separate priority",
+      "type": "integer"
+    },
+    "never_loosen": {
+      "description": "must remain true. Both long and short directions enforced server-side",
+      "type": "boolean"
+    },
+    "replacement_recipe_id": {
+      "description": "qualified same-order or cancel-replace procedure. Native high-water reset and unknown outcomes accounted for",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    }
+  },
+  "required": [
+    "recipe_name",
+    "activation_rule_id",
+    "trail_method_id",
+    "never_loosen",
+    "replacement_recipe_id"
+  ],
+  "description": "Ready-input schema plus server business validation. Draft input uses identical property types but permits missing required fields; missingness must be displayed. Identity/password forms never saved as drafts."
+}

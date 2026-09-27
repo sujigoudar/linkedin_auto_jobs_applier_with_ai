@@ -1,0 +1,96 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "F-RESEARCH.schema.json",
+  "title": "Portfolio research run",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "universe_version_id": {
+      "description": "rights-qualified version. Whole approved universe enumerated",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "recipes": {
+      "description": "implemented deterministic recipes. No runtime LLM required",
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "equal_capital",
+          "inverse_volatility",
+          "hrp",
+          "min_cvar"
+        ]
+      },
+      "uniqueItems": true,
+      "maxItems": 100
+    },
+    "subset_min": {
+      "description": ">=1 and<=subset_max. Research-only constraint",
+      "type": "integer"
+    },
+    "subset_max": {
+      "description": "<=universe size and approved job cap. No silently reduced search",
+      "type": "integer"
+    },
+    "cash_bps": {
+      "description": "0..10000 and existing research policy. Not live account allocation",
+      "type": "integer"
+    },
+    "max_sleeve_bps": {
+      "description": "0..10000 and feasible. Weights plus cash exactly10000",
+      "type": "integer"
+    },
+    "max_cluster_bps": {
+      "description": "0..10000 and approved study. No hidden concentration",
+      "type": "integer"
+    },
+    "train_sessions": {
+      "description": "positive;available window sufficient. Chronological only",
+      "type": "integer"
+    },
+    "test_sessions": {
+      "description": "positive;nonoverlapping holdout. No hindsight information",
+      "type": "integer"
+    },
+    "holdout_fraction": {
+      "description": "strictly0..1;lock dataset before search. No repeated tuning on holdout",
+      "type": "string",
+      "pattern": "^-?(?:0|[1-9][0-9]*)(?:\\.[0-9]+)?$",
+      "maxLength": 80
+    },
+    "cost_scenario_ids": {
+      "description": "verified available scenarios. No zero-cost assumption",
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 200
+      },
+      "uniqueItems": true,
+      "maxItems": 100
+    },
+    "resource_profile_id": {
+      "description": "approved memory/time/disk budget. Cannot starve execution",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    }
+  },
+  "required": [
+    "universe_version_id",
+    "recipes",
+    "subset_min",
+    "subset_max",
+    "cash_bps",
+    "max_sleeve_bps",
+    "max_cluster_bps",
+    "train_sessions",
+    "test_sessions",
+    "holdout_fraction",
+    "cost_scenario_ids",
+    "resource_profile_id"
+  ],
+  "description": "Ready-input schema plus server business validation. Draft input uses identical property types but permits missing required fields; missingness must be displayed. Identity/password forms never saved as drafts."
+}

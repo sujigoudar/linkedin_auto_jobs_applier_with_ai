@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "F-DELIVERY.schema.json",
+  "title": "Delivery preferences",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "email": {
+      "description": "verified identity-owned email or verification workflow. No blind forward to arbitrary recipient",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 254,
+      "format": "email"
+    },
+    "webhook_endpoint_id": {
+      "description": "owned preverified endpoint;SSRF-safe registry. Raw URL uses separate secure validation",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "categories": {
+      "description": "known category IDs. Safety follows agreed policy, not marketing toggle",
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "entry",
+          "update",
+          "exit",
+          "safety",
+          "billing",
+          "marketing"
+        ]
+      },
+      "uniqueItems": true,
+      "maxItems": 100
+    },
+    "timezone": {
+      "description": "IANA zone. Schedule uses local wall time with DST rules",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "quiet_start": {
+      "description": "HH:mm plus explicit wrap behavior. Safety exceptions shown",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500,
+      "pattern": "^(?:[01][0-9]|2[0-3]):[0-5][0-9]$"
+    },
+    "quiet_end": {
+      "description": "required with quiet_start. Digest never revives expired entries",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500,
+      "pattern": "^(?:[01][0-9]|2[0-3]):[0-5][0-9]$"
+    },
+    "marketing_consent": {
+      "description": "separate optional consent. No preselected consent",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "categories",
+    "timezone"
+  ],
+  "description": "Ready-input schema plus server business validation. Draft input uses identical property types but permits missing required fields; missingness must be displayed. Identity/password forms never saved as drafts."
+}

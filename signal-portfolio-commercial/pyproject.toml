@@ -1,5 +1,9 @@
 [tool.ruff]
 line-length = 120
+# dashboard_spec/ (like spec/) is a vendored design-package delivery, not
+# this application's own code -- its own tests/tools are the package
+# author's, not ours to reformat or fix lint findings in.
+extend-exclude = ["dashboard_spec"]
 
 [tool.ruff.lint]
 # F (pyflakes) and B (bugbear) are real-bug detectors: unused imports/

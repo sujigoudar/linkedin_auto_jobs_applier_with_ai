@@ -1,0 +1,32 @@
+{
+  "package": "signal_platform_dashboard_v2",
+  "inspected_baseline": "2de2d7e2522af2554d438de580a5e0635e23899b",
+  "package_claims_verified": "Counts verified by direct inspection of the extracted ZIP's catalog/*.json: 66 screens, 340 panels, 41 forms, 284 fields, 170 actions, 1270 test_cases, 36 journeys, 280 api_contracts. All match the delivery's own stated numbers exactly.",
+  "scope_reality": "66 screens across 4 interfaces is far larger than any single session can implement with this build's own standing practice (real tests, load-bearing verification of every safety-critical invariant) in one pass. Building incrementally, screen-by-screen / phase-by-phase, exactly as every other phase in this project has been built -- never claiming a screen is done until it has real DB-backed queries/commands and real passing tests.",
+  "current_slice": {
+    "name": "AD-07 (Products and portfolio versions, admin) + PU-02 (public portfolio catalog)",
+    "status": "done",
+    "why_this_slice_first": "This is the package's own docs/12_BUILDABLE_DATA_AND_REPOSITORIES.md 'First actual vertical slice', and matches the user's own explicit request: an operator creates a genuine unpublished Product draft, saves it, reloads it, and sees the exact prerequisites blocking publication; the public catalog stays truthfully empty; a cross-tenant draft URL returns scoped not-found.",
+    "what_was_built": [
+      "app/models/product.py -- mutable, revision-tracked Product model (DRAFT/VALIDATED/APPROVED/PUBLISHED)",
+      "app/services/product_admin.py -- list/get/create/update + compute_publication_blockers (named, never collapsed) + list_published_products",
+      "app/services/permissions.py -- 'manage_product_draft' action (owner/researcher/reviewer only)",
+      "app/db.py -- bespoke 'product_visibility' RLS policy (tenant match OR published), separate from the generic per-tenant-table policy, since PU-02 needs cross-tenant visibility for published rows only",
+      "app/api/dashboard_routes.py + app/templates/{_base,ad07_products,ad07_product_detail,pu02_catalog}.html -- real HTTP routes: GET/POST /ops/products, GET/POST /ops/products/{id}, GET /portfolios (anonymous)",
+      "alembic/versions/db545234a3c1_add_products_table.py -- real migration, verified end-to-end with a live disposable Postgres cluster (table + RLS policy both confirmed present via psql)",
+      "tests/test_product_admin.py (16 tests) + tests/test_dashboard_routes.py (10 tests) -- includes a raw-RLS test independent of product_admin.py's own tenant_id filtering, and load-bearing-verified: both the stale-revision guard and the product_visibility policy were each temporarily broken and confirmed to fail the relevant test before being restored"
+    ],
+    "deliberately_not_built": "No publish/release-review route or action exists anywhere in this slice -- AD-07's own 'Confirm: Submit version for review; not directly publish' is a separate, distinct admission decision (app/services/publication_admission.py) this screen has no authority over. No multi-step wizard UI (Identity -> Sleeves/weights -> ... -> Preview) -- a single edit form covers the modeled fields; full 66-screen visual/interaction fidelity is out of scope for this bounded first slice."
+  },
+  "screens_done": ["AD-07", "PU-02"],
+  "screens_not_started": "64 of 66 -- see signal_platform_dashboard_v2/catalog/screens.json for the full list.",
+  "standing_constraints_from_master_prompt": [
+    "No live orders/cancellations, customer charges/subscriptions, live publication, production resets, credential rotation, or unapproved infrastructure spending.",
+    "Isolated synthetic fixtures are authorized only in test/browser databases, never seeded into production.",
+    "Reuse existing FastAPI + Jinja2/Chart.js/Tabulator conventions -- no React/Dash rewrite, no second frontend server, no second trading engine.",
+    "Private signal-copier (SQLite, owner auth) stays separate from signal-portfolio-commercial (Postgres, tenant auth) -- commercial owner is never private trading authority.",
+    "Every action needs real role/tenant/object/state checks derived from the authenticated principal, never a caller-supplied tenant_id.",
+    "Missing external credentials/accounts block only external qualification, never the independently buildable UI/service work.",
+    "User's own standing instruction (carried from Phase 08): everything stays paper-traded; notify before anything is ready for promotion to live."
+  ]
+}

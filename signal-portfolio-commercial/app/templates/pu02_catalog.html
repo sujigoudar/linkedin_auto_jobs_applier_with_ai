@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Portfolio catalog</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 0; padding: 0; color: #1a1a1a; background: #fafafa; }
+    header { background: #111827; color: #f9fafb; padding: 0.75rem 1.25rem; }
+    main { max-width: 960px; margin: 1.5rem auto; padding: 0 1rem; }
+    table { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+    th, td { text-align: left; padding: 0.5rem 0.75rem; border-bottom: 1px solid #e5e7eb; }
+    .empty-state { padding: 2rem; text-align: center; color: #4b5563; border: 1px dashed #d1d5db; border-radius: 0.5rem; }
+  </style>
+</head>
+<body>
+  <header>Portfolio catalog</header>
+  <main>
+    <h1>Published portfolios</h1>
+    {% if products %}
+    <table>
+      <thead>
+        <tr><th>Portfolio</th><th>Service modes</th></tr>
+      </thead>
+      <tbody>
+        {% for product in products %}
+        <tr>
+          <td>{{ product.product_name }}</td>
+          <td>{{ product.service_modes | join(", ") }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <div class="empty-state">
+      <p>No portfolios have been released for this audience.</p>
+    </div>
+    {% endif %}
+  </main>
+</body>
+</html>

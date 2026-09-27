@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "F-CONTENT.schema.json",
+  "title": "Approved public content",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "document_type": {
+      "description": "known structured template. No arbitrary HTML",
+      "type": "string",
+      "enum": [
+        "methodology",
+        "risk",
+        "billing_terms",
+        "privacy",
+        "help",
+        "status"
+      ]
+    },
+    "locale": {
+      "description": "supported language. Translations reviewed for factual consistency",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "title": {
+      "description": "1..120 plain text. No unsupported claims",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "body": {
+      "description": "bounded20000 plain text or safe structured nodes. No scripts/iframes/event handlers",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 20000
+    },
+    "audience_policy_id": {
+      "description": "approved scope. No raw licenses",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "source_evidence_ids": {
+      "description": "required for factual performance claims. No model invented citations",
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 200
+      },
+      "uniqueItems": true,
+      "maxItems": 100
+    }
+  },
+  "required": [
+    "document_type",
+    "locale",
+    "title",
+    "body",
+    "audience_policy_id"
+  ],
+  "description": "Ready-input schema plus server business validation. Draft input uses identical property types but permits missing required fields; missingness must be displayed. Identity/password forms never saved as drafts."
+}

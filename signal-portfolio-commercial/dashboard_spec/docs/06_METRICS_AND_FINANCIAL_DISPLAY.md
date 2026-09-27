@@ -1,0 +1,15 @@
+# Metrics and financial display contract
+
+Keep five record categories separate:SOURCE reports;MODEL replay;PLATFORM model/account records;FOLLOWER actual customer executions;BUSINESS subscription accounts. The UI book selector must not call MODEL results 'your return'. Customer actual data unavailable ->not available, even when model history exists. Historical composites stay hypothetical. Public use is restricted to approved report projections and substantiation.
+
+Realized P&L uses the application's declared reporting lot convention on actual executions and actual known fees. Unrealized P&L needs qualified current marks and currency conversion. Gross,net trading and subscription-cost-adjusted results have separate definitions. Missing fees are not zero;no claim of net result unless cost scope is known or explicitly partial. Deposits/withdrawals change account equity,not trading profit. TWR/MWR require their declared valuation/cashflow timing;do not invent them from daily balances.
+
+Trade win rate counts completed strategy episodes,not reducing fills or profitable bars. A100-unit trade closed40+30+30 is one completed episode. Display episode count and unresolved episodes. Profit factor with no completed trades is unavailable;with verified profits and zero gross losses label denominator-zero rather than a giant finite score. Maximum drawdown requires coherent cashflow-adjusted series and is computed before visual decimation. A stop exit can be profitable. Risk/reward R needs original declared risk,not later tightened stop.
+
+Exposure distinguishes signed net,gross,allocated,cash,borrow/margin and pending commitments. Instrument multipliers,contract sizes,negative-price profiles and account currencies must remain exact. Underlying/sector clusters are context,not permission to net incompatible instruments. Generic dashboard formulas must not price options or inverse contracts as shares.
+
+Required quantity components in TR-03/CU-05:owned_confirmed,entry_remaining_possible,exit_remaining_possible,native_covered,uncovered_under_recipe,working_order_family and data_as_of. No `protected=true` based only on a plan's stop price. Counterexample fixture:owned54,working stop47,pending TP remainder7;stop54 is ineligible until that remainder's outcome is resolved. Late extra3 fill ->owned51. Render those facts and the precise blocking operation,not a generic spinner.
+
+Business revenue,refunds,royalties and infrastructure costs never aggregate with investor capital. Managed NAV/unit/HWM screens use qualified broker program rules;unknown fee/cashflow conventions block those calculations. No SaaS page collects managed investment deposits.
+
+Chart formatting only:financial values stay canonical strings in API;rendering code converts validated finite values for coordinates without feeding them back into an economic calculation. Tooltips show exact value and quality. Negative/positive signs,currency and units retained in CSV/PDF/table alternatives. A stale last-good value is labeled last verified at a timestamp. Known-flat requires a complete authoritative inventory snapshot.

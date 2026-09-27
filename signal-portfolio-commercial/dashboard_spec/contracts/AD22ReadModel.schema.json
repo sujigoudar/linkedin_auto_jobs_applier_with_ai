@@ -1,0 +1,153 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "AD22ReadModel.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "screen_id",
+    "state",
+    "snapshot_id",
+    "schema_version",
+    "generated_at",
+    "origin_label",
+    "summary",
+    "rows",
+    "metrics",
+    "capabilities",
+    "next_cursor",
+    "panels"
+  ],
+  "properties": {
+    "screen_id": {
+      "const": "AD-22"
+    },
+    "schema_version": {
+      "const": "ui-v2"
+    },
+    "state": {
+      "enum": [
+        "loading",
+        "ready",
+        "empty",
+        "denied",
+        "stale",
+        "partial",
+        "timeout",
+        "error",
+        "unsupported",
+        "conflict",
+        "session_expired",
+        "maintenance"
+      ]
+    },
+    "snapshot_id": {
+      "type": "string"
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "origin_label": {
+      "type": "string"
+    },
+    "summary": {
+      "type": "string"
+    },
+    "rows": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "row_id",
+          "role",
+          "site",
+          "artifact",
+          "latest_complete_task",
+          "database_generation",
+          "authority",
+          "blocker"
+        ],
+        "properties": {
+          "role": {
+            "$ref": "ui-contracts.schema.json#/$defs/Cell",
+            "description": "Role; server formats semantics as typed value, not prebuilt HTML."
+          },
+          "site": {
+            "$ref": "ui-contracts.schema.json#/$defs/Cell",
+            "description": "Site; server formats semantics as typed value, not prebuilt HTML."
+          },
+          "artifact": {
+            "$ref": "ui-contracts.schema.json#/$defs/Cell",
+            "description": "Artifact; server formats semantics as typed value, not prebuilt HTML."
+          },
+          "latest_complete_task": {
+            "$ref": "ui-contracts.schema.json#/$defs/Cell",
+            "description": "Latest complete task; server formats semantics as typed value, not prebuilt HTML."
+          },
+          "database_generation": {
+            "$ref": "ui-contracts.schema.json#/$defs/Cell",
+            "description": "Database generation; server formats semantics as typed value, not prebuilt HTML."
+          },
+          "authority": {
+            "$ref": "ui-contracts.schema.json#/$defs/Cell",
+            "description": "Authority; server formats semantics as typed value, not prebuilt HTML."
+          },
+          "blocker": {
+            "$ref": "ui-contracts.schema.json#/$defs/Cell",
+            "description": "Blocker; server formats semantics as typed value, not prebuilt HTML."
+          },
+          "row_id": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "metrics": {
+      "type": "array",
+      "items": {
+        "$ref": "ui-contracts.schema.json#/$defs/Metric"
+      }
+    },
+    "capabilities": {
+      "type": "array",
+      "items": {
+        "$ref": "ui-contracts.schema.json#/$defs/Capability"
+      }
+    },
+    "next_cursor": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "total_rows": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 0
+    },
+    "scope_label": {
+      "type": "string"
+    },
+    "object_revision": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "blockers": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "panels": {
+      "type": "array",
+      "items": {
+        "$ref": "ui-contracts.schema.json#/$defs/Panel"
+      }
+    }
+  }
+}

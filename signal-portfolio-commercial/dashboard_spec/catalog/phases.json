@@ -1,0 +1,86 @@
+[
+  {
+    "id": "00",
+    "title": "Baseline and scope",
+    "prompt": "prompts/00_baseline_and_scope.md",
+    "work": "Record exact HEAD, dirty changes, existing private/commercial routes, models, auth and frontend assets. Read original CP requirements. Produce requirement-to-screen-to-form-to-domain map. Confirm legacy /api/commercial/v1 versus current /api/v1 mapping. Preserve current work.",
+    "exit_evidence": "A complete inventory with no claim that an imported module or current three-route app supplies the missing screen workflows."
+  },
+  {
+    "id": "01",
+    "title": "Shared shells and secure browser sessions",
+    "prompt": "prompts/01_shared_shells_and_secure_browser_sessions.md",
+    "work": "Implement shared templates/tokens/components, four distinct shells, exact URL routing and server session adapter. Use real empty queries and controlled issuer, current PostgreSQL RLS and private auth.",
+    "exit_evidence": "Direct-route authorization, CSRF, session expiry/revocation, masked denial, safe rendering and every empty page work through actual apps."
+  },
+  {
+    "id": "02",
+    "title": "Drafts and core domain vertical slice",
+    "prompt": "prompts/02_drafts_and_core_domain_vertical_slice.md",
+    "work": "Build or extend Product/PortfolioVersion/Projection/Draft/Operation/Preference repositories and migrations. Operator creates a private draft; reload/restart reads it; public catalog remains empty; a scoped private preview lists real blockers.",
+    "exit_evidence": "No hardcoded list stubs, no synthetic production rows, no circular dependency on completed research. Real zero/one/many repository tests pass."
+  },
+  {
+    "id": "03",
+    "title": "Public and onboarding",
+    "prompt": "prompts/03_public_and_onboarding.md",
+    "work": "Complete PU/ID pages, eligibility flows, approved pricing/documents and discovery. Hosted identity callbacks and public projections are allowlisted and cache-safe.",
+    "exit_evidence": "Public catalog/detail/compare remain truthful without releases; staff drafts never leak; onboarding does not grant payment or trade authority."
+  },
+  {
+    "id": "04",
+    "title": "Customer portal",
+    "prompt": "prompts/04_customer_portal.md",
+    "work": "Complete all CU pages, selections, alerts, account performance, preferences, support and exports using actual tenant-scoped APIs and repositories.",
+    "exit_evidence": "CustomerA/B isolation, unknown metrics, history pagination, interrupted requests, read-only scope and endpoint controls tested."
+  },
+  {
+    "id": "05",
+    "title": "Private trading console",
+    "prompt": "prompts/05_private_trading_console.md",
+    "work": "Implement all TR views/config forms on private origin against existing private services. Preserve execution semantics and report missing capabilities rather than fabricate them.",
+    "exit_evidence": "Actual order families and protection transfer states render correctly; account/source changes preview; no new effects from reads or stale UI."
+  },
+  {
+    "id": "06",
+    "title": "Admin and Portfolio Lab",
+    "prompt": "prompts/06_admin_and_portfolio_lab.md",
+    "work": "Complete AD research/product/rights/review pages, persisted runs and candidate results, full denominator, revisions, effective settings and approval queues.",
+    "exit_evidence": "Draft/validate/preview/review work locally before real provider histories exist. Rights and evidence blockers remain explicit at effect boundary."
+  },
+  {
+    "id": "07",
+    "title": "Billing, publishers and copy setup",
+    "prompt": "prompts/07_billing_publishers_and_copy_setup.md",
+    "work": "Implement all customer/operator billing, hosted connection, mandate and publication workflows with official clients and controlled protocol boundaries, then qualify real external test services only with authorization.",
+    "exit_evidence": "Payment!=mandate,connected!=copying,ack!=execution;duplicate/reordered events and lost responses do not duplicate effects."
+  },
+  {
+    "id": "08",
+    "title": "Managed-account and recovery UI",
+    "prompt": "prompts/08_managed-account_and_recovery_ui.md",
+    "work": "Complete PAMM/MAM investor/ops fields, dealing/NAV/fee request and status views; deployment/recovery/incident screens. Keep unapproved real program actions blocked.",
+    "exit_evidence": "No investment custody through SaaS;cutoffs and corrected NAV explicit;standby inspection works without financial authority."
+  },
+  {
+    "id": "09",
+    "title": "Customization and accessibility",
+    "prompt": "prompts/09_customization_and_accessibility.md",
+    "work": "Finish role/environment-scoped saved views, columns, charts, theme/density/timezone, responsiveness, keyboard/focus and accessible equivalents. Use optional packages only where justified.",
+    "exit_evidence": "Required identity/origin/risk/cost/quality widgets cannot be hidden;no custom JS/CSS or financial changes in preferences."
+  },
+  {
+    "id": "10",
+    "title": "Full integrated verification",
+    "prompt": "prompts/10_full_integrated_verification.md",
+    "work": "Collect and bind every catalog case and inherited requirement. Run complete declared matrices, each form field/domain boundary, each action scope, all journeys and actual DB/API/browser integration. Preserve failures and repair consumers.",
+    "exit_evidence": "No missing selected instance or fake driver;no stubs passed through “unsupported”;record code/config/data/schema/browser scope and actual evidence."
+  },
+  {
+    "id": "11",
+    "title": "Inactive deployment and handoff",
+    "prompt": "prompts/11_inactive_deployment_and_handoff.md",
+    "work": "With approved access deploy actual UI/API inactive, verify origin/TLS/cache/CSP/auth/callbacks/assets and worker boundaries. Produce screen-by-screen matrix, screenshots and owner blockers.",
+    "exit_evidence": "Show actual usable empty-state site, working local persisted drafts and all qualified workflows;do not claim live certification from design or synthetic tests."
+  }
+]

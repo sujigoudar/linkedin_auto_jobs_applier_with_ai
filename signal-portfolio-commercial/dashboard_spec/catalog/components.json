@@ -1,0 +1,98 @@
+[
+  {
+    "repository": "pallets/jinja",
+    "decision": "ADOPT",
+    "use": "Server-rendered shared layouts/macros",
+    "guard": "Autoescape HTML; StrictUndefined in tests; never accept user templates or mark raw signal text safe",
+    "url": "https://github.com/pallets/jinja",
+    "version_status": "Select compatible reviewed release at implementation;pin and record license/commit/hash;do not install moving main"
+  },
+  {
+    "repository": "chartjs/Chart.js",
+    "decision": "REUSE_PINNED",
+    "use": "Equity/drawdown/cost/exposure charts",
+    "guard": "Same metric definition and table alternative;null gaps;no browser P&L accounting",
+    "url": "https://github.com/chartjs/Chart.js",
+    "version_status": "Select compatible reviewed release at implementation;pin and record license/commit/hash;do not install moving main"
+  },
+  {
+    "repository": "tabulator-tables/tabulator",
+    "decision": "REUSE_PINNED",
+    "use": "Tables/filters/columns and virtual rendering",
+    "guard": "Use explicit snapshot/cursor adapter;do not estimate total from last_page;safe text formatters",
+    "url": "https://github.com/tabulator-tables/tabulator",
+    "version_status": "Select compatible reviewed release at implementation;pin and record license/commit/hash;do not install moving main"
+  },
+  {
+    "repository": "lucide-icons/lucide",
+    "decision": "ADOPT_SMALL_SUBSET",
+    "use": "Consistent local inline SVG assets",
+    "guard": "Icons decorative unless labeled;never icon-only financial actions",
+    "url": "https://github.com/lucide-icons/lucide",
+    "version_status": "Select compatible reviewed release at implementation;pin and record license/commit/hash;do not install moving main"
+  },
+  {
+    "repository": "orchidjs/tom-select",
+    "decision": "CONDITIONAL",
+    "use": "Large searchable account/source/product selectors",
+    "guard": "Reuse native selects below25options;server-scoped search;no arbitrary create option",
+    "url": "https://github.com/orchidjs/tom-select",
+    "version_status": "Select compatible reviewed release at implementation;pin and record license/commit/hash;do not install moving main"
+  },
+  {
+    "repository": "gridstack/gridstack.js",
+    "decision": "CONDITIONAL_PHASE_9",
+    "use": "Opt-in drag/resize personal dashboard layouts",
+    "guard": "Fixed grid + move buttons first;optional only;no drag-only;no arbitrary content HTML;layout never financial policy",
+    "url": "https://github.com/gridstack/gridstack.js",
+    "version_status": "Select compatible reviewed release at implementation;pin and record license/commit/hash;do not install moving main"
+  },
+  {
+    "repository": "supabase/supabase-py",
+    "decision": "REUSE_CURRENT_AUTH_CONTRACT",
+    "use": "Commercial provider auth from server BFF",
+    "guard": "No service key browser;verify claims/signature/audience;RLS non-superuser tests",
+    "url": "https://github.com/supabase/supabase-py",
+    "version_status": "Select compatible reviewed release at implementation;pin and record license/commit/hash;do not install moving main"
+  },
+  {
+    "repository": "stripe/stripe-python",
+    "decision": "REUSE_OFFICIAL",
+    "use": "Hosted checkout/customer portal and canonical billing reads",
+    "guard": "Test/live identities separate;receipt does not mean event applied;success redirect no privilege",
+    "url": "https://github.com/stripe/stripe-python",
+    "version_status": "Select compatible reviewed release at implementation;pin and record license/commit/hash;do not install moving main"
+  },
+  {
+    "repository": "microsoft/playwright-python",
+    "decision": "REUSE",
+    "use": "Connected browser journeys three engines",
+    "guard": "UI tests invoke actual apps+DB;test fixtures not production seeds",
+    "url": "https://github.com/microsoft/playwright-python",
+    "version_status": "Select compatible reviewed release at implementation;pin and record license/commit/hash;do not install moving main"
+  },
+  {
+    "repository": "dequelabs/axe-core",
+    "decision": "REUSE_TEST_ONLY",
+    "use": "Automated accessibility checks",
+    "guard": "Keep keyboard/focus/zoom/manual screen-reader obligations;automated pass not certification",
+    "url": "https://github.com/dequelabs/axe-core",
+    "version_status": "Select compatible reviewed release at implementation;pin and record license/commit/hash;do not install moving main"
+  },
+  {
+    "repository": "schemathesis/schemathesis",
+    "decision": "REUSE_TEST_ONLY",
+    "use": "Request/response and scoped API negative tests",
+    "guard": "Effects isolated to test adapters;never fuzz production financial endpoints",
+    "url": "https://github.com/schemathesis/schemathesis",
+    "version_status": "Select compatible reviewed release at implementation;pin and record license/commit/hash;do not install moving main"
+  },
+  {
+    "repository": "cure53/DOMPurify",
+    "decision": "NOT_NEEDED_FOR_PLAIN_TEXT",
+    "use": "Only future explicitly approved rich-text requirement",
+    "guard": "Safe text and server autoescape first;do not introduce rich HTML just to sanitize",
+    "url": "https://github.com/cure53/DOMPurify",
+    "version_status": "Select compatible reviewed release at implementation;pin and record license/commit/hash;do not install moving main"
+  }
+]

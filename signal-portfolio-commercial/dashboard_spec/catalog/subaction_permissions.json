@@ -1,0 +1,92 @@
+{
+  "F-INCIDENT": {
+    "acknowledge": [
+      "owner",
+      "publisher_operator",
+      "support_readonly"
+    ],
+    "assign": [
+      "owner",
+      "publisher_operator",
+      "support_readonly"
+    ],
+    "reconcile": [
+      "owner",
+      "publisher_operator"
+    ],
+    "propose_resolution": [
+      "owner",
+      "publisher_operator"
+    ],
+    "private_execution": [
+      "private_owner"
+    ],
+    "note": "Commercial support acknowledgment is not financial recovery or reconciliation. All actions scoped to allowed incident; no automatic grant from read access."
+  },
+  "F-REPORT": {
+    "business": [
+      "owner",
+      "billing_operator"
+    ],
+    "model": [
+      "owner",
+      "researcher",
+      "reviewer"
+    ],
+    "source": [
+      "owner",
+      "researcher",
+      "reviewer"
+    ],
+    "platform": [
+      "owner",
+      "publisher_operator",
+      "reviewer"
+    ],
+    "actual": [
+      "customer:self",
+      "owner:explicit_target_scope"
+    ],
+    "private_execution": [
+      "private_owner"
+    ],
+    "note": "Report enum does not grant access. Intersection of endpoint role,book permission,tenant/object and data-use rights;include_sensitive requires independent documented permission."
+  },
+  "F-RELEASE": {
+    "request_changes": [
+      "owner",
+      "reviewer"
+    ],
+    "reject": [
+      "owner",
+      "reviewer"
+    ],
+    "approve": [
+      "owner",
+      "reviewer"
+    ],
+    "note": "Author cannot self-review where the released governance policy requires independence. Being owner does not waive rights,merchant/platform or authority gates."
+  },
+  "F-RECOVERY-OPS": {
+    "private_execution": [
+      "private_owner"
+    ],
+    "commercial": [
+      "owner"
+    ],
+    "note": "Publisher_operator may inspect permitted evidence but cannot promote sites or acquire private credentials. This form prepares a card,not a live promotion command."
+  },
+  "F-ACCESS": {
+    "all": [
+      "owner"
+    ],
+    "note": "No public signup role selection. Invitation scope verified;last owner lockout prevented;operator role never creates private owner auth."
+  },
+  "F-PUBLISH-ACTION": {
+    "all": [
+      "owner",
+      "publisher_operator"
+    ],
+    "note": "Reconcile remains an observation operation;resubmission requires actual resolved outcome and exact authorized action,never a generic retry."
+  }
+}

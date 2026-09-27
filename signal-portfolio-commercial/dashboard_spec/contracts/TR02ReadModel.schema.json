@@ -1,0 +1,168 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "TR02ReadModel.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "screen_id",
+    "state",
+    "snapshot_id",
+    "schema_version",
+    "generated_at",
+    "origin_label",
+    "summary",
+    "rows",
+    "metrics",
+    "capabilities",
+    "next_cursor",
+    "panels"
+  ],
+  "properties": {
+    "screen_id": {
+      "const": "TR-02"
+    },
+    "schema_version": {
+      "const": "ui-v2"
+    },
+    "state": {
+      "enum": [
+        "loading",
+        "ready",
+        "empty",
+        "denied",
+        "stale",
+        "partial",
+        "timeout",
+        "error",
+        "unsupported",
+        "conflict",
+        "session_expired",
+        "maintenance"
+      ]
+    },
+    "snapshot_id": {
+      "type": "string"
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "origin_label": {
+      "type": "string"
+    },
+    "summary": {
+      "type": "string"
+    },
+    "rows": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "row_id",
+          "account",
+          "instrument_id",
+          "analyst",
+          "side",
+          "owned",
+          "pending_entry",
+          "possible_closes",
+          "working_stop",
+          "p_l_basis",
+          "state"
+        ],
+        "properties": {
+          "account": {
+            "$ref": "ui-contracts.schema.json#/$defs/Cell",
+            "description": "Account; server formats semantics as typed value, not prebuilt HTML."
+          },
+          "instrument_id": {
+            "$ref": "ui-contracts.schema.json#/$defs/Cell",
+            "description": "Instrument ID; server formats semantics as typed value, not prebuilt HTML."
+          },
+          "analyst": {
+            "$ref": "ui-contracts.schema.json#/$defs/Cell",
+            "description": "Analyst; server formats semantics as typed value, not prebuilt HTML."
+          },
+          "side": {
+            "$ref": "ui-contracts.schema.json#/$defs/Cell",
+            "description": "Side; server formats semantics as typed value, not prebuilt HTML."
+          },
+          "owned": {
+            "$ref": "ui-contracts.schema.json#/$defs/Cell",
+            "description": "Owned; server formats semantics as typed value, not prebuilt HTML."
+          },
+          "pending_entry": {
+            "$ref": "ui-contracts.schema.json#/$defs/Cell",
+            "description": "Pending entry; server formats semantics as typed value, not prebuilt HTML."
+          },
+          "possible_closes": {
+            "$ref": "ui-contracts.schema.json#/$defs/Cell",
+            "description": "Possible closes; server formats semantics as typed value, not prebuilt HTML."
+          },
+          "working_stop": {
+            "$ref": "ui-contracts.schema.json#/$defs/Cell",
+            "description": "Working stop; server formats semantics as typed value, not prebuilt HTML."
+          },
+          "p_l_basis": {
+            "$ref": "ui-contracts.schema.json#/$defs/Cell",
+            "description": "P&L basis; server formats semantics as typed value, not prebuilt HTML."
+          },
+          "state": {
+            "$ref": "ui-contracts.schema.json#/$defs/Cell",
+            "description": "State; server formats semantics as typed value, not prebuilt HTML."
+          },
+          "row_id": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "metrics": {
+      "type": "array",
+      "items": {
+        "$ref": "ui-contracts.schema.json#/$defs/Metric"
+      }
+    },
+    "capabilities": {
+      "type": "array",
+      "items": {
+        "$ref": "ui-contracts.schema.json#/$defs/Capability"
+      }
+    },
+    "next_cursor": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "total_rows": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 0
+    },
+    "scope_label": {
+      "type": "string"
+    },
+    "object_revision": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "blockers": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "panels": {
+      "type": "array",
+      "items": {
+        "$ref": "ui-contracts.schema.json#/$defs/Panel"
+      }
+    }
+  }
+}

@@ -20,6 +20,7 @@ from app.db import Base
 import app.models.billing  # noqa: E402,F401
 import app.models.ledger  # noqa: E402,F401
 import app.models.portfolio_version  # noqa: E402,F401
+import app.models.product  # noqa: E402,F401
 import app.models.publication  # noqa: E402,F401
 import app.models.publisher_writer_claim  # noqa: E402,F401
 import app.models.rights  # noqa: E402,F401

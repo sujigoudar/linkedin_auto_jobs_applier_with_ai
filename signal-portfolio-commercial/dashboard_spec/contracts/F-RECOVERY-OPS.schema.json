@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "F-RECOVERY-OPS.schema.json",
+  "title": "Recovery review",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "service_role": {
+      "description": "operator allowed for role. Website role not trading permission",
+      "type": "string",
+      "enum": [
+        "private_writer",
+        "publisher",
+        "api",
+        "research"
+      ]
+    },
+    "source_site_id": {
+      "description": "registered site. No arbitrary SSH host",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "target_site_id": {
+      "description": "qualified distinct site. Standby initially incapable of effects",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "release_manifest_id": {
+      "description": "verified immutable manifest. No mutable latest tag",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "backup_generation_id": {
+      "description": "verified compatible restore. Known RPO/unknown commands visible",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "fencing_evidence_ids": {
+      "description": "required before writer promotion. Lease expiry is insufficient",
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 200
+      },
+      "uniqueItems": true,
+      "maxItems": 100
+    },
+    "reconciliation_evidence_id": {
+      "description": "required for promotion;fresh and complete. Positions alone may not recover ownership",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    }
+  },
+  "required": [
+    "service_role",
+    "source_site_id",
+    "target_site_id",
+    "release_manifest_id",
+    "backup_generation_id"
+  ],
+  "description": "Ready-input schema plus server business validation. Draft input uses identical property types but permits missing required fields; missingness must be displayed. Identity/password forms never saved as drafts."
+}

@@ -1,0 +1,70 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "F-STOP-RECIPE.schema.json",
+  "title": "Initial-stop and fallback recipe",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "recipe_name": {
+      "description": "max100. Versioned internal recipe",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "reference_basis": {
+      "description": "must match resolved source meaning and product. No automatic underlying-to-premium translation",
+      "type": "string",
+      "enum": [
+        "instrument_price",
+        "underlying_price",
+        "option_premium",
+        "combo_price"
+      ]
+    },
+    "provider_stop_policy": {
+      "description": "invalid/crossed supplied stop is not missing. Fallback only for genuinely absent source stop",
+      "type": "string",
+      "enum": [
+        "require_valid",
+        "use_valid_else_released_fallback"
+      ]
+    },
+    "fallback_method_id": {
+      "description": "released or research-only compatible method;required when selected. No invented percentage default",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "fallback_distance": {
+      "description": "units/bounds from method schema;positive where profile requires. Research draft until independently reviewed",
+      "type": "string",
+      "pattern": "^-?(?:0|[1-9][0-9]*)(?:\\.[0-9]+)?$",
+      "maxLength": 80
+    },
+    "volatility_window": {
+      "description": "required only for compatible volatility recipe;integer>=2. Availability and warmup explicitly evaluated",
+      "type": "integer"
+    },
+    "native_coverage_policy_id": {
+      "description": "qualified exact account product session recipe. No claimed continuous protection on unsupported route",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "missing_data_action": {
+      "description": "cannot be relaxed by this form. Existing positions follow their separate recovery plan",
+      "type": "string",
+      "enum": [
+        "block_new_entry"
+      ]
+    }
+  },
+  "required": [
+    "recipe_name",
+    "reference_basis",
+    "provider_stop_policy",
+    "native_coverage_policy_id",
+    "missing_data_action"
+  ],
+  "description": "Ready-input schema plus server business validation. Draft input uses identical property types but permits missing required fields; missingness must be displayed. Identity/password forms never saved as drafts."
+}

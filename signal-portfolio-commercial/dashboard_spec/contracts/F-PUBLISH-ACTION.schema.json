@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "F-PUBLISH-ACTION.schema.json",
+  "title": "Publisher recovery/correction",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "intent_id": {
+      "description": "scope-owned existing intent. Never fabricate new identity for retry",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "operation": {
+      "description": "supported exact recipe. Quantity changes cannot masquerade as price edit",
+      "type": "string",
+      "enum": [
+        "reconcile",
+        "propose_price_change",
+        "propose_cancel"
+      ]
+    },
+    "new_price": {
+      "description": "required only valid price modification. Instrument/tick/side validation",
+      "type": "string",
+      "pattern": "^-?(?:0|[1-9][0-9]*)(?:\\.[0-9]+)?$",
+      "maxLength": 80
+    },
+    "reason": {
+      "description": "1..2000 characters. Audit",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    }
+  },
+  "required": [
+    "intent_id",
+    "operation",
+    "reason"
+  ],
+  "description": "Ready-input schema plus server business validation. Draft input uses identical property types but permits missing required fields; missingness must be displayed. Identity/password forms never saved as drafts."
+}

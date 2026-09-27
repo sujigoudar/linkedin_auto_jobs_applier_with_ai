@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "F-SUPPORT.schema.json",
+  "title": "Support case",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "category": {
+      "description": "known category. Safety priority triaged separately",
+      "type": "string",
+      "enum": [
+        "billing",
+        "delivery",
+        "connection",
+        "performance",
+        "safety",
+        "access"
+      ]
+    },
+    "related_object_id": {
+      "description": "caller can access object. No cross-tenant IDs",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "subject": {
+      "description": "1..120 characters. Plain text",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "description": {
+      "description": "1..8000 characters;inert rendering. Do not enter passwords or API keys",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 8000
+    },
+    "attachment_ids": {
+      "description": "owned quarantine-scanned objects;max5. max10MiB each;CSV/PNG/JPEG/PDF;no executable HTML",
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 200
+      },
+      "uniqueItems": true,
+      "maxItems": 100
+    }
+  },
+  "required": [
+    "category",
+    "subject",
+    "description"
+  ],
+  "description": "Ready-input schema plus server business validation. Draft input uses identical property types but permits missing required fields; missingness must be displayed. Identity/password forms never saved as drafts."
+}

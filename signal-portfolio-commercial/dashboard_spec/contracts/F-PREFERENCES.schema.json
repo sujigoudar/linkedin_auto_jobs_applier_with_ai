@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "F-PREFERENCES.schema.json",
+  "title": "Profile/security/display",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "display_name": {
+      "description": "0..80 plain-text characters. Not published by default",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "timezone": {
+      "description": "IANA zone. UTC retained in stored events",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "theme": {
+      "description": "known values only. No custom CSS",
+      "type": "string",
+      "enum": [
+        "system",
+        "dark",
+        "light"
+      ]
+    },
+    "density": {
+      "description": "compact target sizes remain accessible. Never hide safety notices",
+      "type": "string",
+      "enum": [
+        "comfortable",
+        "compact"
+      ]
+    },
+    "number_locale": {
+      "description": "supported locale. Stored amounts remain decimal strings",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "view_currency": {
+      "description": "display only;no implicit conversion without data. No account currency change",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500,
+      "pattern": "^[A-Z]{3}$"
+    },
+    "reduce_motion": {
+      "description": "never override user reduced-motion preference off. No blinking tickers",
+      "type": "string",
+      "enum": [
+        "system",
+        "on"
+      ]
+    }
+  },
+  "required": [
+    "timezone",
+    "theme",
+    "density",
+    "number_locale",
+    "reduce_motion"
+  ],
+  "description": "Ready-input schema plus server business validation. Draft input uses identical property types but permits missing required fields; missingness must be displayed. Identity/password forms never saved as drafts."
+}

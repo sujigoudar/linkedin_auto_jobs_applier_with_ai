@@ -1,0 +1,522 @@
+[
+  {
+    "id": "M-PU-02-01",
+    "screen": "PU-02",
+    "label": "Published product count",
+    "unit": "count",
+    "definition": "Exact count over authorized snapshot with its filter and completeness",
+    "incomplete_policy": "Zero only if query complete and count truly zero; never infer total rows from one page.",
+    "origin": "approved portfolio projection",
+    "precision": "UI rounds only rendering with consistent declared scale; transport remains exact decimal strings; axis float conversion is presentation only."
+  },
+  {
+    "id": "M-PU-03-01",
+    "screen": "PU-03",
+    "label": "Net return",
+    "unit": "ratio",
+    "definition": "(ending_unit_NAV / starting_unit_NAV) - 1, or chain-linked subperiod return after external cashflow boundaries; exact method in definition version",
+    "incomplete_policy": "No valid starting NAV, comparable period or sufficient marks => unavailable; do not use realized P&L / deposits.",
+    "origin": "approved portfolio projection",
+    "precision": "UI rounds only rendering with consistent declared scale; transport remains exact decimal strings; axis float conversion is presentation only."
+  },
+  {
+    "id": "M-PU-03-02",
+    "screen": "PU-03",
+    "label": "Maximum drawdown",
+    "unit": "ratio",
+    "definition": "max over chronological normalized equity of (running_peak-equity)/running_peak",
+    "incomplete_policy": "Requires positive comparable equity and full stated history; use full-resolution data before chart decimation; unknown gaps qualify coverage.",
+    "origin": "approved portfolio projection",
+    "precision": "UI rounds only rendering with consistent declared scale; transport remains exact decimal strings; axis float conversion is presentation only."
+  },
+  {
+    "id": "M-PU-03-03",
+    "screen": "PU-03",
+    "label": "Completed episodes",
+    "unit": "count",
+    "definition": "Exact count over authorized snapshot with its filter and completeness",
+    "incomplete_policy": "Zero only if query complete and count truly zero; never infer total rows from one page.",
+    "origin": "approved portfolio projection",
+    "precision": "UI rounds only rendering with consistent declared scale; transport remains exact decimal strings; axis float conversion is presentation only."
+  },
+  {
+    "id": "M-PU-03-04",
+    "screen": "PU-03",
+    "label": "History length",
+    "unit": "seconds",
+    "definition": "Difference between identified server times with timezone/clock semantics and start/end evidence",
+    "incomplete_policy": "Missing either end => ongoing or unavailable, not0.",
+    "origin": "approved portfolio projection",
+    "precision": "UI rounds only rendering with consistent declared scale; transport remains exact decimal strings; axis float conversion is presentation only."
+  },
+  {
+    "id": "M-PU-04-01",
+    "screen": "PU-04",
+    "label": "Common history coverage",
+    "unit": "ratio",
+    "definition": "Available eligible observations / specified expected observations or explicitly defined overlap duration",
+    "incomplete_policy": "Denominator and gap policy recorded; missing bars not automatically zero return.",
+    "origin": "approved portfolio projection",
+    "precision": "UI rounds only rendering with consistent declared scale; transport remains exact decimal strings; axis float conversion is presentation only."
+  },
+  {
+    "id": "M-CU-01-01",
+    "screen": "CU-01",
+    "label": "Selected portfolios",
+    "unit": "count",
+    "definition": "Exact count over authorized snapshot with its filter and completeness",
+    "incomplete_policy": "Zero only if query complete and count truly zero; never infer total rows from one page.",
+    "origin": "actual follower and selected labeled model",
+    "precision": "UI rounds only rendering with consistent declared scale; transport remains exact decimal strings; axis float conversion is presentation only."
+  },
+  {
+    "id": "M-CU-01-02",
+    "screen": "CU-01",
+    "label": "Observed open episodes",
+    "unit": "count",
+    "definition": "Exact count over authorized snapshot with its filter and completeness",
+    "incomplete_policy": "Zero only if query complete and count truly zero; never infer total rows from one page.",
+    "origin": "actual follower and selected labeled model",
+    "precision": "UI rounds only rendering with consistent declared scale; transport remains exact decimal strings; axis float conversion is presentation only."
+  },
+  {
+    "id": "M-CU-01-03",
+    "screen": "CU-01",
+    "label": "Net result if available",
+    "unit": "money",
+    "definition": "Sum identified realized and eligible unrealized P&L minus applicable costs, with cashflows excluded and all conversions versioned",
+    "incomplete_policy": "Missing fees/marks/basis => partial or unavailable, not net verification.",
+    "origin": "actual follower and selected labeled model",
+    "precision": "UI rounds only rendering with consistent declared scale; transport remains exact decimal strings; axis float conversion is presentation only."
+  },
+  {
+    "id": "M-CU-03-01",
+    "screen": "CU-03",
+    "label": "Observed net P&L",
+    "unit": "money",
+    "definition": "Sum identified realized and eligible unrealized P&L minus applicable costs, with cashflows excluded and all conversions versioned",
+    "incomplete_policy": "Missing fees/marks/basis => partial or unavailable, not net verification.",
+    "origin": "actual follower and selected labeled model",
+    "precision": "UI rounds only rendering with consistent declared scale; transport remains exact decimal strings; axis float conversion is presentation only."
+  },
+  {
+    "id": "M-CU-03-02",
+    "screen": "CU-03",
+    "label": "Open episodes",
+    "unit": "count",
+    "definition": "Exact count over authorized snapshot with its filter and completeness",
+    "incomplete_policy": "Zero only if query complete and count truly zero; never infer total rows from one page.",
+    "origin": "actual follower and selected labeled model",
+    "precision": "UI rounds only rendering with consistent declared scale; transport remains exact decimal strings; axis float conversion is presentation only."
+  },
+  {
+    "id": "M-CU-03-03",
+    "screen": "CU-03",
+    "label": "Delivery lag",
+    "unit": "seconds",
+    "definition": "Difference between identified server times with timezone/clock semantics and start/end evidence",
+    "incomplete_policy": "Missing either end => ongoing or unavailable, not0.",
+    "origin": "actual follower and selected labeled model",
+    "precision": "UI rounds only rendering with consistent declared scale; transport remains exact decimal strings; axis float conversion is presentation only."
+  },
+  {
+    "id": "M-CU-05-01",
+    "screen": "CU-05",
+    "label": "Owned quantity",
+    "unit": "instrument_quantity",
+    "definition": "Authoritative execution/position/order-family ledger for selected allocation",
+    "incomplete_policy": "Never derive ownership from requested order quantity; null/unknown distinct from known zero.",
+    "origin": "actual follower and selected labeled model",
+    "precision": "UI rounds only rendering with consistent declared scale; transport remains exact decimal strings; axis float conversion is presentation only."
+  },
+  {
+    "id": "M-CU-05-02",
+    "screen": "CU-05",
+    "label": "Possible remaining closes",
+    "unit": "count",
+    "definition": "Exact count over authorized snapshot with its filter and completeness",
+    "incomplete_policy": "Zero only if query complete and count truly zero; never infer total rows from one page.",
+    "origin": "actual follower and selected labeled model",
+    "precision": "UI rounds only rendering with consistent declared scale; transport remains exact decimal strings; axis float conversion is presentation only."
+  },
+  {
+    "id": "M-CU-05-03",
+    "screen": "CU-05",
+    "label": "Native-covered quantity",
+    "unit": "instrument_quantity",
+    "definition": "Authoritative execution/position/order-family ledger for selected allocation",
+    "incomplete_policy": "Never derive ownership from requested order quantity; null/unknown distinct from known zero.",
+    "origin": "actual follower and selected labeled model",
+    "precision": "UI rounds only rendering with consistent declared scale; transport remains exact decimal strings; axis float conversion is presentation only."
+  },
+  {
+    "id": "M-CU-06-01",
+    "screen": "CU-06",
+    "label": "Net P&L",
+    "unit": "money",
+    "definition": "Sum identified realized and eligible unrealized P&L minus applicable costs, with cashflows excluded and all conversions versioned",
+    "incomplete_policy": "Missing fees/marks/basis => partial or unavailable, not net verification.",
+    "origin": "actual follower and selected labeled model",
+    "precision": "UI rounds only rendering with consistent declared scale; transport remains exact decimal strings; axis float conversion is presentation only."
+  },
+  {
+    "id": "M-CU-06-02",
+    "screen": "CU-06",
+    "label": "Maximum drawdown",
+    "unit": "ratio",
+    "definition": "max over chronological normalized equity of (running_peak-equity)/running_peak",
+    "incomplete_policy": "Requires positive comparable equity and full stated history; use full-resolution data before chart decimation; unknown gaps qualify coverage.",
+    "origin": "actual follower and selected labeled model",
+    "precision": "UI rounds only rendering with consistent declared scale; transport remains exact decimal strings; axis float conversion is presentation only."
+  },
+  {
+    "id": "M-CU-06-03",
+    "screen": "CU-06",
+    "label": "Completed-episode win rate",
+    "unit": "ratio",
+    "definition": "count(net completed strategy episodes >0) / count(all eligible completed episodes)",
+    "incomplete_policy": "Zero completed episodes => unavailable; reducing fill count is separate; no exclusion of losses or zero-result episodes.",
+    "origin": "actual follower and selected labeled model",
+    "precision": "UI rounds only rendering with consistent declared scale; transport remains exact decimal strings; axis float conversion is presentation only."
+  },
+  {
+    "id": "M-CU-06-04",
+    "screen": "CU-06",
+    "label": "Unresolved items",
+    "unit": "count",
+    "definition": "Exact count over authorized snapshot with its filter and completeness",
+    "incomplete_policy": "Zero only if query complete and count truly zero; never infer total rows from one page.",
+    "origin": "actual follower and selected labeled model",
+    "precision": "UI rounds only rendering with consistent declared scale; transport remains exact decimal strings; axis float conversion is presentation only."
+  },
+  {
+    "id": "M-TR-01-01",
+    "screen": "TR-01",
+    "label": "Verified net liquidation",
+    "unit": "money",
+    "definition": "Account-provider net liquidation observation at the displayed as-of and base currency",
+    "incomplete_policy": "Do not sum incompatible account currencies or substitute realized P&L.",
+    "origin": "private authoritative ledger",
+    "precision": "UI rounds only rendering with consistent declared scale; transport remains exact decimal strings; axis float conversion is presentation only."
+  },
+  {
+    "id": "M-TR-01-02",
+    "screen": "TR-01",
+    "label": "Reserved risk",
+    "unit": "money_or_risk_units",
+    "definition": "Sum committed released per-trade risk and outstanding reservations under stated product convention",
+    "incomplete_policy": "Stop loss is not guaranteed max loss; stress/contractual risk shown separately; unknown commitments retain budget.",
+    "origin": "private authoritative ledger",
+    "precision": "UI rounds only rendering with consistent declared scale; transport remains exact decimal strings; axis float conversion is presentation only."
+  },
+  {
+    "id": "M-TR-01-03",
+    "screen": "TR-01",
+    "label": "Protection deficit",
+    "unit": "quantity_and_risk",
+    "definition": "Actual owned exposure without required verified native coverage, classified by transfer/incident and nonoverlapping commitments",
+    "incomplete_policy": "Do not aggregate unlike share/contract/base units into one unlabeled scalar; show count and per-allocation breakdown.",
+    "origin": "private authoritative ledger",
+    "precision": "UI rounds only rendering with consistent declared scale; transport remains exact decimal strings; axis float conversion is presentation only."
+  },
+  {
+    "id": "M-TR-01-04",
+    "screen": "TR-01",
+    "label": "Unknown operations",
+    "unit": "count",
+    "definition": "Exact count over authorized snapshot with its filter and completeness",
+    "incomplete_policy": "Zero only if query complete and count truly zero; never infer total rows from one page.",
+    "origin": "private authoritative ledger",
+    "precision": "UI rounds only rendering with consistent declared scale; transport remains exact decimal strings; axis float conversion is presentation only."
+  },
+  {
+    "id": "M-TR-02-01",
+    "screen": "TR-02",
+    "label": "Known position count",
+    "unit": "count",
+    "definition": "Exact count over authorized snapshot with its filter and completeness",
+    "incomplete_policy": "Zero only if query complete and count truly zero; never infer total rows from one page.",
+    "origin": "private authoritative ledger",
+    "precision": "UI rounds only rendering with consistent declared scale; transport remains exact decimal strings; axis float conversion is presentation only."
+  },
+  {
+    "id": "M-TR-02-02",
+    "screen": "TR-02",
+    "label": "Unresolved positions",
+    "unit": "count",
+    "definition": "Exact count over authorized snapshot with its filter and completeness",
+    "incomplete_policy": "Zero only if query complete and count truly zero; never infer total rows from one page.",
+    "origin": "private authoritative ledger",
+    "precision": "UI rounds only rendering with consistent declared scale; transport remains exact decimal strings; axis float conversion is presentation only."
+  },
+  {
+    "id": "M-TR-03-01",
+    "screen": "TR-03",
+    "label": "Owned",
+    "unit": "instrument_quantity",
+    "definition": "Authoritative execution/position/order-family ledger for selected allocation",
+    "incomplete_policy": "Never derive ownership from requested order quantity; null/unknown distinct from known zero.",
+    "origin": "private authoritative ledger",
+    "precision": "UI rounds only rendering with consistent declared scale; transport remains exact decimal strings; axis float conversion is presentation only."
+  },
+  {
+    "id": "M-TR-03-02",
+    "screen": "TR-03",
+    "label": "Native covered",
+    "unit": "instrument_quantity",
+    "definition": "Authoritative execution/position/order-family ledger for selected allocation",
+    "incomplete_policy": "Never derive ownership from requested order quantity; null/unknown distinct from known zero.",
+    "origin": "private authoritative ledger",
+    "precision": "UI rounds only rendering with consistent declared scale; transport remains exact decimal strings; axis float conversion is presentation only."
+  },
+  {
+    "id": "M-TR-03-03",
+    "screen": "TR-03",
+    "label": "Uncovered",
+    "unit": "instrument_quantity",
+    "definition": "Authoritative execution/position/order-family ledger for selected allocation",
+    "incomplete_policy": "Never derive ownership from requested order quantity; null/unknown distinct from known zero.",
+    "origin": "private authoritative ledger",
+    "precision": "UI rounds only rendering with consistent declared scale; transport remains exact decimal strings; axis float conversion is presentation only."
+  },
+  {
+    "id": "M-TR-03-04",
+    "screen": "TR-03",
+    "label": "Still executable closes",
+    "unit": "instrument_quantity",
+    "definition": "Authoritative execution/position/order-family ledger for selected allocation",
+    "incomplete_policy": "Never derive ownership from requested order quantity; null/unknown distinct from known zero.",
+    "origin": "private authoritative ledger",
+    "precision": "UI rounds only rendering with consistent declared scale; transport remains exact decimal strings; axis float conversion is presentation only."
+  },
+  {
+    "id": "M-TR-14-01",
+    "screen": "TR-14",
+    "label": "Net P&L",
+    "unit": "money",
+    "definition": "Sum identified realized and eligible unrealized P&L minus applicable costs, with cashflows excluded and all conversions versioned",
+    "incomplete_policy": "Missing fees/marks/basis => partial or unavailable, not net verification.",
+    "origin": "private authoritative ledger",
+    "precision": "UI rounds only rendering with consistent declared scale; transport remains exact decimal strings; axis float conversion is presentation only."
+  },
+  {
+    "id": "M-TR-14-02",
+    "screen": "TR-14",
+    "label": "Completed episodes",
+    "unit": "count",
+    "definition": "Exact count over authorized snapshot with its filter and completeness",
+    "incomplete_policy": "Zero only if query complete and count truly zero; never infer total rows from one page.",
+    "origin": "private authoritative ledger",
+    "precision": "UI rounds only rendering with consistent declared scale; transport remains exact decimal strings; axis float conversion is presentation only."
+  },
+  {
+    "id": "M-TR-14-03",
+    "screen": "TR-14",
+    "label": "Maximum drawdown",
+    "unit": "ratio",
+    "definition": "max over chronological normalized equity of (running_peak-equity)/running_peak",
+    "incomplete_policy": "Requires positive comparable equity and full stated history; use full-resolution data before chart decimation; unknown gaps qualify coverage.",
+    "origin": "private authoritative ledger",
+    "precision": "UI rounds only rendering with consistent declared scale; transport remains exact decimal strings; axis float conversion is presentation only."
+  },
+  {
+    "id": "M-TR-14-04",
+    "screen": "TR-14",
+    "label": "Unresolved fees",
+    "unit": "count",
+    "definition": "Exact count over authorized snapshot with its filter and completeness",
+    "incomplete_policy": "Zero only if query complete and count truly zero; never infer total rows from one page.",
+    "origin": "private authoritative ledger",
+    "precision": "UI rounds only rendering with consistent declared scale; transport remains exact decimal strings; axis float conversion is presentation only."
+  },
+  {
+    "id": "M-AD-01-01",
+    "screen": "AD-01",
+    "label": "Eligible products",
+    "unit": "count",
+    "definition": "Exact count over authorized snapshot with its filter and completeness",
+    "incomplete_policy": "Zero only if query complete and count truly zero; never infer total rows from one page.",
+    "origin": "explicit business/model/platform book",
+    "precision": "UI rounds only rendering with consistent declared scale; transport remains exact decimal strings; axis float conversion is presentation only."
+  },
+  {
+    "id": "M-AD-01-02",
+    "screen": "AD-01",
+    "label": "Active subscriptions",
+    "unit": "count",
+    "definition": "Exact count over authorized snapshot with its filter and completeness",
+    "incomplete_policy": "Zero only if query complete and count truly zero; never infer total rows from one page.",
+    "origin": "explicit business/model/platform book",
+    "precision": "UI rounds only rendering with consistent declared scale; transport remains exact decimal strings; axis float conversion is presentation only."
+  },
+  {
+    "id": "M-AD-01-03",
+    "screen": "AD-01",
+    "label": "Unknown publications",
+    "unit": "count",
+    "definition": "Exact count over authorized snapshot with its filter and completeness",
+    "incomplete_policy": "Zero only if query complete and count truly zero; never infer total rows from one page.",
+    "origin": "explicit business/model/platform book",
+    "precision": "UI rounds only rendering with consistent declared scale; transport remains exact decimal strings; axis float conversion is presentation only."
+  },
+  {
+    "id": "M-AD-01-04",
+    "screen": "AD-01",
+    "label": "Open incidents",
+    "unit": "count",
+    "definition": "Exact count over authorized snapshot with its filter and completeness",
+    "incomplete_policy": "Zero only if query complete and count truly zero; never infer total rows from one page.",
+    "origin": "explicit business/model/platform book",
+    "precision": "UI rounds only rendering with consistent declared scale; transport remains exact decimal strings; axis float conversion is presentation only."
+  },
+  {
+    "id": "M-AD-04-01",
+    "screen": "AD-04",
+    "label": "Declared candidates",
+    "unit": "count",
+    "definition": "Exact count over authorized snapshot with its filter and completeness",
+    "incomplete_policy": "Zero only if query complete and count truly zero; never infer total rows from one page.",
+    "origin": "explicit business/model/platform book",
+    "precision": "UI rounds only rendering with consistent declared scale; transport remains exact decimal strings; axis float conversion is presentation only."
+  },
+  {
+    "id": "M-AD-04-02",
+    "screen": "AD-04",
+    "label": "Expected resource budget",
+    "unit": "resource_units",
+    "definition": "Deterministic declared job candidate count and calibrated resource estimate, not a guaranteed runtime",
+    "incomplete_policy": "Unmeasured runtime estimate labeled estimated; cost/credit allowance checked before launch.",
+    "origin": "explicit business/model/platform book",
+    "precision": "UI rounds only rendering with consistent declared scale; transport remains exact decimal strings; axis float conversion is presentation only."
+  },
+  {
+    "id": "M-AD-05-01",
+    "screen": "AD-05",
+    "label": "Expected candidates",
+    "unit": "count",
+    "definition": "Exact count over authorized snapshot with its filter and completeness",
+    "incomplete_policy": "Zero only if query complete and count truly zero; never infer total rows from one page.",
+    "origin": "explicit business/model/platform book",
+    "precision": "UI rounds only rendering with consistent declared scale; transport remains exact decimal strings; axis float conversion is presentation only."
+  },
+  {
+    "id": "M-AD-05-02",
+    "screen": "AD-05",
+    "label": "Completed",
+    "unit": "count",
+    "definition": "Exact count over authorized snapshot with its filter and completeness",
+    "incomplete_policy": "Zero only if query complete and count truly zero; never infer total rows from one page.",
+    "origin": "explicit business/model/platform book",
+    "precision": "UI rounds only rendering with consistent declared scale; transport remains exact decimal strings; axis float conversion is presentation only."
+  },
+  {
+    "id": "M-AD-05-03",
+    "screen": "AD-05",
+    "label": "Failed",
+    "unit": "count",
+    "definition": "Exact count over authorized snapshot with its filter and completeness",
+    "incomplete_policy": "Zero only if query complete and count truly zero; never infer total rows from one page.",
+    "origin": "explicit business/model/platform book",
+    "precision": "UI rounds only rendering with consistent declared scale; transport remains exact decimal strings; axis float conversion is presentation only."
+  },
+  {
+    "id": "M-AD-05-04",
+    "screen": "AD-05",
+    "label": "Blocked",
+    "unit": "count",
+    "definition": "Exact count over authorized snapshot with its filter and completeness",
+    "incomplete_policy": "Zero only if query complete and count truly zero; never infer total rows from one page.",
+    "origin": "explicit business/model/platform book",
+    "precision": "UI rounds only rendering with consistent declared scale; transport remains exact decimal strings; axis float conversion is presentation only."
+  },
+  {
+    "id": "M-AD-06-01",
+    "screen": "AD-06",
+    "label": "Comparable coverage",
+    "unit": "ratio",
+    "definition": "Available eligible observations / specified expected observations or explicitly defined overlap duration",
+    "incomplete_policy": "Denominator and gap policy recorded; missing bars not automatically zero return.",
+    "origin": "explicit business/model/platform book",
+    "precision": "UI rounds only rendering with consistent declared scale; transport remains exact decimal strings; axis float conversion is presentation only."
+  },
+  {
+    "id": "M-AD-06-02",
+    "screen": "AD-06",
+    "label": "Forward duration",
+    "unit": "seconds",
+    "definition": "Difference between identified server times with timezone/clock semantics and start/end evidence",
+    "incomplete_policy": "Missing either end => ongoing or unavailable, not0.",
+    "origin": "explicit business/model/platform book",
+    "precision": "UI rounds only rendering with consistent declared scale; transport remains exact decimal strings; axis float conversion is presentation only."
+  },
+  {
+    "id": "M-AD-10-01",
+    "screen": "AD-10",
+    "label": "Cohort size",
+    "unit": "count",
+    "definition": "Exact count over authorized snapshot with its filter and completeness",
+    "incomplete_policy": "Zero only if query complete and count truly zero; never infer total rows from one page.",
+    "origin": "explicit business/model/platform book",
+    "precision": "UI rounds only rendering with consistent declared scale; transport remains exact decimal strings; axis float conversion is presentation only."
+  },
+  {
+    "id": "M-AD-10-02",
+    "screen": "AD-10",
+    "label": "Delivered",
+    "unit": "count",
+    "definition": "Exact count over authorized snapshot with its filter and completeness",
+    "incomplete_policy": "Zero only if query complete and count truly zero; never infer total rows from one page.",
+    "origin": "explicit business/model/platform book",
+    "precision": "UI rounds only rendering with consistent declared scale; transport remains exact decimal strings; axis float conversion is presentation only."
+  },
+  {
+    "id": "M-AD-10-03",
+    "screen": "AD-10",
+    "label": "Unknown",
+    "unit": "count",
+    "definition": "Exact count over authorized snapshot with its filter and completeness",
+    "incomplete_policy": "Zero only if query complete and count truly zero; never infer total rows from one page.",
+    "origin": "explicit business/model/platform book",
+    "precision": "UI rounds only rendering with consistent declared scale; transport remains exact decimal strings; axis float conversion is presentation only."
+  },
+  {
+    "id": "M-AD-12-01",
+    "screen": "AD-12",
+    "label": "Booked revenue",
+    "unit": "money",
+    "definition": "Booked subscription revenue/refund/cost items under documented accrual/cash convention",
+    "incomplete_policy": "Separate currencies or approved conversion; investment profits are not revenue.",
+    "origin": "explicit business/model/platform book",
+    "precision": "UI rounds only rendering with consistent declared scale; transport remains exact decimal strings; axis float conversion is presentation only."
+  },
+  {
+    "id": "M-AD-12-02",
+    "screen": "AD-12",
+    "label": "Refunds",
+    "unit": "money",
+    "definition": "Booked subscription revenue/refund/cost items under documented accrual/cash convention",
+    "incomplete_policy": "Separate currencies or approved conversion; investment profits are not revenue.",
+    "origin": "explicit business/model/platform book",
+    "precision": "UI rounds only rendering with consistent declared scale; transport remains exact decimal strings; axis float conversion is presentation only."
+  },
+  {
+    "id": "M-AD-12-03",
+    "screen": "AD-12",
+    "label": "Net contribution",
+    "unit": "money",
+    "definition": "Booked subscription revenue/refund/cost items under documented accrual/cash convention",
+    "incomplete_policy": "Separate currencies or approved conversion; investment profits are not revenue.",
+    "origin": "explicit business/model/platform book",
+    "precision": "UI rounds only rendering with consistent declared scale; transport remains exact decimal strings; axis float conversion is presentation only."
+  },
+  {
+    "id": "M-AD-12-04",
+    "screen": "AD-12",
+    "label": "Unresolved costs",
+    "unit": "count",
+    "definition": "Exact count over authorized snapshot with its filter and completeness",
+    "incomplete_policy": "Zero only if query complete and count truly zero; never infer total rows from one page.",
+    "origin": "explicit business/model/platform book",
+    "precision": "UI rounds only rendering with consistent declared scale; transport remains exact decimal strings; axis float conversion is presentation only."
+  }
+]

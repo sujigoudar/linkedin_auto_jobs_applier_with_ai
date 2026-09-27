@@ -1,0 +1,148 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "CU03ReadModel.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "screen_id",
+    "state",
+    "snapshot_id",
+    "schema_version",
+    "generated_at",
+    "origin_label",
+    "summary",
+    "rows",
+    "metrics",
+    "capabilities",
+    "next_cursor",
+    "panels"
+  ],
+  "properties": {
+    "screen_id": {
+      "const": "CU-03"
+    },
+    "schema_version": {
+      "const": "ui-v2"
+    },
+    "state": {
+      "enum": [
+        "loading",
+        "ready",
+        "empty",
+        "denied",
+        "stale",
+        "partial",
+        "timeout",
+        "error",
+        "unsupported",
+        "conflict",
+        "session_expired",
+        "maintenance"
+      ]
+    },
+    "snapshot_id": {
+      "type": "string"
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "origin_label": {
+      "type": "string"
+    },
+    "summary": {
+      "type": "string"
+    },
+    "rows": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "row_id",
+          "episode",
+          "source_publication_time",
+          "customer_delivery",
+          "customer_fill_state",
+          "cost",
+          "remaining_quantity"
+        ],
+        "properties": {
+          "episode": {
+            "$ref": "ui-contracts.schema.json#/$defs/Cell",
+            "description": "Episode; server formats semantics as typed value, not prebuilt HTML."
+          },
+          "source_publication_time": {
+            "$ref": "ui-contracts.schema.json#/$defs/Cell",
+            "description": "Source-publication time; server formats semantics as typed value, not prebuilt HTML."
+          },
+          "customer_delivery": {
+            "$ref": "ui-contracts.schema.json#/$defs/Cell",
+            "description": "Customer delivery; server formats semantics as typed value, not prebuilt HTML."
+          },
+          "customer_fill_state": {
+            "$ref": "ui-contracts.schema.json#/$defs/Cell",
+            "description": "Customer fill state; server formats semantics as typed value, not prebuilt HTML."
+          },
+          "cost": {
+            "$ref": "ui-contracts.schema.json#/$defs/Cell",
+            "description": "Cost; server formats semantics as typed value, not prebuilt HTML."
+          },
+          "remaining_quantity": {
+            "$ref": "ui-contracts.schema.json#/$defs/Cell",
+            "description": "Remaining quantity; server formats semantics as typed value, not prebuilt HTML."
+          },
+          "row_id": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "metrics": {
+      "type": "array",
+      "items": {
+        "$ref": "ui-contracts.schema.json#/$defs/Metric"
+      }
+    },
+    "capabilities": {
+      "type": "array",
+      "items": {
+        "$ref": "ui-contracts.schema.json#/$defs/Capability"
+      }
+    },
+    "next_cursor": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "total_rows": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 0
+    },
+    "scope_label": {
+      "type": "string"
+    },
+    "object_revision": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "blockers": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "panels": {
+      "type": "array",
+      "items": {
+        "$ref": "ui-contracts.schema.json#/$defs/Panel"
+      }
+    }
+  }
+}

@@ -1,0 +1,153 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "AD14ReadModel.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "screen_id",
+    "state",
+    "snapshot_id",
+    "schema_version",
+    "generated_at",
+    "origin_label",
+    "summary",
+    "rows",
+    "metrics",
+    "capabilities",
+    "next_cursor",
+    "panels"
+  ],
+  "properties": {
+    "screen_id": {
+      "const": "AD-14"
+    },
+    "schema_version": {
+      "const": "ui-v2"
+    },
+    "state": {
+      "enum": [
+        "loading",
+        "ready",
+        "empty",
+        "denied",
+        "stale",
+        "partial",
+        "timeout",
+        "error",
+        "unsupported",
+        "conflict",
+        "session_expired",
+        "maintenance"
+      ]
+    },
+    "snapshot_id": {
+      "type": "string"
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "origin_label": {
+      "type": "string"
+    },
+    "summary": {
+      "type": "string"
+    },
+    "rows": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "row_id",
+          "program",
+          "broker",
+          "mode",
+          "allocation_convention",
+          "nav_policy",
+          "approval",
+          "state"
+        ],
+        "properties": {
+          "program": {
+            "$ref": "ui-contracts.schema.json#/$defs/Cell",
+            "description": "Program; server formats semantics as typed value, not prebuilt HTML."
+          },
+          "broker": {
+            "$ref": "ui-contracts.schema.json#/$defs/Cell",
+            "description": "Broker; server formats semantics as typed value, not prebuilt HTML."
+          },
+          "mode": {
+            "$ref": "ui-contracts.schema.json#/$defs/Cell",
+            "description": "Mode; server formats semantics as typed value, not prebuilt HTML."
+          },
+          "allocation_convention": {
+            "$ref": "ui-contracts.schema.json#/$defs/Cell",
+            "description": "Allocation convention; server formats semantics as typed value, not prebuilt HTML."
+          },
+          "nav_policy": {
+            "$ref": "ui-contracts.schema.json#/$defs/Cell",
+            "description": "NAV policy; server formats semantics as typed value, not prebuilt HTML."
+          },
+          "approval": {
+            "$ref": "ui-contracts.schema.json#/$defs/Cell",
+            "description": "Approval; server formats semantics as typed value, not prebuilt HTML."
+          },
+          "state": {
+            "$ref": "ui-contracts.schema.json#/$defs/Cell",
+            "description": "State; server formats semantics as typed value, not prebuilt HTML."
+          },
+          "row_id": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "metrics": {
+      "type": "array",
+      "items": {
+        "$ref": "ui-contracts.schema.json#/$defs/Metric"
+      }
+    },
+    "capabilities": {
+      "type": "array",
+      "items": {
+        "$ref": "ui-contracts.schema.json#/$defs/Capability"
+      }
+    },
+    "next_cursor": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "total_rows": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 0
+    },
+    "scope_label": {
+      "type": "string"
+    },
+    "object_revision": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "blockers": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "panels": {
+      "type": "array",
+      "items": {
+        "$ref": "ui-contracts.schema.json#/$defs/Panel"
+      }
+    }
+  }
+}

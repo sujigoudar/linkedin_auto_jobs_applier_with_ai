@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "F-CONNECTION.schema.json",
+  "title": "Platform connection",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "platform": {
+      "description": "configured and service-eligible. No inference of provider program approval",
+      "type": "string",
+      "enum": [
+        "collective2",
+        "etoro",
+        "copyfactory",
+        "broker_native"
+      ]
+    },
+    "environment": {
+      "description": "live needs distinct approved flow;C2 test strategy is not blanket sandbox. Displayed at every step",
+      "type": "string",
+      "enum": [
+        "demo",
+        "live"
+      ]
+    },
+    "account_selection": {
+      "description": "only IDs in server-verified provider response. Cannot type arbitrary account ID",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "connection_label": {
+      "description": "1..80 plain-text characters. No secrets in labels",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "consent_version": {
+      "description": "approved current document ID. Connection is not mandate",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    }
+  },
+  "required": [
+    "platform",
+    "environment",
+    "connection_label",
+    "consent_version"
+  ],
+  "description": "Ready-input schema plus server business validation. Draft input uses identical property types but permits missing required fields; missingness must be displayed. Identity/password forms never saved as drafts."
+}

@@ -1,0 +1,4347 @@
+[
+  {
+    "id": "F-IDENTITY",
+    "title": "Commercial sign-in / sign-up",
+    "scope": "identity",
+    "steps": [
+      "Choose sign in or sign up",
+      "Enter credentials",
+      "Terms for signup",
+      "Submit"
+    ],
+    "fields": [
+      {
+        "key": "email",
+        "label": "Email",
+        "type": "email",
+        "required": true,
+        "default": null,
+        "validation": "valid email;max254;normalize domain not provider-specific aliases",
+        "help": "Used by the configured identity provider",
+        "error": "Email: valid email;max254;normalize domain not provider-specific aliases. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "password",
+        "label": "Password",
+        "type": "password",
+        "required": true,
+        "default": null,
+        "validation": "configured identity-provider policy;max1024 bytes;allow Unicode and password managers",
+        "help": "Never log or persist in app state",
+        "error": "Password: configured identity-provider policy;max1024 bytes;allow Unicode and password managers. No change was applied.",
+        "persistence": "never persist raw authentication challenges/passwords; otherwise versioned server draft"
+      },
+      {
+        "key": "terms_version",
+        "label": "Terms version",
+        "type": "id",
+        "required": false,
+        "default": null,
+        "validation": "server-supplied approved document ID;required on signup",
+        "help": "Version accepted is stored as evidence",
+        "error": "Terms version: server-supplied approved document ID;required on signup. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "accept_terms",
+        "label": "Accept terms",
+        "type": "boolean",
+        "required": false,
+        "default": "false",
+        "validation": "required true for signup only",
+        "help": "Does not authorize trading",
+        "error": "Accept terms: required true for signup only. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "return_route",
+        "label": "Return destination",
+        "type": "route_key",
+        "required": false,
+        "default": "customer_overview",
+        "validation": "server route-key allowlist only",
+        "help": "No external redirect accepted",
+        "error": "Return destination: server route-key allowlist only. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      }
+    ],
+    "save_effect": "Create/verify identity through existing provider; create tenant/membership only after validated identity",
+    "preview_effect": "No financial preview",
+    "confirm_effect": "Create session or verification-pending state; never select/pay/copy",
+    "rules": "No email enumeration. Bound attempts by trusted client and identity; signup uses bot defenses only when implemented accessibly.",
+    "layout": "Left main form grouped into stated steps; right effective-summary rail; error summary links to labeled fields. Mobile rail follows current step before action bar.",
+    "validation_timing": "Validate on blur after first interaction and on submit; never replace draft while user edits. Server repeats all checks. Positive response reflects committed state, not optimistic toast.",
+    "conflict": "If-Match or expected_revision mismatch ->409 with current revision and non-secret field diff; preserve local draft; user resolves explicitly.",
+    "cancel": "Cancel leaves last explicitly saved draft; never executes or grants authority.",
+    "autosave": "Display prefs only after500ms debounce; all other forms explicit Save draft; secrets/challenges never autosaved.",
+    "idempotency": "Stable per logical submission key; retries join same operation; changed payload with same key ->409.",
+    "button_labels": [
+      "Save draft",
+      "Validate",
+      "Preview",
+      "Confirm scoped action"
+    ]
+  },
+  {
+    "id": "F-RECOVERY",
+    "title": "Credential recovery / MFA",
+    "scope": "identity",
+    "steps": [
+      "Validate challenge",
+      "Verify factor",
+      "Set new credential",
+      "Confirm"
+    ],
+    "fields": [
+      {
+        "key": "challenge_id",
+        "label": "Challenge",
+        "type": "challenge",
+        "required": true,
+        "default": null,
+        "validation": "short-lived;origin/audience/action bound;single use",
+        "help": "Issued server-side",
+        "error": "Challenge: short-lived;origin/audience/action bound;single use. No change was applied.",
+        "persistence": "never persist raw authentication challenges/passwords; otherwise versioned server draft"
+      },
+      {
+        "key": "verification_code",
+        "label": "Verification code",
+        "type": "challenge",
+        "required": false,
+        "default": null,
+        "validation": "provider-specific length;paste allowed",
+        "help": "Use provider challenge verifier",
+        "error": "Verification code: provider-specific length;paste allowed. No change was applied.",
+        "persistence": "never persist raw authentication challenges/passwords; otherwise versioned server draft"
+      },
+      {
+        "key": "new_password",
+        "label": "New password",
+        "type": "password",
+        "required": false,
+        "default": null,
+        "validation": "provider policy;max1024 bytes;only password-reset mode",
+        "help": "Do not echo value",
+        "error": "New password: provider policy;max1024 bytes;only password-reset mode. No change was applied.",
+        "persistence": "never persist raw authentication challenges/passwords; otherwise versioned server draft"
+      },
+      {
+        "key": "revoke_other_sessions",
+        "label": "Revoke other browser sessions",
+        "type": "boolean",
+        "required": false,
+        "default": "true",
+        "validation": "actual boolean",
+        "help": "Does not stop worker management",
+        "error": "Revoke other browser sessions: actual boolean. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      }
+    ],
+    "save_effect": "No raw challenge saved to drafts",
+    "preview_effect": "Show session consequences only",
+    "confirm_effect": "Provider-verified credential change and session epoch update",
+    "rules": "Recovery cannot change mandate scope; expired step-up returns to requesting action without automatic replay.",
+    "layout": "Left main form grouped into stated steps; right effective-summary rail; error summary links to labeled fields. Mobile rail follows current step before action bar.",
+    "validation_timing": "Validate on blur after first interaction and on submit; never replace draft while user edits. Server repeats all checks. Positive response reflects committed state, not optimistic toast.",
+    "conflict": "If-Match or expected_revision mismatch ->409 with current revision and non-secret field diff; preserve local draft; user resolves explicitly.",
+    "cancel": "Cancel leaves last explicitly saved draft; never executes or grants authority.",
+    "autosave": "Display prefs only after500ms debounce; all other forms explicit Save draft; secrets/challenges never autosaved.",
+    "idempotency": "Stable per logical submission key; retries join same operation; changed payload with same key ->409.",
+    "button_labels": [
+      "Save draft",
+      "Validate",
+      "Preview",
+      "Confirm scoped action"
+    ]
+  },
+  {
+    "id": "F-ELIGIBILITY",
+    "title": "Residence and service eligibility",
+    "scope": "customer",
+    "steps": [
+      "Identity facts",
+      "Requested service",
+      "Documents",
+      "Decision"
+    ],
+    "fields": [
+      {
+        "key": "residence_country",
+        "label": "Country of residence",
+        "type": "country",
+        "required": true,
+        "default": null,
+        "validation": "ISO country supported by approved policy",
+        "help": "User fact, not approval",
+        "error": "Country of residence: ISO country supported by approved policy. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "tax_residence",
+        "label": "Tax residence",
+        "type": "country_list",
+        "required": false,
+        "default": null,
+        "validation": "unique ISO countries;policy decides requirement",
+        "help": "Not inferred from IP",
+        "error": "Tax residence: unique ISO countries;policy decides requirement. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "customer_type",
+        "label": "Customer type",
+        "type": "enum:individual,entity",
+        "required": true,
+        "default": "individual",
+        "validation": "allowed by service approval",
+        "help": "Entities need their actual approved onboarding flow",
+        "error": "Customer type: allowed by service approval. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "service_modes",
+        "label": "Requested services",
+        "type": "enum_list:research,alerts,copying,managed_program",
+        "required": true,
+        "default": null,
+        "validation": "nonempty;published compatible services only",
+        "help": "Payment and mandate gates remain separate",
+        "error": "Requested services: nonempty;published compatible services only. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "document_versions",
+        "label": "Acknowledged documents",
+        "type": "id_list",
+        "required": true,
+        "default": null,
+        "validation": "exact server-published versions",
+        "help": "Document acceptance timestamp persisted",
+        "error": "Acknowledged documents: exact server-published versions. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "facts_confirmed",
+        "label": "I confirm these facts",
+        "type": "boolean",
+        "required": true,
+        "default": "false",
+        "validation": "required true",
+        "help": "No eligibility flags accepted from browser",
+        "error": "I confirm these facts: required true. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      }
+    ],
+    "save_effect": "Persist submitted facts and consent versions",
+    "preview_effect": "Evaluate approved eligibility policy without charging or creating mandate",
+    "confirm_effect": "Record fact submission; server result eligible/pending/unsupported with reason",
+    "rules": "Residence change invalidates affected service eligibility and triggers review; does not silently orphan open obligations.",
+    "layout": "Left main form grouped into stated steps; right effective-summary rail; error summary links to labeled fields. Mobile rail follows current step before action bar.",
+    "validation_timing": "Validate on blur after first interaction and on submit; never replace draft while user edits. Server repeats all checks. Positive response reflects committed state, not optimistic toast.",
+    "conflict": "If-Match or expected_revision mismatch ->409 with current revision and non-secret field diff; preserve local draft; user resolves explicitly.",
+    "cancel": "Cancel leaves last explicitly saved draft; never executes or grants authority.",
+    "autosave": "Display prefs only after500ms debounce; all other forms explicit Save draft; secrets/challenges never autosaved.",
+    "idempotency": "Stable per logical submission key; retries join same operation; changed payload with same key ->409.",
+    "button_labels": [
+      "Save draft",
+      "Validate",
+      "Preview",
+      "Confirm scoped action"
+    ]
+  },
+  {
+    "id": "F-SELECTION",
+    "title": "Select a portfolio",
+    "scope": "customer",
+    "steps": [
+      "Choose product/version",
+      "Eligibility",
+      "Plan capacity",
+      "Confirm"
+    ],
+    "fields": [
+      {
+        "key": "product_id",
+        "label": "Product",
+        "type": "id",
+        "required": true,
+        "default": null,
+        "validation": "published and audience-visible",
+        "help": "Draft IDs rejected",
+        "error": "Product: published and audience-visible. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "portfolio_version_id",
+        "label": "Version",
+        "type": "id",
+        "required": true,
+        "default": null,
+        "validation": "belongs to product;released",
+        "help": "Version binding preserved",
+        "error": "Version: belongs to product;released. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "subscription_id",
+        "label": "Subscription",
+        "type": "id",
+        "required": false,
+        "default": null,
+        "validation": "owned and entitlement-compatible",
+        "help": "required for paid access only",
+        "error": "Subscription: owned and entitlement-compatible. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "start_mode",
+        "label": "Start mode",
+        "type": "enum:new_entries_only",
+        "required": true,
+        "default": "new_entries_only",
+        "validation": "only new_entries_only here",
+        "help": "Existing-position sync is a separate mandate flow",
+        "error": "Start mode: only new_entries_only here. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      }
+    ],
+    "save_effect": "Persist selection draft",
+    "preview_effect": "Show entitlement/rights/capacity and missing gates",
+    "confirm_effect": "Create scoped selection only; never publish or trade",
+    "rules": "Duplicate selection returns existing record; version material change requires fresh preview.",
+    "layout": "Left main form grouped into stated steps; right effective-summary rail; error summary links to labeled fields. Mobile rail follows current step before action bar.",
+    "validation_timing": "Validate on blur after first interaction and on submit; never replace draft while user edits. Server repeats all checks. Positive response reflects committed state, not optimistic toast.",
+    "conflict": "If-Match or expected_revision mismatch ->409 with current revision and non-secret field diff; preserve local draft; user resolves explicitly.",
+    "cancel": "Cancel leaves last explicitly saved draft; never executes or grants authority.",
+    "autosave": "Display prefs only after500ms debounce; all other forms explicit Save draft; secrets/challenges never autosaved.",
+    "idempotency": "Stable per logical submission key; retries join same operation; changed payload with same key ->409.",
+    "button_labels": [
+      "Save draft",
+      "Validate",
+      "Preview",
+      "Confirm scoped action"
+    ]
+  },
+  {
+    "id": "F-REPORT",
+    "title": "Report / export request",
+    "scope": "scoped",
+    "steps": [
+      "Scope",
+      "Period/book",
+      "Format",
+      "Review"
+    ],
+    "fields": [
+      {
+        "key": "object_ids",
+        "label": "Scoped objects",
+        "type": "id_list",
+        "required": true,
+        "default": null,
+        "validation": "server-authorized nonempty IDs;no all-tenants wildcard",
+        "help": "Scope is immutable in job",
+        "error": "Scoped objects: server-authorized nonempty IDs;no all-tenants wildcard. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "period_start",
+        "label": "Start",
+        "type": "datetime",
+        "required": true,
+        "default": null,
+        "validation": "UTC instant;before end;within retention",
+        "help": "User timezone converted explicitly",
+        "error": "Start: UTC instant;before end;within retention. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "period_end",
+        "label": "End",
+        "type": "datetime",
+        "required": true,
+        "default": null,
+        "validation": "after start;not future for actual report",
+        "help": "End-exclusive interval documented",
+        "error": "End: after start;not future for actual report. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "book",
+        "label": "Book",
+        "type": "enum:actual,model,platform,source,business",
+        "required": true,
+        "default": "actual",
+        "validation": "supported for caller and report;business never investment",
+        "help": "Do not merge origins",
+        "error": "Book: supported for caller and report;business never investment. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "currency",
+        "label": "Reporting currency",
+        "type": "currency",
+        "required": false,
+        "default": null,
+        "validation": "supported conversion policy or show separate currencies",
+        "help": "Reference rate basis shown",
+        "error": "Reporting currency: supported conversion policy or show separate currencies. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "format",
+        "label": "Format",
+        "type": "enum:csv,json,pdf",
+        "required": true,
+        "default": "csv",
+        "validation": "server supports generation;PDF only after renderer implemented",
+        "help": "No formula injection in CSV",
+        "error": "Format: server supports generation;PDF only after renderer implemented. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "include_sensitive",
+        "label": "Include sensitive fields",
+        "type": "boolean",
+        "required": false,
+        "default": "false",
+        "validation": "only explicitly permitted by current scope",
+        "help": "Secrets always excluded",
+        "error": "Include sensitive fields: only explicitly permitted by current scope. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      }
+    ],
+    "save_effect": "Persist export definition",
+    "preview_effect": "Show coverage, cost basis and rights without file generation",
+    "confirm_effect": "Start bounded export job; reauthorize at download",
+    "rules": "No public unapproved hypothetical export; expiring download token scoped to principal and record; failed job not empty report.",
+    "layout": "Left main form grouped into stated steps; right effective-summary rail; error summary links to labeled fields. Mobile rail follows current step before action bar.",
+    "validation_timing": "Validate on blur after first interaction and on submit; never replace draft while user edits. Server repeats all checks. Positive response reflects committed state, not optimistic toast.",
+    "conflict": "If-Match or expected_revision mismatch ->409 with current revision and non-secret field diff; preserve local draft; user resolves explicitly.",
+    "cancel": "Cancel leaves last explicitly saved draft; never executes or grants authority.",
+    "autosave": "Display prefs only after500ms debounce; all other forms explicit Save draft; secrets/challenges never autosaved.",
+    "idempotency": "Stable per logical submission key; retries join same operation; changed payload with same key ->409.",
+    "button_labels": [
+      "Save draft",
+      "Validate",
+      "Preview",
+      "Confirm scoped action"
+    ]
+  },
+  {
+    "id": "F-CONNECTION",
+    "title": "Platform connection",
+    "scope": "customer",
+    "steps": [
+      "Choose platform",
+      "Mode",
+      "Eligibility",
+      "Hosted consent",
+      "Verify account"
+    ],
+    "fields": [
+      {
+        "key": "platform",
+        "label": "Platform",
+        "type": "enum:collective2,etoro,copyfactory,broker_native",
+        "required": true,
+        "default": null,
+        "validation": "configured and service-eligible",
+        "help": "No inference of provider program approval",
+        "error": "Platform: configured and service-eligible. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "environment",
+        "label": "Environment",
+        "type": "enum:demo,live",
+        "required": true,
+        "default": "demo",
+        "validation": "live needs distinct approved flow;C2 test strategy is not blanket sandbox",
+        "help": "Displayed at every step",
+        "error": "Environment: live needs distinct approved flow;C2 test strategy is not blanket sandbox. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "account_selection",
+        "label": "Returned account",
+        "type": "id",
+        "required": false,
+        "default": null,
+        "validation": "only IDs in server-verified provider response",
+        "help": "Cannot type arbitrary account ID",
+        "error": "Returned account: only IDs in server-verified provider response. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "connection_label",
+        "label": "Label",
+        "type": "text",
+        "required": true,
+        "default": null,
+        "validation": "1..80 plain-text characters",
+        "help": "No secrets in labels",
+        "error": "Label: 1..80 plain-text characters. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "consent_version",
+        "label": "Connection consent",
+        "type": "id",
+        "required": true,
+        "default": null,
+        "validation": "approved current document ID",
+        "help": "Connection is not mandate",
+        "error": "Connection consent: approved current document ID. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      }
+    ],
+    "save_effect": "Persist connection draft and server-held auth state",
+    "preview_effect": "Verify account/scopes using allowed read methods",
+    "confirm_effect": "Save verified connection metadata; tokens remain encrypted server-side",
+    "rules": "No live financial API calls during connection verification; OAuth/PKCE only where actual platform supports it; unsupported platform method visible.",
+    "layout": "Left main form grouped into stated steps; right effective-summary rail; error summary links to labeled fields. Mobile rail follows current step before action bar.",
+    "validation_timing": "Validate on blur after first interaction and on submit; never replace draft while user edits. Server repeats all checks. Positive response reflects committed state, not optimistic toast.",
+    "conflict": "If-Match or expected_revision mismatch ->409 with current revision and non-secret field diff; preserve local draft; user resolves explicitly.",
+    "cancel": "Cancel leaves last explicitly saved draft; never executes or grants authority.",
+    "autosave": "Display prefs only after500ms debounce; all other forms explicit Save draft; secrets/challenges never autosaved.",
+    "idempotency": "Stable per logical submission key; retries join same operation; changed payload with same key ->409.",
+    "button_labels": [
+      "Save draft",
+      "Validate",
+      "Preview",
+      "Confirm scoped action"
+    ]
+  },
+  {
+    "id": "F-MANDATE",
+    "title": "Copy mandate",
+    "scope": "customer",
+    "steps": [
+      "Select version and account",
+      "Constraints",
+      "Start mode",
+      "Preview",
+      "Consent and confirm"
+    ],
+    "fields": [
+      {
+        "key": "selection_id",
+        "label": "Portfolio selection",
+        "type": "id",
+        "required": true,
+        "default": null,
+        "validation": "owned and eligible",
+        "help": "Locked in preview",
+        "error": "Portfolio selection: owned and eligible. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "connection_id",
+        "label": "Connection",
+        "type": "id",
+        "required": true,
+        "default": null,
+        "validation": "owned;current verified scope/mode",
+        "help": "Account cannot change after preview",
+        "error": "Connection: owned;current verified scope/mode. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "allocation_amount",
+        "label": "Allocation amount",
+        "type": "decimal",
+        "required": true,
+        "default": null,
+        "validation": "positive within released min/max and verified capacity",
+        "help": "Currency separate, no browser sizing",
+        "error": "Allocation amount: positive within released min/max and verified capacity. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "allocation_currency",
+        "label": "Currency",
+        "type": "currency",
+        "required": true,
+        "default": null,
+        "validation": "matches approved account profile",
+        "help": "Cross-currency unsupported ->blocked",
+        "error": "Currency: matches approved account profile. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "max_trade_risk",
+        "label": "Maximum per-trade risk",
+        "type": "decimal",
+        "required": false,
+        "default": null,
+        "validation": "only values within released account/product ceiling",
+        "help": "No guessed default",
+        "error": "Maximum per-trade risk: only values within released account/product ceiling. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "max_loss",
+        "label": "Loss limit",
+        "type": "decimal",
+        "required": false,
+        "default": null,
+        "validation": "unit and period from approved profile",
+        "help": "required when profile requires",
+        "error": "Loss limit: unit and period from approved profile. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "start_mode",
+        "label": "Start mode",
+        "type": "enum:new_entries_only,sync_existing",
+        "required": true,
+        "default": "new_entries_only",
+        "validation": "sync_existing requires separate fresh price/exposure preview",
+        "help": "No historical replay",
+        "error": "Start mode: sync_existing requires separate fresh price/exposure preview. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "policy_version_id",
+        "label": "Policy",
+        "type": "id",
+        "required": true,
+        "default": null,
+        "validation": "released and compatible with portfolio/account",
+        "help": "No editable raw algorithm",
+        "error": "Policy: released and compatible with portfolio/account. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "consent_version",
+        "label": "Mandate document",
+        "type": "id",
+        "required": true,
+        "default": null,
+        "validation": "exact current approved version",
+        "help": "Payment is not consent",
+        "error": "Mandate document: exact current approved version. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "acknowledge_scope",
+        "label": "Confirm account and scope",
+        "type": "boolean",
+        "required": true,
+        "default": "false",
+        "validation": "required true only at confirmation",
+        "help": "Step-up is separate challenge",
+        "error": "Confirm account and scope: required true only at confirmation. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      }
+    ],
+    "save_effect": "Persist mandate draft without effect",
+    "preview_effect": "Read current gates/positions/price and return expiring frozen action preview",
+    "confirm_effect": "Enqueue approved activation through scoped publisher; return operation not instant success",
+    "rules": "Rights, entitlement, mandate, environment, platform and risk all rechecked at effect boundary. No actual user signing through design tooling.",
+    "layout": "Left main form grouped into stated steps; right effective-summary rail; error summary links to labeled fields. Mobile rail follows current step before action bar.",
+    "validation_timing": "Validate on blur after first interaction and on submit; never replace draft while user edits. Server repeats all checks. Positive response reflects committed state, not optimistic toast.",
+    "conflict": "If-Match or expected_revision mismatch ->409 with current revision and non-secret field diff; preserve local draft; user resolves explicitly.",
+    "cancel": "Cancel leaves last explicitly saved draft; never executes or grants authority.",
+    "autosave": "Display prefs only after500ms debounce; all other forms explicit Save draft; secrets/challenges never autosaved.",
+    "idempotency": "Stable per logical submission key; retries join same operation; changed payload with same key ->409.",
+    "button_labels": [
+      "Save draft",
+      "Validate",
+      "Preview",
+      "Confirm scoped action"
+    ]
+  },
+  {
+    "id": "F-WINDDOWN",
+    "title": "Copy pause, exit and handoff",
+    "scope": "customer",
+    "steps": [
+      "Choose safety action",
+      "Inspect cohort",
+      "Preview obligations",
+      "Confirm"
+    ],
+    "fields": [
+      {
+        "key": "mandate_id",
+        "label": "Mandate",
+        "type": "id",
+        "required": true,
+        "default": null,
+        "validation": "owned and existing",
+        "help": "Can be accessible during valid wind-down after billing expiry",
+        "error": "Mandate: owned and existing. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "action",
+        "label": "Action",
+        "type": "enum:pause_new_entries,drain,close_owned_cohort,request_handoff,revoke",
+        "required": true,
+        "default": "pause_new_entries",
+        "validation": "operation compatible with mandate and platform",
+        "help": "No general account flatten",
+        "error": "Action: operation compatible with mandate and platform. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "cohort_revision",
+        "label": "Owned cohort revision",
+        "type": "revision",
+        "required": true,
+        "default": null,
+        "validation": "fresh server-issued immutable cohort",
+        "help": "No newly opened/manual positions added",
+        "error": "Owned cohort revision: fresh server-issued immutable cohort. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "reason",
+        "label": "Reason",
+        "type": "text",
+        "required": true,
+        "default": null,
+        "validation": "1..500 plain-text characters",
+        "help": "Audit only",
+        "error": "Reason: 1..500 plain-text characters. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "acknowledge_remaining",
+        "label": "Acknowledge remaining obligations",
+        "type": "boolean",
+        "required": true,
+        "default": "false",
+        "validation": "required for non-pause actions",
+        "help": "No claim closed until confirmed",
+        "error": "Acknowledge remaining obligations: required for non-pause actions. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      }
+    ],
+    "save_effect": "Persist requested disposition",
+    "preview_effect": "Compute outstanding obligations and executable quantities",
+    "confirm_effect": "Enqueue exact approved scope; UNKNOWN stays reconciling",
+    "rules": "Billing cancellation never implicitly calls this action. Platform revocation may require external handoff; show actual outcome.",
+    "layout": "Left main form grouped into stated steps; right effective-summary rail; error summary links to labeled fields. Mobile rail follows current step before action bar.",
+    "validation_timing": "Validate on blur after first interaction and on submit; never replace draft while user edits. Server repeats all checks. Positive response reflects committed state, not optimistic toast.",
+    "conflict": "If-Match or expected_revision mismatch ->409 with current revision and non-secret field diff; preserve local draft; user resolves explicitly.",
+    "cancel": "Cancel leaves last explicitly saved draft; never executes or grants authority.",
+    "autosave": "Display prefs only after500ms debounce; all other forms explicit Save draft; secrets/challenges never autosaved.",
+    "idempotency": "Stable per logical submission key; retries join same operation; changed payload with same key ->409.",
+    "button_labels": [
+      "Save draft",
+      "Validate",
+      "Preview",
+      "Confirm scoped action"
+    ]
+  },
+  {
+    "id": "F-BILLING",
+    "title": "Subscription checkout or change",
+    "scope": "customer",
+    "steps": [
+      "Plan and interval",
+      "Costs/terms",
+      "Hosted provider",
+      "Return and verify"
+    ],
+    "fields": [
+      {
+        "key": "price_version_id",
+        "label": "Price",
+        "type": "id",
+        "required": true,
+        "default": null,
+        "validation": "server allowlist;approved for audience and mode",
+        "help": "No client-supplied charge amount",
+        "error": "Price: server allowlist;approved for audience and mode. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "interval",
+        "label": "Interval",
+        "type": "enum:month,year",
+        "required": true,
+        "default": "month",
+        "validation": "matches price version",
+        "help": "Actual proration from processor",
+        "error": "Interval: matches price version. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "subscription_id",
+        "label": "Subscription",
+        "type": "id",
+        "required": false,
+        "default": null,
+        "validation": "owned;required for changes",
+        "help": "No other-customer billing ID",
+        "error": "Subscription: owned;required for changes. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "change_mode",
+        "label": "Change",
+        "type": "enum:start,upgrade,downgrade,cancel",
+        "required": true,
+        "default": "start",
+        "validation": "current subscription transition valid",
+        "help": "No financial-account effect",
+        "error": "Change: current subscription transition valid. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "return_route",
+        "label": "Return destination",
+        "type": "route_key",
+        "required": true,
+        "default": "billing",
+        "validation": "server allowlist",
+        "help": "No arbitrary external redirect",
+        "error": "Return destination: server allowlist. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "accept_billing_terms",
+        "label": "Accept terms",
+        "type": "boolean",
+        "required": true,
+        "default": "false",
+        "validation": "required at change confirmation",
+        "help": "No stored card input in app",
+        "error": "Accept terms: required at change confirmation. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      }
+    ],
+    "save_effect": "Store change intent",
+    "preview_effect": "Show canonical processor quote or clearly unavailable quote",
+    "confirm_effect": "Create hosted checkout/portal session in approved mode; webhook confirms canonical state",
+    "rules": "HTTP redirect success does not grant access. Missing merchant approval blocks live session but not local workflow implementation.",
+    "layout": "Left main form grouped into stated steps; right effective-summary rail; error summary links to labeled fields. Mobile rail follows current step before action bar.",
+    "validation_timing": "Validate on blur after first interaction and on submit; never replace draft while user edits. Server repeats all checks. Positive response reflects committed state, not optimistic toast.",
+    "conflict": "If-Match or expected_revision mismatch ->409 with current revision and non-secret field diff; preserve local draft; user resolves explicitly.",
+    "cancel": "Cancel leaves last explicitly saved draft; never executes or grants authority.",
+    "autosave": "Display prefs only after500ms debounce; all other forms explicit Save draft; secrets/challenges never autosaved.",
+    "idempotency": "Stable per logical submission key; retries join same operation; changed payload with same key ->409.",
+    "button_labels": [
+      "Save draft",
+      "Validate",
+      "Preview",
+      "Confirm scoped action"
+    ]
+  },
+  {
+    "id": "F-DELIVERY",
+    "title": "Delivery preferences",
+    "scope": "customer",
+    "steps": [
+      "Destinations",
+      "Categories",
+      "Timezone/schedule",
+      "Verification"
+    ],
+    "fields": [
+      {
+        "key": "email",
+        "label": "Email destination",
+        "type": "email",
+        "required": false,
+        "default": null,
+        "validation": "verified identity-owned email or verification workflow",
+        "help": "No blind forward to arbitrary recipient",
+        "error": "Email destination: verified identity-owned email or verification workflow. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "webhook_endpoint_id",
+        "label": "Webhook destination",
+        "type": "id",
+        "required": false,
+        "default": null,
+        "validation": "owned preverified endpoint;SSRF-safe registry",
+        "help": "Raw URL uses separate secure validation",
+        "error": "Webhook destination: owned preverified endpoint;SSRF-safe registry. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "categories",
+        "label": "Categories",
+        "type": "enum_list:entry,update,exit,safety,billing,marketing",
+        "required": true,
+        "default": null,
+        "validation": "known category IDs",
+        "help": "Safety follows agreed policy, not marketing toggle",
+        "error": "Categories: known category IDs. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "timezone",
+        "label": "Timezone",
+        "type": "timezone",
+        "required": true,
+        "default": "UTC",
+        "validation": "IANA zone",
+        "help": "Schedule uses local wall time with DST rules",
+        "error": "Timezone: IANA zone. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "quiet_start",
+        "label": "Quiet hours start",
+        "type": "time",
+        "required": false,
+        "default": null,
+        "validation": "HH:mm plus explicit wrap behavior",
+        "help": "Safety exceptions shown",
+        "error": "Quiet hours start: HH:mm plus explicit wrap behavior. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "quiet_end",
+        "label": "Quiet hours end",
+        "type": "time",
+        "required": false,
+        "default": null,
+        "validation": "required with quiet_start",
+        "help": "Digest never revives expired entries",
+        "error": "Quiet hours end: required with quiet_start. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "marketing_consent",
+        "label": "Marketing consent",
+        "type": "boolean",
+        "required": false,
+        "default": "false",
+        "validation": "separate optional consent",
+        "help": "No preselected consent",
+        "error": "Marketing consent: separate optional consent. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      }
+    ],
+    "save_effect": "Persist preferences with revision",
+    "preview_effect": "Show effective channel policy and safety exceptions",
+    "confirm_effect": "Save preference version; verification/test jobs only when explicitly requested",
+    "rules": "Test message labeled TEST and cannot be routed to financial engine. Endpoint private networks/redirects not allowed.",
+    "layout": "Left main form grouped into stated steps; right effective-summary rail; error summary links to labeled fields. Mobile rail follows current step before action bar.",
+    "validation_timing": "Validate on blur after first interaction and on submit; never replace draft while user edits. Server repeats all checks. Positive response reflects committed state, not optimistic toast.",
+    "conflict": "If-Match or expected_revision mismatch ->409 with current revision and non-secret field diff; preserve local draft; user resolves explicitly.",
+    "cancel": "Cancel leaves last explicitly saved draft; never executes or grants authority.",
+    "autosave": "Display prefs only after500ms debounce; all other forms explicit Save draft; secrets/challenges never autosaved.",
+    "idempotency": "Stable per logical submission key; retries join same operation; changed payload with same key ->409.",
+    "button_labels": [
+      "Save draft",
+      "Validate",
+      "Preview",
+      "Confirm scoped action"
+    ]
+  },
+  {
+    "id": "F-PREFERENCES",
+    "title": "Profile/security/display",
+    "scope": "customer",
+    "steps": [
+      "Profile",
+      "Display",
+      "Sessions",
+      "Privacy"
+    ],
+    "fields": [
+      {
+        "key": "display_name",
+        "label": "Display name",
+        "type": "text",
+        "required": false,
+        "default": null,
+        "validation": "0..80 plain-text characters",
+        "help": "Not published by default",
+        "error": "Display name: 0..80 plain-text characters. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "timezone",
+        "label": "Timezone",
+        "type": "timezone",
+        "required": true,
+        "default": "UTC",
+        "validation": "IANA zone",
+        "help": "UTC retained in stored events",
+        "error": "Timezone: IANA zone. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "theme",
+        "label": "Theme",
+        "type": "enum:system,dark,light",
+        "required": true,
+        "default": "system",
+        "validation": "known values only",
+        "help": "No custom CSS",
+        "error": "Theme: known values only. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "density",
+        "label": "Density",
+        "type": "enum:comfortable,compact",
+        "required": true,
+        "default": "comfortable",
+        "validation": "compact target sizes remain accessible",
+        "help": "Never hide safety notices",
+        "error": "Density: compact target sizes remain accessible. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "number_locale",
+        "label": "Number locale",
+        "type": "locale",
+        "required": true,
+        "default": "en-US",
+        "validation": "supported locale",
+        "help": "Stored amounts remain decimal strings",
+        "error": "Number locale: supported locale. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "view_currency",
+        "label": "Preferred currency",
+        "type": "currency",
+        "required": false,
+        "default": null,
+        "validation": "display only;no implicit conversion without data",
+        "help": "No account currency change",
+        "error": "Preferred currency: display only;no implicit conversion without data. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "reduce_motion",
+        "label": "Reduce motion",
+        "type": "enum:system,on",
+        "required": true,
+        "default": "system",
+        "validation": "never override user reduced-motion preference off",
+        "help": "No blinking tickers",
+        "error": "Reduce motion: never override user reduced-motion preference off. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      }
+    ],
+    "save_effect": "Persist profile/display preferences",
+    "preview_effect": "Show display-only diff",
+    "confirm_effect": "Commit user preference version",
+    "rules": "Session revocation, deletion and data export use separate audited action contracts; no arbitrary JSON settings blob.",
+    "layout": "Left main form grouped into stated steps; right effective-summary rail; error summary links to labeled fields. Mobile rail follows current step before action bar.",
+    "validation_timing": "Validate on blur after first interaction and on submit; never replace draft while user edits. Server repeats all checks. Positive response reflects committed state, not optimistic toast.",
+    "conflict": "If-Match or expected_revision mismatch ->409 with current revision and non-secret field diff; preserve local draft; user resolves explicitly.",
+    "cancel": "Cancel leaves last explicitly saved draft; never executes or grants authority.",
+    "autosave": "Display prefs only after500ms debounce; all other forms explicit Save draft; secrets/challenges never autosaved.",
+    "idempotency": "Stable per logical submission key; retries join same operation; changed payload with same key ->409.",
+    "button_labels": [
+      "Save draft",
+      "Validate",
+      "Preview",
+      "Confirm scoped action"
+    ]
+  },
+  {
+    "id": "F-SUPPORT",
+    "title": "Support case",
+    "scope": "scoped",
+    "steps": [
+      "Category",
+      "Affected record",
+      "Details",
+      "Review"
+    ],
+    "fields": [
+      {
+        "key": "category",
+        "label": "Category",
+        "type": "enum:billing,delivery,connection,performance,safety,access",
+        "required": true,
+        "default": null,
+        "validation": "known category",
+        "help": "Safety priority triaged separately",
+        "error": "Category: known category. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "related_object_id",
+        "label": "Related record",
+        "type": "id",
+        "required": false,
+        "default": null,
+        "validation": "caller can access object",
+        "help": "No cross-tenant IDs",
+        "error": "Related record: caller can access object. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "subject",
+        "label": "Subject",
+        "type": "text",
+        "required": true,
+        "default": null,
+        "validation": "1..120 characters",
+        "help": "Plain text",
+        "error": "Subject: 1..120 characters. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "description",
+        "label": "Description",
+        "type": "text",
+        "required": true,
+        "default": null,
+        "validation": "1..8000 characters;inert rendering",
+        "help": "Do not enter passwords or API keys",
+        "error": "Description: 1..8000 characters;inert rendering. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "attachment_ids",
+        "label": "Attachments",
+        "type": "id_list",
+        "required": false,
+        "default": null,
+        "validation": "owned quarantine-scanned objects;max5",
+        "help": "max10MiB each;CSV/PNG/JPEG/PDF;no executable HTML",
+        "error": "Attachments: owned quarantine-scanned objects;max5. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      }
+    ],
+    "save_effect": "Persist scoped case",
+    "preview_effect": "Show redaction/attachment scan status",
+    "confirm_effect": "Create case and approved notification; no financial command",
+    "rules": "Staff scope least privilege; private execution secrets unavailable; customer may submit before subscribing.",
+    "layout": "Left main form grouped into stated steps; right effective-summary rail; error summary links to labeled fields. Mobile rail follows current step before action bar.",
+    "validation_timing": "Validate on blur after first interaction and on submit; never replace draft while user edits. Server repeats all checks. Positive response reflects committed state, not optimistic toast.",
+    "conflict": "If-Match or expected_revision mismatch ->409 with current revision and non-secret field diff; preserve local draft; user resolves explicitly.",
+    "cancel": "Cancel leaves last explicitly saved draft; never executes or grants authority.",
+    "autosave": "Display prefs only after500ms debounce; all other forms explicit Save draft; secrets/challenges never autosaved.",
+    "idempotency": "Stable per logical submission key; retries join same operation; changed payload with same key ->409.",
+    "button_labels": [
+      "Save draft",
+      "Validate",
+      "Preview",
+      "Confirm scoped action"
+    ]
+  },
+  {
+    "id": "F-MANAGED-REQUEST",
+    "title": "Managed-account dealing request",
+    "scope": "customer",
+    "steps": [
+      "Program",
+      "Broker convention",
+      "Amount",
+      "Cutoff",
+      "Review"
+    ],
+    "fields": [
+      {
+        "key": "program_id",
+        "label": "Program",
+        "type": "id",
+        "required": true,
+        "default": null,
+        "validation": "owned participant in approved broker-native program",
+        "help": "No local pooled account",
+        "error": "Program: owned participant in approved broker-native program. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "request_type",
+        "label": "Request",
+        "type": "enum:broker_onboarding,subscription,redemption,statement",
+        "required": true,
+        "default": null,
+        "validation": "allowed by program",
+        "help": "Requests are not transfers",
+        "error": "Request: allowed by program. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "amount",
+        "label": "Amount",
+        "type": "decimal",
+        "required": false,
+        "default": null,
+        "validation": "required positive for cashflow requests;program bound",
+        "help": "No dollar defaults",
+        "error": "Amount: required positive for cashflow requests;program bound. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "currency",
+        "label": "Currency",
+        "type": "currency",
+        "required": false,
+        "default": null,
+        "validation": "required with amount",
+        "help": "Matches program",
+        "error": "Currency: required with amount. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "cutoff_id",
+        "label": "Dealing cutoff",
+        "type": "id",
+        "required": false,
+        "default": null,
+        "validation": "server-issued;still open",
+        "help": "Late requests roll by approved rule",
+        "error": "Dealing cutoff: server-issued;still open. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "mandate_version",
+        "label": "Mandate",
+        "type": "id",
+        "required": true,
+        "default": null,
+        "validation": "current approved participant mandate",
+        "help": "Explicit request consent",
+        "error": "Mandate: current approved participant mandate. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      }
+    ],
+    "save_effect": "Persist request draft",
+    "preview_effect": "Show broker schedule, fees, restrictions and open-exposure effect",
+    "confirm_effect": "Submit only through approved broker program flow; otherwise record awaiting owner action",
+    "rules": "No Stripe cash deposits, invented NAV or fee arithmetic. Missing convention blocks dealing.",
+    "layout": "Left main form grouped into stated steps; right effective-summary rail; error summary links to labeled fields. Mobile rail follows current step before action bar.",
+    "validation_timing": "Validate on blur after first interaction and on submit; never replace draft while user edits. Server repeats all checks. Positive response reflects committed state, not optimistic toast.",
+    "conflict": "If-Match or expected_revision mismatch ->409 with current revision and non-secret field diff; preserve local draft; user resolves explicitly.",
+    "cancel": "Cancel leaves last explicitly saved draft; never executes or grants authority.",
+    "autosave": "Display prefs only after500ms debounce; all other forms explicit Save draft; secrets/challenges never autosaved.",
+    "idempotency": "Stable per logical submission key; retries join same operation; changed payload with same key ->409.",
+    "button_labels": [
+      "Save draft",
+      "Validate",
+      "Preview",
+      "Confirm scoped action"
+    ]
+  },
+  {
+    "id": "F-API-ACCESS",
+    "title": "Scoped API delivery access",
+    "scope": "customer",
+    "steps": [
+      "Scope",
+      "Expiry",
+      "Destination",
+      "Confirm"
+    ],
+    "fields": [
+      {
+        "key": "label",
+        "label": "Key label",
+        "type": "text",
+        "required": true,
+        "default": null,
+        "validation": "1..80 plain text",
+        "help": "Not a secret",
+        "error": "Key label: 1..80 plain text. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "scopes",
+        "label": "Scopes",
+        "type": "enum_list:alerts_read,reports_read,delivery_receive",
+        "required": true,
+        "default": null,
+        "validation": "subset of entitlement and rights",
+        "help": "No trading/admin scope",
+        "error": "Scopes: subset of entitlement and rights. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "expires_at",
+        "label": "Expiry",
+        "type": "datetime",
+        "required": true,
+        "default": null,
+        "validation": "future within server maximum",
+        "help": "No never-expire by default",
+        "error": "Expiry: future within server maximum. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "destination_id",
+        "label": "Delivery endpoint",
+        "type": "id",
+        "required": false,
+        "default": null,
+        "validation": "owned validated endpoint",
+        "help": "No arbitrary outbound URL",
+        "error": "Delivery endpoint: owned validated endpoint. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      }
+    ],
+    "save_effect": "Persist requested access metadata",
+    "preview_effect": "Show allowed subset/quota and expiry",
+    "confirm_effect": "Generate scoped secret once only; store hash/server secret as appropriate",
+    "rules": "Key reveal not in audit/export/cache. Revocation idempotent and affects reads/delivery only.",
+    "layout": "Left main form grouped into stated steps; right effective-summary rail; error summary links to labeled fields. Mobile rail follows current step before action bar.",
+    "validation_timing": "Validate on blur after first interaction and on submit; never replace draft while user edits. Server repeats all checks. Positive response reflects committed state, not optimistic toast.",
+    "conflict": "If-Match or expected_revision mismatch ->409 with current revision and non-secret field diff; preserve local draft; user resolves explicitly.",
+    "cancel": "Cancel leaves last explicitly saved draft; never executes or grants authority.",
+    "autosave": "Display prefs only after500ms debounce; all other forms explicit Save draft; secrets/challenges never autosaved.",
+    "idempotency": "Stable per logical submission key; retries join same operation; changed payload with same key ->409.",
+    "button_labels": [
+      "Save draft",
+      "Validate",
+      "Preview",
+      "Confirm scoped action"
+    ]
+  },
+  {
+    "id": "F-BROKER",
+    "title": "Private brokerage account",
+    "scope": "private_owner",
+    "steps": [
+      "Adapter",
+      "External identity",
+      "Credential references",
+      "Products",
+      "Read checks",
+      "Review"
+    ],
+    "fields": [
+      {
+        "key": "account_label",
+        "label": "Account label",
+        "type": "text",
+        "required": true,
+        "default": null,
+        "validation": "1..80 plain text",
+        "help": "No credentials",
+        "error": "Account label: 1..80 plain text. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "adapter_id",
+        "label": "Adapter",
+        "type": "id",
+        "required": true,
+        "default": null,
+        "validation": "reviewed registry ID",
+        "help": "No module import string",
+        "error": "Adapter: reviewed registry ID. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "venue_id",
+        "label": "Venue/API variant",
+        "type": "id",
+        "required": true,
+        "default": null,
+        "validation": "supported adapter configuration",
+        "help": "CCXT exchange not inferred",
+        "error": "Venue/API variant: supported adapter configuration. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "external_account_ref",
+        "label": "Broker account",
+        "type": "id",
+        "required": true,
+        "default": null,
+        "validation": "verified by read-only connection",
+        "help": "Masked in general UI",
+        "error": "Broker account: verified by read-only connection. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "environment",
+        "label": "Environment",
+        "type": "enum:simulation,paper,live",
+        "required": true,
+        "default": "simulation",
+        "validation": "actual provider mapping required",
+        "help": "No fake broker paper",
+        "error": "Environment: actual provider mapping required. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "credential_ref",
+        "label": "Secret reference",
+        "type": "secret_ref",
+        "required": false,
+        "default": null,
+        "validation": "preprovisioned scoped vault reference",
+        "help": "Secret values not in this form",
+        "error": "Secret reference: preprovisioned scoped vault reference. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "products",
+        "label": "Products",
+        "type": "id_list",
+        "required": true,
+        "default": null,
+        "validation": "qualified exact product profiles",
+        "help": "No all-assets default",
+        "error": "Products: qualified exact product profiles. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "position_mode",
+        "label": "Position mode",
+        "type": "enum:netting,hedged,spot",
+        "required": true,
+        "default": null,
+        "validation": "verified account setting",
+        "help": "No implicit mode change",
+        "error": "Position mode: verified account setting. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "max_exposure",
+        "label": "Notional ceiling",
+        "type": "decimal",
+        "required": false,
+        "default": null,
+        "validation": "from owner-approved account policy",
+        "help": "No auto increase",
+        "error": "Notional ceiling: from owner-approved account policy. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "entry_enabled",
+        "label": "Enable new entries",
+        "type": "boolean",
+        "required": true,
+        "default": "false",
+        "validation": "true only separate release gates",
+        "help": "Save never enables trading",
+        "error": "Enable new entries: true only separate release gates. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      }
+    ],
+    "save_effect": "Save inactive account draft",
+    "preview_effect": "Read identity, scopes, positions and capability evidence",
+    "confirm_effect": "Apply approved inactive configuration; activation separate operation",
+    "rules": "Account deletion becomes drain/handoff workflow. Credential rotation separate qualified workflow; no GET side effects.",
+    "layout": "Left main form grouped into stated steps; right effective-summary rail; error summary links to labeled fields. Mobile rail follows current step before action bar.",
+    "validation_timing": "Validate on blur after first interaction and on submit; never replace draft while user edits. Server repeats all checks. Positive response reflects committed state, not optimistic toast.",
+    "conflict": "If-Match or expected_revision mismatch ->409 with current revision and non-secret field diff; preserve local draft; user resolves explicitly.",
+    "cancel": "Cancel leaves last explicitly saved draft; never executes or grants authority.",
+    "autosave": "Display prefs only after500ms debounce; all other forms explicit Save draft; secrets/challenges never autosaved.",
+    "idempotency": "Stable per logical submission key; retries join same operation; changed payload with same key ->409.",
+    "button_labels": [
+      "Save draft",
+      "Validate",
+      "Preview",
+      "Confirm scoped action"
+    ]
+  },
+  {
+    "id": "F-SOURCE",
+    "title": "Signal provider and parser",
+    "scope": "private_owner",
+    "steps": [
+      "Transport",
+      "Source identity",
+      "Permissions",
+      "History",
+      "Parser",
+      "Review"
+    ],
+    "fields": [
+      {
+        "key": "transport_instance_id",
+        "label": "Transport",
+        "type": "id",
+        "required": true,
+        "default": null,
+        "validation": "authorized shared collector instance",
+        "help": "No duplicate bot for same transport unless required",
+        "error": "Transport: authorized shared collector instance. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "provider_id",
+        "label": "Provider",
+        "type": "id",
+        "required": true,
+        "default": null,
+        "validation": "stable registered source identity",
+        "help": "Not just telegram/discord",
+        "error": "Provider: stable registered source identity. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "channel_product_id",
+        "label": "Channel/product",
+        "type": "text",
+        "required": true,
+        "default": null,
+        "validation": "stable external source identity;max200",
+        "help": "Preserve channel-level lineage",
+        "error": "Channel/product: stable external source identity;max200. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "analyst_mapping",
+        "label": "Analyst mapping version",
+        "type": "id",
+        "required": true,
+        "default": null,
+        "validation": "reviewed deterministic mapping",
+        "help": "No ambiguous display-name matching",
+        "error": "Analyst mapping version: reviewed deterministic mapping. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "allowed_products",
+        "label": "Asset profiles",
+        "type": "id_list",
+        "required": true,
+        "default": null,
+        "validation": "explicit source scope",
+        "help": "No default all crypto",
+        "error": "Asset profiles: explicit source scope. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "parser_version_id",
+        "label": "Parser version",
+        "type": "id",
+        "required": true,
+        "default": null,
+        "validation": "reviewed parser registry",
+        "help": "No arbitrary code",
+        "error": "Parser version: reviewed parser registry. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "rights_grant_id",
+        "label": "Rights grant",
+        "type": "id",
+        "required": false,
+        "default": null,
+        "validation": "required for selected commercial/model uses",
+        "help": "Personal receipt not resale grant",
+        "error": "Rights grant: required for selected commercial/model uses. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "history_start",
+        "label": "History start",
+        "type": "datetime",
+        "required": false,
+        "default": null,
+        "validation": "authorized range;before end",
+        "help": "Do not invent original revisions",
+        "error": "History start: authorized range;before end. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "history_end",
+        "label": "History end",
+        "type": "datetime",
+        "required": false,
+        "default": null,
+        "validation": "not future;paired range",
+        "help": "Save does not start import",
+        "error": "History end: not future;paired range. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "entry_enabled",
+        "label": "Enable admissions",
+        "type": "boolean",
+        "required": true,
+        "default": "false",
+        "validation": "activation separate reviewed transition",
+        "help": "Management of old trades separate",
+        "error": "Enable admissions: activation separate reviewed transition. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      }
+    ],
+    "save_effect": "Create real source draft",
+    "preview_effect": "Validate access metadata and parser coverage",
+    "confirm_effect": "Save draft or enqueue explicitly authorized history read job",
+    "rules": "Import progress durable; ingestion state separate from live admissions; edits/replies/cancellations included.",
+    "layout": "Left main form grouped into stated steps; right effective-summary rail; error summary links to labeled fields. Mobile rail follows current step before action bar.",
+    "validation_timing": "Validate on blur after first interaction and on submit; never replace draft while user edits. Server repeats all checks. Positive response reflects committed state, not optimistic toast.",
+    "conflict": "If-Match or expected_revision mismatch ->409 with current revision and non-secret field diff; preserve local draft; user resolves explicitly.",
+    "cancel": "Cancel leaves last explicitly saved draft; never executes or grants authority.",
+    "autosave": "Display prefs only after500ms debounce; all other forms explicit Save draft; secrets/challenges never autosaved.",
+    "idempotency": "Stable per logical submission key; retries join same operation; changed payload with same key ->409.",
+    "button_labels": [
+      "Save draft",
+      "Validate",
+      "Preview",
+      "Confirm scoped action"
+    ]
+  },
+  {
+    "id": "F-ROUTING",
+    "title": "Routing rule",
+    "scope": "private_owner",
+    "steps": [
+      "Source match",
+      "Destination scope",
+      "Conflict preview",
+      "Review"
+    ],
+    "fields": [
+      {
+        "key": "source_id",
+        "label": "Source",
+        "type": "id",
+        "required": true,
+        "default": null,
+        "validation": "registered source",
+        "help": "Exact provider identity",
+        "error": "Source: registered source. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "analyst_ids",
+        "label": "Analysts",
+        "type": "id_list",
+        "required": false,
+        "default": null,
+        "validation": "within source",
+        "help": "Null=all authorized analysts, not all providers",
+        "error": "Analysts: within source. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "product_ids",
+        "label": "Products",
+        "type": "id_list",
+        "required": true,
+        "default": null,
+        "validation": "explicit qualified scope",
+        "help": "Not ticker heuristic",
+        "error": "Products: explicit qualified scope. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "instrument_filter",
+        "label": "Instrument filter",
+        "type": "id_list",
+        "required": false,
+        "default": null,
+        "validation": "verified instruments",
+        "help": "No regex code execution",
+        "error": "Instrument filter: verified instruments. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "destination_ids",
+        "label": "Destinations",
+        "type": "id_list",
+        "required": true,
+        "default": null,
+        "validation": "distinct owned accounts",
+        "help": "Duplicate rules do not duplicate intents",
+        "error": "Destinations: distinct owned accounts. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "priority",
+        "label": "Priority",
+        "type": "integer",
+        "required": true,
+        "default": "100",
+        "validation": "0..10000 deterministic conflict rule",
+        "help": "No silently conflicting overrides",
+        "error": "Priority: 0..10000 deterministic conflict rule. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "entry_enabled",
+        "label": "New entries",
+        "type": "boolean",
+        "required": true,
+        "default": "false",
+        "validation": "true only with release",
+        "help": "Exit ownership stays on original account",
+        "error": "New entries: true only with release. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      }
+    ],
+    "save_effect": "Persist rule draft",
+    "preview_effect": "Evaluate stored non-executing event set and show per-destination dedup",
+    "confirm_effect": "Commit reviewed configuration revision",
+    "rules": "Preview never calls broker write. Change diff declares future-entry only versus independently approved active transition.",
+    "layout": "Left main form grouped into stated steps; right effective-summary rail; error summary links to labeled fields. Mobile rail follows current step before action bar.",
+    "validation_timing": "Validate on blur after first interaction and on submit; never replace draft while user edits. Server repeats all checks. Positive response reflects committed state, not optimistic toast.",
+    "conflict": "If-Match or expected_revision mismatch ->409 with current revision and non-secret field diff; preserve local draft; user resolves explicitly.",
+    "cancel": "Cancel leaves last explicitly saved draft; never executes or grants authority.",
+    "autosave": "Display prefs only after500ms debounce; all other forms explicit Save draft; secrets/challenges never autosaved.",
+    "idempotency": "Stable per logical submission key; retries join same operation; changed payload with same key ->409.",
+    "button_labels": [
+      "Save draft",
+      "Validate",
+      "Preview",
+      "Confirm scoped action"
+    ]
+  },
+  {
+    "id": "F-POLICY",
+    "title": "Management policy draft",
+    "scope": "private_owner",
+    "steps": [
+      "Scope",
+      "Sizing",
+      "Stop",
+      "Targets/trail",
+      "Holding",
+      "Preview"
+    ],
+    "fields": [
+      {
+        "key": "policy_name",
+        "label": "Name",
+        "type": "text",
+        "required": true,
+        "default": null,
+        "validation": "1..100 plain text",
+        "help": "Version immutable after release",
+        "error": "Name: 1..100 plain text. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "product_profile_id",
+        "label": "Product profile",
+        "type": "id",
+        "required": true,
+        "default": null,
+        "validation": "exact currency/quantity/trigger semantics",
+        "help": "No share math for options",
+        "error": "Product profile: exact currency/quantity/trigger semantics. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "size_mode",
+        "label": "Sizing mode",
+        "type": "enum:risk,fixed_units,fixed_notional,source_scaled",
+        "required": true,
+        "default": "risk",
+        "validation": "supported released family",
+        "help": "All modes bounded by hard limits",
+        "error": "Sizing mode: supported released family. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "risk_budget",
+        "label": "Risk budget",
+        "type": "decimal",
+        "required": false,
+        "default": null,
+        "validation": "explicit approved currency/percentage unit",
+        "help": "required for risk mode",
+        "error": "Risk budget: explicit approved currency/percentage unit. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "fixed_units",
+        "label": "Fixed units",
+        "type": "decimal",
+        "required": false,
+        "default": null,
+        "validation": "legal positive step;hard-cap bound",
+        "help": "required only fixed_units",
+        "error": "Fixed units: legal positive step;hard-cap bound. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "fixed_notional",
+        "label": "Fixed notional",
+        "type": "decimal",
+        "required": false,
+        "default": null,
+        "validation": "positive currency value",
+        "help": "required only fixed_notional",
+        "error": "Fixed notional: positive currency value. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "stop_recipe_id",
+        "label": "Fallback stop recipe",
+        "type": "id",
+        "required": false,
+        "default": null,
+        "validation": "released compatible recipe",
+        "help": "Null means stopless signal cannot be resolved without provider stop",
+        "error": "Fallback stop recipe: released compatible recipe. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "target_policy_id",
+        "label": "Target policy",
+        "type": "id",
+        "required": true,
+        "default": null,
+        "validation": "released role/partial/basis definitions",
+        "help": "No invented provider target",
+        "error": "Target policy: released role/partial/basis definitions. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "trail_recipe_id",
+        "label": "Trail recipe",
+        "type": "id",
+        "required": false,
+        "default": null,
+        "validation": "released non-loosening recipe",
+        "help": "No trailing automatic activation by price default",
+        "error": "Trail recipe: released non-loosening recipe. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "holding_policy_id",
+        "label": "Holding rule",
+        "type": "id",
+        "required": true,
+        "default": null,
+        "validation": "finite applicable strategy/product deadlines",
+        "help": "Includes session coverage",
+        "error": "Holding rule: finite applicable strategy/product deadlines. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "apply_to",
+        "label": "Apply to",
+        "type": "enum:future_entries",
+        "required": true,
+        "default": "future_entries",
+        "validation": "existing allocations require separate transition",
+        "help": "No silent retrofit",
+        "error": "Apply to: existing allocations require separate transition. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      }
+    ],
+    "save_effect": "Save draft policy only",
+    "preview_effect": "Resolve a complete plan with exact provenance on selected event",
+    "confirm_effect": "Submit for qualified owner review; live release separate",
+    "rules": "Unknown initial price or risk cannot bypass sizing. All configuration numbers validated on server with decimal/product units.",
+    "layout": "Left main form grouped into stated steps; right effective-summary rail; error summary links to labeled fields. Mobile rail follows current step before action bar.",
+    "validation_timing": "Validate on blur after first interaction and on submit; never replace draft while user edits. Server repeats all checks. Positive response reflects committed state, not optimistic toast.",
+    "conflict": "If-Match or expected_revision mismatch ->409 with current revision and non-secret field diff; preserve local draft; user resolves explicitly.",
+    "cancel": "Cancel leaves last explicitly saved draft; never executes or grants authority.",
+    "autosave": "Display prefs only after500ms debounce; all other forms explicit Save draft; secrets/challenges never autosaved.",
+    "idempotency": "Stable per logical submission key; retries join same operation; changed payload with same key ->409.",
+    "button_labels": [
+      "Save draft",
+      "Validate",
+      "Preview",
+      "Confirm scoped action"
+    ]
+  },
+  {
+    "id": "F-POSITION-ACTION",
+    "title": "Position action",
+    "scope": "private_owner",
+    "steps": [
+      "Select owned allocation",
+      "Operation",
+      "Quantity/floor",
+      "Preview",
+      "Confirm"
+    ],
+    "fields": [
+      {
+        "key": "allocation_id",
+        "label": "Allocation",
+        "type": "id",
+        "required": true,
+        "default": null,
+        "validation": "owned and exact instrument/environment",
+        "help": "Not symbol-only",
+        "error": "Allocation: owned and exact instrument/environment. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "operation",
+        "label": "Action",
+        "type": "enum:reduce,close_owned,raise_protection,reconcile",
+        "required": true,
+        "default": null,
+        "validation": "supported exact route recipe",
+        "help": "Risk reduction still quantity checked",
+        "error": "Action: supported exact route recipe. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "quantity",
+        "label": "Quantity",
+        "type": "decimal",
+        "required": false,
+        "default": null,
+        "validation": "required for reduce;legal step;<=available after possible fills",
+        "help": "No percentage without original/remaining basis",
+        "error": "Quantity: required for reduce;legal step;<=available after possible fills. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "new_floor",
+        "label": "New protective threshold",
+        "type": "decimal",
+        "required": false,
+        "default": null,
+        "validation": "required for raise_protection;must not loosen activated policy",
+        "help": "Price instrument/basis fixed by plan",
+        "error": "New protective threshold: required for raise_protection;must not loosen activated policy. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "reason",
+        "label": "Reason",
+        "type": "text",
+        "required": true,
+        "default": null,
+        "validation": "1..500 plain text",
+        "help": "Audit",
+        "error": "Reason: 1..500 plain text. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      }
+    ],
+    "save_effect": "Save action draft, not reservation",
+    "preview_effect": "Read complete positions/order families and return expiring scoped preview",
+    "confirm_effect": "Durably claim and dispatch through sole writer only after revalidation",
+    "rules": "Unknown same action cannot resubmit. Stop and TP orders may both execute without actual venue cap; constraints use maximum possible close quantity.",
+    "layout": "Left main form grouped into stated steps; right effective-summary rail; error summary links to labeled fields. Mobile rail follows current step before action bar.",
+    "validation_timing": "Validate on blur after first interaction and on submit; never replace draft while user edits. Server repeats all checks. Positive response reflects committed state, not optimistic toast.",
+    "conflict": "If-Match or expected_revision mismatch ->409 with current revision and non-secret field diff; preserve local draft; user resolves explicitly.",
+    "cancel": "Cancel leaves last explicitly saved draft; never executes or grants authority.",
+    "autosave": "Display prefs only after500ms debounce; all other forms explicit Save draft; secrets/challenges never autosaved.",
+    "idempotency": "Stable per logical submission key; retries join same operation; changed payload with same key ->409.",
+    "button_labels": [
+      "Save draft",
+      "Validate",
+      "Preview",
+      "Confirm scoped action"
+    ]
+  },
+  {
+    "id": "F-INCIDENT",
+    "title": "Incident management",
+    "scope": "scoped",
+    "steps": [
+      "Evidence",
+      "Responsibility",
+      "Containment",
+      "Resolution"
+    ],
+    "fields": [
+      {
+        "key": "incident_id",
+        "label": "Incident",
+        "type": "id",
+        "required": true,
+        "default": null,
+        "validation": "within authorized scope",
+        "help": "Persisted incident",
+        "error": "Incident: within authorized scope. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "operation",
+        "label": "Operation",
+        "type": "enum:acknowledge,assign,reconcile,propose_resolution",
+        "required": true,
+        "default": "acknowledge",
+        "validation": "explicit per-role permission",
+        "help": "No execute arbitrary command",
+        "error": "Operation: explicit per-role permission. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "assignee_id",
+        "label": "Assignee",
+        "type": "id",
+        "required": false,
+        "default": null,
+        "validation": "active role eligible for incident",
+        "help": "Cannot assign financial authority",
+        "error": "Assignee: active role eligible for incident. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "note",
+        "label": "Note",
+        "type": "text",
+        "required": true,
+        "default": null,
+        "validation": "1..2000 plain text",
+        "help": "No secrets",
+        "error": "Note: 1..2000 plain text. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "evidence_ids",
+        "label": "Evidence",
+        "type": "id_list",
+        "required": false,
+        "default": null,
+        "validation": "scoped immutable objects",
+        "help": "required for resolution proposal",
+        "error": "Evidence: scoped immutable objects. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      }
+    ],
+    "save_effect": "Save comment/action intent",
+    "preview_effect": "Show affected scope and proposed operation",
+    "confirm_effect": "Acknowledge/assign/readback job or submit resolution review",
+    "rules": "Acknowledge never marks resolved. Reconcile is read-only broker action unless separately approved corrective command.",
+    "layout": "Left main form grouped into stated steps; right effective-summary rail; error summary links to labeled fields. Mobile rail follows current step before action bar.",
+    "validation_timing": "Validate on blur after first interaction and on submit; never replace draft while user edits. Server repeats all checks. Positive response reflects committed state, not optimistic toast.",
+    "conflict": "If-Match or expected_revision mismatch ->409 with current revision and non-secret field diff; preserve local draft; user resolves explicitly.",
+    "cancel": "Cancel leaves last explicitly saved draft; never executes or grants authority.",
+    "autosave": "Display prefs only after500ms debounce; all other forms explicit Save draft; secrets/challenges never autosaved.",
+    "idempotency": "Stable per logical submission key; retries join same operation; changed payload with same key ->409.",
+    "button_labels": [
+      "Save draft",
+      "Validate",
+      "Preview",
+      "Confirm scoped action"
+    ]
+  },
+  {
+    "id": "F-RECOVERY-OPS",
+    "title": "Recovery review",
+    "scope": "scoped",
+    "steps": [
+      "Scope",
+      "Artifact/data",
+      "Old writer fencing",
+      "Reconciliation",
+      "Approvals"
+    ],
+    "fields": [
+      {
+        "key": "service_role",
+        "label": "Role",
+        "type": "enum:private_writer,publisher,api,research",
+        "required": true,
+        "default": null,
+        "validation": "operator allowed for role",
+        "help": "Website role not trading permission",
+        "error": "Role: operator allowed for role. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "source_site_id",
+        "label": "Old site",
+        "type": "id",
+        "required": true,
+        "default": null,
+        "validation": "registered site",
+        "help": "No arbitrary SSH host",
+        "error": "Old site: registered site. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "target_site_id",
+        "label": "Target site",
+        "type": "id",
+        "required": true,
+        "default": null,
+        "validation": "qualified distinct site",
+        "help": "Standby initially incapable of effects",
+        "error": "Target site: qualified distinct site. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "release_manifest_id",
+        "label": "Release",
+        "type": "id",
+        "required": true,
+        "default": null,
+        "validation": "verified immutable manifest",
+        "help": "No mutable latest tag",
+        "error": "Release: verified immutable manifest. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "backup_generation_id",
+        "label": "Data generation",
+        "type": "id",
+        "required": true,
+        "default": null,
+        "validation": "verified compatible restore",
+        "help": "Known RPO/unknown commands visible",
+        "error": "Data generation: verified compatible restore. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "fencing_evidence_ids",
+        "label": "Fencing evidence",
+        "type": "id_list",
+        "required": false,
+        "default": null,
+        "validation": "required before writer promotion",
+        "help": "Lease expiry is insufficient",
+        "error": "Fencing evidence: required before writer promotion. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "reconciliation_evidence_id",
+        "label": "Reconciliation",
+        "type": "id",
+        "required": false,
+        "default": null,
+        "validation": "required for promotion;fresh and complete",
+        "help": "Positions alone may not recover ownership",
+        "error": "Reconciliation: required for promotion;fresh and complete. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      }
+    ],
+    "save_effect": "Persist review checklist",
+    "preview_effect": "Evaluate required evidence; no infrastructure effects",
+    "confirm_effect": "Prepare signed release/handoff card; no unattended promote from GUI in this scope",
+    "rules": "Only separate authorized deployment runbook applies effect. Default no auto failover and no storing root credentials in UI.",
+    "layout": "Left main form grouped into stated steps; right effective-summary rail; error summary links to labeled fields. Mobile rail follows current step before action bar.",
+    "validation_timing": "Validate on blur after first interaction and on submit; never replace draft while user edits. Server repeats all checks. Positive response reflects committed state, not optimistic toast.",
+    "conflict": "If-Match or expected_revision mismatch ->409 with current revision and non-secret field diff; preserve local draft; user resolves explicitly.",
+    "cancel": "Cancel leaves last explicitly saved draft; never executes or grants authority.",
+    "autosave": "Display prefs only after500ms debounce; all other forms explicit Save draft; secrets/challenges never autosaved.",
+    "idempotency": "Stable per logical submission key; retries join same operation; changed payload with same key ->409.",
+    "button_labels": [
+      "Save draft",
+      "Validate",
+      "Preview",
+      "Confirm scoped action"
+    ]
+  },
+  {
+    "id": "F-RIGHTS",
+    "title": "Rights-grant evidence",
+    "scope": "admin",
+    "steps": [
+      "Source",
+      "Allowed uses",
+      "Audience/channel",
+      "Term",
+      "Evidence",
+      "Review"
+    ],
+    "fields": [
+      {
+        "key": "source_id",
+        "label": "Source",
+        "type": "id",
+        "required": true,
+        "default": null,
+        "validation": "registered source/product",
+        "help": "Exact rights counterparty",
+        "error": "Source: registered source/product. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "uses",
+        "label": "Uses",
+        "type": "enum_list:private_trading,research,redistribution,model_processing",
+        "required": true,
+        "default": null,
+        "validation": "explicit written grant scope",
+        "help": "Combining signals does not grant rights",
+        "error": "Uses: explicit written grant scope. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "jurisdictions",
+        "label": "Jurisdictions",
+        "type": "country_list",
+        "required": true,
+        "default": null,
+        "validation": "explicit approved audience",
+        "help": "No implicit worldwide",
+        "error": "Jurisdictions: explicit approved audience. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "channels",
+        "label": "Channels",
+        "type": "id_list",
+        "required": true,
+        "default": null,
+        "validation": "approved destinations",
+        "help": "No arbitrary all-channel",
+        "error": "Channels: approved destinations. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "assets",
+        "label": "Asset profiles",
+        "type": "id_list",
+        "required": true,
+        "default": null,
+        "validation": "covered by agreement",
+        "help": "Exact use scope",
+        "error": "Asset profiles: covered by agreement. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "effective_at",
+        "label": "Effective",
+        "type": "datetime",
+        "required": true,
+        "default": null,
+        "validation": "UTC;before expiry",
+        "help": "No retroactive fake permission",
+        "error": "Effective: UTC;before expiry. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "expires_at",
+        "label": "Expires",
+        "type": "datetime",
+        "required": true,
+        "default": null,
+        "validation": "after effective;ongoing requires separately approved convention",
+        "help": "Expiration evaluated at effect",
+        "error": "Expires: after effective;ongoing requires separately approved convention. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "evidence_ids",
+        "label": "Contract/evidence",
+        "type": "id_list",
+        "required": true,
+        "default": null,
+        "validation": "private reviewed immutable documents",
+        "help": "No public raw contract",
+        "error": "Contract/evidence: private reviewed immutable documents. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "attribution_policy_id",
+        "label": "Attribution",
+        "type": "id",
+        "required": true,
+        "default": null,
+        "validation": "reviewed policy",
+        "help": "Trade secrets/private sources respected",
+        "error": "Attribution: reviewed policy. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      }
+    ],
+    "save_effect": "Create draft grant and evidence records",
+    "preview_effect": "Show intersection and affected products/obligations",
+    "confirm_effect": "Submit or record owner-approved decision with audit; researcher cannot approve",
+    "rules": "Revocation triggers scoped wind-down review, not instant deletion of history or abandonment of existing management.",
+    "layout": "Left main form grouped into stated steps; right effective-summary rail; error summary links to labeled fields. Mobile rail follows current step before action bar.",
+    "validation_timing": "Validate on blur after first interaction and on submit; never replace draft while user edits. Server repeats all checks. Positive response reflects committed state, not optimistic toast.",
+    "conflict": "If-Match or expected_revision mismatch ->409 with current revision and non-secret field diff; preserve local draft; user resolves explicitly.",
+    "cancel": "Cancel leaves last explicitly saved draft; never executes or grants authority.",
+    "autosave": "Display prefs only after500ms debounce; all other forms explicit Save draft; secrets/challenges never autosaved.",
+    "idempotency": "Stable per logical submission key; retries join same operation; changed payload with same key ->409.",
+    "button_labels": [
+      "Save draft",
+      "Validate",
+      "Preview",
+      "Confirm scoped action"
+    ]
+  },
+  {
+    "id": "F-SLEEVE",
+    "title": "Strategy sleeve",
+    "scope": "admin",
+    "steps": [
+      "Lineage",
+      "History",
+      "Product",
+      "Management",
+      "Qualification"
+    ],
+    "fields": [
+      {
+        "key": "provider_id",
+        "label": "Provider",
+        "type": "id",
+        "required": true,
+        "default": null,
+        "validation": "registered source",
+        "help": "Rights checked separately",
+        "error": "Provider: registered source. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "analyst_id",
+        "label": "Analyst",
+        "type": "id",
+        "required": true,
+        "default": null,
+        "validation": "verified mapping",
+        "help": "Stable ID",
+        "error": "Analyst: verified mapping. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "strategy_id",
+        "label": "Strategy",
+        "type": "id",
+        "required": true,
+        "default": null,
+        "validation": "reviewed strategy identity",
+        "help": "Not arbitrary marketing label",
+        "error": "Strategy: reviewed strategy identity. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "parser_version_id",
+        "label": "Parser",
+        "type": "id",
+        "required": true,
+        "default": null,
+        "validation": "reviewed exact version",
+        "help": "No latest alias",
+        "error": "Parser: reviewed exact version. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "policy_version_id",
+        "label": "Management policy",
+        "type": "id",
+        "required": true,
+        "default": null,
+        "validation": "compatible released recipe",
+        "help": "Original risk semantics retained",
+        "error": "Management policy: compatible released recipe. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "product_profile_id",
+        "label": "Product",
+        "type": "id",
+        "required": true,
+        "default": null,
+        "validation": "verified instrument family",
+        "help": "No mixed financial math",
+        "error": "Product: verified instrument family. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "dataset_version_id",
+        "label": "History",
+        "type": "id",
+        "required": false,
+        "default": null,
+        "validation": "required for research eligibility, not saving draft",
+        "help": "No fabricated performance",
+        "error": "History: required for research eligibility, not saving draft. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "cluster_id",
+        "label": "Exposure cluster",
+        "type": "id",
+        "required": false,
+        "default": null,
+        "validation": "reviewed context label",
+        "help": "Does not merge source events",
+        "error": "Exposure cluster: reviewed context label. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      }
+    ],
+    "save_effect": "Create real sleeve draft",
+    "preview_effect": "Report rights/data/capacity blockers",
+    "confirm_effect": "Save qualified status only from evidence-backed evaluation",
+    "rules": "Draft with no history permitted. History study blocks until data, never blocks form construction.",
+    "layout": "Left main form grouped into stated steps; right effective-summary rail; error summary links to labeled fields. Mobile rail follows current step before action bar.",
+    "validation_timing": "Validate on blur after first interaction and on submit; never replace draft while user edits. Server repeats all checks. Positive response reflects committed state, not optimistic toast.",
+    "conflict": "If-Match or expected_revision mismatch ->409 with current revision and non-secret field diff; preserve local draft; user resolves explicitly.",
+    "cancel": "Cancel leaves last explicitly saved draft; never executes or grants authority.",
+    "autosave": "Display prefs only after500ms debounce; all other forms explicit Save draft; secrets/challenges never autosaved.",
+    "idempotency": "Stable per logical submission key; retries join same operation; changed payload with same key ->409.",
+    "button_labels": [
+      "Save draft",
+      "Validate",
+      "Preview",
+      "Confirm scoped action"
+    ]
+  },
+  {
+    "id": "F-RESEARCH",
+    "title": "Portfolio research run",
+    "scope": "admin",
+    "steps": [
+      "Universe",
+      "Candidates",
+      "Capital constraints",
+      "Data split",
+      "Costs",
+      "Budget",
+      "Review"
+    ],
+    "fields": [
+      {
+        "key": "universe_version_id",
+        "label": "Universe",
+        "type": "id",
+        "required": true,
+        "default": null,
+        "validation": "rights-qualified version",
+        "help": "Whole approved universe enumerated",
+        "error": "Universe: rights-qualified version. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "recipes",
+        "label": "Recipes",
+        "type": "enum_list:equal_capital,inverse_volatility,hrp,min_cvar",
+        "required": true,
+        "default": null,
+        "validation": "implemented deterministic recipes",
+        "help": "No runtime LLM required",
+        "error": "Recipes: implemented deterministic recipes. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "subset_min",
+        "label": "Minimum sleeves",
+        "type": "integer",
+        "required": true,
+        "default": "2",
+        "validation": ">=1 and<=subset_max",
+        "help": "Research-only constraint",
+        "error": "Minimum sleeves: >=1 and<=subset_max. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "subset_max",
+        "label": "Maximum sleeves",
+        "type": "integer",
+        "required": true,
+        "default": "5",
+        "validation": "<=universe size and approved job cap",
+        "help": "No silently reduced search",
+        "error": "Maximum sleeves: <=universe size and approved job cap. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "cash_bps",
+        "label": "Cash allocation",
+        "type": "integer",
+        "required": true,
+        "default": "1500",
+        "validation": "0..10000 and existing research policy",
+        "help": "Not live account allocation",
+        "error": "Cash allocation: 0..10000 and existing research policy. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "max_sleeve_bps",
+        "label": "Sleeve ceiling",
+        "type": "integer",
+        "required": true,
+        "default": "3500",
+        "validation": "0..10000 and feasible",
+        "help": "Weights plus cash exactly10000",
+        "error": "Sleeve ceiling: 0..10000 and feasible. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "max_cluster_bps",
+        "label": "Cluster ceiling",
+        "type": "integer",
+        "required": true,
+        "default": "5000",
+        "validation": "0..10000 and approved study",
+        "help": "No hidden concentration",
+        "error": "Cluster ceiling: 0..10000 and approved study. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "train_sessions",
+        "label": "Training sessions",
+        "type": "integer",
+        "required": true,
+        "default": "252",
+        "validation": "positive;available window sufficient",
+        "help": "Chronological only",
+        "error": "Training sessions: positive;available window sufficient. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "test_sessions",
+        "label": "Test sessions",
+        "type": "integer",
+        "required": true,
+        "default": "63",
+        "validation": "positive;nonoverlapping holdout",
+        "help": "No hindsight information",
+        "error": "Test sessions: positive;nonoverlapping holdout. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "holdout_fraction",
+        "label": "Holdout fraction",
+        "type": "decimal",
+        "required": true,
+        "default": "0.20",
+        "validation": "strictly0..1;lock dataset before search",
+        "help": "No repeated tuning on holdout",
+        "error": "Holdout fraction: strictly0..1;lock dataset before search. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "cost_scenario_ids",
+        "label": "Costs/stress",
+        "type": "id_list",
+        "required": true,
+        "default": null,
+        "validation": "verified available scenarios",
+        "help": "No zero-cost assumption",
+        "error": "Costs/stress: verified available scenarios. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "resource_profile_id",
+        "label": "Resources",
+        "type": "id",
+        "required": true,
+        "default": null,
+        "validation": "approved memory/time/disk budget",
+        "help": "Cannot starve execution",
+        "error": "Resources: approved memory/time/disk budget. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      }
+    ],
+    "save_effect": "Persist complete study definition",
+    "preview_effect": "Compute full candidate denominator, data gaps, resource quote and immutable manifest",
+    "confirm_effect": "Enqueue research job only; not publish/weight live portfolio",
+    "rules": "Defaults inherited research drafts only, not evidence of optimal parameters; infeasible candidates retained with reasons.",
+    "layout": "Left main form grouped into stated steps; right effective-summary rail; error summary links to labeled fields. Mobile rail follows current step before action bar.",
+    "validation_timing": "Validate on blur after first interaction and on submit; never replace draft while user edits. Server repeats all checks. Positive response reflects committed state, not optimistic toast.",
+    "conflict": "If-Match or expected_revision mismatch ->409 with current revision and non-secret field diff; preserve local draft; user resolves explicitly.",
+    "cancel": "Cancel leaves last explicitly saved draft; never executes or grants authority.",
+    "autosave": "Display prefs only after500ms debounce; all other forms explicit Save draft; secrets/challenges never autosaved.",
+    "idempotency": "Stable per logical submission key; retries join same operation; changed payload with same key ->409.",
+    "button_labels": [
+      "Save draft",
+      "Validate",
+      "Preview",
+      "Confirm scoped action"
+    ]
+  },
+  {
+    "id": "F-PRODUCT",
+    "title": "Product and portfolio version",
+    "scope": "admin",
+    "steps": [
+      "Identity",
+      "Sleeves/weights",
+      "Channels/audience",
+      "Evidence",
+      "Disclosures",
+      "Preview"
+    ],
+    "fields": [
+      {
+        "key": "product_name",
+        "label": "Product name",
+        "type": "text",
+        "required": true,
+        "default": null,
+        "validation": "1..100 plain text",
+        "help": "No unsupported promotional claims",
+        "error": "Product name: 1..100 plain text. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "slug",
+        "label": "Public slug",
+        "type": "slug",
+        "required": true,
+        "default": null,
+        "validation": "unique lower-case URL slug",
+        "help": "Draft slug not public",
+        "error": "Public slug: unique lower-case URL slug. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "portfolio_version_id",
+        "label": "Existing version",
+        "type": "id",
+        "required": false,
+        "default": null,
+        "validation": "editable draft only",
+        "help": "Released changes create new version",
+        "error": "Existing version: editable draft only. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "sleeve_weights",
+        "label": "Sleeve weights",
+        "type": "weight_map",
+        "required": false,
+        "default": null,
+        "validation": "nonnegative integer bps;plus cash10000 when complete",
+        "help": "Draft can be incomplete",
+        "error": "Sleeve weights: nonnegative integer bps;plus cash10000 when complete. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "cash_bps",
+        "label": "Cash weight",
+        "type": "integer",
+        "required": true,
+        "default": "10000",
+        "validation": "0..10000;weight conservation before eligibility",
+        "help": "New empty draft all cash is not a trading recommendation",
+        "error": "Cash weight: 0..10000;weight conservation before eligibility. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "service_modes",
+        "label": "Modes",
+        "type": "enum_list:alerts,copying,managed_program",
+        "required": true,
+        "default": null,
+        "validation": "rights/platform/legal intersections",
+        "help": "No auto-enable unsupported mode",
+        "error": "Modes: rights/platform/legal intersections. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "audience_policy_id",
+        "label": "Audience",
+        "type": "id",
+        "required": false,
+        "default": null,
+        "validation": "required before release",
+        "help": "No inferred jurisdictions",
+        "error": "Audience: required before release. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "research_report_id",
+        "label": "Evidence",
+        "type": "id",
+        "required": false,
+        "default": null,
+        "validation": "required for claims;can save without",
+        "help": "No invented track record",
+        "error": "Evidence: required for claims;can save without. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "methodology_document_id",
+        "label": "Methodology",
+        "type": "id",
+        "required": false,
+        "default": null,
+        "validation": "required before public publication",
+        "help": "Versioned approved content",
+        "error": "Methodology: required before public publication. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      }
+    ],
+    "save_effect": "Create real draft rows even without completed research",
+    "preview_effect": "Render private no-store audience-safe preview with missing-data messages",
+    "confirm_effect": "Submit version for review; not directly publish",
+    "rules": "A version with no sleeves/evidence may be saved but cannot pass release or appear publicly. State badges separate edited, validated, approved, published.",
+    "layout": "Left main form grouped into stated steps; right effective-summary rail; error summary links to labeled fields. Mobile rail follows current step before action bar.",
+    "validation_timing": "Validate on blur after first interaction and on submit; never replace draft while user edits. Server repeats all checks. Positive response reflects committed state, not optimistic toast.",
+    "conflict": "If-Match or expected_revision mismatch ->409 with current revision and non-secret field diff; preserve local draft; user resolves explicitly.",
+    "cancel": "Cancel leaves last explicitly saved draft; never executes or grants authority.",
+    "autosave": "Display prefs only after500ms debounce; all other forms explicit Save draft; secrets/challenges never autosaved.",
+    "idempotency": "Stable per logical submission key; retries join same operation; changed payload with same key ->409.",
+    "button_labels": [
+      "Save draft",
+      "Validate",
+      "Preview",
+      "Confirm scoped action"
+    ]
+  },
+  {
+    "id": "F-RELEASE",
+    "title": "Release review",
+    "scope": "admin",
+    "steps": [
+      "Object/hash",
+      "Evidence",
+      "Gates",
+      "Audience",
+      "Independent review",
+      "Decision"
+    ],
+    "fields": [
+      {
+        "key": "object_version_id",
+        "label": "Version",
+        "type": "id",
+        "required": true,
+        "default": null,
+        "validation": "immutable current review target",
+        "help": "Exact hash shown",
+        "error": "Version: immutable current review target. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "evidence_manifest_id",
+        "label": "Evidence",
+        "type": "id",
+        "required": true,
+        "default": null,
+        "validation": "complete mapped tests/rights/data/report",
+        "help": "Structural hashes not truth by themselves",
+        "error": "Evidence: complete mapped tests/rights/data/report. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "audience_policy_id",
+        "label": "Audience",
+        "type": "id",
+        "required": true,
+        "default": null,
+        "validation": "approved exact service/channel/geography",
+        "help": "No broadened audience",
+        "error": "Audience: approved exact service/channel/geography. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "scheduled_at",
+        "label": "Effective time",
+        "type": "datetime",
+        "required": false,
+        "default": null,
+        "validation": "future within approval validity",
+        "help": "Open allocations retain original binding",
+        "error": "Effective time: future within approval validity. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "decision",
+        "label": "Decision",
+        "type": "enum:request_changes,reject,approve",
+        "required": true,
+        "default": "request_changes",
+        "validation": "per-role reviewer authorization",
+        "help": "Cannot approve own proposal where independence required",
+        "error": "Decision: per-role reviewer authorization. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "reason",
+        "label": "Decision reason",
+        "type": "text",
+        "required": true,
+        "default": null,
+        "validation": "1..4000 characters",
+        "help": "Audit evidence",
+        "error": "Decision reason: 1..4000 characters. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      }
+    ],
+    "save_effect": "Record review notes",
+    "preview_effect": "Recompute all gates and display changes since proposal",
+    "confirm_effect": "Persist decision after fresh step-up; publication is separate",
+    "rules": "No checkbox declares legal advice complete; evidence-bound approvals only. Financial permission cannot arise from role switch in same identity.",
+    "layout": "Left main form grouped into stated steps; right effective-summary rail; error summary links to labeled fields. Mobile rail follows current step before action bar.",
+    "validation_timing": "Validate on blur after first interaction and on submit; never replace draft while user edits. Server repeats all checks. Positive response reflects committed state, not optimistic toast.",
+    "conflict": "If-Match or expected_revision mismatch ->409 with current revision and non-secret field diff; preserve local draft; user resolves explicitly.",
+    "cancel": "Cancel leaves last explicitly saved draft; never executes or grants authority.",
+    "autosave": "Display prefs only after500ms debounce; all other forms explicit Save draft; secrets/challenges never autosaved.",
+    "idempotency": "Stable per logical submission key; retries join same operation; changed payload with same key ->409.",
+    "button_labels": [
+      "Save draft",
+      "Validate",
+      "Preview",
+      "Confirm scoped action"
+    ]
+  },
+  {
+    "id": "F-PUBLISHER",
+    "title": "Publisher destination",
+    "scope": "admin",
+    "steps": [
+      "Platform",
+      "External strategy",
+      "Identity/scope",
+      "Capabilities",
+      "Qualification"
+    ],
+    "fields": [
+      {
+        "key": "platform",
+        "label": "Platform",
+        "type": "enum:collective2,etoro,copyfactory,broker_native",
+        "required": true,
+        "default": null,
+        "validation": "implemented approved adapter",
+        "help": "Not proprietary SignalStack self-hosting",
+        "error": "Platform: implemented approved adapter. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "external_strategy_id",
+        "label": "External strategy",
+        "type": "id",
+        "required": true,
+        "default": null,
+        "validation": "read-verified account strategy",
+        "help": "Unique financial authority binding",
+        "error": "External strategy: read-verified account strategy. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "environment",
+        "label": "Mode",
+        "type": "enum:local_simulation,external_test,demo,live",
+        "required": true,
+        "default": "local_simulation",
+        "validation": "vendor-specific evidence;C2 external_test not sandbox",
+        "help": "No subscribers/autotrade for test without verification",
+        "error": "Mode: vendor-specific evidence;C2 external_test not sandbox. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "credential_ref",
+        "label": "Credential reference",
+        "type": "secret_ref",
+        "required": false,
+        "default": null,
+        "validation": "scoped preprovisioned reference",
+        "help": "Never disclose key",
+        "error": "Credential reference: scoped preprovisioned reference. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "capability_manifest_id",
+        "label": "Capabilities",
+        "type": "id",
+        "required": false,
+        "default": null,
+        "validation": "required before external action",
+        "help": "Exact platform version/evidence",
+        "error": "Capabilities: required before external action. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "publication_mode",
+        "label": "Mode",
+        "type": "enum:api_strategy_publisher,approved_master_copy",
+        "required": true,
+        "default": "api_strategy_publisher",
+        "validation": "one approved path per external account/strategy",
+        "help": "No double publisher",
+        "error": "Mode: one approved path per external account/strategy. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      }
+    ],
+    "save_effect": "Save inactive destination",
+    "preview_effect": "Run read-only identity/capability checks where allowed",
+    "confirm_effect": "Request qualification/release; not send signal",
+    "rules": "No real C2 test request without external explicit authorization; unsupported operations stay blocked while local protocol tests exercise all outcomes.",
+    "layout": "Left main form grouped into stated steps; right effective-summary rail; error summary links to labeled fields. Mobile rail follows current step before action bar.",
+    "validation_timing": "Validate on blur after first interaction and on submit; never replace draft while user edits. Server repeats all checks. Positive response reflects committed state, not optimistic toast.",
+    "conflict": "If-Match or expected_revision mismatch ->409 with current revision and non-secret field diff; preserve local draft; user resolves explicitly.",
+    "cancel": "Cancel leaves last explicitly saved draft; never executes or grants authority.",
+    "autosave": "Display prefs only after500ms debounce; all other forms explicit Save draft; secrets/challenges never autosaved.",
+    "idempotency": "Stable per logical submission key; retries join same operation; changed payload with same key ->409.",
+    "button_labels": [
+      "Save draft",
+      "Validate",
+      "Preview",
+      "Confirm scoped action"
+    ]
+  },
+  {
+    "id": "F-PUBLISH-ACTION",
+    "title": "Publisher recovery/correction",
+    "scope": "admin",
+    "steps": [
+      "Intent",
+      "Current external state",
+      "Allowed operation",
+      "Preview",
+      "Confirm"
+    ],
+    "fields": [
+      {
+        "key": "intent_id",
+        "label": "Intent",
+        "type": "id",
+        "required": true,
+        "default": null,
+        "validation": "scope-owned existing intent",
+        "help": "Never fabricate new identity for retry",
+        "error": "Intent: scope-owned existing intent. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "operation",
+        "label": "Operation",
+        "type": "enum:reconcile,propose_price_change,propose_cancel",
+        "required": true,
+        "default": "reconcile",
+        "validation": "supported exact recipe",
+        "help": "Quantity changes cannot masquerade as price edit",
+        "error": "Operation: supported exact recipe. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "new_price",
+        "label": "Proposed price",
+        "type": "decimal",
+        "required": false,
+        "default": null,
+        "validation": "required only valid price modification",
+        "help": "Instrument/tick/side validation",
+        "error": "Proposed price: required only valid price modification. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "reason",
+        "label": "Reason",
+        "type": "text",
+        "required": true,
+        "default": null,
+        "validation": "1..2000 characters",
+        "help": "Audit",
+        "error": "Reason: 1..2000 characters. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      }
+    ],
+    "save_effect": "Record correction proposal",
+    "preview_effect": "Recheck external family, rights and permitted mutation",
+    "confirm_effect": "Enqueue approved operation with durable identity; no blind retry",
+    "rules": "Cohort unchanged after unknown send; new subscribers receive no late old entry through repair.",
+    "layout": "Left main form grouped into stated steps; right effective-summary rail; error summary links to labeled fields. Mobile rail follows current step before action bar.",
+    "validation_timing": "Validate on blur after first interaction and on submit; never replace draft while user edits. Server repeats all checks. Positive response reflects committed state, not optimistic toast.",
+    "conflict": "If-Match or expected_revision mismatch ->409 with current revision and non-secret field diff; preserve local draft; user resolves explicitly.",
+    "cancel": "Cancel leaves last explicitly saved draft; never executes or grants authority.",
+    "autosave": "Display prefs only after500ms debounce; all other forms explicit Save draft; secrets/challenges never autosaved.",
+    "idempotency": "Stable per logical submission key; retries join same operation; changed payload with same key ->409.",
+    "button_labels": [
+      "Save draft",
+      "Validate",
+      "Preview",
+      "Confirm scoped action"
+    ]
+  },
+  {
+    "id": "F-PRICE",
+    "title": "Price and entitlement draft",
+    "scope": "admin",
+    "steps": [
+      "Product/SKU",
+      "Interval/currency",
+      "Entitlements",
+      "Processor mode",
+      "Review"
+    ],
+    "fields": [
+      {
+        "key": "sku",
+        "label": "SKU",
+        "type": "slug",
+        "required": true,
+        "default": null,
+        "validation": "immutable unique product plan key",
+        "help": "No arbitrary client prices",
+        "error": "SKU: immutable unique product plan key. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "currency",
+        "label": "Currency",
+        "type": "currency",
+        "required": true,
+        "default": "USD",
+        "validation": "supported merchant approved currency",
+        "help": "Currency exponent from currency metadata",
+        "error": "Currency: supported merchant approved currency. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "amount_minor",
+        "label": "Amount in minor units",
+        "type": "integer",
+        "required": true,
+        "default": null,
+        "validation": ">=0 within approved test/live pricing",
+        "help": "Not float cents",
+        "error": "Amount in minor units: >=0 within approved test/live pricing. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "interval",
+        "label": "Interval",
+        "type": "enum:month,year",
+        "required": true,
+        "default": "month",
+        "validation": "approved plan interval",
+        "help": "No hidden renewal",
+        "error": "Interval: approved plan interval. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "portfolio_limit",
+        "label": "Portfolio count",
+        "type": "integer",
+        "required": true,
+        "default": null,
+        "validation": "nonnegative;defined unlimited only as explicit policy",
+        "help": "No unexplained null unlimited",
+        "error": "Portfolio count: nonnegative;defined unlimited only as explicit policy. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "features",
+        "label": "Feature IDs",
+        "type": "id_list",
+        "required": true,
+        "default": null,
+        "validation": "reviewed entitlement registry",
+        "help": "No implicit trading right",
+        "error": "Feature IDs: reviewed entitlement registry. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "mode",
+        "label": "Mode",
+        "type": "enum:test,live",
+        "required": true,
+        "default": "test",
+        "validation": "live requires merchant/owner price approval",
+        "help": "No auto paid launch",
+        "error": "Mode: live requires merchant/owner price approval. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      }
+    ],
+    "save_effect": "Create test-mode price version",
+    "preview_effect": "Show total costs, entitlement diff and active subscriber impact",
+    "confirm_effect": "Submit approved processor price request only in explicit mode",
+    "rules": "Existing subscriptions bind original price/version; downgrade has effective date and safe open-obligation treatment.",
+    "layout": "Left main form grouped into stated steps; right effective-summary rail; error summary links to labeled fields. Mobile rail follows current step before action bar.",
+    "validation_timing": "Validate on blur after first interaction and on submit; never replace draft while user edits. Server repeats all checks. Positive response reflects committed state, not optimistic toast.",
+    "conflict": "If-Match or expected_revision mismatch ->409 with current revision and non-secret field diff; preserve local draft; user resolves explicitly.",
+    "cancel": "Cancel leaves last explicitly saved draft; never executes or grants authority.",
+    "autosave": "Display prefs only after500ms debounce; all other forms explicit Save draft; secrets/challenges never autosaved.",
+    "idempotency": "Stable per logical submission key; retries join same operation; changed payload with same key ->409.",
+    "button_labels": [
+      "Save draft",
+      "Validate",
+      "Preview",
+      "Confirm scoped action"
+    ]
+  },
+  {
+    "id": "F-MANAGED-PROGRAM",
+    "title": "PAMM/MAM program config",
+    "scope": "admin",
+    "steps": [
+      "Broker agreement",
+      "Allocation",
+      "Dealing",
+      "NAV/fees",
+      "Audience",
+      "Review"
+    ],
+    "fields": [
+      {
+        "key": "program_name",
+        "label": "Name",
+        "type": "text",
+        "required": true,
+        "default": null,
+        "validation": "1..100 plain text",
+        "help": "No implication launched",
+        "error": "Name: 1..100 plain text. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "broker_program_id",
+        "label": "Broker program",
+        "type": "id",
+        "required": true,
+        "default": null,
+        "validation": "broker-verified exact program",
+        "help": "No internally invented pool",
+        "error": "Broker program: broker-verified exact program. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "mode",
+        "label": "Structure",
+        "type": "enum:pamm,mam",
+        "required": true,
+        "default": null,
+        "validation": "approved contract semantics",
+        "help": "Not interchangeable accounting",
+        "error": "Structure: approved contract semantics. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "allocation_policy_id",
+        "label": "Allocation policy",
+        "type": "id",
+        "required": true,
+        "default": null,
+        "validation": "precommitted deterministic rule",
+        "help": "No after-outcome selection",
+        "error": "Allocation policy: precommitted deterministic rule. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "nav_policy_id",
+        "label": "NAV policy",
+        "type": "id",
+        "required": true,
+        "default": null,
+        "validation": "broker-approved generation/restatement convention",
+        "help": "No incomplete estimate sold as NAV",
+        "error": "NAV policy: broker-approved generation/restatement convention. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "dealing_schedule_id",
+        "label": "Dealing schedule",
+        "type": "id",
+        "required": true,
+        "default": null,
+        "validation": "cutoffs/timezone verified",
+        "help": "No browser wall-clock authority",
+        "error": "Dealing schedule: cutoffs/timezone verified. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "fee_policy_id",
+        "label": "Fee policy",
+        "type": "id",
+        "required": false,
+        "default": null,
+        "validation": "approved cashflow/HWM convention",
+        "help": "Performance fees disabled without full convention",
+        "error": "Fee policy: approved cashflow/HWM convention. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "agreement_evidence_ids",
+        "label": "Evidence",
+        "type": "id_list",
+        "required": true,
+        "default": null,
+        "validation": "rights/legal/broker approvals",
+        "help": "No automated signing",
+        "error": "Evidence: rights/legal/broker approvals. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      }
+    ],
+    "save_effect": "Save inactive program",
+    "preview_effect": "Validate completeness and unresolved conventions",
+    "confirm_effect": "Submit program release review, not custody or deposit action",
+    "rules": "UI built even when approvals absent; real cash handling remains through broker.",
+    "layout": "Left main form grouped into stated steps; right effective-summary rail; error summary links to labeled fields. Mobile rail follows current step before action bar.",
+    "validation_timing": "Validate on blur after first interaction and on submit; never replace draft while user edits. Server repeats all checks. Positive response reflects committed state, not optimistic toast.",
+    "conflict": "If-Match or expected_revision mismatch ->409 with current revision and non-secret field diff; preserve local draft; user resolves explicitly.",
+    "cancel": "Cancel leaves last explicitly saved draft; never executes or grants authority.",
+    "autosave": "Display prefs only after500ms debounce; all other forms explicit Save draft; secrets/challenges never autosaved.",
+    "idempotency": "Stable per logical submission key; retries join same operation; changed payload with same key ->409.",
+    "button_labels": [
+      "Save draft",
+      "Validate",
+      "Preview",
+      "Confirm scoped action"
+    ]
+  },
+  {
+    "id": "F-DEALING",
+    "title": "Dealing and allocation review",
+    "scope": "admin",
+    "steps": [
+      "Program/generation",
+      "Requests",
+      "Allocation",
+      "Evidence",
+      "Confirm"
+    ],
+    "fields": [
+      {
+        "key": "program_id",
+        "label": "Program",
+        "type": "id",
+        "required": true,
+        "default": null,
+        "validation": "approved scoped program",
+        "help": "No generic account multiplier",
+        "error": "Program: approved scoped program. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "nav_generation_id",
+        "label": "NAV generation",
+        "type": "id",
+        "required": true,
+        "default": null,
+        "validation": "verified current broker generation",
+        "help": "Immutable",
+        "error": "NAV generation: verified current broker generation. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "request_ids",
+        "label": "Requests",
+        "type": "id_list",
+        "required": true,
+        "default": null,
+        "validation": "eligible cutoff cohort",
+        "help": "No add after allocation outcome known",
+        "error": "Requests: eligible cutoff cohort. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "allocation_manifest_id",
+        "label": "Allocation",
+        "type": "id",
+        "required": true,
+        "default": null,
+        "validation": "deterministic policy and tie-break bound",
+        "help": "Conserves units/amounts",
+        "error": "Allocation: deterministic policy and tie-break bound. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "reason",
+        "label": "Reason",
+        "type": "text",
+        "required": true,
+        "default": null,
+        "validation": "1..2000 plain text",
+        "help": "Required audit",
+        "error": "Reason: 1..2000 plain text. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      }
+    ],
+    "save_effect": "Save review",
+    "preview_effect": "Show broker-defined allocation/fees/rounding and unresolved conditions",
+    "confirm_effect": "Prepare approved broker instruction or await external authority",
+    "rules": "No local invented transfer. Corrected NAV causes new generation and revised report, not overwrite.",
+    "layout": "Left main form grouped into stated steps; right effective-summary rail; error summary links to labeled fields. Mobile rail follows current step before action bar.",
+    "validation_timing": "Validate on blur after first interaction and on submit; never replace draft while user edits. Server repeats all checks. Positive response reflects committed state, not optimistic toast.",
+    "conflict": "If-Match or expected_revision mismatch ->409 with current revision and non-secret field diff; preserve local draft; user resolves explicitly.",
+    "cancel": "Cancel leaves last explicitly saved draft; never executes or grants authority.",
+    "autosave": "Display prefs only after500ms debounce; all other forms explicit Save draft; secrets/challenges never autosaved.",
+    "idempotency": "Stable per logical submission key; retries join same operation; changed payload with same key ->409.",
+    "button_labels": [
+      "Save draft",
+      "Validate",
+      "Preview",
+      "Confirm scoped action"
+    ]
+  },
+  {
+    "id": "F-ACCESS",
+    "title": "Commercial role membership",
+    "scope": "admin",
+    "steps": [
+      "Identity",
+      "Role",
+      "Scope",
+      "Expiry",
+      "Confirm"
+    ],
+    "fields": [
+      {
+        "key": "user_id",
+        "label": "User",
+        "type": "id",
+        "required": true,
+        "default": null,
+        "validation": "verified existing or invited identity",
+        "help": "No arbitrary JWT claims",
+        "error": "User: verified existing or invited identity. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "role",
+        "label": "Role",
+        "type": "enum:researcher,reviewer,publisher_operator,billing_operator,support_readonly",
+        "required": true,
+        "default": null,
+        "validation": "explicit named role",
+        "help": "Owner grants not through self-service form",
+        "error": "Role: explicit named role. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "scope_ids",
+        "label": "Scope",
+        "type": "id_list",
+        "required": true,
+        "default": null,
+        "validation": "minimum necessary objects/tenants",
+        "help": "No implicit global scope",
+        "error": "Scope: minimum necessary objects/tenants. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "expires_at",
+        "label": "Expiry",
+        "type": "datetime",
+        "required": false,
+        "default": null,
+        "validation": "required for temporary support grant",
+        "help": "Current time server-side",
+        "error": "Expiry: required for temporary support grant. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "purpose",
+        "label": "Purpose",
+        "type": "text",
+        "required": true,
+        "default": null,
+        "validation": "1..1000 characters",
+        "help": "Audited access",
+        "error": "Purpose: 1..1000 characters. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      }
+    ],
+    "save_effect": "Save proposed grant",
+    "preview_effect": "Display exact read and effect capabilities",
+    "confirm_effect": "Apply owner-authorized membership and session invalidation as appropriate",
+    "rules": "Customer cannot access admin role route; support impersonation and private-secret access absent.",
+    "layout": "Left main form grouped into stated steps; right effective-summary rail; error summary links to labeled fields. Mobile rail follows current step before action bar.",
+    "validation_timing": "Validate on blur after first interaction and on submit; never replace draft while user edits. Server repeats all checks. Positive response reflects committed state, not optimistic toast.",
+    "conflict": "If-Match or expected_revision mismatch ->409 with current revision and non-secret field diff; preserve local draft; user resolves explicitly.",
+    "cancel": "Cancel leaves last explicitly saved draft; never executes or grants authority.",
+    "autosave": "Display prefs only after500ms debounce; all other forms explicit Save draft; secrets/challenges never autosaved.",
+    "idempotency": "Stable per logical submission key; retries join same operation; changed payload with same key ->409.",
+    "button_labels": [
+      "Save draft",
+      "Validate",
+      "Preview",
+      "Confirm scoped action"
+    ]
+  },
+  {
+    "id": "F-INTEGRATION",
+    "title": "Integration configuration",
+    "scope": "admin",
+    "steps": [
+      "Registry",
+      "Purpose",
+      "Mode",
+      "Entitlement",
+      "Credentials",
+      "Quotas"
+    ],
+    "fields": [
+      {
+        "key": "provider_registry_id",
+        "label": "Provider",
+        "type": "id",
+        "required": true,
+        "default": null,
+        "validation": "reviewed allowlist",
+        "help": "No arbitrary service URL",
+        "error": "Provider: reviewed allowlist. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "purpose",
+        "label": "Purpose",
+        "type": "enum:research,quotes,reference,publication,billing,monitoring",
+        "required": true,
+        "default": null,
+        "validation": "approved provider use",
+        "help": "Research credentials have no trade powers",
+        "error": "Purpose: approved provider use. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "environment",
+        "label": "Environment",
+        "type": "enum:test,demo,live",
+        "required": true,
+        "default": "test",
+        "validation": "purpose-specific mapping",
+        "help": "Explicit live approval",
+        "error": "Environment: purpose-specific mapping. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "credential_ref",
+        "label": "Secret reference",
+        "type": "secret_ref",
+        "required": false,
+        "default": null,
+        "validation": "role-scoped vault reference",
+        "help": "No secret echo",
+        "error": "Secret reference: role-scoped vault reference. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "entitlement_evidence_id",
+        "label": "Entitlement/use terms",
+        "type": "id",
+        "required": false,
+        "default": null,
+        "validation": "required for selected data use",
+        "help": "Free software is not free data rights",
+        "error": "Entitlement/use terms: required for selected data use. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "quota_profile_id",
+        "label": "Quota/cost profile",
+        "type": "id",
+        "required": true,
+        "default": null,
+        "validation": "known request weights/reset/cost cap",
+        "help": "No paid fallback",
+        "error": "Quota/cost profile: known request weights/reset/cost cap. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      }
+    ],
+    "save_effect": "Save inactive config",
+    "preview_effect": "Permitted read-only check and quota forecast",
+    "confirm_effect": "Apply approved configuration only",
+    "rules": "Get/read endpoint must still enforce host/redirect authorization and payload limits.",
+    "layout": "Left main form grouped into stated steps; right effective-summary rail; error summary links to labeled fields. Mobile rail follows current step before action bar.",
+    "validation_timing": "Validate on blur after first interaction and on submit; never replace draft while user edits. Server repeats all checks. Positive response reflects committed state, not optimistic toast.",
+    "conflict": "If-Match or expected_revision mismatch ->409 with current revision and non-secret field diff; preserve local draft; user resolves explicitly.",
+    "cancel": "Cancel leaves last explicitly saved draft; never executes or grants authority.",
+    "autosave": "Display prefs only after500ms debounce; all other forms explicit Save draft; secrets/challenges never autosaved.",
+    "idempotency": "Stable per logical submission key; retries join same operation; changed payload with same key ->409.",
+    "button_labels": [
+      "Save draft",
+      "Validate",
+      "Preview",
+      "Confirm scoped action"
+    ]
+  },
+  {
+    "id": "F-CONTENT",
+    "title": "Approved public content",
+    "scope": "admin",
+    "steps": [
+      "Document",
+      "Plain content",
+      "Audience",
+      "Sources",
+      "Review"
+    ],
+    "fields": [
+      {
+        "key": "document_type",
+        "label": "Type",
+        "type": "enum:methodology,risk,billing_terms,privacy,help,status",
+        "required": true,
+        "default": null,
+        "validation": "known structured template",
+        "help": "No arbitrary HTML",
+        "error": "Type: known structured template. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "locale",
+        "label": "Language",
+        "type": "locale",
+        "required": true,
+        "default": "en-US",
+        "validation": "supported language",
+        "help": "Translations reviewed for factual consistency",
+        "error": "Language: supported language. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "title",
+        "label": "Title",
+        "type": "text",
+        "required": true,
+        "default": null,
+        "validation": "1..120 plain text",
+        "help": "No unsupported claims",
+        "error": "Title: 1..120 plain text. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "body",
+        "label": "Content",
+        "type": "text",
+        "required": true,
+        "default": null,
+        "validation": "bounded20000 plain text or safe structured nodes",
+        "help": "No scripts/iframes/event handlers",
+        "error": "Content: bounded20000 plain text or safe structured nodes. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "audience_policy_id",
+        "label": "Audience",
+        "type": "id",
+        "required": true,
+        "default": null,
+        "validation": "approved scope",
+        "help": "No raw licenses",
+        "error": "Audience: approved scope. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "source_evidence_ids",
+        "label": "Supporting evidence",
+        "type": "id_list",
+        "required": false,
+        "default": null,
+        "validation": "required for factual performance claims",
+        "help": "No model invented citations",
+        "error": "Supporting evidence: required for factual performance claims. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      }
+    ],
+    "save_effect": "Save private content draft",
+    "preview_effect": "Render using same safe renderer under no-store private route",
+    "confirm_effect": "Submit for review; publishing distinct approved command",
+    "rules": "No unreviewed AI marketing text; consent signed on exact published document version.",
+    "layout": "Left main form grouped into stated steps; right effective-summary rail; error summary links to labeled fields. Mobile rail follows current step before action bar.",
+    "validation_timing": "Validate on blur after first interaction and on submit; never replace draft while user edits. Server repeats all checks. Positive response reflects committed state, not optimistic toast.",
+    "conflict": "If-Match or expected_revision mismatch ->409 with current revision and non-secret field diff; preserve local draft; user resolves explicitly.",
+    "cancel": "Cancel leaves last explicitly saved draft; never executes or grants authority.",
+    "autosave": "Display prefs only after500ms debounce; all other forms explicit Save draft; secrets/challenges never autosaved.",
+    "idempotency": "Stable per logical submission key; retries join same operation; changed payload with same key ->409.",
+    "button_labels": [
+      "Save draft",
+      "Validate",
+      "Preview",
+      "Confirm scoped action"
+    ]
+  },
+  {
+    "id": "F-WORKSPACE",
+    "title": "Workspace and saved views",
+    "scope": "admin",
+    "steps": [
+      "Display",
+      "Navigation",
+      "Notifications",
+      "Review"
+    ],
+    "fields": [
+      {
+        "key": "workspace_name",
+        "label": "Workspace label",
+        "type": "text",
+        "required": true,
+        "default": null,
+        "validation": "1..80 plain text",
+        "help": "No impersonating another entity",
+        "error": "Workspace label: 1..80 plain text. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "theme",
+        "label": "Theme",
+        "type": "enum:system,dark,light",
+        "required": true,
+        "default": "system",
+        "validation": "known theme",
+        "help": "Shared visual tokens only",
+        "error": "Theme: known theme. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "density",
+        "label": "Density",
+        "type": "enum:comfortable,compact",
+        "required": true,
+        "default": "comfortable",
+        "validation": "accessible minimum controls",
+        "help": "Not a risk policy",
+        "error": "Density: accessible minimum controls. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "visible_panel_ids",
+        "label": "Optional panels",
+        "type": "id_list",
+        "required": false,
+        "default": null,
+        "validation": "allowlisted current role panels",
+        "help": "Mandatory safety/fees/origin cannot hide",
+        "error": "Optional panels: allowlisted current role panels. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "column_order",
+        "label": "Table columns",
+        "type": "id_list",
+        "required": false,
+        "default": null,
+        "validation": "allowlisted;required identity columns retained",
+        "help": "Move via buttons not drag-only",
+        "error": "Table columns: allowlisted;required identity columns retained. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "notification_route_id",
+        "label": "Operations notifications",
+        "type": "id",
+        "required": false,
+        "default": null,
+        "validation": "verified recipient/channel policy",
+        "help": "Test notice non-actionable",
+        "error": "Operations notifications: verified recipient/channel policy. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      }
+    ],
+    "save_effect": "Persist personal view or workspace draft",
+    "preview_effect": "Show exact cosmetic scope and mandatory panels",
+    "confirm_effect": "Save display configuration; financial configuration separate review",
+    "rules": "No custom CSS/JS/SQL/plugin imports. Reordering accessible and versioned per principal/workspace/environment.",
+    "layout": "Left main form grouped into stated steps; right effective-summary rail; error summary links to labeled fields. Mobile rail follows current step before action bar.",
+    "validation_timing": "Validate on blur after first interaction and on submit; never replace draft while user edits. Server repeats all checks. Positive response reflects committed state, not optimistic toast.",
+    "conflict": "If-Match or expected_revision mismatch ->409 with current revision and non-secret field diff; preserve local draft; user resolves explicitly.",
+    "cancel": "Cancel leaves last explicitly saved draft; never executes or grants authority.",
+    "autosave": "Display prefs only after500ms debounce; all other forms explicit Save draft; secrets/challenges never autosaved.",
+    "idempotency": "Stable per logical submission key; retries join same operation; changed payload with same key ->409.",
+    "button_labels": [
+      "Save draft",
+      "Validate",
+      "Preview",
+      "Confirm scoped action"
+    ]
+  },
+  {
+    "id": "F-SIZING-RECIPE",
+    "title": "Sizing and portfolio-risk recipe",
+    "scope": "trading",
+    "steps": [
+      "Identity and product scope",
+      "Sizing basis",
+      "Hard limits and reserves",
+      "Review"
+    ],
+    "fields": [
+      {
+        "key": "recipe_name",
+        "label": "Recipe name",
+        "type": "text",
+        "required": true,
+        "default": null,
+        "validation": "max100;unique within account policy scope",
+        "help": "Private draft only",
+        "error": "Recipe name: max100;unique within account policy scope. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "product_profile_id",
+        "label": "Product profile",
+        "type": "id",
+        "required": true,
+        "default": null,
+        "validation": "verified compatible product schema",
+        "help": "Defines units and multiplier",
+        "error": "Product profile: verified compatible product schema. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "risk_basis",
+        "label": "Sizing basis",
+        "type": "enum:fixed_units,fixed_notional,loss_budget",
+        "required": true,
+        "default": null,
+        "validation": "must be allowed by the selected product profile",
+        "help": "No algorithm inferred from a name",
+        "error": "Sizing basis: must be allowed by the selected product profile. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "risk_amount",
+        "label": "Per-trade risk amount",
+        "type": "decimal",
+        "required": false,
+        "default": null,
+        "validation": "required for loss_budget;positive;at or below released ceiling",
+        "help": "Currency or percent basis supplied by verified account policy",
+        "error": "Per-trade risk amount: required for loss_budget;positive;at or below released ceiling. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "risk_currency",
+        "label": "Risk currency",
+        "type": "currency",
+        "required": false,
+        "default": null,
+        "validation": "required for money amount;must match approved basis",
+        "help": "No implicit FX conversion",
+        "error": "Risk currency: required for money amount;must match approved basis. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "minimum_quantity",
+        "label": "Minimum legal quantity",
+        "type": "decimal",
+        "required": false,
+        "default": null,
+        "validation": "server instrument minimum;cannot raise quantity beyond risk",
+        "help": "Smaller signals may be rejected",
+        "error": "Minimum legal quantity: server instrument minimum;cannot raise quantity beyond risk. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "maximum_quantity",
+        "label": "Maximum quantity",
+        "type": "decimal",
+        "required": false,
+        "default": null,
+        "validation": "nonnegative compatible units;at or below account hard cap",
+        "help": "Does not replace buying-power checks",
+        "error": "Maximum quantity: nonnegative compatible units;at or below account hard cap. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "account_limit_policy_id",
+        "label": "Daily weekly exposure and loss limits",
+        "type": "id",
+        "required": true,
+        "default": null,
+        "validation": "released server policy;customer cannot weaken it",
+        "help": "Preview all applicable account and owner limits",
+        "error": "Daily weekly exposure and loss limits: released server policy;customer cannot weaken it. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "allocation_policy_id",
+        "label": "Analyst and concentration policy",
+        "type": "id",
+        "required": true,
+        "default": null,
+        "validation": "compatible released overlap/reservation policy",
+        "help": "Shared capital and pending orders remain counted",
+        "error": "Analyst and concentration policy: compatible released overlap/reservation policy. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "cost_stress_policy_id",
+        "label": "Fees slippage and stress allowance",
+        "type": "id",
+        "required": true,
+        "default": null,
+        "validation": "verified product-specific cost and stress convention",
+        "help": "A stop price is not guaranteed loss",
+        "error": "Fees slippage and stress allowance: verified product-specific cost and stress convention. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      }
+    ],
+    "save_effect": "Save sizing recipe draft",
+    "preview_effect": "Show all resolved quantities units caps and failure reasons on a selected signal",
+    "confirm_effect": "Submit recipe for research/review only;do not alter live sizing",
+    "rules": "No browser computation can size the order. Edit requires actual product metadata and inherited hard boundaries. Unknown risk or buying power remains a blocker.",
+    "layout": "Left main form grouped into stated steps; right effective-summary rail; error summary links to labeled fields. Mobile rail follows current step before action bar.",
+    "validation_timing": "Validate on blur after first interaction and on submit; never replace draft while user edits. Server repeats all checks. Positive response reflects committed state, not optimistic toast.",
+    "conflict": "If-Match or expected_revision mismatch ->409 with current revision and non-secret field diff; preserve local draft; user resolves explicitly.",
+    "cancel": "Cancel leaves last explicitly saved draft; never executes or grants authority.",
+    "autosave": "Display prefs only after500ms debounce; all other forms explicit Save draft; secrets/challenges never autosaved.",
+    "idempotency": "Stable per logical submission key; retries join same operation; changed payload with same key ->409.",
+    "button_labels": [
+      "Save draft",
+      "Validate",
+      "Preview",
+      "Confirm scoped action"
+    ]
+  },
+  {
+    "id": "F-STOP-RECIPE",
+    "title": "Initial-stop and fallback recipe",
+    "scope": "trading",
+    "steps": [
+      "Stop meaning",
+      "Source precedence",
+      "Fallback parameters",
+      "Review"
+    ],
+    "fields": [
+      {
+        "key": "recipe_name",
+        "label": "Recipe name",
+        "type": "text",
+        "required": true,
+        "default": null,
+        "validation": "max100",
+        "help": "Versioned internal recipe",
+        "error": "Recipe name: max100. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "reference_basis",
+        "label": "Stop reference basis",
+        "type": "enum:instrument_price,underlying_price,option_premium,combo_price",
+        "required": true,
+        "default": null,
+        "validation": "must match resolved source meaning and product",
+        "help": "No automatic underlying-to-premium translation",
+        "error": "Stop reference basis: must match resolved source meaning and product. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "provider_stop_policy",
+        "label": "Provider stop treatment",
+        "type": "enum:require_valid,use_valid_else_released_fallback",
+        "required": true,
+        "default": null,
+        "validation": "invalid/crossed supplied stop is not missing",
+        "help": "Fallback only for genuinely absent source stop",
+        "error": "Provider stop treatment: invalid/crossed supplied stop is not missing. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "fallback_method_id",
+        "label": "Fallback calculation",
+        "type": "id",
+        "required": false,
+        "default": null,
+        "validation": "released or research-only compatible method;required when selected",
+        "help": "No invented percentage default",
+        "error": "Fallback calculation: released or research-only compatible method;required when selected. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "fallback_distance",
+        "label": "Fallback distance parameter",
+        "type": "decimal",
+        "required": false,
+        "default": null,
+        "validation": "units/bounds from method schema;positive where profile requires",
+        "help": "Research draft until independently reviewed",
+        "error": "Fallback distance parameter: units/bounds from method schema;positive where profile requires. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "volatility_window",
+        "label": "Volatility lookback observations",
+        "type": "integer",
+        "required": false,
+        "default": null,
+        "validation": "required only for compatible volatility recipe;integer>=2",
+        "help": "Availability and warmup explicitly evaluated",
+        "error": "Volatility lookback observations: required only for compatible volatility recipe;integer>=2. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "native_coverage_policy_id",
+        "label": "Coverage and unprotected-window policy",
+        "type": "id",
+        "required": true,
+        "default": null,
+        "validation": "qualified exact account product session recipe",
+        "help": "No claimed continuous protection on unsupported route",
+        "error": "Coverage and unprotected-window policy: qualified exact account product session recipe. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "missing_data_action",
+        "label": "Missing or invalid data action",
+        "type": "enum:block_new_entry",
+        "required": true,
+        "default": "block_new_entry",
+        "validation": "cannot be relaxed by this form",
+        "help": "Existing positions follow their separate recovery plan",
+        "error": "Missing or invalid data action: cannot be relaxed by this form. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      }
+    ],
+    "save_effect": "Save initial-stop draft",
+    "preview_effect": "Display provider/fallback provenance invalidation and attainable coverage",
+    "confirm_effect": "Submit for reviewed policy release;no current stop move",
+    "rules": "Stops with valid negative product prices require an explicit compatible profile;do not globally forbid or reinterpret them. Existing trade remains on its original policy.",
+    "layout": "Left main form grouped into stated steps; right effective-summary rail; error summary links to labeled fields. Mobile rail follows current step before action bar.",
+    "validation_timing": "Validate on blur after first interaction and on submit; never replace draft while user edits. Server repeats all checks. Positive response reflects committed state, not optimistic toast.",
+    "conflict": "If-Match or expected_revision mismatch ->409 with current revision and non-secret field diff; preserve local draft; user resolves explicitly.",
+    "cancel": "Cancel leaves last explicitly saved draft; never executes or grants authority.",
+    "autosave": "Display prefs only after500ms debounce; all other forms explicit Save draft; secrets/challenges never autosaved.",
+    "idempotency": "Stable per logical submission key; retries join same operation; changed payload with same key ->409.",
+    "button_labels": [
+      "Save draft",
+      "Validate",
+      "Preview",
+      "Confirm scoped action"
+    ]
+  },
+  {
+    "id": "F-TRAIL-RECIPE",
+    "title": "Trailing and profit-lock recipe",
+    "scope": "trading",
+    "steps": [
+      "Activation",
+      "Distance and floor",
+      "Update constraints",
+      "Review"
+    ],
+    "fields": [
+      {
+        "key": "recipe_name",
+        "label": "Recipe name",
+        "type": "text",
+        "required": true,
+        "default": null,
+        "validation": "max100",
+        "help": "Versioned draft",
+        "error": "Recipe name: max100. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "activation_rule_id",
+        "label": "Activation condition",
+        "type": "id",
+        "required": true,
+        "default": null,
+        "validation": "compatible reviewed rule;explicit trigger basis",
+        "help": "A target can activate a trail only through policy",
+        "error": "Activation condition: compatible reviewed rule;explicit trigger basis. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "activation_value",
+        "label": "Activation parameter",
+        "type": "decimal",
+        "required": false,
+        "default": null,
+        "validation": "typed units and bounds supplied by rule",
+        "help": "Missing value is not zero",
+        "error": "Activation parameter: typed units and bounds supplied by rule. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "trail_method_id",
+        "label": "Trailing method",
+        "type": "id",
+        "required": true,
+        "default": null,
+        "validation": "fixed percent price volatility or other implemented method ID",
+        "help": "Only installed qualified formulas offered",
+        "error": "Trailing method: fixed percent price volatility or other implemented method ID. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "trail_distance",
+        "label": "Distance parameter",
+        "type": "decimal",
+        "required": false,
+        "default": null,
+        "validation": "required by method;unit/bounds from recipe schema",
+        "help": "Never an untyped generic percent",
+        "error": "Distance parameter: required by method;unit/bounds from recipe schema. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "minimum_improvement_ticks",
+        "label": "Minimum update improvement",
+        "type": "integer",
+        "required": false,
+        "default": null,
+        "validation": "integer>=1;compatible tick metadata",
+        "help": "Optimization cannot suppress a breached active threshold",
+        "error": "Minimum update improvement: integer>=1;compatible tick metadata. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "update_cooldown_ms",
+        "label": "Elective update cooldown in ms",
+        "type": "integer",
+        "required": false,
+        "default": null,
+        "validation": "integer>=0;bounded by released policy",
+        "help": "Urgent risk-reducing behavior has separate priority",
+        "error": "Elective update cooldown in ms: integer>=0;bounded by released policy. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "never_loosen",
+        "label": "Preserve activated protective floor",
+        "type": "boolean",
+        "required": true,
+        "default": "true",
+        "validation": "must remain true",
+        "help": "Both long and short directions enforced server-side",
+        "error": "Preserve activated protective floor: must remain true. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "replacement_recipe_id",
+        "label": "Broker stop-update procedure",
+        "type": "id",
+        "required": true,
+        "default": null,
+        "validation": "qualified same-order or cancel-replace procedure",
+        "help": "Native high-water reset and unknown outcomes accounted for",
+        "error": "Broker stop-update procedure: qualified same-order or cancel-replace procedure. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      }
+    ],
+    "save_effect": "Save trailing draft",
+    "preview_effect": "Show candidate activated and broker-confirmed floors separately on replay",
+    "confirm_effect": "Submit reviewed recipe;no live update from Save",
+    "rules": "An unattainable candidate floor is not a breach. Every accepted change retains actual fills and outstanding close commitments;no app function assumes a bracket from its name.",
+    "layout": "Left main form grouped into stated steps; right effective-summary rail; error summary links to labeled fields. Mobile rail follows current step before action bar.",
+    "validation_timing": "Validate on blur after first interaction and on submit; never replace draft while user edits. Server repeats all checks. Positive response reflects committed state, not optimistic toast.",
+    "conflict": "If-Match or expected_revision mismatch ->409 with current revision and non-secret field diff; preserve local draft; user resolves explicitly.",
+    "cancel": "Cancel leaves last explicitly saved draft; never executes or grants authority.",
+    "autosave": "Display prefs only after500ms debounce; all other forms explicit Save draft; secrets/challenges never autosaved.",
+    "idempotency": "Stable per logical submission key; retries join same operation; changed payload with same key ->409.",
+    "button_labels": [
+      "Save draft",
+      "Validate",
+      "Preview",
+      "Confirm scoped action"
+    ]
+  },
+  {
+    "id": "F-TARGET-RECIPE",
+    "title": "Profit-target level and partial-exit recipe",
+    "scope": "trading",
+    "steps": [
+      "Stable target identity",
+      "Meaning and level",
+      "Reduction basis",
+      "Review"
+    ],
+    "fields": [
+      {
+        "key": "target_id",
+        "label": "Target identity",
+        "type": "id",
+        "required": true,
+        "default": null,
+        "validation": "stable within version;updates do not replace another target",
+        "help": "Omitted means no change;remove is explicit operation",
+        "error": "Target identity: stable within version;updates do not replace another target. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "operation",
+        "label": "Target operation",
+        "type": "enum:add,update,remove",
+        "required": true,
+        "default": null,
+        "validation": "exact target/version scope",
+        "help": "Removal never removes protective stop",
+        "error": "Target operation: exact target/version scope. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "role",
+        "label": "Target role",
+        "type": "enum:reference,hard_exit,partial_exit,trailing_trigger",
+        "required": false,
+        "default": null,
+        "validation": "required for add/update",
+        "help": "Provider intent preserved unless released policy states otherwise",
+        "error": "Target role: required for add/update. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "reference_basis",
+        "label": "Trigger basis",
+        "type": "enum:instrument_price,underlying_price,option_premium,combo_price",
+        "required": false,
+        "default": null,
+        "validation": "required for add/update;product-compatible",
+        "help": "No raw price basis inference",
+        "error": "Trigger basis: required for add/update;product-compatible. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "level",
+        "label": "Target price or trigger level",
+        "type": "decimal",
+        "required": false,
+        "default": null,
+        "validation": "required for add/update;profile-valid domain",
+        "help": "No invented level when source supplied none",
+        "error": "Target price or trigger level: required for add/update;profile-valid domain. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "reduction_basis",
+        "label": "Reduction basis",
+        "type": "enum:original_allocation,remaining_allocation,cumulative_goal",
+        "required": false,
+        "default": null,
+        "validation": "required for partial exit",
+        "help": "Exact quantity-conserving semantics",
+        "error": "Reduction basis: required for partial exit. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "reduction_fraction",
+        "label": "Reduction fraction",
+        "type": "decimal",
+        "required": false,
+        "default": null,
+        "validation": "required for partial exit;0<value<=1",
+        "help": "Server cumulative rounding avoids excess sales",
+        "error": "Reduction fraction: required for partial exit;0<value<=1. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "rounding_policy_id",
+        "label": "Legal quantity rounding",
+        "type": "id",
+        "required": false,
+        "default": null,
+        "validation": "required for partial exit;verified instrument step",
+        "help": "Small allocations may not support every trim",
+        "error": "Legal quantity rounding: required for partial exit;verified instrument step. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "trail_recipe_id",
+        "label": "Trail activated at level",
+        "type": "id",
+        "required": false,
+        "default": null,
+        "validation": "required for trailing_trigger",
+        "help": "Activating a trail is not automatically an immediate sale",
+        "error": "Trail activated at level: required for trailing_trigger. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      }
+    ],
+    "save_effect": "Save explicit target operation",
+    "preview_effect": "Show changed levels actual owned quantity possible closes and remaining coverage",
+    "confirm_effect": "Submit target-policy review or separately authorized existing-position action",
+    "rules": "Multiple target records form one ordered target set. Stable IDs distinguish revisions,omission,clear and deletion. A gap across several levels is processed through one coordinated exit manager.",
+    "layout": "Left main form grouped into stated steps; right effective-summary rail; error summary links to labeled fields. Mobile rail follows current step before action bar.",
+    "validation_timing": "Validate on blur after first interaction and on submit; never replace draft while user edits. Server repeats all checks. Positive response reflects committed state, not optimistic toast.",
+    "conflict": "If-Match or expected_revision mismatch ->409 with current revision and non-secret field diff; preserve local draft; user resolves explicitly.",
+    "cancel": "Cancel leaves last explicitly saved draft; never executes or grants authority.",
+    "autosave": "Display prefs only after500ms debounce; all other forms explicit Save draft; secrets/challenges never autosaved.",
+    "idempotency": "Stable per logical submission key; retries join same operation; changed payload with same key ->409.",
+    "button_labels": [
+      "Save draft",
+      "Validate",
+      "Preview",
+      "Confirm scoped action"
+    ]
+  },
+  {
+    "id": "F-HOLD-RECIPE",
+    "title": "Holding session and deadline recipe",
+    "scope": "trading",
+    "steps": [
+      "Strategy horizon",
+      "Venue rules",
+      "Deadline and failure",
+      "Review"
+    ],
+    "fields": [
+      {
+        "key": "recipe_name",
+        "label": "Recipe name",
+        "type": "text",
+        "required": true,
+        "default": null,
+        "validation": "max100",
+        "help": "Versioned draft",
+        "error": "Recipe name: max100. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "holding_policy_id",
+        "label": "Holding convention",
+        "type": "id",
+        "required": true,
+        "default": null,
+        "validation": "implemented strategy horizon profile",
+        "help": "No universal intraday cutoff for every strategy",
+        "error": "Holding convention: implemented strategy horizon profile. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "maximum_hold_seconds",
+        "label": "Maximum strategy hold",
+        "type": "integer",
+        "required": false,
+        "default": null,
+        "validation": "required when profile uses elapsed duration;integer>0",
+        "help": "Not a market-open assumption",
+        "error": "Maximum strategy hold: required when profile uses elapsed duration;integer>0. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "session_calendar_id",
+        "label": "Exchange session calendar",
+        "type": "id",
+        "required": true,
+        "default": null,
+        "validation": "verified product/venue calendar plus broker exceptions",
+        "help": "Holidays DST and special sessions tested",
+        "error": "Exchange session calendar: verified product/venue calendar plus broker exceptions. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "overnight_allowed",
+        "label": "Overnight permitted",
+        "type": "boolean",
+        "required": true,
+        "default": "false",
+        "validation": "cannot exceed released account/product permission",
+        "help": "Closing market can make stops dormant",
+        "error": "Overnight permitted: cannot exceed released account/product permission. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "product_deadline_policy_id",
+        "label": "Expiry notice and broker deadline",
+        "type": "id",
+        "required": false,
+        "default": null,
+        "validation": "required for expiring/notice-sensitive products",
+        "help": "Earliest applicable mandatory deadline wins",
+        "error": "Expiry notice and broker deadline: required for expiring/notice-sensitive products. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "emergency_exit_recipe_id",
+        "label": "Deadline and emergency handling",
+        "type": "id",
+        "required": true,
+        "default": null,
+        "validation": "qualified route urgency/quantity procedure",
+        "help": "Unknown prior order prevents blind duplicate exit",
+        "error": "Deadline and emergency handling: qualified route urgency/quantity procedure. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      }
+    ],
+    "save_effect": "Save horizon recipe draft",
+    "preview_effect": "Display actual current and future deadlines coverage windows and known venue restrictions",
+    "confirm_effect": "Submit reviewed recipe;existing episodes preserve their deadline unless separately authorized",
+    "rules": "A valid calendar does not prove the broker can create/cancel/execute every order at that time. Do not suppress valid existing-position management with entry-hour filters.",
+    "layout": "Left main form grouped into stated steps; right effective-summary rail; error summary links to labeled fields. Mobile rail follows current step before action bar.",
+    "validation_timing": "Validate on blur after first interaction and on submit; never replace draft while user edits. Server repeats all checks. Positive response reflects committed state, not optimistic toast.",
+    "conflict": "If-Match or expected_revision mismatch ->409 with current revision and non-secret field diff; preserve local draft; user resolves explicitly.",
+    "cancel": "Cancel leaves last explicitly saved draft; never executes or grants authority.",
+    "autosave": "Display prefs only after500ms debounce; all other forms explicit Save draft; secrets/challenges never autosaved.",
+    "idempotency": "Stable per logical submission key; retries join same operation; changed payload with same key ->409.",
+    "button_labels": [
+      "Save draft",
+      "Validate",
+      "Preview",
+      "Confirm scoped action"
+    ]
+  },
+  {
+    "id": "F-BACKTEST",
+    "title": "Historical copier replay",
+    "scope": "private_owner",
+    "steps": [
+      "Sources/history",
+      "Products/policies",
+      "Capital/costs",
+      "Period",
+      "Scope and run"
+    ],
+    "fields": [
+      {
+        "key": "dataset_version_ids",
+        "label": "Source and market datasets",
+        "type": "id_list",
+        "required": true,
+        "default": null,
+        "validation": "authorized immutable history snapshots",
+        "help": "Missing originals and revisions remain visible",
+        "error": "Source and market datasets: authorized immutable history snapshots. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "policy_version_ids",
+        "label": "Policies",
+        "type": "id_list",
+        "required": true,
+        "default": null,
+        "validation": "compatible baseline/candidate recipes",
+        "help": "Do not change live policy",
+        "error": "Policies: compatible baseline/candidate recipes. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "account_profile_id",
+        "label": "Account profile",
+        "type": "id",
+        "required": true,
+        "default": null,
+        "validation": "declared shared capital and product limits",
+        "help": "No full capital independently assigned to each signal",
+        "error": "Account profile: declared shared capital and product limits. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "period_start",
+        "label": "Start",
+        "type": "datetime",
+        "required": true,
+        "default": null,
+        "validation": "UTC before end;within dataset",
+        "help": "Use information availability",
+        "error": "Start: UTC before end;within dataset. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "period_end",
+        "label": "End",
+        "type": "datetime",
+        "required": true,
+        "default": null,
+        "validation": "UTC after start;not future",
+        "help": "Full selected range",
+        "error": "End: UTC after start;not future. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "cost_scenario_ids",
+        "label": "Costs/slippage",
+        "type": "id_list",
+        "required": true,
+        "default": null,
+        "validation": "qualified fee/funding/latency assumptions",
+        "help": "No silently zero costs",
+        "error": "Costs/slippage: qualified fee/funding/latency assumptions. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "ambiguity_policy",
+        "label": "Intrabar ambiguity",
+        "type": "enum:bound_outcomes,require_finer_data",
+        "required": true,
+        "default": "bound_outcomes",
+        "validation": "never select favorable path silently",
+        "help": "Bounds labeled hypothetical",
+        "error": "Intrabar ambiguity: never select favorable path silently. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      },
+      {
+        "key": "resource_profile_id",
+        "label": "Resources",
+        "type": "id",
+        "required": true,
+        "default": null,
+        "validation": "approved job limits",
+        "help": "Worker isolated from protection",
+        "error": "Resources: approved job limits. No change was applied.",
+        "persistence": "versioned server draft; tenant derived server-side"
+      }
+    ],
+    "save_effect": "Persist reproducible replay draft",
+    "preview_effect": "Resolve coverage/gaps/candidate count and estimated resources",
+    "confirm_effect": "Enqueue replay job through research service only",
+    "rules": "Backtest report persists and distinguishes outcomes, actual cost status, fills, episodes and incomplete data.",
+    "layout": "Left main form grouped into stated steps; right effective-summary rail; error summary links to labeled fields. Mobile rail follows current step before action bar.",
+    "validation_timing": "Validate on blur after first interaction and on submit; never replace draft while user edits. Server repeats all checks. Positive response reflects committed state, not optimistic toast.",
+    "conflict": "If-Match or expected_revision mismatch ->409 with current revision and non-secret field diff; preserve local draft; user resolves explicitly.",
+    "cancel": "Cancel leaves last explicitly saved draft; never executes or grants authority.",
+    "autosave": "Display prefs only after500ms debounce; all other forms explicit Save draft; secrets/challenges never autosaved.",
+    "idempotency": "Stable per logical submission key; retries join same operation; changed payload with same key ->409.",
+    "button_labels": [
+      "Save draft",
+      "Validate",
+      "Preview",
+      "Confirm scoped action"
+    ]
+  }
+]

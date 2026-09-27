@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "F-TARGET-RECIPE.schema.json",
+  "title": "Profit-target level and partial-exit recipe",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "target_id": {
+      "description": "stable within version;updates do not replace another target. Omitted means no change;remove is explicit operation",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "operation": {
+      "description": "exact target/version scope. Removal never removes protective stop",
+      "type": "string",
+      "enum": [
+        "add",
+        "update",
+        "remove"
+      ]
+    },
+    "role": {
+      "description": "required for add/update. Provider intent preserved unless released policy states otherwise",
+      "type": "string",
+      "enum": [
+        "reference",
+        "hard_exit",
+        "partial_exit",
+        "trailing_trigger"
+      ]
+    },
+    "reference_basis": {
+      "description": "required for add/update;product-compatible. No raw price basis inference",
+      "type": "string",
+      "enum": [
+        "instrument_price",
+        "underlying_price",
+        "option_premium",
+        "combo_price"
+      ]
+    },
+    "level": {
+      "description": "required for add/update;profile-valid domain. No invented level when source supplied none",
+      "type": "string",
+      "pattern": "^-?(?:0|[1-9][0-9]*)(?:\\.[0-9]+)?$",
+      "maxLength": 80
+    },
+    "reduction_basis": {
+      "description": "required for partial exit. Exact quantity-conserving semantics",
+      "type": "string",
+      "enum": [
+        "original_allocation",
+        "remaining_allocation",
+        "cumulative_goal"
+      ]
+    },
+    "reduction_fraction": {
+      "description": "required for partial exit;0<value<=1. Server cumulative rounding avoids excess sales",
+      "type": "string",
+      "pattern": "^-?(?:0|[1-9][0-9]*)(?:\\.[0-9]+)?$",
+      "maxLength": 80
+    },
+    "rounding_policy_id": {
+      "description": "required for partial exit;verified instrument step. Small allocations may not support every trim",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "trail_recipe_id": {
+      "description": "required for trailing_trigger. Activating a trail is not automatically an immediate sale",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    }
+  },
+  "required": [
+    "target_id",
+    "operation"
+  ],
+  "description": "Ready-input schema plus server business validation. Draft input uses identical property types but permits missing required fields; missingness must be displayed. Identity/password forms never saved as drafts."
+}

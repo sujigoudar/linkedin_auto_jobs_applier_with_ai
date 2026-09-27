@@ -1,0 +1,309 @@
+[
+  {
+    "requirement_id": "CP-091",
+    "requirement_text": "Only approved projections, costs, drawdown and performance origin are visible. Implement the actual workflow through all eight declared states and nine browser/viewport projects, with per-role tenant isolation and independent data/effect assertions.",
+    "journey_id": "J-PUBLIC_CATALOG",
+    "screens": [
+      "PU-01",
+      "PU-02",
+      "PU-04",
+      "AD-07",
+      "AD-19"
+    ],
+    "status": "DESIGNED_NOT_APPLICATION_TESTED"
+  },
+  {
+    "requirement_id": "CP-092",
+    "requirement_text": "Correct version/history, disclosure, risk and compatibility; no restricted source raw text. Implement the actual workflow through all eight declared states and nine browser/viewport projects, with per-role tenant isolation and independent data/effect assertions.",
+    "journey_id": "J-PUBLIC_DETAIL",
+    "screens": [
+      "PU-03",
+      "PU-04",
+      "PU-06",
+      "AD-07",
+      "AD-19"
+    ],
+    "status": "DESIGNED_NOT_APPLICATION_TESTED"
+  },
+  {
+    "requirement_id": "CP-093",
+    "requirement_text": "Tenant-bound identity, no paid or trading privilege before independent gates. Implement the actual workflow through all eight declared states and nine browser/viewport projects, with per-role tenant isolation and independent data/effect assertions.",
+    "journey_id": "J-SIGNUP",
+    "screens": [
+      "ID-01",
+      "ID-02",
+      "ID-03",
+      "CU-13"
+    ],
+    "status": "DESIGNED_NOT_APPLICATION_TESTED"
+  },
+  {
+    "requirement_id": "CP-094",
+    "requirement_text": "Exact legal/product/channel approval, no inferred or user-editable bypass. Implement the actual workflow through all eight declared states and nine browser/viewport projects, with per-role tenant isolation and independent data/effect assertions.",
+    "journey_id": "J-ELIGIBILITY",
+    "screens": [
+      "PU-06",
+      "ID-04",
+      "AD-19"
+    ],
+    "status": "DESIGNED_NOT_APPLICATION_TESTED"
+  },
+  {
+    "requirement_id": "CP-095",
+    "requirement_text": "Whitelisted price and customer identity; success page never creates entitlement. Implement the actual workflow through all eight declared states and nine browser/viewport projects, with per-role tenant isolation and independent data/effect assertions.",
+    "journey_id": "J-CHECKOUT",
+    "screens": [
+      "PU-05",
+      "CU-11",
+      "AD-13"
+    ],
+    "status": "DESIGNED_NOT_APPLICATION_TESTED"
+  },
+  {
+    "requirement_id": "CP-096",
+    "requirement_text": "Correct interval/fees, safe open-episode treatment and separate platform state. Implement the actual workflow through all eight declared states and nine browser/viewport projects, with per-role tenant isolation and independent data/effect assertions.",
+    "journey_id": "J-SUBSCRIPTIONS",
+    "screens": [
+      "PU-05",
+      "CU-11",
+      "AD-13"
+    ],
+    "status": "DESIGNED_NOT_APPLICATION_TESTED"
+  },
+  {
+    "requirement_id": "CP-097",
+    "requirement_text": "Effective version, risk/capacity/rights and customer scope preserved. Implement the actual workflow through all eight declared states and nine browser/viewport projects, with per-role tenant isolation and independent data/effect assertions.",
+    "journey_id": "J-PORTFOLIO_SELECT",
+    "screens": [
+      "CU-01",
+      "CU-02",
+      "CU-03",
+      "TR-11"
+    ],
+    "status": "DESIGNED_NOT_APPLICATION_TESTED"
+  },
+  {
+    "requirement_id": "CP-098",
+    "requirement_text": "Correct lifecycle sequence, expiry, origin and delivered-versus-filled distinction. Implement the actual workflow through all eight declared states and nine browser/viewport projects, with per-role tenant isolation and independent data/effect assertions.",
+    "journey_id": "J-ALERTS",
+    "screens": [
+      "CU-01",
+      "CU-04",
+      "CU-05",
+      "TR-04",
+      "TR-05"
+    ],
+    "status": "DESIGNED_NOT_APPLICATION_TESTED"
+  },
+  {
+    "requirement_id": "CP-099",
+    "requirement_text": "Verified endpoint and lawful consent; safety policy distinguished from marketing. Implement the actual workflow through all eight declared states and nine browser/viewport projects, with per-role tenant isolation and independent data/effect assertions.",
+    "journey_id": "J-DELIVERY_PREFS",
+    "screens": [
+      "CU-12",
+      "CU-13",
+      "CU-16",
+      "AD-20"
+    ],
+    "status": "DESIGNED_NOT_APPLICATION_TESTED"
+  },
+  {
+    "requirement_id": "CP-100",
+    "requirement_text": "Correct account/environment and token scope; no browser or other-tenant key leakage. Implement the actual workflow through all eight declared states and nine browser/viewport projects, with per-role tenant isolation and independent data/effect assertions.",
+    "journey_id": "J-PLATFORM_CONNECT",
+    "screens": [
+      "PU-08",
+      "CU-07",
+      "CU-08",
+      "TR-07",
+      "TR-08",
+      "AD-17"
+    ],
+    "status": "DESIGNED_NOT_APPLICATION_TESTED"
+  },
+  {
+    "requirement_id": "CP-101",
+    "requirement_text": "Explicit new-only/sync choice, exact constraints, independent billing and mandate. Implement the actual workflow through all eight declared states and nine browser/viewport projects, with per-role tenant isolation and independent data/effect assertions.",
+    "journey_id": "J-COPY_ACTIVATE",
+    "screens": [
+      "CU-03",
+      "CU-09",
+      "TR-11",
+      "TR-12"
+    ],
+    "status": "DESIGNED_NOT_APPLICATION_TESTED"
+  },
+  {
+    "requirement_id": "CP-102",
+    "requirement_text": "Only customer actual observations, real fees/marks and incomplete flags. Implement the actual workflow through all eight declared states and nine browser/viewport projects, with per-role tenant isolation and independent data/effect assertions.",
+    "journey_id": "J-CUSTOMER_PERFORMANCE",
+    "screens": [
+      "CU-01",
+      "CU-03",
+      "CU-06",
+      "TR-14"
+    ],
+    "status": "DESIGNED_NOT_APPLICATION_TESTED"
+  },
+  {
+    "requirement_id": "CP-103",
+    "requirement_text": "Actual quantities, uncertainty, children, corrections and stop coverage reconcile. Implement the actual workflow through all eight declared states and nine browser/viewport projects, with per-role tenant isolation and independent data/effect assertions.",
+    "journey_id": "J-TRADE_DETAIL",
+    "screens": [
+      "CU-05",
+      "TR-01",
+      "TR-02",
+      "TR-03",
+      "TR-05",
+      "TR-06",
+      "TR-12",
+      "TR-13"
+    ],
+    "status": "DESIGNED_NOT_APPLICATION_TESTED"
+  },
+  {
+    "requirement_id": "CP-104",
+    "requirement_text": "Scope-specific approved wind-down; no whole-account surprise flatten. Implement the actual workflow through all eight declared states and nine browser/viewport projects, with per-role tenant isolation and independent data/effect assertions.",
+    "journey_id": "J-SAFETY_EXIT",
+    "screens": [
+      "CU-03",
+      "CU-10",
+      "TR-02",
+      "TR-03"
+    ],
+    "status": "DESIGNED_NOT_APPLICATION_TESTED"
+  },
+  {
+    "requirement_id": "CP-105",
+    "requirement_text": "Narrow staff rights, audit trail and safe communications. Implement the actual workflow through all eight declared states and nine browser/viewport projects, with per-role tenant isolation and independent data/effect assertions.",
+    "journey_id": "J-SUPPORT",
+    "screens": [
+      "PU-07",
+      "PU-08",
+      "CU-13",
+      "CU-14",
+      "CU-16",
+      "TR-13",
+      "AD-11",
+      "AD-16",
+      "AD-18",
+      "AD-21"
+    ],
+    "status": "DESIGNED_NOT_APPLICATION_TESTED"
+  },
+  {
+    "requirement_id": "CP-106",
+    "requirement_text": "Licensed complete history, known-flat versus missing, exact source versions. Implement the actual workflow through all eight declared states and nine browser/viewport projects, with per-role tenant isolation and independent data/effect assertions.",
+    "journey_id": "J-LAB_UNIVERSE",
+    "screens": [
+      "TR-04",
+      "TR-05",
+      "TR-09",
+      "TR-10",
+      "TR-15",
+      "AD-03"
+    ],
+    "status": "DESIGNED_NOT_APPLICATION_TESTED"
+  },
+  {
+    "requirement_id": "CP-107",
+    "requirement_text": "All fixed subsets/recipes terminal outcomes, resumable deterministic shards. Implement the actual workflow through all eight declared states and nine browser/viewport projects, with per-role tenant isolation and independent data/effect assertions.",
+    "journey_id": "J-LAB_RUN",
+    "screens": [
+      "TR-15",
+      "AD-04",
+      "AD-05"
+    ],
+    "status": "DESIGNED_NOT_APPLICATION_TESTED"
+  },
+  {
+    "requirement_id": "CP-108",
+    "requirement_text": "Holdout separation, fees/capacity/correlations and rejected candidates visible. Implement the actual workflow through all eight declared states and nine browser/viewport projects, with per-role tenant isolation and independent data/effect assertions.",
+    "journey_id": "J-LAB_COMPARE",
+    "screens": [
+      "TR-15",
+      "AD-06"
+    ],
+    "status": "DESIGNED_NOT_APPLICATION_TESTED"
+  },
+  {
+    "requirement_id": "CP-109",
+    "requirement_text": "Separate reviewer, immutable artifact/version/rights and audience scope. Implement the actual workflow through all eight declared states and nine browser/viewport projects, with per-role tenant isolation and independent data/effect assertions.",
+    "journey_id": "J-RELEASE_REVIEW",
+    "screens": [
+      "AD-01",
+      "AD-07",
+      "AD-08",
+      "AD-16",
+      "AD-18",
+      "AD-20"
+    ],
+    "status": "DESIGNED_NOT_APPLICATION_TESTED"
+  },
+  {
+    "requirement_id": "CP-110",
+    "requirement_text": "Exact external strategy, unknown operations, quota and writer state. Implement the actual workflow through all eight declared states and nine browser/viewport projects, with per-role tenant isolation and independent data/effect assertions.",
+    "journey_id": "J-PUBLISHER",
+    "screens": [
+      "TR-06",
+      "AD-01",
+      "AD-09",
+      "AD-10",
+      "AD-17",
+      "AD-21"
+    ],
+    "status": "DESIGNED_NOT_APPLICATION_TESTED"
+  },
+  {
+    "requirement_id": "CP-111",
+    "requirement_text": "Evidence-only permissions, restricted changes and expiry/wind-down preview. Implement the actual workflow through all eight declared states and nine browser/viewport projects, with per-role tenant isolation and independent data/effect assertions.",
+    "journey_id": "J-RIGHTS",
+    "screens": [
+      "AD-01",
+      "AD-02",
+      "AD-16",
+      "AD-17",
+      "AD-21"
+    ],
+    "status": "DESIGNED_NOT_APPLICATION_TESTED"
+  },
+  {
+    "requirement_id": "CP-112",
+    "requirement_text": "Subscription revenue/costs separate from trading P&L. Implement the actual workflow through all eight declared states and nine browser/viewport projects, with per-role tenant isolation and independent data/effect assertions.",
+    "journey_id": "J-BUSINESS",
+    "screens": [
+      "TR-14",
+      "AD-01",
+      "AD-12",
+      "AD-13"
+    ],
+    "status": "DESIGNED_NOT_APPLICATION_TESTED"
+  },
+  {
+    "requirement_id": "CP-113",
+    "requirement_text": "Broker-native status, mandates, units/NAV/fees, no SaaS custody. Implement the actual workflow through all eight declared states and nine browser/viewport projects, with per-role tenant isolation and independent data/effect assertions.",
+    "journey_id": "J-MANAGED_ACCOUNT",
+    "screens": [
+      "CU-15",
+      "AD-14",
+      "AD-15"
+    ],
+    "status": "DESIGNED_NOT_APPLICATION_TESTED"
+  },
+  {
+    "requirement_id": "CP-114",
+    "requirement_text": "No financial authority before fence, current grants and external reconciliation. Implement the actual workflow through all eight declared states and nine browser/viewport projects, with per-role tenant isolation and independent data/effect assertions.",
+    "journey_id": "J-RECOVERY",
+    "screens": [
+      "PU-07",
+      "TR-01",
+      "TR-07",
+      "TR-13",
+      "TR-16",
+      "AD-18",
+      "AD-21",
+      "AD-22"
+    ],
+    "status": "DESIGNED_NOT_APPLICATION_TESTED"
+  }
+]

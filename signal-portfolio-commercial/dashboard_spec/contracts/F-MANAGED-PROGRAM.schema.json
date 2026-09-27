@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "F-MANAGED-PROGRAM.schema.json",
+  "title": "PAMM/MAM program config",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "program_name": {
+      "description": "1..100 plain text. No implication launched",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "broker_program_id": {
+      "description": "broker-verified exact program. No internally invented pool",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "mode": {
+      "description": "approved contract semantics. Not interchangeable accounting",
+      "type": "string",
+      "enum": [
+        "pamm",
+        "mam"
+      ]
+    },
+    "allocation_policy_id": {
+      "description": "precommitted deterministic rule. No after-outcome selection",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "nav_policy_id": {
+      "description": "broker-approved generation/restatement convention. No incomplete estimate sold as NAV",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "dealing_schedule_id": {
+      "description": "cutoffs/timezone verified. No browser wall-clock authority",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "fee_policy_id": {
+      "description": "approved cashflow/HWM convention. Performance fees disabled without full convention",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "agreement_evidence_ids": {
+      "description": "rights/legal/broker approvals. No automated signing",
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 200
+      },
+      "uniqueItems": true,
+      "maxItems": 100
+    }
+  },
+  "required": [
+    "program_name",
+    "broker_program_id",
+    "mode",
+    "allocation_policy_id",
+    "nav_policy_id",
+    "dealing_schedule_id",
+    "agreement_evidence_ids"
+  ],
+  "description": "Ready-input schema plus server business validation. Draft input uses identical property types but permits missing required fields; missingness must be displayed. Identity/password forms never saved as drafts."
+}

@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "F-PRICE.schema.json",
+  "title": "Price and entitlement draft",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "sku": {
+      "description": "immutable unique product plan key. No arbitrary client prices",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500,
+      "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+    },
+    "currency": {
+      "description": "supported merchant approved currency. Currency exponent from currency metadata",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500,
+      "pattern": "^[A-Z]{3}$"
+    },
+    "amount_minor": {
+      "description": ">=0 within approved test/live pricing. Not float cents",
+      "type": "integer"
+    },
+    "interval": {
+      "description": "approved plan interval. No hidden renewal",
+      "type": "string",
+      "enum": [
+        "month",
+        "year"
+      ]
+    },
+    "portfolio_limit": {
+      "description": "nonnegative;defined unlimited only as explicit policy. No unexplained null unlimited",
+      "type": "integer"
+    },
+    "features": {
+      "description": "reviewed entitlement registry. No implicit trading right",
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 200
+      },
+      "uniqueItems": true,
+      "maxItems": 100
+    },
+    "mode": {
+      "description": "live requires merchant/owner price approval. No auto paid launch",
+      "type": "string",
+      "enum": [
+        "test",
+        "live"
+      ]
+    }
+  },
+  "required": [
+    "sku",
+    "currency",
+    "amount_minor",
+    "interval",
+    "portfolio_limit",
+    "features",
+    "mode"
+  ],
+  "description": "Ready-input schema plus server business validation. Draft input uses identical property types but permits missing required fields; missingness must be displayed. Identity/password forms never saved as drafts."
+}

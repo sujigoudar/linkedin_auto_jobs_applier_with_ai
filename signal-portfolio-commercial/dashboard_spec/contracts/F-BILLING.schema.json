@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "F-BILLING.schema.json",
+  "title": "Subscription checkout or change",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "price_version_id": {
+      "description": "server allowlist;approved for audience and mode. No client-supplied charge amount",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "interval": {
+      "description": "matches price version. Actual proration from processor",
+      "type": "string",
+      "enum": [
+        "month",
+        "year"
+      ]
+    },
+    "subscription_id": {
+      "description": "owned;required for changes. No other-customer billing ID",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "change_mode": {
+      "description": "current subscription transition valid. No financial-account effect",
+      "type": "string",
+      "enum": [
+        "start",
+        "upgrade",
+        "downgrade",
+        "cancel"
+      ]
+    },
+    "return_route": {
+      "description": "server allowlist. No arbitrary external redirect",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "accept_billing_terms": {
+      "description": "required at change confirmation. No stored card input in app",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "price_version_id",
+    "interval",
+    "change_mode",
+    "return_route",
+    "accept_billing_terms"
+  ],
+  "description": "Ready-input schema plus server business validation. Draft input uses identical property types but permits missing required fields; missingness must be displayed. Identity/password forms never saved as drafts."
+}

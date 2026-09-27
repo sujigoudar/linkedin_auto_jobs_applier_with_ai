@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "F-INTEGRATION.schema.json",
+  "title": "Integration configuration",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "provider_registry_id": {
+      "description": "reviewed allowlist. No arbitrary service URL",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "purpose": {
+      "description": "approved provider use. Research credentials have no trade powers",
+      "type": "string",
+      "enum": [
+        "research",
+        "quotes",
+        "reference",
+        "publication",
+        "billing",
+        "monitoring"
+      ]
+    },
+    "environment": {
+      "description": "purpose-specific mapping. Explicit live approval",
+      "type": "string",
+      "enum": [
+        "test",
+        "demo",
+        "live"
+      ]
+    },
+    "credential_ref": {
+      "description": "role-scoped vault reference. No secret echo",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "entitlement_evidence_id": {
+      "description": "required for selected data use. Free software is not free data rights",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "quota_profile_id": {
+      "description": "known request weights/reset/cost cap. No paid fallback",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    }
+  },
+  "required": [
+    "provider_registry_id",
+    "purpose",
+    "environment",
+    "quota_profile_id"
+  ],
+  "description": "Ready-input schema plus server business validation. Draft input uses identical property types but permits missing required fields; missingness must be displayed. Identity/password forms never saved as drafts."
+}

@@ -1,0 +1,89 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "F-POLICY.schema.json",
+  "title": "Management policy draft",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "policy_name": {
+      "description": "1..100 plain text. Version immutable after release",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "product_profile_id": {
+      "description": "exact currency/quantity/trigger semantics. No share math for options",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "size_mode": {
+      "description": "supported released family. All modes bounded by hard limits",
+      "type": "string",
+      "enum": [
+        "risk",
+        "fixed_units",
+        "fixed_notional",
+        "source_scaled"
+      ]
+    },
+    "risk_budget": {
+      "description": "explicit approved currency/percentage unit. required for risk mode",
+      "type": "string",
+      "pattern": "^-?(?:0|[1-9][0-9]*)(?:\\.[0-9]+)?$",
+      "maxLength": 80
+    },
+    "fixed_units": {
+      "description": "legal positive step;hard-cap bound. required only fixed_units",
+      "type": "string",
+      "pattern": "^-?(?:0|[1-9][0-9]*)(?:\\.[0-9]+)?$",
+      "maxLength": 80
+    },
+    "fixed_notional": {
+      "description": "positive currency value. required only fixed_notional",
+      "type": "string",
+      "pattern": "^-?(?:0|[1-9][0-9]*)(?:\\.[0-9]+)?$",
+      "maxLength": 80
+    },
+    "stop_recipe_id": {
+      "description": "released compatible recipe. Null means stopless signal cannot be resolved without provider stop",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "target_policy_id": {
+      "description": "released role/partial/basis definitions. No invented provider target",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "trail_recipe_id": {
+      "description": "released non-loosening recipe. No trailing automatic activation by price default",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "holding_policy_id": {
+      "description": "finite applicable strategy/product deadlines. Includes session coverage",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "apply_to": {
+      "description": "existing allocations require separate transition. No silent retrofit",
+      "type": "string",
+      "enum": [
+        "future_entries"
+      ]
+    }
+  },
+  "required": [
+    "policy_name",
+    "product_profile_id",
+    "size_mode",
+    "target_policy_id",
+    "holding_policy_id",
+    "apply_to"
+  ],
+  "description": "Ready-input schema plus server business validation. Draft input uses identical property types but permits missing required fields; missingness must be displayed. Identity/password forms never saved as drafts."
+}

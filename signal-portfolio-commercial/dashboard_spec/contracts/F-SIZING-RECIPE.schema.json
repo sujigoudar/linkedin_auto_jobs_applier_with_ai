@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "F-SIZING-RECIPE.schema.json",
+  "title": "Sizing and portfolio-risk recipe",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "recipe_name": {
+      "description": "max100;unique within account policy scope. Private draft only",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "product_profile_id": {
+      "description": "verified compatible product schema. Defines units and multiplier",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "risk_basis": {
+      "description": "must be allowed by the selected product profile. No algorithm inferred from a name",
+      "type": "string",
+      "enum": [
+        "fixed_units",
+        "fixed_notional",
+        "loss_budget"
+      ]
+    },
+    "risk_amount": {
+      "description": "required for loss_budget;positive;at or below released ceiling. Currency or percent basis supplied by verified account policy",
+      "type": "string",
+      "pattern": "^-?(?:0|[1-9][0-9]*)(?:\\.[0-9]+)?$",
+      "maxLength": 80
+    },
+    "risk_currency": {
+      "description": "required for money amount;must match approved basis. No implicit FX conversion",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500,
+      "pattern": "^[A-Z]{3}$"
+    },
+    "minimum_quantity": {
+      "description": "server instrument minimum;cannot raise quantity beyond risk. Smaller signals may be rejected",
+      "type": "string",
+      "pattern": "^-?(?:0|[1-9][0-9]*)(?:\\.[0-9]+)?$",
+      "maxLength": 80
+    },
+    "maximum_quantity": {
+      "description": "nonnegative compatible units;at or below account hard cap. Does not replace buying-power checks",
+      "type": "string",
+      "pattern": "^-?(?:0|[1-9][0-9]*)(?:\\.[0-9]+)?$",
+      "maxLength": 80
+    },
+    "account_limit_policy_id": {
+      "description": "released server policy;customer cannot weaken it. Preview all applicable account and owner limits",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "allocation_policy_id": {
+      "description": "compatible released overlap/reservation policy. Shared capital and pending orders remain counted",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "cost_stress_policy_id": {
+      "description": "verified product-specific cost and stress convention. A stop price is not guaranteed loss",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    }
+  },
+  "required": [
+    "recipe_name",
+    "product_profile_id",
+    "risk_basis",
+    "account_limit_policy_id",
+    "allocation_policy_id",
+    "cost_stress_policy_id"
+  ],
+  "description": "Ready-input schema plus server business validation. Draft input uses identical property types but permits missing required fields; missingness must be displayed. Identity/password forms never saved as drafts."
+}

@@ -27,6 +27,12 @@ _ALLOWED: dict[str, frozenset[Role]] = {
     "run_research_job": frozenset({Role.OWNER, Role.RESEARCHER}),
     "view_support_case": frozenset({Role.OWNER, Role.SUPPORT_READONLY}),
     "view_own_customer_profile": frozenset({Role.CUSTOMER, Role.OWNER, Role.SUPPORT_READONLY}),
+    #: AD-07 "Products and portfolio versions" -- create/edit a Product
+    #: draft. Explicitly not BILLING_OPERATOR/PUBLISHER_OPERATOR/
+    #: SUPPORT_READONLY/CUSTOMER: drafting a product is a research/
+    #: release decision, not a billing, publication, support or
+    #: customer action.
+    "manage_product_draft": frozenset({Role.OWNER, Role.RESEARCHER, Role.REVIEWER}),
 }
 
 

@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "F-REPORT.schema.json",
+  "title": "Report / export request",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "object_ids": {
+      "description": "server-authorized nonempty IDs;no all-tenants wildcard. Scope is immutable in job",
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 200
+      },
+      "uniqueItems": true,
+      "maxItems": 100
+    },
+    "period_start": {
+      "description": "UTC instant;before end;within retention. User timezone converted explicitly",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500,
+      "format": "date-time"
+    },
+    "period_end": {
+      "description": "after start;not future for actual report. End-exclusive interval documented",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500,
+      "format": "date-time"
+    },
+    "book": {
+      "description": "supported for caller and report;business never investment. Do not merge origins",
+      "type": "string",
+      "enum": [
+        "actual",
+        "model",
+        "platform",
+        "source",
+        "business"
+      ]
+    },
+    "currency": {
+      "description": "supported conversion policy or show separate currencies. Reference rate basis shown",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500,
+      "pattern": "^[A-Z]{3}$"
+    },
+    "format": {
+      "description": "server supports generation;PDF only after renderer implemented. No formula injection in CSV",
+      "type": "string",
+      "enum": [
+        "csv",
+        "json",
+        "pdf"
+      ]
+    },
+    "include_sensitive": {
+      "description": "only explicitly permitted by current scope. Secrets always excluded",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "object_ids",
+    "period_start",
+    "period_end",
+    "book",
+    "format"
+  ],
+  "description": "Ready-input schema plus server business validation. Draft input uses identical property types but permits missing required fields; missingness must be displayed. Identity/password forms never saved as drafts."
+}

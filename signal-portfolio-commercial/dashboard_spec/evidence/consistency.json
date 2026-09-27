@@ -1,0 +1,13 @@
+{
+  "artifact_consistency": "PASS",
+  "errors": [],
+  "screens": 66,
+  "forms": 41,
+  "fields": 284,
+  "actions": 170,
+  "panels": 340,
+  "api_bindings": 280,
+  "case_specifications": 1270,
+  "application_tests_executed": 0,
+  "application_readiness": "NOT_ASSESSED"
+}

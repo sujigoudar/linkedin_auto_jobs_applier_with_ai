@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "F-ELIGIBILITY.schema.json",
+  "title": "Residence and service eligibility",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "residence_country": {
+      "description": "ISO country supported by approved policy. User fact, not approval",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500,
+      "pattern": "^[A-Z]{2}$"
+    },
+    "tax_residence": {
+      "description": "unique ISO countries;policy decides requirement. Not inferred from IP",
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 200
+      },
+      "uniqueItems": true,
+      "maxItems": 100
+    },
+    "customer_type": {
+      "description": "allowed by service approval. Entities need their actual approved onboarding flow",
+      "type": "string",
+      "enum": [
+        "individual",
+        "entity"
+      ]
+    },
+    "service_modes": {
+      "description": "nonempty;published compatible services only. Payment and mandate gates remain separate",
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "research",
+          "alerts",
+          "copying",
+          "managed_program"
+        ]
+      },
+      "uniqueItems": true,
+      "maxItems": 100
+    },
+    "document_versions": {
+      "description": "exact server-published versions. Document acceptance timestamp persisted",
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 200
+      },
+      "uniqueItems": true,
+      "maxItems": 100
+    },
+    "facts_confirmed": {
+      "description": "required true. No eligibility flags accepted from browser",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "residence_country",
+    "customer_type",
+    "service_modes",
+    "document_versions",
+    "facts_confirmed"
+  ],
+  "description": "Ready-input schema plus server business validation. Draft input uses identical property types but permits missing required fields; missingness must be displayed. Identity/password forms never saved as drafts."
+}

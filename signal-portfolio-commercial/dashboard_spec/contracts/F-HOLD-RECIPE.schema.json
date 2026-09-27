@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "F-HOLD-RECIPE.schema.json",
+  "title": "Holding session and deadline recipe",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "recipe_name": {
+      "description": "max100. Versioned draft",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "holding_policy_id": {
+      "description": "implemented strategy horizon profile. No universal intraday cutoff for every strategy",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "maximum_hold_seconds": {
+      "description": "required when profile uses elapsed duration;integer>0. Not a market-open assumption",
+      "type": "integer"
+    },
+    "session_calendar_id": {
+      "description": "verified product/venue calendar plus broker exceptions. Holidays DST and special sessions tested",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "overnight_allowed": {
+      "description": "cannot exceed released account/product permission. Closing market can make stops dormant",
+      "type": "boolean"
+    },
+    "product_deadline_policy_id": {
+      "description": "required for expiring/notice-sensitive products. Earliest applicable mandatory deadline wins",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "emergency_exit_recipe_id": {
+      "description": "qualified route urgency/quantity procedure. Unknown prior order prevents blind duplicate exit",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    }
+  },
+  "required": [
+    "recipe_name",
+    "holding_policy_id",
+    "session_calendar_id",
+    "overnight_allowed",
+    "emergency_exit_recipe_id"
+  ],
+  "description": "Ready-input schema plus server business validation. Draft input uses identical property types but permits missing required fields; missingness must be displayed. Identity/password forms never saved as drafts."
+}

@@ -13,6 +13,13 @@ those all sit behind CARD-3/CARD-4 (real platform/processor
 credentials) that do not exist in this environment. Adding routes for
 capabilities that can't be exercised for real would be scaffolding
 around nothing, which this build has consistently avoided.
+
+`app/api/dashboard_routes.py` (included below) is the first dashboard
+vertical slice on top of this skeleton -- draft/save/reload a Product
+and see its exact publication blockers (AD-07), plus the truthfully
+empty public catalog (PU-02). Same rule applies there: no publish/
+release-review route exists yet, only what's genuinely buildable
+without a real release decision.
 """
 from __future__ import annotations
 
@@ -22,6 +29,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from sqlalchemy.orm import Session
 
 from app import config
+from app.api.dashboard_routes import router as dashboard_router
 from app.api.dependencies import get_current_scope, get_db_session
 from app.db import make_engine, make_session_factory, set_tenant_scope
 from app.services.auth import TenantScope
@@ -38,6 +46,7 @@ def create_app(database_url: str | None = None) -> FastAPI:
     app = FastAPI(title="signal-portfolio-commercial")
     engine = make_engine(database_url)
     app.state.session_factory = make_session_factory(engine)
+    app.include_router(dashboard_router)
 
     @app.get("/healthz")
     def healthz() -> dict:

@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "F-INCIDENT.schema.json",
+  "title": "Incident management",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "incident_id": {
+      "description": "within authorized scope. Persisted incident",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "operation": {
+      "description": "explicit per-role permission. No execute arbitrary command",
+      "type": "string",
+      "enum": [
+        "acknowledge",
+        "assign",
+        "reconcile",
+        "propose_resolution"
+      ]
+    },
+    "assignee_id": {
+      "description": "active role eligible for incident. Cannot assign financial authority",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "note": {
+      "description": "1..2000 plain text. No secrets",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "evidence_ids": {
+      "description": "scoped immutable objects. required for resolution proposal",
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 200
+      },
+      "uniqueItems": true,
+      "maxItems": 100
+    }
+  },
+  "required": [
+    "incident_id",
+    "operation",
+    "note"
+  ],
+  "description": "Ready-input schema plus server business validation. Draft input uses identical property types but permits missing required fields; missingness must be displayed. Identity/password forms never saved as drafts."
+}

@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "F-IDENTITY.schema.json",
+  "title": "Commercial sign-in / sign-up",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "email": {
+      "description": "valid email;max254;normalize domain not provider-specific aliases. Used by the configured identity provider",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 254,
+      "format": "email"
+    },
+    "password": {
+      "description": "configured identity-provider policy;max1024 bytes;allow Unicode and password managers. Never log or persist in app state",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024
+    },
+    "terms_version": {
+      "description": "server-supplied approved document ID;required on signup. Version accepted is stored as evidence",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "accept_terms": {
+      "description": "required true for signup only. Does not authorize trading",
+      "type": "boolean"
+    },
+    "return_route": {
+      "description": "server route-key allowlist only. No external redirect accepted",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    }
+  },
+  "required": [
+    "email",
+    "password"
+  ],
+  "description": "Ready-input schema plus server business validation. Draft input uses identical property types but permits missing required fields; missingness must be displayed. Identity/password forms never saved as drafts."
+}
