@@ -179,18 +179,19 @@ def compute_publication_blockers(session: Session, product: Product) -> list[str
             portfolio_version = session.get(PortfolioVersion, product.portfolio_version_id)
             if portfolio_version is not None:
                 sleeves_by_id = {w.sleeve_id: session.get(Sleeve, w.sleeve_id) for w in weights}
-                unknown_sleeves = [sid for sid, sleeve in sleeves_by_id.items() if sleeve is None]
-                for sleeve_id in unknown_sleeves:
+                unknown_sleeve_ids = [sid for sid, sleeve in sleeves_by_id.items() if sleeve is None]
+                for sleeve_id in unknown_sleeve_ids:
                     blockers.append(f"UNKNOWN_SLEEVE:{sleeve_id}")
 
-                if not unknown_sleeves:
+                known_sleeves = [sleeve for sleeve in sleeves_by_id.values() if sleeve is not None]
+                if not unknown_sleeve_ids:
                     #: `check_portfolio_rights` already checks every member
                     #: sleeve for a given `asset`, so one call per DISTINCT
                     #: asset class among this portfolio's sleeves covers
                     #: the whole set -- never one call per sleeve, and
                     #: never a single call using only one sleeve's asset
                     #: class to stand in for sleeves of a different class.
-                    asset_classes = {sleeve.asset_class for sleeve in sleeves_by_id.values()}
+                    asset_classes = {sleeve.asset_class for sleeve in known_sleeves}
                     for asset_class in sorted(asset_classes):
                         rights_result = check_portfolio_rights(
                             session,
