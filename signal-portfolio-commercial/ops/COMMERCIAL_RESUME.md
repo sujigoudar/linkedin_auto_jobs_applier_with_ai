@@ -81,7 +81,16 @@ readable companion: how to actually pick the work back up.
   exists). See `commercial_state.json`'s `08_subscriptions_billing`
   notes for what's not yet wired (no Product persistence, no real
   processor, nothing calls `entitlement.py` yet from Phase 05/06/07).
-- **Phase 09-12**: not started. See `commercial_state.json` for phase-specific
+- **Phase 09 (website)**: partially done -- only
+  `app/services/onboarding.py`, the customer onboarding state machine
+  (structurally enforces "do not call a customer live merely because
+  payment succeeded"). No actual website/HTML/FastAPI routes exist yet
+  -- deliberately deferred, since the public catalog/detail pages need
+  real released PortfolioVersion/Product rows that don't exist (Phase
+  04/08 both explicitly stopped short of that for the same "don't
+  fabricate data" reason). See `commercial_state.json`'s
+  `09_public_customer_operator_website` notes.
+- **Phase 10-12**: not started. See `commercial_state.json` for phase-specific
   notes carried forward from the original request (e.g. PAMM/MAM being
   simulation-only in this build).
 
@@ -132,14 +141,15 @@ directory of pytest's tmp dir (this bit us once; the fix is in
 
 ## Next step
 
-Phase 09: the actual public/customer/operator website
-(docs/09_website_dashboards_and_journeys.md) -- build real page/dashboard
-scaffolding and the journeys that don't require a live processor or
-broker connection (e.g. public product discovery, signup, the
-operator-side rights/portfolio review screens), reusing the existing
-signal-copier dashboard's Chart.js/Tabulator assets per docs/02's
-"reuse current HTML/JS... no frontend-framework rewrite." This is also a
-natural point to add a FastAPI `commercial_api` app skeleton and real
-Alembic migrations, since the ledger/tenancy/rights/sleeve/publication/
-billing schemas are now stable enough to give a first migration
-something real to cover.
+Phase 10: the broker-managed PAMM/MAM domain model (simulation only --
+docs/07_managed_accounts_pamm_mam.md), which per the master prompt's
+own scope note is real work even before real broker agreements exist:
+the AllocationProgram record, fair MAM allocation (largest-remainder
+integer-unit allocation with deterministic tie-break), and PAMM
+unit/NAV accounting (including the simple test-only high-water-mark fee
+formula, which the spec says must REJECT any deposit/withdrawal input
+rather than compute a wrong fee) are all well-specified, data-
+independent, and buildable now. This is also a natural point to add a
+FastAPI `commercial_api` app skeleton and real Alembic migrations, since
+the ledger/tenancy/rights/sleeve/publication/billing schemas are now
+stable enough to give a first migration something real to cover.
