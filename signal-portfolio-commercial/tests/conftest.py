@@ -42,6 +42,7 @@ from app.db import (
 # own imports happened to register, silently dropping tables other tests
 # in the same session/run depend on existing.
 import app.models.billing  # noqa: F401
+import app.models.eligibility  # noqa: F401
 import app.models.ledger  # noqa: F401
 import app.models.portfolio_version  # noqa: F401
 import app.models.product  # noqa: F401

@@ -61,6 +61,10 @@ _ALLOWED: dict[str, frozenset[Role]] = {
             Role.SUPPORT_READONLY,
         }
     ),
+    #: ID-04 "Service eligibility onboarding" -- a customer's own facts,
+    #: never another role's concern (an operator manages products/
+    #: reviews/research, not a customer's own onboarding record).
+    "manage_own_eligibility": frozenset({Role.CUSTOMER}),
 }
 
 

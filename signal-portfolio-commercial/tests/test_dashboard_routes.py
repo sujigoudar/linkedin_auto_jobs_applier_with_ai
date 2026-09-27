@@ -775,3 +775,66 @@ def test_pricing_page_shows_real_plan_cards_once_billing_is_configured(db_sessio
     assert response.status_code == 200
     assert "ALERTS_ONE" in response.text
     assert "Subscriptions are not open for purchase yet." not in response.text
+
+
+def _seed_customer_membership(db_session, *, tenant_id="tenant-a", user_id="user-a"):
+    from app.models.tenancy import Membership, Tenant, UserIdentity
+
+    db_session.add(Tenant(tenant_id=tenant_id, display_name="Tenant", environment="LOCAL_SIM"))
+    db_session.flush()
+    db_session.add(UserIdentity(user_id=user_id, email=f"{user_id}@example.com"))
+    db_session.flush()
+    db_session.add(Membership(tenant_id=tenant_id, user_id=user_id, role=MembershipRole.CUSTOMER))
+    db_session.commit()
+
+
+def test_eligibility_page_requires_a_customer_role(db_session):
+    client = _client(db_session)
+    response = client.get("/onboarding/eligibility", headers=_auth_headers(role=MembershipRole.OWNER))
+    assert response.status_code == 403
+
+
+def test_eligibility_page_shows_the_real_empty_state_before_any_facts(db_session):
+    _seed_customer_membership(db_session)
+    client = _client(db_session)
+    headers = _auth_headers(role=MembershipRole.CUSTOMER)
+    response = client.get("/onboarding/eligibility", headers=headers)
+    assert response.status_code == 200
+    assert "Complete eligibility before selecting a paid or copy service." in response.text
+
+
+def test_save_eligibility_facts_then_reload_shows_real_decision(db_session):
+    _seed_customer_membership(db_session)
+    client = _client(db_session)
+    headers = _auth_headers(role=MembershipRole.CUSTOMER)
+
+    save_response = client.post(
+        "/onboarding/eligibility",
+        data={
+            "residence_country": "US",
+            "customer_type": "individual",
+            "requested_service_modes": ["research"],
+            "document_versions": "terms-v1",
+            "facts_confirmed": "true",
+        },
+        headers=headers,
+    )
+    assert save_response.status_code == 303
+
+    response = client.get("/onboarding/eligibility", headers=headers)
+    assert response.status_code == 200
+    assert "ELIGIBLE" in response.text
+    assert "Complete eligibility before selecting a paid or copy service." not in response.text
+
+
+def test_save_eligibility_facts_rejects_an_empty_service_selection(db_session):
+    _seed_customer_membership(db_session)
+    client = _client(db_session)
+    headers = _auth_headers(role=MembershipRole.CUSTOMER)
+    response = client.post(
+        "/onboarding/eligibility",
+        data={"residence_country": "US", "customer_type": "individual", "document_versions": "", "facts_confirmed": ""},
+        headers=headers,
+    )
+    assert response.status_code == 400
+    assert "at least one requested service is required" in response.text

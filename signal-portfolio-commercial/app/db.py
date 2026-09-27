@@ -34,7 +34,7 @@ def make_session_factory(engine) -> sessionmaker:
 #: through in this single-role-per-database development setup).
 _TENANT_SCOPED_TABLES: tuple[str, ...] = (
     "memberships", "customer_profiles", "ledger_entries", "sleeves", "subscriptions", "portfolio_versions",
-    "release_reviews", "research_runs",
+    "release_reviews", "research_runs", "eligibility_assessments",
 )
 
 #: Tables that must never be UPDATEd or DELETEd from, only appended to (see

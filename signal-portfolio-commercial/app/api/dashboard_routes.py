@@ -59,6 +59,12 @@ what is and is not implemented yet.
   once billing is genuinely connected -- those fixture prices are
   documented as "not user-approved", so this deployment (billing
   unconfigured) truthfully renders PU-05's own empty state instead.
+- ID-04 "Service eligibility onboarding": a customer saves real
+  residence/service facts; eligibility is always computed live from
+  those facts plus the real published-product catalog, never a stored
+  verdict. Only "US" residence is a supported jurisdiction and entity
+  onboarding is a real, named UNSUPPORTED reason -- neither is silently
+  approved.
 """
 from __future__ import annotations
 
@@ -74,6 +80,12 @@ from app.api.dependencies import get_current_scope, get_db_session
 from app.db import set_tenant_scope
 from app.models.product import ServiceMode
 from app.services.auth import TenantScope
+from app.services.eligibility import (
+    InvalidEligibilityFactsError,
+    evaluate_eligibility,
+    get_eligibility_assessment,
+    save_eligibility_facts,
+)
 from app.services.permissions import PermissionDenied, require_permission
 from app.services.product_admin import (
     InvalidProductDraftError,
@@ -655,3 +667,67 @@ def public_pricing_page(request: Request):
     plans = get_pricing_plans()
     service_status = get_service_status()
     return templates.TemplateResponse(request, "pu05_pricing.html", {"plans": plans, "service_status": service_status})
+
+
+def _require_customer(scope: TenantScope) -> None:
+    try:
+        require_permission(scope.role, "manage_own_eligibility")
+    except PermissionDenied as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+
+@router.get("/onboarding/eligibility")
+def eligibility_page(
+    request: Request,
+    scope: TenantScope = Depends(get_current_scope),
+    session: Session = Depends(get_db_session),
+):
+    """ID-04 "Service eligibility onboarding" -- a customer's own real
+    facts and a live-computed decision, never a stored verdict (see
+    app/services/eligibility.py's own docstring)."""
+    _require_customer(scope)
+    set_tenant_scope(session, scope.tenant_id)
+    assessment = get_eligibility_assessment(session, tenant_id=scope.tenant_id, user_id=scope.user_id)
+    decisions = evaluate_eligibility(session, assessment) if assessment is not None else []
+    return templates.TemplateResponse(
+        request, "id04_eligibility.html", {"assessment": assessment, "decisions": decisions, "error": None}
+    )
+
+
+@router.post("/onboarding/eligibility")
+def save_eligibility_page(
+    request: Request,
+    residence_country: str = Form(...),
+    tax_residence: list[str] = Form([]),
+    customer_type: str = Form("individual"),
+    requested_service_modes: list[str] = Form([]),
+    document_versions: str = Form(""),
+    facts_confirmed: str = Form(""),
+    scope: TenantScope = Depends(get_current_scope),
+    session: Session = Depends(get_db_session),
+):
+    _require_customer(scope)
+    set_tenant_scope(session, scope.tenant_id)
+    document_version_list = [v.strip() for v in document_versions.split(",") if v.strip()]
+    try:
+        save_eligibility_facts(
+            session,
+            tenant_id=scope.tenant_id,
+            user_id=scope.user_id,
+            residence_country=residence_country,
+            tax_residence=tax_residence,
+            customer_type=customer_type,
+            requested_service_modes=requested_service_modes,
+            document_versions=document_version_list,
+            facts_confirmed=bool(facts_confirmed),
+        )
+    except InvalidEligibilityFactsError as exc:
+        session.rollback()
+        return templates.TemplateResponse(
+            request,
+            "id04_eligibility.html",
+            {"assessment": get_eligibility_assessment(session, tenant_id=scope.tenant_id, user_id=scope.user_id), "decisions": [], "error": str(exc)},
+            status_code=400,
+        )
+    session.commit()
+    return RedirectResponse(url="/onboarding/eligibility", status_code=303)

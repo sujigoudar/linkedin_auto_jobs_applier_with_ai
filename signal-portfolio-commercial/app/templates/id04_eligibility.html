@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Service eligibility onboarding</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 0; padding: 0; color: #1a1a1a; background: #fafafa; }
+    header { background: #111827; color: #f9fafb; padding: 0.75rem 1.25rem; }
+    header a { color: inherit; text-decoration: none; }
+    main { max-width: 720px; margin: 1.5rem auto; padding: 0 1rem; }
+    .panel { background: #fff; border: 1px solid #e5e7eb; border-radius: 0.5rem; padding: 1rem 1.25rem; margin-bottom: 1rem; }
+    .panel h2 { margin-top: 0; font-size: 1rem; }
+    label { display: block; margin: 0.75rem 0 0.25rem; font-weight: 600; }
+    input, select { padding: 0.4rem; width: 100%; box-sizing: border-box; }
+    fieldset { border: 1px solid #e5e7eb; border-radius: 0.375rem; margin: 0.75rem 0; }
+    table { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+    th, td { text-align: left; padding: 0.5rem 0.75rem; border-bottom: 1px solid #e5e7eb; }
+    .empty-state { padding: 1.5rem; text-align: center; color: #4b5563; border: 1px dashed #d1d5db; border-radius: 0.5rem; }
+    .conflict { background: #fef2f2; border: 1px solid #fecaca; color: #991b1b; padding: 0.5rem 0.75rem; border-radius: 0.375rem; margin-bottom: 1rem; }
+    .decision-eligible { color: #166534; }
+    .decision-pending { color: #92400e; }
+    .decision-unsupported { color: #991b1b; }
+  </style>
+</head>
+<body>
+  <header><a href="/">signal-portfolio-commercial</a></header>
+  <main>
+    <h1>Service eligibility onboarding</h1>
+
+    {% if error %}<div class="conflict">{{ error }}</div>{% endif %}
+
+    {% if not assessment %}
+    <div class="empty-state">
+      <p>Complete eligibility before selecting a paid or copy service.</p>
+    </div>
+    {% endif %}
+
+    <div class="panel">
+      <h2>Residence/service facts</h2>
+      <form method="post" action="/onboarding/eligibility">
+        <label for="residence_country">Country of residence</label>
+        <input type="text" id="residence_country" name="residence_country" value="{{ assessment.residence_country if assessment else '' }}" required>
+
+        <label for="customer_type">Customer type</label>
+        <select id="customer_type" name="customer_type">
+          <option value="individual" {% if not assessment or assessment.customer_type.value == "individual" %}selected{% endif %}>Individual</option>
+          <option value="entity" {% if assessment and assessment.customer_type.value == "entity" %}selected{% endif %}>Entity</option>
+        </select>
+
+        <fieldset>
+          <legend>Requested services</legend>
+          {% for mode in ["research", "alerts", "copying", "managed_program"] %}
+          <label><input type="checkbox" name="requested_service_modes" value="{{ mode }}" {% if assessment and mode in assessment.requested_service_modes %}checked{% endif %}> {{ mode }}</label>
+          {% endfor %}
+        </fieldset>
+
+        <label for="document_versions">Acknowledged document versions (comma-separated)</label>
+        <input type="text" name="document_versions" value="{{ assessment.document_versions | join(',') if assessment else '' }}">
+
+        <label><input type="checkbox" name="facts_confirmed" value="true" {% if assessment and assessment.facts_confirmed %}checked{% endif %}> I confirm these facts</label>
+
+        <p><button type="submit">Save facts</button></p>
+      </form>
+    </div>
+
+    {% if decisions %}
+    <div class="panel">
+      <h2>Decision and next steps</h2>
+      <table>
+        <thead><tr><th>Service</th><th>Eligibility</th><th>Reason</th></tr></thead>
+        <tbody>
+          {% for d in decisions %}
+          <tr>
+            <td>{{ d.service }}</td>
+            <td class="decision-{{ d.decision | lower }}">{{ d.decision }}</td>
+            <td>{{ d.reason }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% endif %}
+  </main>
+</body>
+</html>

@@ -127,8 +127,21 @@
     ],
     "deliberately_not_built": "Feature comparison panel is not built as a separate per-tier feature matrix -- no real mapping from ProductTier to specific delivery-channel/portfolio-count entitlements exists yet, and inventing one would be exactly the kind of unexplained calculated value PU-05's own panel contract forbids. External platform fee notice is static text (no real external fee schedule is modeled anywhere in this build)."
   },
-  "screens_done": ["AD-07", "PU-02", "AD-02 (read-only slice)", "AD-03 (create/list slice)", "AD-01 (overview slice)", "AD-08 (review queue/decision slice)", "AD-04 (run declaration/preview slice)", "PU-01", "PU-08", "PU-03 (detail slice)", "PU-05 (pricing slice)"],
-  "screens_not_started": "55 of 66 (AD-01, AD-02, AD-03, AD-04, AD-08, PU-03, PU-05 partially done) -- see signal_platform_dashboard_v2/catalog/screens.json for the full list.",
+  "eleventh_slice": {
+    "name": "ID-04 (Service eligibility onboarding) -- customer facts + live policy evaluation",
+    "status": "done, deliberately partial",
+    "why_this_slice": "app/models/tenancy.py's CustomerProfile already carries a real residence_jurisdiction field and the MembershipRole.CUSTOMER role already exists with no screen using it yet -- ID-04 is the natural first real customer-facing screen. 'Customer supplies facts, not approval flags' (ID-04's own acceptance text) is implemented literally: no column anywhere stores an eligibility VERDICT, only the submitted facts; the decision is recomputed live every read from those facts plus the real published-product catalog, so a residence change can never leave a stale decision behind.",
+    "what_was_built": [
+      "app/models/eligibility.py -- EligibilityAssessment (one row per (tenant_id, user_id), FK'd to Membership like CustomerProfile's own precedent), CustomerType enum",
+      "app/services/eligibility.py -- save_eligibility_facts (validates residence_country/requested services/customer_type; rejects unknown requested services) + evaluate_eligibility (a bounded, honest jurisdiction policy: only 'US' is supported; entity onboarding is a real named UNSUPPORTED reason, never silently treated as an individual; unconfirmed facts are PENDING never ELIGIBLE; a requested service with no real published product supporting it is UNSUPPORTED, never guessed eligible)",
+      "app/api/dashboard_routes.py + app/templates/id04_eligibility.html -- GET/POST /onboarding/eligibility, gated by a new 'manage_own_eligibility' permission (CUSTOMER role only)",
+      "alembic/versions/858b08bda7d1_add_eligibility_assessments_table.py -- real migration, verified end-to-end against a live disposable Postgres cluster (full alembic upgrade head chain replayed clean, table + tenant_isolation RLS policy confirmed via psql)",
+      "tests/test_eligibility.py (9 tests) + tests/test_dashboard_routes.py (+4) -- covers validation failures, real save/reload, and every named decision reason (JURISDICTION_NOT_SUPPORTED, ENTITY_ONBOARDING_NOT_IMPLEMENTED, FACTS_NOT_CONFIRMED, NO_PUBLISHED_PRODUCT_FOR_SERVICE, POLICY_SATISFIED). All three gating checks (jurisdiction, entity, facts-confirmed) were load-bearing-verified in one pass (temporarily removed all three, confirmed all three corresponding tests failed with the wrong decision leaking through, restored)."
+    ],
+    "deliberately_not_built": "No multi-step wizard (Identity facts -> Requested service -> Documents -> Decision are one combined form, not four separate screens/steps). No residence-change-triggers-review notification -- the live recomputation makes a stale decision impossible, but there is no active notification when an existing customer's facts go from eligible to ineligible. Tax residence is accepted but not used by the policy yet (no tax-residence-specific rule exists)."
+  },
+  "screens_done": ["AD-07", "PU-02", "AD-02 (read-only slice)", "AD-03 (create/list slice)", "AD-01 (overview slice)", "AD-08 (review queue/decision slice)", "AD-04 (run declaration/preview slice)", "PU-01", "PU-08", "PU-03 (detail slice)", "PU-05 (pricing slice)", "ID-04 (eligibility slice)"],
+  "screens_not_started": "54 of 66 (AD-01, AD-02, AD-03, AD-04, AD-08, PU-03, PU-05, ID-04 partially done) -- see signal_platform_dashboard_v2/catalog/screens.json for the full list.",
   "standing_constraints_from_master_prompt": [
     "No live orders/cancellations, customer charges/subscriptions, live publication, production resets, credential rotation, or unapproved infrastructure spending.",
     "Isolated synthetic fixtures are authorized only in test/browser databases, never seeded into production.",
