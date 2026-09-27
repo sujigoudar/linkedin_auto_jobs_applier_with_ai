@@ -26,7 +26,17 @@ from pathlib import Path
 import pytest
 from sqlalchemy import text
 
-from app.db import Base, enable_row_level_security, make_engine, make_session_factory
+from app.db import Base, enable_row_level_security, enforce_append_only, make_engine, make_session_factory
+
+# Importing every model module (even ones this particular test file never
+# references) is required so `Base.metadata` is fully populated before
+# `create_all` -- otherwise running a single test file in isolation (e.g.
+# `pytest tests/test_ledger.py`) would create only the tables THAT file's
+# own imports happened to register, silently dropping tables other tests
+# in the same session/run depend on existing.
+import app.models.ledger  # noqa: F401
+import app.models.rights  # noqa: F401
+import app.models.tenancy  # noqa: F401
 
 _PG_BIN = Path("/usr/lib/postgresql/16/bin")
 
@@ -142,6 +152,7 @@ def db_session(postgres_cluster):
     with engine.begin() as conn:
         conn.execute(text("GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO app_role"))
     enable_row_level_security(engine)
+    enforce_append_only(engine)
     session_factory = make_session_factory(engine)
     session = session_factory()
     try:

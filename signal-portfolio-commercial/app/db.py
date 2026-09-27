@@ -32,7 +32,12 @@ def make_session_factory(engine) -> sessionmaker:
 #: SECURITY` alone is bypassed by the owner and by superusers, which would
 #: make this a no-op against the very role these tables are usually queried
 #: through in this single-role-per-database development setup).
-_TENANT_SCOPED_TABLES: tuple[str, ...] = ("memberships", "customer_profiles")
+_TENANT_SCOPED_TABLES: tuple[str, ...] = ("memberships", "customer_profiles", "ledger_entries")
+
+#: Tables that must never be UPDATEd or DELETEd from, only appended to (see
+#: app/models/ledger.py) -- a mistaken entry is corrected by inserting a new
+#: row, never by editing or removing the original.
+_APPEND_ONLY_TABLES: tuple[str, ...] = ("ledger_entries",)
 
 
 def enable_row_level_security(engine) -> None:
@@ -51,6 +56,31 @@ def enable_row_level_security(engine) -> None:
                 text(
                     f"CREATE POLICY tenant_isolation ON {table} "
                     "USING (tenant_id = current_setting('app.tenant_id', true))"
+                )
+            )
+
+
+def enforce_append_only(engine) -> None:
+    """Install a trigger that rejects any UPDATE or DELETE against an
+    append-only table -- this must hold even for the table owner and even
+    for a caller who forgot (or a future refactor that removed) the
+    application-level `append_entry`/`append_correction` discipline in
+    `app/services/ledger.py`. Idempotent: safe to call every time the
+    schema is (re)created."""
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "CREATE OR REPLACE FUNCTION forbid_ledger_mutation() RETURNS trigger AS $$ "
+                "BEGIN RAISE EXCEPTION 'this table is append-only: % is not permitted', TG_OP; "
+                "END; $$ LANGUAGE plpgsql"
+            )
+        )
+        for table in _APPEND_ONLY_TABLES:
+            conn.execute(text(f"DROP TRIGGER IF EXISTS append_only_guard ON {table}"))
+            conn.execute(
+                text(
+                    f"CREATE TRIGGER append_only_guard BEFORE UPDATE OR DELETE ON {table} "
+                    "FOR EACH ROW EXECUTE FUNCTION forbid_ledger_mutation()"
                 )
             )
 

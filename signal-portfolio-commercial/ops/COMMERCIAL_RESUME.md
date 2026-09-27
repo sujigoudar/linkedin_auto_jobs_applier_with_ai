@@ -21,11 +21,18 @@ readable companion: how to actually pick the work back up.
   guard, a local JWT issuer, and an explicit role-permission allow-list.
   Not yet wired into anything -- no FastAPI app/routes exist yet, and no
   Alembic migrations (still `Base.metadata.create_all` in tests).
-- **Phases 03-12**: not started. See `commercial_state.json` for phase-specific
+- **Phase 03 (economic journal)**: done and tested. Two halves: (1) a real
+  fix in `signal-copier/app/economics.py` for the `completed_trade_win_rate`
+  naming issue Phase 00 flagged (see `commercial_state.json`'s notes for the
+  exact rename/new-metric split); (2) the four-book append-only ledger
+  itself (`app/models/ledger.py`, `app/services/ledger.py`,
+  `app/db.py`'s `enforce_append_only`, `tests/test_ledger.py`) -- a real
+  Postgres trigger rejects direct UPDATE/DELETE, and corrections are new
+  rows, never edits. Not yet wired -- no caller appends real entries, and
+  there's no projection/aggregation (NAV, per-book P&L) layer yet.
+- **Phases 04-12**: not started. See `commercial_state.json` for phase-specific
   notes carried forward from the original request (e.g. the Collective2 API4
-  TIF inconsistency to resolve, the Phase 03 accounting-journal scope
-  boundary against `signal-copier/app/provider_value.py`, PAMM/MAM being
-  simulation-only in this build).
+  TIF inconsistency to resolve, PAMM/MAM being simulation-only in this build).
 
 ## How to run the tests
 
@@ -62,12 +69,10 @@ directory of pytest's tmp dir (this bit us once; the fix is in
 
 ## Next step
 
-Phase 03: the economic journal (four-book accounting -- source/model/
-platform/follower) and corrected metrics. Must NOT simply wrap or
-re-export `signal-copier/app/provider_value.py` -- see `docs/00_discovery.md`
-and `commercial_state.json`'s `03_economic_journal` notes for why (it's a
-narrower, single-owner tool) and for the `completed_trade_win_rate` naming
-fix this phase also carries forward. This is also a natural point to add a
-FastAPI `commercial_api` app skeleton (routes calling into the Phase 01/02
-services) and real Alembic migrations, once the accounting schema gives a
-fuller picture of what the first migration needs to cover.
+Phase 04: portfolio research and selection (sleeves, original histories,
+point-in-time alignment, complementarity/capacity, complete subset/recipe
+enumeration, realistic common-capital chronology, holdout/shadow
+evaluation). This is also a natural point to add a FastAPI `commercial_api`
+app skeleton and real Alembic migrations, since the ledger/tenancy/rights
+schemas are now stable enough to give a first migration something real to
+cover.

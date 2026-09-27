@@ -1,7 +1,27 @@
 """E06: authoritative account economics -- realized P&L, current cost
-basis, and completed-trade win rate computed by replaying this account's
-own confirmed executions (SignalStore's `orders` table), not a simulated
-or estimated equity curve.
+basis, and two distinct win-rate metrics computed by replaying this
+account's own confirmed executions (SignalStore's `orders` table), not a
+simulated or estimated equity curve.
+
+Two win rates, not one, because they answer different questions and must
+never be conflated (see the commercial platform's
+signal-portfolio-commercial/spec/docs/04_metrics_accounting_and_truth.md,
+"Completed-lifecycle win rate"):
+
+- `closing_fill_win_rate`: fraction of individual REDUCING FILLS that were
+  profitable. A single position closed via three partial-exit fills counts
+  as three observations here, not one.
+- `completed_lifecycle_win_rate`: fraction of independently completed
+  POSITION EPISODES (flat -> non-flat -> flat again) that were net
+  profitable, with break-even episodes counted separately rather than
+  folded into either winners or losers. The same three-partial-exit
+  position above counts as exactly one observation here.
+
+`completed_trade_win_rate` (the original name) is kept as a deprecated
+alias for `closing_fill_win_rate` -- despite its name, it was always the
+fill-based metric, never the episode-based one; renaming it outright
+would have silently changed the meaning of a name calling code may still
+depend on.
 
 Deliberately narrow: this reports what the execution journal actually
 proves. It does NOT report:
@@ -45,14 +65,49 @@ class SymbolEconomics:
     last_fill_price: float | None = None
     closing_fills: int = 0
     winning_closing_fills: int = 0
+    #: Independently completed position episodes (flat -> non-flat -> flat),
+    #: as distinct from `closing_fills` above -- a position closed across
+    #: several partial-exit fills is still exactly one episode.
+    completed_episodes: int = 0
+    winning_episodes: int = 0
+    breakeven_episodes: int = 0
+    #: Realized P&L accumulated so far within the CURRENTLY OPEN episode --
+    #: not itself exposed; reset to 0.0 each time an episode completes.
+    _open_episode_pnl: float = 0.0
 
     @property
-    def completed_trade_win_rate(self) -> float | None:
+    def closing_fill_win_rate(self) -> float | None:
         """Fraction of REDUCING fills (the only fills that can realize a
-        gain or loss) that were profitable -- not a period-based ratio."""
+        gain or loss) that were profitable -- not a period-based ratio, and
+        not the same thing as `completed_lifecycle_win_rate` below (a
+        position closed over several fills counts once there, but once per
+        fill here)."""
         if self.closing_fills == 0:
             return None
         return self.winning_closing_fills / self.closing_fills
+
+    @property
+    def completed_trade_win_rate(self) -> float | None:
+        """Deprecated alias for `closing_fill_win_rate` -- kept because this
+        was always the fill-based metric under a name that suggested
+        otherwise; see `completed_lifecycle_win_rate` for the metric this
+        name would imply."""
+        return self.closing_fill_win_rate
+
+    @property
+    def losing_episodes(self) -> int:
+        return self.completed_episodes - self.winning_episodes - self.breakeven_episodes
+
+    @property
+    def completed_lifecycle_win_rate(self) -> float | None:
+        """Fraction of independently completed position episodes that were
+        net profitable. Break-even episodes count toward the denominator
+        (they are a completed episode) but not toward the numerator --
+        exposed separately via `breakeven_episodes`, never silently folded
+        into either winners or losers."""
+        if self.completed_episodes == 0:
+            return None
+        return self.winning_episodes / self.completed_episodes
 
 
 @dataclass
@@ -67,22 +122,40 @@ class AccountEconomics:
     incomplete_symbols: list[str] = field(default_factory=list)
 
     @property
-    def completed_trade_win_rate(self) -> float | None:
+    def closing_fill_win_rate(self) -> float | None:
         total_closing = sum(s.closing_fills for s in self.per_symbol.values())
         if total_closing == 0:
             return None
         total_wins = sum(s.winning_closing_fills for s in self.per_symbol.values())
         return total_wins / total_closing
 
+    @property
+    def completed_trade_win_rate(self) -> float | None:
+        """Deprecated alias for `closing_fill_win_rate` -- see that
+        property's docstring."""
+        return self.closing_fill_win_rate
+
+    @property
+    def completed_lifecycle_win_rate(self) -> float | None:
+        total_episodes = sum(s.completed_episodes for s in self.per_symbol.values())
+        if total_episodes == 0:
+            return None
+        total_wins = sum(s.winning_episodes for s in self.per_symbol.values())
+        return total_wins / total_episodes
+
     def to_dict(self) -> dict:
         return {
             "account_id": self.account_id,
             "realized_pnl": self.realized_pnl,
+            "closing_fill_win_rate": self.closing_fill_win_rate,
+            "completed_lifecycle_win_rate": self.completed_lifecycle_win_rate,
             "completed_trade_win_rate": self.completed_trade_win_rate,
             "incomplete_symbols": self.incomplete_symbols,
             "note": "Gross of fees (not yet tracked). last_fill_price is the last price this "
             "account actually traded at, not a live market quote -- unrealized P&L is not "
-            "reported here.",
+            "reported here. completed_trade_win_rate is a deprecated alias for "
+            "closing_fill_win_rate (a per-fill metric); completed_lifecycle_win_rate is the "
+            "separate per-episode metric its name would suggest.",
             "per_symbol": {
                 symbol: {
                     "realized_pnl": s.realized_pnl,
@@ -90,11 +163,27 @@ class AccountEconomics:
                     "average_cost": s.average_cost,
                     "last_fill_price": s.last_fill_price,
                     "closing_fills": s.closing_fills,
-                    "completed_trade_win_rate": s.completed_trade_win_rate,
+                    "closing_fill_win_rate": s.closing_fill_win_rate,
+                    "completed_episodes": s.completed_episodes,
+                    "winning_episodes": s.winning_episodes,
+                    "breakeven_episodes": s.breakeven_episodes,
+                    "completed_lifecycle_win_rate": s.completed_lifecycle_win_rate,
                 }
                 for symbol, s in self.per_symbol.items()
             },
         }
+
+
+def _close_episode(se: SymbolEconomics) -> None:
+    """Classify and finalize the episode that just returned to flat (or
+    flipped through flat), then reset the accumulator for whatever episode
+    comes next."""
+    se.completed_episodes += 1
+    if se._open_episode_pnl > 0:
+        se.winning_episodes += 1
+    elif se._open_episode_pnl == 0:
+        se.breakeven_episodes += 1
+    se._open_episode_pnl = 0.0
 
 
 def _signed_quantity(side: str, quantity: float) -> float | None:
@@ -147,6 +236,7 @@ def compute_account_economics(store: SignalStore, account_id: str) -> AccountEco
         realized = (price - se.average_cost) * direction * closing_quantity
         se.realized_pnl += realized
         result.realized_pnl += realized
+        se._open_episode_pnl += realized
         se.closing_fills += 1
         if realized > 0:
             se.winning_closing_fills += 1
@@ -154,11 +244,15 @@ def compute_account_economics(store: SignalStore, account_id: str) -> AccountEco
         remainder = abs(signed_qty) - closing_quantity
         se.open_quantity += signed_qty
         if remainder > 0:
-            # Flipped through flat: what's left opens a fresh position in
-            # the new direction, priced at this same fill.
+            # Flipped through flat: the position touched flat, so the
+            # episode that was open closes here (classified below), and
+            # what's left opens a FRESH episode/position in the new
+            # direction, priced at this same fill.
             se.average_cost = price
             se.open_quantity = remainder if signed_qty > 0 else -remainder
+            _close_episode(se)
         elif se.open_quantity == 0:
             se.average_cost = None
+            _close_episode(se)
 
     return result
