@@ -51,9 +51,20 @@ readable companion: how to actually pick the work back up.
   queued intent anywhere, cohorts/consent/audience determination,
   follower allocation, capacity/fairness tracking. See
   `commercial_state.json`'s `05_publication_customer_copy_lifecycle` notes.
-- **Phases 06-12**: not started. See `commercial_state.json` for phase-specific
-  notes carried forward from the original request (e.g. the Collective2 API4
-  TIF inconsistency to resolve, PAMM/MAM being simulation-only in this build).
+- **Phase 06 (Collective2 API4 publisher)**: partially done --
+  `app/services/collective2_publisher.py` builds (never sends) the API4
+  Order envelope. The TIF documentation conflict was investigated (not
+  guessed): a WebFetch to collective2.com was blocked by this
+  environment's egress policy (an organization denial, confirmed via
+  `/root/.ccr/README.md` -- not retried, per that file's own rule). The
+  `Tif` enum therefore defines only the two undisputed values (DAY, GTC);
+  the disputed "2" is not a member and is rejected if ever produced. See
+  `commercial_state.json`'s `06_collective2_publisher` notes for what's
+  still missing (real transport/credentials, StrategyId/symbol
+  resolution, OCA reconciliation).
+- **Phase 07-12**: not started. See `commercial_state.json` for phase-specific
+  notes carried forward from the original request (e.g. PAMM/MAM being
+  simulation-only in this build).
 
 ## How to run the tests
 
@@ -90,13 +101,12 @@ directory of pytest's tmp dir (this bit us once; the fix is in
 
 ## Next step
 
-Phase 06: Collective2 API4 publisher -- the first destination adapter
-that would actually consume a QUEUED PublicationIntent and drive it
-through `transition()` toward ACKNOWLEDGED/REJECTED/UNKNOWN using a real
-external acknowledgment. Per the original request, resolve the API4
-price-only-modification/TIF inconsistency against current Collective2
-docs before implementing (no sandbox exists for this -- no live
-publishing during this build regardless). This is also a natural point
-to add a FastAPI `commercial_api` app skeleton and real Alembic
-migrations, since the ledger/tenancy/rights/sleeve/publication schemas
-are now stable enough to give a first migration something real to cover.
+Phase 07: eToro + other copier channel adapters (MetaApi CopyFactory,
+etc.), following the same pattern as Phase 06 -- build the transport-
+independent request-shape mapping, never send anything live, and if a
+vendor-documentation question needs live verification, attempt it
+honestly and record BLOCKED rather than guess if egress is refused. This
+is also a natural point to add a FastAPI `commercial_api` app skeleton
+and real Alembic migrations, since the ledger/tenancy/rights/sleeve/
+publication schemas are now stable enough to give a first migration
+something real to cover.
