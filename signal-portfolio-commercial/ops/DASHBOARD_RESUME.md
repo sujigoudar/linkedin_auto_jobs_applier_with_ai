@@ -22,7 +22,7 @@ tests; never fabricate data to make an empty state look populated.
 
 ## Where things stand
 
-Two slices are DONE:
+Three slices are DONE:
 - AD-07 Products admin screen + PU-02 public catalog: real model/
   service/routes/templates/migration, 26 tests, load-bearing verified
   (stale-revision guard, `product_visibility` RLS policy).
@@ -31,18 +31,31 @@ Two slices are DONE:
   attach-evidence/approve -- those need document-upload/malware-scan
   infrastructure and an audit-logged approval workflow that don't
   exist yet.
+- AD-03 Research universe and sleeves: real create/list of sleeve
+  lineage records (`GET`/`POST /ops/research/universe`), reusing the
+  Phase 04 `Sleeve` model as-is. Deliberately NOT including a
+  DRAFT/QUALIFIED lifecycle or coverage/overlap analysis -- those need
+  real historical sleeve data this environment doesn't have.
 
-Full suite is 258 tests, ruff and mypy both green (**use `python3 -m
+Full suite is 267 tests, ruff and mypy both green (**use `python3 -m
 ruff`/`python3 -m mypy`/`python3 -m pytest` explicitly** -- this sandbox
 has a stray `uv tool`-installed `ruff`/`mypy` shadowing the project's
 real declared versions on bare `PATH`, which produced a false-negative
 locally once already; CI always uses the `requirements.txt`-installed
 versions via `pip install -r requirements.txt`).
 
-See `dashboard_state.json`'s `current_slice`/`second_slice` for the
-exact file lists and what was deliberately left unbuilt in each. 63 of
-66 screens (AD-02 partially done) remain -- pick the next one following
-the steps below.
+A real, end-to-end screenshot walkthrough of the 3 built screens was
+also done once (disposable Postgres + real seeded data through the
+actual service functions + Playwright with a real signed JWT in
+`extra_http_headers` since auth is Bearer-token, not cookie-based) --
+see git history around that point for the seed/screenshot scripts if
+you need to repeat this for a future demo; nothing from that throwaway
+demo is checked into the repo itself.
+
+See `dashboard_state.json`'s `current_slice`/`second_slice`/
+`third_slice` for the exact file lists and what was deliberately left
+unbuilt in each. 62 of 66 screens (AD-02, AD-03 partially done) remain
+-- pick the next one following the steps below.
 
 ## How to pick the next screen
 

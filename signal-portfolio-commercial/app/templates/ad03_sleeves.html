@@ -1,0 +1,82 @@
+{% extends "_base.html" %}
+{% block title %}Research universe and sleeves{% endblock %}
+{% block content %}
+<h1>Research universe and sleeves</h1>
+<p class="help">Tenant: <strong>{{ tenant_id }}</strong> &middot; Role: <strong>{{ role }}</strong></p>
+
+{% if error %}
+<div class="conflict">{{ error }}</div>
+{% endif %}
+
+<div class="panel">
+  <h2>Sleeve catalog</h2>
+  {% if sleeves %}
+  <table>
+    <thead>
+      <tr>
+        <th>Provider / analyst</th><th>Strategy</th><th>Asset</th>
+        <th>Parser / policy</th><th>History origin</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for sleeve in sleeves %}
+      <tr>
+        <td>{{ sleeve.provider }} / {{ sleeve.analyst }}</td>
+        <td>{{ sleeve.strategy_horizon }}</td>
+        <td>{{ sleeve.asset_class }}</td>
+        <td>{{ sleeve.parser_version }} / {{ sleeve.execution_policy_id }}</td>
+        <td>{{ sleeve.history_origin }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="empty-state">
+    <p>No qualified strategy sleeves are available.</p>
+  </div>
+  {% endif %}
+</div>
+
+<div class="panel">
+  <h2>Create sleeve draft</h2>
+  <form method="post" action="/ops/research/universe">
+    <label for="provider">Provider</label>
+    <input id="provider" name="provider" type="text" required>
+    <p class="help">Registered source. Rights checked separately.</p>
+
+    <label for="analyst">Analyst</label>
+    <input id="analyst" name="analyst" type="text" required>
+    <p class="help">Verified mapping; stable ID.</p>
+
+    <label for="strategy_horizon">Strategy</label>
+    <input id="strategy_horizon" name="strategy_horizon" type="text" required>
+    <p class="help">Reviewed strategy identity. Not an arbitrary marketing label.</p>
+
+    <label for="asset_class">Asset class</label>
+    <input id="asset_class" name="asset_class" type="text" required>
+
+    <label for="parser_version">Parser version</label>
+    <input id="parser_version" name="parser_version" type="text" required>
+    <p class="help">Reviewed exact version. No "latest" alias.</p>
+
+    <label for="execution_policy_id">Management policy</label>
+    <input id="execution_policy_id" name="execution_policy_id" type="text" required>
+    <p class="help">Compatible released recipe. Original risk semantics retained.</p>
+
+    <label for="cost_model_id">Cost model</label>
+    <input id="cost_model_id" name="cost_model_id" type="text" required>
+
+    <label for="capacity_policy_id">Capacity policy</label>
+    <input id="capacity_policy_id" name="capacity_policy_id" type="text" required>
+
+    <label for="risk_unit_id">Risk unit</label>
+    <input id="risk_unit_id" name="risk_unit_id" type="text" required>
+
+    <label for="history_origin">History origin</label>
+    <input id="history_origin" name="history_origin" type="text" required>
+    <p class="help">No fabricated performance -- exact source of any history this sleeve draws on.</p>
+
+    <button type="submit" style="margin-top:1rem;">Create sleeve draft</button>
+  </form>
+</div>
+{% endblock %}

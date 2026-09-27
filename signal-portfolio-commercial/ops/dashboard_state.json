@@ -30,8 +30,20 @@
     ],
     "deliberately_not_built": "AD-02-A01 (create grant draft), AD-02-A02 (attach evidence), AD-02-A03 (submit approval) -- no draft/revision lifecycle on RightsGrant, no evidence-document storage, no approval audit log."
   },
-  "screens_done": ["AD-07", "PU-02", "AD-02 (read-only slice)"],
-  "screens_not_started": "63 of 66 (AD-02 partially done) -- see signal_platform_dashboard_v2/catalog/screens.json for the full list.",
+  "third_slice": {
+    "name": "AD-03 (Research universe and sleeves, admin) -- sleeve lineage catalog",
+    "status": "done, deliberately partial",
+    "why_this_slice": "Sleeve (Phase 04) already models exactly the lineage fields F-SLEEVE's form asks for (provider/analyst/strategy/parser/policy/risk/history), reused as-is rather than a redesigned field set. Create + list is honestly buildable now. NOT built: a DRAFT/QUALIFIED lifecycle or the 'Confirm: qualified status only from evidence-backed evaluation' step -- that needs real coverage/overlap statistics against actual historical data this environment doesn't have.",
+    "what_was_built": [
+      "app/services/sleeve_admin.py -- create_sleeve/list_sleeves/get_sleeve (tenant-scoped, RLS-protected via the existing generic sleeves policy)",
+      "app/services/permissions.py -- 'manage_sleeve_draft' action (owner/researcher/reviewer)",
+      "app/api/dashboard_routes.py + app/templates/ad03_sleeves.html -- GET/POST /ops/research/universe",
+      "tests/test_sleeve_admin.py (4 tests) + tests/test_dashboard_routes.py (+5) -- empty state, create+reload, cross-tenant scoped-not-found, permission denial, missing-field validation. Both the permission guard and the required-field validation were load-bearing-verified (each temporarily broken, confirmed to fail its test, restored)."
+    ],
+    "deliberately_not_built": "AD-03-A02 (inspect coverage), AD-03-A03 (open portfolio lab) -- coverage/overlap analysis needs real historical sleeve data; portfolio lab (AD-04) is a separate unbuilt screen."
+  },
+  "screens_done": ["AD-07", "PU-02", "AD-02 (read-only slice)", "AD-03 (create/list slice)"],
+  "screens_not_started": "62 of 66 (AD-02, AD-03 partially done) -- see signal_platform_dashboard_v2/catalog/screens.json for the full list.",
   "standing_constraints_from_master_prompt": [
     "No live orders/cancellations, customer charges/subscriptions, live publication, production resets, credential rotation, or unapproved infrastructure spending.",
     "Isolated synthetic fixtures are authorized only in test/browser databases, never seeded into production.",

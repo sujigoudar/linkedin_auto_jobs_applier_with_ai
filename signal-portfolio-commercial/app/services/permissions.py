@@ -42,6 +42,10 @@ _ALLOWED: dict[str, frozenset[Role]] = {
     #: which this build doesn't implement yet (see product_admin's own
     #: precedent of not building the approval/publish step until it is).
     "view_rights_register": frozenset({Role.OWNER, Role.REVIEWER}),
+    #: AD-03 "Research universe and sleeves" -- create/list sleeve
+    #: lineage records. Same trio as `manage_product_draft`: a research/
+    #: release decision, not billing/publication/support/customer.
+    "manage_sleeve_draft": frozenset({Role.OWNER, Role.RESEARCHER, Role.REVIEWER}),
 }
 
 

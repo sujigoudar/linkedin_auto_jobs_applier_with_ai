@@ -17,6 +17,11 @@ what is and is not implemented yet.
   logged approval workflow that don't exist yet; building an empty
   create form around them would be exactly the kind of scaffolding
   around nothing this build avoids.
+- AD-03 "Research universe and sleeves": create/list real sleeve
+  lineage records (reusing the Phase 04 `Sleeve` model as-is). No
+  distinct DRAFT/QUALIFIED lifecycle or "Confirm: qualified status"
+  step -- that needs real coverage/overlap statistics against actual
+  historical data this environment doesn't have.
 """
 from __future__ import annotations
 
@@ -44,6 +49,7 @@ from app.services.product_admin import (
     update_product_draft,
 )
 from app.services.rights_registry import list_rights_grants
+from app.services.sleeve_admin import InvalidSleeveDraftError, create_sleeve, list_sleeves
 
 router = APIRouter()
 
@@ -211,6 +217,81 @@ def rights_register_page(
 
     grants = list_rights_grants(session)
     return templates.TemplateResponse(request, "ad02_rights.html", {"grants": grants})
+
+
+def _require_sleeve_admin(scope: TenantScope) -> None:
+    try:
+        require_permission(scope.role, "manage_sleeve_draft")
+    except PermissionDenied as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+
+@router.get("/ops/research/universe")
+def sleeve_catalog_page(
+    request: Request,
+    scope: TenantScope = Depends(get_current_scope),
+    session: Session = Depends(get_db_session),
+):
+    _require_sleeve_admin(scope)
+    set_tenant_scope(session, scope.tenant_id)
+    sleeves = list_sleeves(session, tenant_id=scope.tenant_id)
+    return templates.TemplateResponse(
+        request,
+        "ad03_sleeves.html",
+        {"sleeves": sleeves, "tenant_id": scope.tenant_id, "role": scope.role.value},
+    )
+
+
+@router.post("/ops/research/universe")
+def create_sleeve_route(
+    request: Request,
+    provider: str = Form(...),
+    analyst: str = Form(...),
+    strategy_horizon: str = Form(...),
+    asset_class: str = Form(...),
+    parser_version: str = Form(...),
+    execution_policy_id: str = Form(...),
+    cost_model_id: str = Form(...),
+    capacity_policy_id: str = Form(...),
+    risk_unit_id: str = Form(...),
+    history_origin: str = Form(...),
+    scope: TenantScope = Depends(get_current_scope),
+    session: Session = Depends(get_db_session),
+):
+    _require_sleeve_admin(scope)
+    set_tenant_scope(session, scope.tenant_id)
+    try:
+        create_sleeve(
+            session,
+            tenant_id=scope.tenant_id,
+            provider=provider,
+            analyst=analyst,
+            strategy_horizon=strategy_horizon,
+            asset_class=asset_class,
+            parser_version=parser_version,
+            execution_policy_id=execution_policy_id,
+            cost_model_id=cost_model_id,
+            capacity_policy_id=capacity_policy_id,
+            risk_unit_id=risk_unit_id,
+            history_origin=history_origin,
+        )
+        session.commit()
+    except InvalidSleeveDraftError as exc:
+        session.rollback()
+        set_tenant_scope(session, scope.tenant_id)
+        sleeves = list_sleeves(session, tenant_id=scope.tenant_id)
+        return templates.TemplateResponse(
+            request,
+            "ad03_sleeves.html",
+            {
+                "sleeves": sleeves,
+                "tenant_id": scope.tenant_id,
+                "role": scope.role.value,
+                "error": str(exc),
+            },
+            status_code=400,
+        )
+    return RedirectResponse(url="/ops/research/universe", status_code=303)
 
 
 @router.get("/portfolios")

@@ -227,3 +227,60 @@ def test_rights_register_lists_a_real_recorded_grant(db_session):
     assert "grant-http-1" in response.text
     assert "acme-research" in response.text
     assert "GRANTED" in response.text
+
+
+_SLEEVE_FORM_FIELDS = {
+    "provider": "north-star-research",
+    "analyst": "m.chen",
+    "strategy_horizon": "swing",
+    "asset_class": "EQUITY",
+    "parser_version": "v3",
+    "execution_policy_id": "ep-standard",
+    "cost_model_id": "cm-standard",
+    "capacity_policy_id": "cap-standard",
+    "risk_unit_id": "ru-1pct",
+    "history_origin": "north-star-research",
+}
+
+
+def test_sleeve_catalog_requires_authentication(db_session):
+    client = _client(db_session)
+    response = client.get("/ops/research/universe")
+    assert response.status_code == 401
+
+
+def test_sleeve_catalog_denies_a_role_without_manage_sleeve_draft(db_session):
+    client = _client(db_session)
+    headers = _auth_headers(role=MembershipRole.SUPPORT_READONLY)
+    response = client.get("/ops/research/universe", headers=headers)
+    assert response.status_code == 403
+
+
+def test_sleeve_catalog_shows_the_real_empty_state(db_session):
+    client = _client(db_session)
+    response = client.get("/ops/research/universe", headers=_auth_headers())
+    assert response.status_code == 200
+    assert "No qualified strategy sleeves are available" in response.text
+
+
+def test_create_sleeve_via_form_then_reload_shows_it_persisted(db_session):
+    client = _client(db_session)
+    headers = _auth_headers()
+
+    create_response = client.post("/ops/research/universe", data=_SLEEVE_FORM_FIELDS, headers=headers)
+    assert create_response.status_code == 303
+
+    list_response = client.get("/ops/research/universe", headers=headers)
+    assert "north-star-research" in list_response.text
+    assert "swing" in list_response.text
+
+
+def test_create_sleeve_rejects_a_missing_required_field_with_an_error_banner(db_session):
+    client = _client(db_session)
+    headers = _auth_headers()
+
+    fields = dict(_SLEEVE_FORM_FIELDS)
+    fields["provider"] = "   "
+    response = client.post("/ops/research/universe", data=fields, headers=headers)
+    assert response.status_code == 400
+    assert "missing required field" in response.text
