@@ -208,6 +208,11 @@ from app.services.publisher_destination import (
 )
 from app.services.support_case import InvalidSupportCaseError, create_support_case, list_support_cases
 from app.services.publication_admin import get_publication_intent_detail
+from app.services.notification_preferences import (
+    InvalidNotificationPreferencesError,
+    get_notification_preferences,
+    save_notification_preferences,
+)
 from app.services.portfolio_selection import (
     InvalidPortfolioSelectionError,
     cancel_portfolio_selection,
@@ -1864,3 +1869,73 @@ def cancel_portfolio_selection_page(
     cancel_portfolio_selection(session, selection)
     session.commit()
     return RedirectResponse(url="/app/portfolios", status_code=303)
+
+
+_ALL_NOTIFICATION_CATEGORIES = ["entry", "update", "exit", "safety", "billing", "marketing"]
+
+
+def _require_notification_preferences(scope: TenantScope) -> None:
+    try:
+        require_permission(scope.role, "manage_own_notification_preferences")
+    except PermissionDenied as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+
+@router.get("/app/settings/notifications")
+def notification_preferences_page(
+    request: Request,
+    scope: TenantScope = Depends(get_current_scope),
+    session: Session = Depends(get_db_session),
+    error: str | None = None,
+):
+    """CU-12 "Alert delivery preferences" -- see this route module's
+    own docstring above for what is and is not implemented."""
+    _require_notification_preferences(scope)
+    set_tenant_scope(session, scope.tenant_id)
+    preferences = get_notification_preferences(session, tenant_id=scope.tenant_id, user_id=scope.user_id)
+    return templates.TemplateResponse(
+        request,
+        "cu12_notifications.html",
+        {"preferences": preferences, "all_categories": _ALL_NOTIFICATION_CATEGORIES, "error": error},
+    )
+
+
+@router.post("/app/settings/notifications")
+def save_notification_preferences_page(
+    request: Request,
+    email: str = Form(""),
+    webhook_endpoint_id: str = Form(""),
+    categories: list[str] = Form([]),
+    timezone_name: str = Form("UTC"),
+    quiet_start: str = Form(""),
+    quiet_end: str = Form(""),
+    marketing_consent: bool = Form(False),
+    scope: TenantScope = Depends(get_current_scope),
+    session: Session = Depends(get_db_session),
+):
+    _require_notification_preferences(scope)
+    set_tenant_scope(session, scope.tenant_id)
+    try:
+        save_notification_preferences(
+            session,
+            tenant_id=scope.tenant_id,
+            user_id=scope.user_id,
+            email=email or None,
+            webhook_endpoint_id=webhook_endpoint_id or None,
+            categories=categories,
+            timezone_name=timezone_name,
+            quiet_start=quiet_start or None,
+            quiet_end=quiet_end or None,
+            marketing_consent=marketing_consent,
+        )
+    except InvalidNotificationPreferencesError as exc:
+        session.rollback()
+        preferences = get_notification_preferences(session, tenant_id=scope.tenant_id, user_id=scope.user_id)
+        return templates.TemplateResponse(
+            request,
+            "cu12_notifications.html",
+            {"preferences": preferences, "all_categories": _ALL_NOTIFICATION_CATEGORIES, "error": str(exc)},
+            status_code=400,
+        )
+    session.commit()
+    return RedirectResponse(url="/app/settings/notifications", status_code=303)

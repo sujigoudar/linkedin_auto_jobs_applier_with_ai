@@ -1816,3 +1816,54 @@ def test_cancel_portfolio_selection_is_a_scoped_not_found_for_another_customer(d
     other_customer_headers = _auth_headers(user_id="user-other", role=MembershipRole.CUSTOMER)
     response = client.post(f"/app/portfolios/{selection_id}/cancel", headers=other_customer_headers)
     assert response.status_code == 404
+
+
+def test_notification_preferences_page_requires_customer_role(db_session):
+    client = _client(db_session)
+    response = client.get("/app/settings/notifications", headers=_auth_headers(role=MembershipRole.OWNER))
+    assert response.status_code == 403
+
+
+def test_notification_preferences_page_shows_the_real_empty_state(db_session):
+    client = _client(db_session)
+    response = client.get("/app/settings/notifications", headers=_auth_headers(role=MembershipRole.CUSTOMER))
+    assert response.status_code == 200
+    assert "No verified delivery destination is configured." in response.text
+
+
+def test_save_notification_preferences_rejects_excluding_safety_over_http(db_session):
+    _seed_customer_membership(db_session)
+    client = _client(db_session)
+    response = client.post(
+        "/app/settings/notifications",
+        data={
+            "email": "customer@example.com",
+            "categories": ["marketing"],
+            "timezone_name": "UTC",
+            "marketing_consent": "true",
+        },
+        headers=_auth_headers(role=MembershipRole.CUSTOMER),
+    )
+    assert response.status_code == 400
+    assert "mandatory categories cannot be excluded" in response.text
+
+
+def test_save_then_reload_notification_preferences_over_real_http(db_session):
+    _seed_customer_membership(db_session)
+    client = _client(db_session)
+    headers = _auth_headers(role=MembershipRole.CUSTOMER)
+    create_response = client.post(
+        "/app/settings/notifications",
+        data={
+            "email": "http-customer@example.com",
+            "categories": ["safety", "billing"],
+            "timezone_name": "America/New_York",
+            "marketing_consent": "false",
+        },
+        headers=headers,
+    )
+    assert create_response.status_code == 303
+
+    final_response = client.get("/app/settings/notifications", headers=headers)
+    assert "http-customer@example.com" in final_response.text
+    assert "America/New_York" in final_response.text

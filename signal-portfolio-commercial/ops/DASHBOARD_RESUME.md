@@ -188,8 +188,17 @@ Seven slices are DONE:
   block reselecting after cancel -- caught by the test written for
   exactly that path, fixed before committing). No quantity/broker/
   execution field exists anywhere on this model.
+- CU-12 Alert delivery preferences: `GET`/`POST /app/settings/
+  notifications` (CUSTOMER only) -- a customer's own delivery
+  destinations, categories, timezone and quiet hours. A fixed
+  `MANDATORY_CATEGORIES = {"safety"}` can never be excluded, the same
+  discipline as AD-20's own `MANDATORY_PANEL_IDS`. `webhook_endpoint_id`
+  is an opaque id reference, never a raw URL, so there is no SSRF
+  surface to secure. Verify endpoint/Send labeled test and delivery
+  failures are explicit UNSUPPORTED -- no outbound delivery or
+  delivery-attempt-tracking infrastructure exists in this build.
 
-Full suite is 507 tests, ruff and mypy both green (**use `python3 -m
+Full suite is 520 tests, ruff and mypy both green (**use `python3 -m
 ruff`/`python3 -m mypy`/`python3 -m pytest` explicitly** -- this sandbox
 has a stray `uv tool`-installed `ruff`/`mypy` shadowing the project's
 real declared versions on bare `PATH`, which produced a false-negative
@@ -211,12 +220,12 @@ See `dashboard_state.json`'s `current_slice`/`second_slice`/
 `sixteenth_slice`/`seventeenth_slice`/`eighteenth_slice`/
 `nineteenth_slice`/`twentieth_slice`/`twentyfirst_slice`/
 `twentysecond_slice`/`twentythird_slice`/`twentyfourth_slice`/
-`twentyfifth_slice`/`twentysixth_slice` for the exact file lists and
-what was deliberately left unbuilt in each. 39 of 66 screens (AD-01,
-AD-02, AD-03, AD-04, AD-05, AD-08, AD-10, PU-03, PU-05, ID-04, AD-16,
-CU-14, AD-09, CU-16, AD-12, AD-11, AD-17, AD-13, AD-19, AD-14, AD-18,
-AD-20, CU-02 partially done) remain -- pick the next one following the
-steps below. **If you add a
+`twentyfifth_slice`/`twentysixth_slice`/`twentyseventh_slice` for the
+exact file lists and what was deliberately left unbuilt in each. 38 of
+66 screens (AD-01, AD-02, AD-03, AD-04, AD-05, AD-08, AD-10, PU-03,
+PU-05, ID-04, AD-16, CU-14, AD-09, CU-16, AD-12, AD-11, AD-17, AD-13,
+AD-19, AD-14, AD-18, AD-20, CU-02, CU-12 partially done) remain -- pick
+the next one following the steps below. **If you add a
 new table to
 `_TENANT_SCOPED_TABLES` in app/db.py, pin any EARLIER migration that
 already calls `_apply_row_level_security` with no explicit `tables`

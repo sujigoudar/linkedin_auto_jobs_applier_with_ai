@@ -1,0 +1,70 @@
+{% extends "_base.html" %}
+{% block title %}Alert delivery preferences{% endblock %}
+{% block content %}
+<h1>Alert delivery preferences</h1>
+
+{% if error %}<div class="conflict">{{ error }}</div>{% endif %}
+
+<div class="panel">
+  <h2>Delivery endpoints</h2>
+  {% if preferences %}
+  <table>
+    <tbody>
+      <tr><th>Email</th><td>{{ preferences.email or "(none)" }}</td></tr>
+      <tr><th>Webhook endpoint</th><td>{{ preferences.webhook_endpoint_id or "(none)" }}</td></tr>
+    </tbody>
+  </table>
+  {% else %}
+  <div class="empty-state">
+    <p>No verified delivery destination is configured.</p>
+  </div>
+  {% endif %}
+</div>
+
+<div class="panel">
+  <h2>Category controls</h2>
+  <form method="post" action="/app/settings/notifications">
+    <label for="email">Email destination</label>
+    <input type="email" id="email" name="email" value="{{ preferences.email if preferences else '' }}">
+
+    <label for="webhook_endpoint_id">Webhook destination (owned preverified endpoint id)</label>
+    <input type="text" id="webhook_endpoint_id" name="webhook_endpoint_id"
+      value="{{ preferences.webhook_endpoint_id if preferences else '' }}">
+
+    <fieldset>
+      <legend>Categories (safety cannot be excluded)</legend>
+      {% for c in all_categories %}
+      <label>
+        <input type="checkbox" name="categories" value="{{ c }}"
+          {% if preferences and c in preferences.categories %}checked{% elif not preferences and c == "safety" %}checked{% endif %}>
+        {{ c }}
+      </label>
+      {% endfor %}
+    </fieldset>
+
+    <label for="timezone_name">Timezone (IANA zone)</label>
+    <input type="text" id="timezone_name" name="timezone_name" value="{{ preferences.timezone_name if preferences else 'UTC' }}">
+
+    <p><button type="submit">Save preferences</button></p>
+  </form>
+</div>
+
+<div class="panel">
+  <h2>Quiet hours</h2>
+  {% if preferences and preferences.quiet_start %}
+  <p>{{ preferences.quiet_start }} &ndash; {{ preferences.quiet_end }} ({{ preferences.timezone_name }}). Safety notices are never suppressed by quiet hours.</p>
+  {% else %}
+  <p>No quiet hours configured.</p>
+  {% endif %}
+</div>
+
+<div class="panel">
+  <h2>Verification/test</h2>
+  <p><span class="badge badge-unknown">UNSUPPORTED</span> -- Verify endpoint and Send labeled test both require real outbound email/webhook delivery infrastructure this build does not have.</p>
+</div>
+
+<div class="panel">
+  <h2>Delivery failures</h2>
+  <p><span class="badge badge-unknown">UNSUPPORTED</span> -- no delivery-attempt tracking model exists in this build (the same gap AD-10's own slice already documented).</p>
+</div>
+{% endblock %}

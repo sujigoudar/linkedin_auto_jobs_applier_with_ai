@@ -126,6 +126,11 @@ _ALLOWED: dict[str, frozenset[Role]] = {
     #: as "manage_own_eligibility"/"manage_own_support_case"/
     #: "manage_own_api_keys".
     "manage_own_portfolio_selections": frozenset({Role.CUSTOMER}),
+    #: CU-12 "Alert delivery preferences" -- a customer's own
+    #: preferences, same shape as "manage_own_eligibility"/
+    #: "manage_own_support_case"/"manage_own_api_keys"/
+    #: "manage_own_portfolio_selections".
+    "manage_own_notification_preferences": frozenset({Role.CUSTOMER}),
 }
 
 
