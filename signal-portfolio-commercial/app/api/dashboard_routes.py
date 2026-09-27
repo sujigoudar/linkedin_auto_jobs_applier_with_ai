@@ -71,6 +71,11 @@ what is and is not implemented yet.
   revoked through it, and a caller can never revoke their own
   membership. Session audit is NOT implemented -- there is no session/
   audit-log store in this build.
+- CU-14 "Support and incident case": a customer's own real support
+  cases. `related_object_id` is validated against a real Subscription in
+  the caller's own tenant -- never a cross-tenant id, even one that
+  genuinely exists. Attachments are plain id references, not real
+  uploaded/scanned files -- no malware-scan/upload pipeline exists yet.
 """
 from __future__ import annotations
 
@@ -104,6 +109,7 @@ from app.services.staff_access import (
     list_staff_memberships,
     revoke_staff_member,
 )
+from app.services.support_case import InvalidSupportCaseError, create_support_case, list_support_cases
 from app.services.product_admin import (
     InvalidProductDraftError,
     SlugAlreadyExistsError,
@@ -827,3 +833,73 @@ def revoke_staff_page(
         )
     session.commit()
     return RedirectResponse(url="/ops/access", status_code=303)
+
+
+_ALL_SUPPORT_CASE_CATEGORIES = ["billing", "delivery", "connection", "performance", "safety", "access"]
+
+
+def _require_own_support_case(scope: TenantScope) -> None:
+    try:
+        require_permission(scope.role, "manage_own_support_case")
+    except PermissionDenied as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+
+@router.get("/app/support")
+def support_case_page(
+    request: Request,
+    scope: TenantScope = Depends(get_current_scope),
+    session: Session = Depends(get_db_session),
+    error: str | None = None,
+):
+    """CU-14 "Support and incident case" -- a customer's own cases
+    only. Attachment scan/status is NOT implemented -- there is no
+    malware-scan/upload pipeline in this build, so attachment_ids are
+    shown honestly as plain unverified references, never a fabricated
+    'scanned clean' status."""
+    _require_own_support_case(scope)
+    set_tenant_scope(session, scope.tenant_id)
+    cases = list_support_cases(session, tenant_id=scope.tenant_id, user_id=scope.user_id)
+    return templates.TemplateResponse(
+        request,
+        "cu14_support.html",
+        {"cases": cases, "all_categories": _ALL_SUPPORT_CASE_CATEGORIES, "error": error},
+    )
+
+
+@router.post("/app/support")
+def create_support_case_page(
+    request: Request,
+    category: str = Form(...),
+    related_object_id: str = Form(""),
+    subject: str = Form(...),
+    description: str = Form(...),
+    attachment_ids: str = Form(""),
+    scope: TenantScope = Depends(get_current_scope),
+    session: Session = Depends(get_db_session),
+):
+    _require_own_support_case(scope)
+    set_tenant_scope(session, scope.tenant_id)
+    attachment_id_list = [v.strip() for v in attachment_ids.split(",") if v.strip()]
+    try:
+        create_support_case(
+            session,
+            tenant_id=scope.tenant_id,
+            user_id=scope.user_id,
+            category=category,
+            related_object_id=related_object_id or None,
+            subject=subject,
+            description=description,
+            attachment_ids=attachment_id_list,
+        )
+    except InvalidSupportCaseError as exc:
+        session.rollback()
+        cases = list_support_cases(session, tenant_id=scope.tenant_id, user_id=scope.user_id)
+        return templates.TemplateResponse(
+            request,
+            "cu14_support.html",
+            {"cases": cases, "all_categories": _ALL_SUPPORT_CASE_CATEGORIES, "error": str(exc)},
+            status_code=400,
+        )
+    session.commit()
+    return RedirectResponse(url="/app/support", status_code=303)

@@ -151,8 +151,21 @@
     ],
     "deliberately_not_built": "Session audit is NOT implemented -- there is no session/audit-log store in this build; an already-issued JWT for a just-revoked user remains cryptographically valid until it expires (documented honestly in the template, not hidden). Revocation is immediate row deletion, not a separately tracked append-only revocation log. No scoped/temporary support-grant expiry (expires_at) -- every grant here is indefinite until explicitly revoked."
   },
-  "screens_done": ["AD-07", "PU-02", "AD-02 (read-only slice)", "AD-03 (create/list slice)", "AD-01 (overview slice)", "AD-08 (review queue/decision slice)", "AD-04 (run declaration/preview slice)", "PU-01", "PU-08", "PU-03 (detail slice)", "PU-05 (pricing slice)", "ID-04 (eligibility slice)", "AD-16 (invite/revoke slice)"],
-  "screens_not_started": "53 of 66 (AD-01, AD-02, AD-03, AD-04, AD-08, PU-03, PU-05, ID-04, AD-16 partially done) -- see signal_platform_dashboard_v2/catalog/screens.json for the full list.",
+  "thirteenth_slice": {
+    "name": "CU-14 (Support and incident case) -- a customer's own support cases",
+    "status": "done, deliberately partial",
+    "why_this_slice": "The first CU (customer portal) screen built. A real, bounded slice: a customer files a case with a category/subject/description and an optional reference to one of their own subscriptions. 'No cross-tenant IDs' (CU-14's own field help text) is enforced for real against the existing Subscription model, not just documented.",
+    "what_was_built": [
+      "app/models/support_case.py -- SupportCase (tenant-scoped, FK'd to Membership like EligibilityAssessment's own precedent), SupportCaseCategory/SupportCaseStatus enums",
+      "app/services/support_case.py -- create_support_case (validates category/subject/description length; when related_object_id is given, verifies it references a real Subscription in the CALLER'S OWN tenant, never a cross-tenant id even one that genuinely exists) + list_support_cases (the customer's own cases only)",
+      "app/api/dashboard_routes.py + app/templates/cu14_support.html -- GET/POST /app/support, gated by a new 'manage_own_support_case' permission (CUSTOMER only)",
+      "alembic/versions/d11f8b0f0544_add_support_cases_table.py -- real migration, verified end-to-end against a live disposable Postgres cluster (full alembic upgrade head chain replayed clean; table + tenant_isolation RLS policy confirmed via psql)",
+      "tests/test_support_case.py (6 tests) + tests/test_dashboard_routes.py (+4) -- covers validation failures, real create/reload, and the cross-tenant related_object_id refusal both at the service layer and over real HTTP. The cross-tenant guard was load-bearing-verified (temporarily removed it, confirmed both the unit test and the HTTP test failed with the cross-tenant subscription id silently accepted, restored)."
+    ],
+    "deliberately_not_built": "Attachment scan/status is NOT implemented -- there is no malware-scan/upload pipeline in this build; attachment_ids are plain unverified id references, matching AD-02's own precedent. No Timeline panel (a per-case immutable event history) -- the form is one combined step, not the four-step wizard the spec describes. Service incidents links to PU-08's own compatibility directory rather than a separate incident feed (AD-01/AD-21's own 'no incident-tracking model exists yet' gap still applies)."
+  },
+  "screens_done": ["AD-07", "PU-02", "AD-02 (read-only slice)", "AD-03 (create/list slice)", "AD-01 (overview slice)", "AD-08 (review queue/decision slice)", "AD-04 (run declaration/preview slice)", "PU-01", "PU-08", "PU-03 (detail slice)", "PU-05 (pricing slice)", "ID-04 (eligibility slice)", "AD-16 (invite/revoke slice)", "CU-14 (support case slice)"],
+  "screens_not_started": "52 of 66 (AD-01, AD-02, AD-03, AD-04, AD-08, PU-03, PU-05, ID-04, AD-16, CU-14 partially done) -- see signal_platform_dashboard_v2/catalog/screens.json for the full list.",
   "standing_constraints_from_master_prompt": [
     "No live orders/cancellations, customer charges/subscriptions, live publication, production resets, credential rotation, or unapproved infrastructure spending.",
     "Isolated synthetic fixtures are authorized only in test/browser databases, never seeded into production.",

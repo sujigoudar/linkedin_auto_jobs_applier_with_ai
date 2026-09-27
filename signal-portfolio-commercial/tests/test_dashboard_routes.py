@@ -901,3 +901,73 @@ def test_revoke_the_owner_is_refused_over_real_http(db_session):
     response = client.post("/ops/access/user-a/revoke", headers=headers)
     assert response.status_code == 400
     assert "owner role cannot be revoked" in response.text
+
+
+def test_support_case_page_requires_a_customer_role(db_session):
+    client = _client(db_session)
+    response = client.get("/app/support", headers=_auth_headers(role=MembershipRole.OWNER))
+    assert response.status_code == 403
+
+
+def test_support_case_page_shows_the_real_empty_state(db_session):
+    _seed_customer_membership(db_session)
+    client = _client(db_session)
+    response = client.get("/app/support", headers=_auth_headers(role=MembershipRole.CUSTOMER))
+    assert response.status_code == 200
+    assert "You have no support cases." in response.text
+
+
+def test_create_then_view_support_case_over_real_http(db_session):
+    _seed_customer_membership(db_session)
+    client = _client(db_session)
+    headers = _auth_headers(role=MembershipRole.CUSTOMER)
+    create_response = client.post(
+        "/app/support",
+        data={
+            "category": "connection",
+            "related_object_id": "",
+            "subject": "Cannot connect broker",
+            "description": "The connection wizard fails at step 2",
+            "attachment_ids": "",
+        },
+        headers=headers,
+    )
+    assert create_response.status_code == 303
+
+    response = client.get("/app/support", headers=headers)
+    assert "Cannot connect broker" in response.text
+    assert "connection" in response.text
+
+
+def test_create_support_case_with_a_cross_tenant_related_object_id_is_refused(db_session):
+    _seed_customer_membership(db_session)
+    client = _client(db_session)
+    headers = _auth_headers(role=MembershipRole.CUSTOMER)
+
+    from datetime import datetime, timedelta, timezone
+
+    from app.models.billing import ProductTier, Subscription, SubscriptionState
+
+    other_tenant_subscription = Subscription(
+        tenant_id="tenant-b",
+        tier=ProductTier.ALERTS_ONE,
+        state=SubscriptionState.ACTIVE_PAID,
+        price_cents=3900,
+        current_period_end=datetime.now(timezone.utc) + timedelta(days=30),
+    )
+    db_session.add(other_tenant_subscription)
+    db_session.commit()
+
+    response = client.post(
+        "/app/support",
+        data={
+            "category": "billing",
+            "related_object_id": other_tenant_subscription.subscription_id,
+            "subject": "Billing question",
+            "description": "Why was I charged",
+            "attachment_ids": "",
+        },
+        headers=headers,
+    )
+    assert response.status_code == 400
+    assert "does not reference a record you can access" in response.text

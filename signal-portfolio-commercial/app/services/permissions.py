@@ -70,6 +70,9 @@ _ALLOWED: dict[str, frozenset[Role]] = {
     #: exactly the kind of authority no other role should have, not even
     #: REVIEWER or SUPPORT_READONLY.
     "manage_staff_access": frozenset({Role.OWNER}),
+    #: CU-14 "Support and incident case" -- a customer's own cases,
+    #: same shape as "manage_own_eligibility".
+    "manage_own_support_case": frozenset({Role.CUSTOMER}),
 }
 
 

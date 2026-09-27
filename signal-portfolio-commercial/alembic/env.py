@@ -28,6 +28,7 @@ import app.models.release_review  # noqa: E402,F401
 import app.models.research_run  # noqa: E402,F401
 import app.models.rights  # noqa: E402,F401
 import app.models.sleeve  # noqa: E402,F401
+import app.models.support_case  # noqa: E402,F401
 import app.models.tenancy  # noqa: E402,F401
 import app.models.webhook_event  # noqa: E402,F401
 

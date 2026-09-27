@@ -1,0 +1,65 @@
+{% extends "_base.html" %}
+{% block title %}Support and incident case{% endblock %}
+{% block content %}
+<h1>Support and incident case</h1>
+
+{% if error %}<div class="conflict">{{ error }}</div>{% endif %}
+
+<div class="panel">
+  <h2>Cases</h2>
+  {% if cases %}
+  <table>
+    <thead><tr><th>Category</th><th>Related record</th><th>Subject</th><th>Status</th><th>Updated</th></tr></thead>
+    <tbody>
+      {% for case in cases %}
+      <tr>
+        <td>{{ case.category.value }}</td>
+        <td>{{ case.related_object_id or "-" }}</td>
+        <td>{{ case.subject }}</td>
+        <td>{{ case.status.value }}</td>
+        <td>{{ case.updated_at }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="empty-state">
+    <p>You have no support cases.</p>
+    <p><a href="/help">Read the help and compatibility guide &rarr;</a></p>
+  </div>
+  {% endif %}
+</div>
+
+<div class="panel">
+  <h2>Case form</h2>
+  <form method="post" action="/app/support">
+    <label for="category">Category</label>
+    <select id="category" name="category">
+      {% for c in all_categories %}
+      <option value="{{ c }}">{{ c }}</option>
+      {% endfor %}
+    </select>
+
+    <label for="related_object_id">Related record (subscription ID, optional)</label>
+    <input type="text" id="related_object_id" name="related_object_id">
+
+    <label for="subject">Subject</label>
+    <input type="text" id="subject" name="subject" maxlength="120" required>
+
+    <label for="description">Description</label>
+    <input type="text" id="description" name="description" maxlength="8000" required>
+
+    <p><button type="submit">Create case</button></p>
+  </form>
+</div>
+
+<div class="panel">
+  <h2>Attachment scan/status</h2>
+  <p><span class="badge badge-unknown">UNSUPPORTED</span> -- there is no malware-scan/upload pipeline in this build. Any attachment ID entered above is stored as a plain unverified reference, never a fabricated "scanned clean" status.</p>
+</div>
+
+<div class="panel">
+  <h2>Service incidents</h2>
+  <p>See the <a href="/help">help and compatibility guide</a> for known service limitations.</p>
+</div>
+{% endblock %}

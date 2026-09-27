@@ -52,6 +52,7 @@ import app.models.release_review  # noqa: F401
 import app.models.research_run  # noqa: F401
 import app.models.rights  # noqa: F401
 import app.models.sleeve  # noqa: F401
+import app.models.support_case  # noqa: F401
 import app.models.tenancy  # noqa: F401
 import app.models.webhook_event  # noqa: F401
 
