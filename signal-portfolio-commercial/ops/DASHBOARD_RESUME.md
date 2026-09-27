@@ -161,8 +161,16 @@ Seven slices are DONE:
   panel headings) can never be hidden via `visible_panel_ids` -- "no
   field here touches a permission, policy, or financial value" holds by
   construction, not by a runtime check.
+- AD-05 Research run and full results: `GET /ops/research/runs/
+  {research_run_id}` (OWNER, RESEARCHER, REVIEWER) -- reuses AD-04's
+  own `get_research_run`/`compute_research_run_preview`, no new model
+  or migration needed. Progress/shards/results/failures always render
+  the real, honest "this run has not started" state -- there is no
+  job-queue/shard-execution model in this build at all, so Resume
+  failed shard/Cancel research job are an explicit UNSUPPORTED note,
+  never implied-working controls.
 
-Full suite is 481 tests, ruff and mypy both green (**use `python3 -m
+Full suite is 485 tests, ruff and mypy both green (**use `python3 -m
 ruff`/`python3 -m mypy`/`python3 -m pytest` explicitly** -- this sandbox
 has a stray `uv tool`-installed `ruff`/`mypy` shadowing the project's
 real declared versions on bare `PATH`, which produced a false-negative
@@ -183,12 +191,12 @@ See `dashboard_state.json`'s `current_slice`/`second_slice`/
 `twelfth_slice`/`thirteenth_slice`/`fourteenth_slice`/`fifteenth_slice`/
 `sixteenth_slice`/`seventeenth_slice`/`eighteenth_slice`/
 `nineteenth_slice`/`twentieth_slice`/`twentyfirst_slice`/
-`twentysecond_slice`/`twentythird_slice` for the exact file lists and
-what was deliberately left unbuilt in each. 42 of 66 screens (AD-01,
-AD-02, AD-03, AD-04, AD-08, PU-03, PU-05, ID-04, AD-16, CU-14, AD-09,
-CU-16, AD-12, AD-11, AD-17, AD-13, AD-19, AD-14, AD-18, AD-20 partially
-done) remain -- pick the next one following the steps below. **If you
-add a new table to
+`twentysecond_slice`/`twentythird_slice`/`twentyfourth_slice` for the
+exact file lists and what was deliberately left unbuilt in each. 41 of
+66 screens (AD-01, AD-02, AD-03, AD-04, AD-05, AD-08, PU-03, PU-05,
+ID-04, AD-16, CU-14, AD-09, CU-16, AD-12, AD-11, AD-17, AD-13, AD-19,
+AD-14, AD-18, AD-20 partially done) remain -- pick the next one
+following the steps below. **If you add a new table to
 `_TENANT_SCOPED_TABLES` in app/db.py, pin any EARLIER migration that
 already calls `_apply_row_level_security` with no explicit `tables`
 argument to its own frozen snapshot of the tables that existed at that

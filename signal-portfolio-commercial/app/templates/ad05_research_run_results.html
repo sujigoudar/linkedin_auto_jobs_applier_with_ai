@@ -1,0 +1,63 @@
+{% extends "_base.html" %}
+{% block title %}Research run and full results{% endblock %}
+{% block content %}
+<p><a href="/ops/research/new/{{ run.research_run_id }}">&larr; Run declaration</a></p>
+<h1>Research run and full results</h1>
+
+<div class="panel">
+  <h2>Manifest and versions</h2>
+  <table>
+    <tbody>
+      <tr><th>Run id</th><td>{{ run.research_run_id }}</td></tr>
+      <tr><th>Sleeves declared</th><td>{{ run.sleeve_ids | length }}</td></tr>
+      <tr><th>Recipes</th><td>{{ run.recipes | join(", ") or "none selected" }}</td></tr>
+      <tr><th>Created</th><td>{{ run.created_at }}</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<div class="panel">
+  <h2>Progress/shards</h2>
+  <div class="empty-state">
+    <p>This run has not started; no performance results exist.</p>
+    <p class="help">There is no job queue in this build -- a saved, previewed declaration is exactly as far as a research run has ever gone here. Next permitted step: <a href="/ops/research/new">Portfolio Lab builder</a>.</p>
+  </div>
+</div>
+
+<div class="panel">
+  <h2>Every result</h2>
+  {% if preview.blockers %}
+  <ul class="blockers">
+    {% for blocker in preview.blockers %}
+    <li>{{ blocker }}</li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <table>
+    <tbody>
+      <tr><th>Expected candidates</th><td>{{ preview.declared_candidates_count }}</td></tr>
+      <tr><th>Completed</th><td>0</td></tr>
+      <tr><th>Failed</th><td>0</td></tr>
+      <tr><th>Blocked</th><td>{{ preview.blockers | length }}</td></tr>
+    </tbody>
+  </table>
+  {% endif %}
+</div>
+
+<div class="panel">
+  <h2>Failures/retries</h2>
+  <div class="empty-state">
+    <p>No shard has ever run, so there is no failure or retry record.</p>
+  </div>
+</div>
+
+<div class="panel">
+  <h2>Reproducibility</h2>
+  <p>Manifest fields above (sleeve universe, recipe, subset bounds, training/holdout, cost scenarios) are the full frozen declaration this run would execute against once a job queue exists.</p>
+</div>
+
+<div class="panel">
+  <h2>Actions</h2>
+  <p><span class="badge badge-unknown">UNSUPPORTED</span> -- Resume failed shard and Cancel research job both require a real job execution and shard-tracking model that does not exist in this build; there is nothing to resume or cancel.</p>
+</div>
+{% endblock %}

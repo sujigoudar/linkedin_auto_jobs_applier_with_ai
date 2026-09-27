@@ -636,6 +636,38 @@ def research_run_detail_page(
     return templates.TemplateResponse(request, "ad04_research_run_detail.html", {"run": run, "preview": preview})
 
 
+def _require_research_run_detail(scope: TenantScope) -> None:
+    try:
+        require_permission(scope.role, "view_research_run_detail")
+    except PermissionDenied as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+
+@router.get("/ops/research/runs/{research_run_id}")
+def research_run_full_results_page(
+    research_run_id: str,
+    request: Request,
+    scope: TenantScope = Depends(get_current_scope),
+    session: Session = Depends(get_db_session),
+):
+    """AD-05 "Research run and full results" -- see this route
+    module's own docstring above for what is and is not implemented.
+
+    Reuses AD-04's own get_research_run/compute_research_run_preview
+    rather than a duplicate query: no shard/result/failure model exists
+    at all yet (there is no job queue -- see research_run.py's own
+    docstring), so progress/shards/results/failures are always the
+    real, honest "this run has not started" empty state, never a
+    fabricated percentage or count."""
+    _require_research_run_detail(scope)
+    set_tenant_scope(session, scope.tenant_id)
+    run = get_research_run(session, research_run_id, tenant_id=scope.tenant_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="not found")
+    preview = compute_research_run_preview(session, run, tenant_id=scope.tenant_id)
+    return templates.TemplateResponse(request, "ad05_research_run_results.html", {"run": run, "preview": preview})
+
+
 @router.get("/ops/rights")
 def rights_register_page(
     request: Request,

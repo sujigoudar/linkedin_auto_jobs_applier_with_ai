@@ -112,6 +112,13 @@ _ALLOWED: dict[str, frozenset[Role]] = {
     #: tenant-wide shared default is an ownership decision, not one any
     #: other operator role should carry.
     "manage_workspace_settings": frozenset({Role.OWNER}),
+    #: AD-05 "Research run and full results" -- exactly this screen's
+    #: own access list (owner, researcher, reviewer). Deliberately
+    #: separate from "run_research_job" (owner/researcher, the create/
+    #: list authority): a reviewer can read a run's own manifest and
+    #: preview without being able to declare a new one, matching
+    #: AD-02's own view/write split precedent.
+    "view_research_run_detail": frozenset({Role.OWNER, Role.RESEARCHER, Role.REVIEWER}),
 }
 
 

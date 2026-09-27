@@ -1569,3 +1569,72 @@ def test_save_then_reload_workspace_settings_over_real_http(db_session):
     final_response = client.get("/ops/settings", headers=headers)
     assert "HTTP Ops desk" in final_response.text
     assert "dark" in final_response.text
+
+
+def test_research_run_full_results_page_requires_owner_researcher_or_reviewer(db_session):
+    client = _client(db_session)
+    response = client.get(
+        "/ops/research/runs/nonexistent-run-id", headers=_auth_headers(role=MembershipRole.BILLING_OPERATOR)
+    )
+    assert response.status_code == 403
+
+
+def test_research_run_full_results_page_is_a_scoped_not_found_for_an_unknown_run(db_session):
+    client = _client(db_session)
+    response = client.get("/ops/research/runs/nonexistent-run-id", headers=_auth_headers(role=MembershipRole.REVIEWER))
+    assert response.status_code == 404
+
+
+def test_research_run_full_results_page_shows_the_real_not_started_empty_state(db_session):
+    client = _client(db_session)
+    headers = _auth_headers()
+
+    create_response = client.post(
+        "/ops/research/new",
+        data={
+            "recipes": ["equal_capital"],
+            "subset_min": "1",
+            "subset_max": "1",
+            "cash_bps": "1500",
+            "max_sleeve_bps": "3500",
+            "max_cluster_bps": "5000",
+            "train_sessions": "252",
+            "test_sessions": "63",
+            "holdout_fraction": "0.20",
+        },
+        headers=headers,
+    )
+    assert create_response.status_code == 303
+    detail_url = create_response.headers["location"]
+    run_id = detail_url.rsplit("/", 1)[-1]
+
+    response = client.get(f"/ops/research/runs/{run_id}", headers=headers)
+    assert response.status_code == 200
+    assert "This run has not started; no performance results exist." in response.text
+    assert "UNSUPPORTED" in response.text
+
+
+def test_research_run_full_results_page_is_a_scoped_not_found_across_tenants(db_session):
+    client = _client(db_session)
+    owner_headers = _auth_headers(tenant_id="tenant-a", user_id="user-a", role=MembershipRole.OWNER)
+
+    create_response = client.post(
+        "/ops/research/new",
+        data={
+            "recipes": ["equal_capital"],
+            "subset_min": "1",
+            "subset_max": "1",
+            "cash_bps": "1500",
+            "max_sleeve_bps": "3500",
+            "max_cluster_bps": "5000",
+            "train_sessions": "252",
+            "test_sessions": "63",
+            "holdout_fraction": "0.20",
+        },
+        headers=owner_headers,
+    )
+    run_id = create_response.headers["location"].rsplit("/", 1)[-1]
+
+    other_tenant_headers = _auth_headers(tenant_id="tenant-b", user_id="user-b", role=MembershipRole.OWNER)
+    response = client.get(f"/ops/research/runs/{run_id}", headers=other_tenant_headers)
+    assert response.status_code == 404
