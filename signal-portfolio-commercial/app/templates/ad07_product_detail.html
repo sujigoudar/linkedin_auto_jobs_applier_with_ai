@@ -13,6 +13,10 @@
 </div>
 {% endif %}
 
+{% if error %}
+<div class="conflict">{{ error }}</div>
+{% endif %}
+
 <div class="panel">
   <h2>Version builder</h2>
   <form method="post" action="/ops/products/{{ product.product_id }}">
@@ -64,7 +68,22 @@
   </ul>
   <p class="help">A version with no sleeves/evidence may be saved but cannot pass release or appear publicly.</p>
   {% else %}
-  <p>No known prerequisite is currently missing. This is not a publication action &mdash; release review is separate and out of scope of this screen.</p>
+  <p>No known prerequisite is currently missing.</p>
+  {% if product.lifecycle_state.value == "DRAFT" %}
+  <form method="post" action="/ops/products/{{ product.product_id }}/request-review" style="margin-top:1rem;">
+    <label for="evidence_manifest_id">Evidence manifest</label>
+    <input id="evidence_manifest_id" name="evidence_manifest_id" type="text" required>
+    <p class="help">Complete mapped tests/rights/data/report. Structural hashes are not truth by themselves.</p>
+
+    <label for="audience_policy_id_review">Approved audience for this release</label>
+    <input id="audience_policy_id_review" name="audience_policy_id" type="text" value="{{ product.audience_policy_id or '' }}" required>
+    <p class="help">Exact approved service/channel/geography. No broadened audience.</p>
+
+    <button type="submit">Submit version for review</button>
+  </form>
+  {% else %}
+  <p class="help">Lifecycle state is {{ product.lifecycle_state.value }} &mdash; already submitted or decided.</p>
+  {% endif %}
   {% endif %}
 </div>
 {% endblock %}

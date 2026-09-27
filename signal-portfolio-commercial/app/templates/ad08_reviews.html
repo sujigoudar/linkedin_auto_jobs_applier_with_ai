@@ -1,0 +1,32 @@
+{% extends "_base.html" %}
+{% block title %}Release and change approvals{% endblock %}
+{% block content %}
+<h1>Release and change approvals</h1>
+
+<div class="panel">
+  <h2>Review queue</h2>
+  {% if reviews %}
+  <table>
+    <thead>
+      <tr><th>Review</th><th>Version reviewed</th><th>Proposer</th><th>Reviewer</th><th>State</th></tr>
+    </thead>
+    <tbody>
+      {% for review in reviews %}
+      <tr>
+        <td><a href="/ops/reviews/{{ review.release_review_id }}">{{ review.release_review_id[:8] }}&hellip;</a></td>
+        <td>revision {{ review.object_revision_reviewed }}</td>
+        <td>{{ review.proposer_user_id }}</td>
+        <td>{{ review.reviewer_user_id or "&mdash;" }}</td>
+        <td><span class="badge badge-{{ review.state.value.lower() }}">{{ review.state.value }}</span></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="empty-state">
+    <p>No release reviews are queued.</p>
+    <p><a href="/ops/products">Products and portfolio versions &rarr;</a></p>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

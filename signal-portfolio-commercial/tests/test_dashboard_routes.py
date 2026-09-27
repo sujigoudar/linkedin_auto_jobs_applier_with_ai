@@ -317,3 +317,245 @@ def test_operations_overview_lists_a_real_products_blockers_and_marks_incidents_
     assert "Overview Test" in response.text
     assert "NO_PORTFOLIO_VERSION_SELECTED" in response.text
     assert "UNSUPPORTED" in response.text
+
+
+def _seed_ready_product_for_review(db_session, *, tenant_id="tenant-a", slug="review-ready-http"):
+    from datetime import datetime, timedelta, timezone
+    from decimal import Decimal
+
+    from app.models.portfolio_version import PortfolioVersion, PortfolioVersionSleeve
+    from app.models.rights import RightsGrant, RightsStatus, RightsUse
+    from app.models.sleeve import Sleeve
+
+    now = datetime.now(timezone.utc)
+    sleeve = Sleeve(
+        tenant_id=tenant_id,
+        provider="acme-research",
+        analyst="jane",
+        strategy_horizon="swing",
+        asset_class="equity",
+        parser_version="v1",
+        execution_policy_id="ep-1",
+        cost_model_id="cm-1",
+        capacity_policy_id="cap-1",
+        risk_unit_id="ru-1",
+        history_origin="acme-research",
+    )
+    db_session.add(sleeve)
+    db_session.flush()
+
+    pv = PortfolioVersion(
+        tenant_id=tenant_id,
+        portfolio_id="p-review-http",
+        version_number=1,
+        cash_weight=Decimal("0"),
+        research_cutoff=now,
+        max_subscriber_capacity=100,
+        consent_disclosure_version="v1",
+    )
+    db_session.add(pv)
+    db_session.flush()
+    db_session.add(
+        PortfolioVersionSleeve(portfolio_version_id=pv.portfolio_version_id, sleeve_id=sleeve.sleeve_id, weight=Decimal("1.0"))
+    )
+    db_session.add(
+        RightsGrant(
+            grant_id=f"grant-{slug}",
+            source_id="acme-research",
+            grantee_entity=tenant_id,
+            contract_hash="hash",
+            status=RightsStatus.GRANTED,
+            uses=[RightsUse.COMMERCIAL_ALERTS.value],
+            channels=["web"],
+            jurisdictions=["US"],
+            assets=["equity"],
+            effective_at=now - timedelta(days=1),
+            expires_at=now + timedelta(days=365),
+            attribution_policy_id="attr-1",
+            wind_down_policy_id="wind-1",
+            review_id="review-1",
+        )
+    )
+    db_session.commit()
+    return pv.portfolio_version_id
+
+
+def test_request_review_then_view_queue_and_detail(db_session):
+    client = _client(db_session)
+    proposer_headers = _auth_headers(user_id="user-proposer")
+
+    pv_id = _seed_ready_product_for_review(db_session)
+    create_response = client.post(
+        "/ops/products", data={"product_name": "Reviewable", "slug": "reviewable-http"}, headers=proposer_headers
+    )
+    detail_url = create_response.headers["location"]
+    client.post(
+        detail_url,
+        data={
+            "expected_revision": "1",
+            "product_name": "Reviewable",
+            "portfolio_version_id": pv_id,
+            "cash_bps": "0",
+            "service_modes": ["alerts"],
+            "audience_policy_id": "audience-1",
+            "research_report_id": "report-1",
+            "methodology_document_id": "method-1",
+        },
+        headers=proposer_headers,
+    )
+
+    review_response = client.post(
+        f"{detail_url}/request-review",
+        data={"evidence_manifest_id": "evidence-1", "audience_policy_id": "audience-1"},
+        headers=proposer_headers,
+    )
+    assert review_response.status_code == 303
+    review_url = review_response.headers["location"]
+
+    queue_response = client.get("/ops/reviews", headers=_auth_headers(role=MembershipRole.REVIEWER))
+    assert queue_response.status_code == 200
+    assert "QUEUED" in queue_response.text
+
+    detail_response = client.get(review_url, headers=_auth_headers(role=MembershipRole.REVIEWER))
+    assert detail_response.status_code == 200
+    assert "user-proposer" in detail_response.text
+    assert "evidence-1" in detail_response.text
+
+    product_page = client.get(detail_url, headers=proposer_headers)
+    assert "VALIDATED" in product_page.text
+
+
+def test_request_review_is_refused_while_blockers_remain(db_session):
+    client = _client(db_session)
+    headers = _auth_headers()
+
+    create_response = client.post(
+        "/ops/products", data={"product_name": "Still Blocked", "slug": "still-blocked-http"}, headers=headers
+    )
+    detail_url = create_response.headers["location"]
+
+    response = client.post(
+        f"{detail_url}/request-review",
+        data={"evidence_manifest_id": "evidence-1", "audience_policy_id": "audience-1"},
+        headers=headers,
+    )
+    assert response.status_code == 400
+    assert "outstanding publication blockers" in response.text
+
+
+def test_reviews_queue_requires_release_strategy_permission(db_session):
+    client = _client(db_session)
+    response = client.get("/ops/reviews", headers=_auth_headers(role=MembershipRole.RESEARCHER))
+    assert response.status_code == 403
+
+
+def test_review_detail_cross_tenant_is_404(db_session):
+    client = _client(db_session)
+    proposer_headers = _auth_headers(user_id="user-proposer", tenant_id="tenant-a")
+
+    pv_id = _seed_ready_product_for_review(db_session, tenant_id="tenant-a")
+    create_response = client.post(
+        "/ops/products", data={"product_name": "Cross Tenant", "slug": "cross-tenant-review-http"}, headers=proposer_headers
+    )
+    detail_url = create_response.headers["location"]
+    client.post(
+        detail_url,
+        data={
+            "expected_revision": "1",
+            "product_name": "Cross Tenant",
+            "portfolio_version_id": pv_id,
+            "cash_bps": "0",
+            "service_modes": ["alerts"],
+            "audience_policy_id": "audience-1",
+            "research_report_id": "report-1",
+            "methodology_document_id": "method-1",
+        },
+        headers=proposer_headers,
+    )
+    review_response = client.post(
+        f"{detail_url}/request-review",
+        data={"evidence_manifest_id": "evidence-1", "audience_policy_id": "audience-1"},
+        headers=proposer_headers,
+    )
+    review_url = review_response.headers["location"]
+
+    other_tenant_headers = _auth_headers(tenant_id="tenant-b", role=MembershipRole.REVIEWER)
+    response = client.get(review_url, headers=other_tenant_headers)
+    assert response.status_code == 404
+
+
+def test_decide_refuses_self_review_over_http(db_session):
+    client = _client(db_session)
+    proposer_headers = _auth_headers(user_id="user-proposer")
+
+    pv_id = _seed_ready_product_for_review(db_session)
+    create_response = client.post(
+        "/ops/products", data={"product_name": "Self Review", "slug": "self-review-http"}, headers=proposer_headers
+    )
+    detail_url = create_response.headers["location"]
+    client.post(
+        detail_url,
+        data={
+            "expected_revision": "1",
+            "product_name": "Self Review",
+            "portfolio_version_id": pv_id,
+            "cash_bps": "0",
+            "service_modes": ["alerts"],
+            "audience_policy_id": "audience-1",
+            "research_report_id": "report-1",
+            "methodology_document_id": "method-1",
+        },
+        headers=proposer_headers,
+    )
+    review_response = client.post(
+        f"{detail_url}/request-review",
+        data={"evidence_manifest_id": "evidence-1", "audience_policy_id": "audience-1"},
+        headers=proposer_headers,
+    )
+    review_url = review_response.headers["location"]
+
+    decide_response = client.post(
+        review_url, data={"decision": "approve", "reason": "self approving"}, headers=proposer_headers
+    )
+    assert decide_response.status_code == 400
+    assert "independent reviewer" in decide_response.text
+
+
+def test_decide_approve_over_http_moves_product_to_approved(db_session):
+    client = _client(db_session)
+    proposer_headers = _auth_headers(user_id="user-proposer")
+    reviewer_headers = _auth_headers(user_id="user-reviewer", role=MembershipRole.REVIEWER)
+
+    pv_id = _seed_ready_product_for_review(db_session)
+    create_response = client.post(
+        "/ops/products", data={"product_name": "Approve Me", "slug": "approve-me-http"}, headers=proposer_headers
+    )
+    detail_url = create_response.headers["location"]
+    client.post(
+        detail_url,
+        data={
+            "expected_revision": "1",
+            "product_name": "Approve Me",
+            "portfolio_version_id": pv_id,
+            "cash_bps": "0",
+            "service_modes": ["alerts"],
+            "audience_policy_id": "audience-1",
+            "research_report_id": "report-1",
+            "methodology_document_id": "method-1",
+        },
+        headers=proposer_headers,
+    )
+    review_response = client.post(
+        f"{detail_url}/request-review",
+        data={"evidence_manifest_id": "evidence-1", "audience_policy_id": "audience-1"},
+        headers=proposer_headers,
+    )
+    review_url = review_response.headers["location"]
+
+    decide_response = client.post(
+        review_url, data={"decision": "approve", "reason": "looks good"}, headers=reviewer_headers
+    )
+    assert decide_response.status_code == 303
+
+    product_page = client.get(detail_url, headers=proposer_headers)
+    assert "APPROVED" in product_page.text

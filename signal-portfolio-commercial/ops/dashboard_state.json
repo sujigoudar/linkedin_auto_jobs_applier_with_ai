@@ -54,8 +54,22 @@
     ],
     "deliberately_not_built": "'Open incidents' has no backing model at all (a real incident-tracking screen doesn't exist yet) -- rendered as an explicit UNSUPPORTED state, never a fabricated zero, per AD-01's own 'Zero only if query complete and count truly zero' rule. Customers/entitlements and Publisher health panels are not built as separate panels; Business indicators covers what's computable."
   },
-  "screens_done": ["AD-07", "PU-02", "AD-02 (read-only slice)", "AD-03 (create/list slice)", "AD-01 (overview slice)"],
-  "screens_not_started": "61 of 66 (AD-01, AD-02, AD-03 partially done) -- see signal_platform_dashboard_v2/catalog/screens.json for the full list.",
+  "fifth_slice": {
+    "name": "AD-08 (Release and change approvals, admin) -- release review queue and decision",
+    "status": "done, deliberately partial",
+    "why_this_slice": "AD-08 is the exact piece AD-07 deliberately left unbuilt: 'Confirm: Submit version for review; not directly publish.' Product already had a VALIDATED/APPROVED lifecycle state with nothing driving it -- this slice wires that up for real: request review (only when compute_publication_blockers is genuinely empty) -> independent-reviewer decision -> approve/reject/request_changes. Approving moves a Product to APPROVED, never PUBLISHED -- publication stays a wholly separate admission decision this has no authority over.",
+    "what_was_built": [
+      "app/models/release_review.py -- ReleaseReview (QUEUED/CHANGES_REQUESTED/REJECTED/APPROVED), tenant-scoped, added to app/db.py's generic _TENANT_SCOPED_TABLES",
+      "app/services/release_review.py -- request_release_review (refuses if blockers remain or product isn't DRAFT; records the product's revision at proposal time) + decide_release_review (a REAL independent-reviewer gate: reviewer_user_id must differ from proposer_user_id; a REAL stale-target check: refuses if the product's revision changed since the review was requested; re-checks blockers at approval time, not just the recorded proposal-time result)",
+      "app/api/dashboard_routes.py + app/templates/ad08_reviews.html + ad08_review_detail.html -- POST /ops/products/{id}/request-review (from AD-07's own detail page), GET /ops/reviews, GET/POST /ops/reviews/{id}. Reuses existing 'manage_product_draft' (request) and 'release_strategy' (decide) permissions -- no new permission entries needed.",
+      "alembic/versions/a5581417bf7f_add_release_reviews_table.py -- real migration, verified end-to-end against a live disposable Postgres cluster",
+      "tests/test_release_review.py (11 tests) + tests/test_dashboard_routes.py (+7) -- covers the self-review gate, the stale-target check, a real re-check-gates-at-decision-time scenario (a rights grant revoked mid-review, which changes the blockers answer without touching the product's own revision), and full HTTP round-trips for request+approve+reject. Both the self-review gate and the stale-target check were load-bearing-verified (each temporarily broken, confirmed to fail its test, restored)."
+    ],
+    "deliberately_not_built": "Evidence-manifest/audience-policy fields are plain id references, not real uploaded documents (matching AD-02's own precedent). No scheduled_at enforcement beyond storing it. No conflict-of-interest checks beyond the proposer/reviewer identity gate (e.g. no organizational hierarchy awareness).",
+    "real_bug_found_and_fixed_along_the_way": "Adding release_reviews to app/db.py's _TENANT_SCOPED_TABLES broke the EARLIER 04c418cbb547 migration on a fresh `alembic upgrade head` replay -- that migration calls the shared _apply_row_level_security helper with no args, which read the CURRENT (now-grown) tuple including a table that didn't exist yet at that point in migration history. Fixed by giving _apply_row_level_security an explicit `tables` parameter and pinning 04c418cbb547 to its own frozen snapshot of the 6 tables that actually existed then, rather than the live, ever-growing module constant. Caught by actually replaying the full migration chain against a disposable cluster, not by reasoning about it."
+  },
+  "screens_done": ["AD-07", "PU-02", "AD-02 (read-only slice)", "AD-03 (create/list slice)", "AD-01 (overview slice)", "AD-08 (review queue/decision slice)"],
+  "screens_not_started": "60 of 66 (AD-01, AD-02, AD-03, AD-08 partially done) -- see signal_platform_dashboard_v2/catalog/screens.json for the full list.",
   "standing_constraints_from_master_prompt": [
     "No live orders/cancellations, customer charges/subscriptions, live publication, production resets, credential rotation, or unapproved infrastructure spending.",
     "Isolated synthetic fixtures are authorized only in test/browser databases, never seeded into production.",

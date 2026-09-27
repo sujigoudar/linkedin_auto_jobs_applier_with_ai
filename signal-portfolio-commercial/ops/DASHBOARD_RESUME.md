@@ -42,8 +42,20 @@ Four slices are DONE:
   real tenant-scoped join through PortfolioVersion). "Open incidents"
   has no backing model, so it's rendered as an explicit UNSUPPORTED
   state, never a fabricated zero.
+- AD-08 Release and change approvals: a real release-review queue.
+  Requesting review (from AD-07's own product detail page) is refused
+  unless the product's blockers are genuinely empty; deciding enforces
+  a real independent-reviewer gate and a real stale-review-target
+  check. Approving moves a Product to APPROVED, never PUBLISHED.
+  **A genuine migration-ordering bug was found and fixed while
+  verifying this slice's migration end-to-end** -- see
+  `dashboard_state.json`'s `fifth_slice.real_bug_found_and_fixed_along_
+  the_way` for the full story; short version: never let an EARLIER
+  migration call a shared RLS-application helper with the CURRENT,
+  ever-growing `_TENANT_SCOPED_TABLES` tuple -- pin it to an explicit,
+  frozen snapshot of the tables that existed at that point in history.
 
-Full suite is 276 tests, ruff and mypy both green (**use `python3 -m
+Full suite is 293 tests, ruff and mypy both green (**use `python3 -m
 ruff`/`python3 -m mypy`/`python3 -m pytest` explicitly** -- this sandbox
 has a stray `uv tool`-installed `ruff`/`mypy` shadowing the project's
 real declared versions on bare `PATH`, which produced a false-negative
@@ -59,9 +71,15 @@ you need to repeat this for a future demo; nothing from that throwaway
 demo is checked into the repo itself.
 
 See `dashboard_state.json`'s `current_slice`/`second_slice`/
-`third_slice`/`fourth_slice` for the exact file lists and what was
-deliberately left unbuilt in each. 61 of 66 screens (AD-01, AD-02, AD-03
-partially done) remain -- pick the next one following the steps below.
+`third_slice`/`fourth_slice`/`fifth_slice` for the exact file lists and
+what was deliberately left unbuilt in each. 60 of 66 screens (AD-01,
+AD-02, AD-03, AD-08 partially done) remain -- pick the next one
+following the steps below. **If you add a new table to
+`_TENANT_SCOPED_TABLES` in app/db.py, pin any EARLIER migration that
+already calls `_apply_row_level_security` with no explicit `tables`
+argument to its own frozen snapshot of the tables that existed at that
+point** (see `04c418cbb547`'s own docstring/code for the pattern) --
+otherwise a fresh `alembic upgrade head` replay breaks.
 
 ## How to pick the next screen
 

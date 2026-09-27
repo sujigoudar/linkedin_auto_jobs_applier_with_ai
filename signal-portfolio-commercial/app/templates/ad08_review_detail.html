@@ -1,0 +1,72 @@
+{% extends "_base.html" %}
+{% block title %}Release review {{ review.release_review_id[:8] }}{% endblock %}
+{% block content %}
+<p><a href="/ops/reviews">&larr; Review queue</a></p>
+<h1>Release review
+  <span class="badge badge-{{ review.state.value.lower() }}">{{ review.state.value }}</span>
+</h1>
+
+{% if error %}
+<div class="conflict">{{ error }}</div>
+{% endif %}
+
+<div class="panel">
+  <h2>Version diff</h2>
+  <table>
+    <tbody>
+      <tr><th>Product</th><td>{% if product %}<a href="/ops/products/{{ product.product_id }}">{{ product.product_name }}</a>{% else %}(not found){% endif %}</td></tr>
+      <tr><th>Version reviewed</th><td>revision {{ review.object_revision_reviewed }}</td></tr>
+      {% if product %}
+      <tr><th>Current version</th><td>revision {{ product.revision }}
+        {% if product.revision != review.object_revision_reviewed %}
+        <span class="badge badge-denied">CHANGED SINCE REQUESTED</span>
+        {% endif %}
+      </td></tr>
+      {% endif %}
+      <tr><th>Proposer</th><td>{{ review.proposer_user_id }}</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<div class="panel">
+  <h2>Evidence gates</h2>
+  <table>
+    <tbody>
+      <tr><th>Evidence manifest</th><td>{{ review.evidence_manifest_id }}</td></tr>
+      <tr><th>Audience policy</th><td>{{ review.audience_policy_id }}</td></tr>
+      <tr><th>Scheduled effective time</th><td>{{ review.scheduled_at or "unset" }}</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<div class="panel">
+  <h2>Conflict / self-review</h2>
+  <p>An independent reviewer cannot also be this review's own proposer ({{ review.proposer_user_id }}).</p>
+</div>
+
+<div class="panel">
+  <h2>Decision</h2>
+  {% if review.state.value == "QUEUED" %}
+  <form method="post" action="/ops/reviews/{{ review.release_review_id }}">
+    <label>Decision</label>
+    <label style="font-weight:normal; display:block;"><input type="radio" name="decision" value="approve" required style="width:auto; display:inline;"> Approve scoped release</label>
+    <label style="font-weight:normal; display:block;"><input type="radio" name="decision" value="request_changes" style="width:auto; display:inline;"> Request changes</label>
+    <label style="font-weight:normal; display:block;"><input type="radio" name="decision" value="reject" style="width:auto; display:inline;"> Reject review</label>
+
+    <label for="reason">Decision reason</label>
+    <input id="reason" name="reason" type="text" maxlength="4000" required>
+    <p class="help">Audit evidence. No checkbox declares legal advice complete.</p>
+
+    <button type="submit" style="margin-top:1rem;">Record decision</button>
+  </form>
+  {% else %}
+  <table>
+    <tbody>
+      <tr><th>Reviewer</th><td>{{ review.reviewer_user_id }}</td></tr>
+      <tr><th>Reason</th><td>{{ review.reason }}</td></tr>
+      <tr><th>Decided at</th><td>{{ review.decided_at }}</td></tr>
+    </tbody>
+  </table>
+  {% endif %}
+</div>
+{% endblock %}

@@ -47,6 +47,7 @@ import app.models.portfolio_version  # noqa: F401
 import app.models.product  # noqa: F401
 import app.models.publication  # noqa: F401
 import app.models.publisher_writer_claim  # noqa: F401
+import app.models.release_review  # noqa: F401
 import app.models.rights  # noqa: F401
 import app.models.sleeve  # noqa: F401
 import app.models.tenancy  # noqa: F401

@@ -34,6 +34,7 @@ def make_session_factory(engine) -> sessionmaker:
 #: through in this single-role-per-database development setup).
 _TENANT_SCOPED_TABLES: tuple[str, ...] = (
     "memberships", "customer_profiles", "ledger_entries", "sleeves", "subscriptions", "portfolio_versions",
+    "release_reviews",
 )
 
 #: Tables that must never be UPDATEd or DELETEd from, only appended to (see
@@ -45,8 +46,20 @@ _TENANT_SCOPED_TABLES: tuple[str, ...] = (
 _APPEND_ONLY_TABLES: tuple[str, ...] = ("ledger_entries", "portfolio_versions", "portfolio_version_sleeves")
 
 
-def _apply_row_level_security(conn) -> None:
-    for table in _TENANT_SCOPED_TABLES:
+def _apply_row_level_security(conn, tables: tuple[str, ...] = _TENANT_SCOPED_TABLES) -> None:
+    """`tables` defaults to the CURRENT `_TENANT_SCOPED_TABLES` -- correct
+    for a fresh schema (tests/conftest.py's `db_session` fixture, which
+    always creates every table before calling this) or `enable_row_level_
+    security` below. An Alembic migration that ran before a later table
+    existed must instead pass its OWN frozen snapshot of table names
+    explicitly (see e.g. `04c418cbb547`'s own upgrade()) -- never the
+    live, ever-growing module constant, which would silently reference a
+    table that doesn't exist yet when that historical migration replays
+    from scratch (caught for real: a fresh `alembic upgrade head` run
+    failed with `UndefinedTable` once `release_reviews` was added here
+    and this function still defaulted every caller to the current
+    tuple)."""
+    for table in tables:
         conn.execute(text(f"ALTER TABLE {table} ENABLE ROW LEVEL SECURITY"))
         conn.execute(text(f"ALTER TABLE {table} FORCE ROW LEVEL SECURITY"))
         conn.execute(text(f"DROP POLICY IF EXISTS tenant_isolation ON {table}"))

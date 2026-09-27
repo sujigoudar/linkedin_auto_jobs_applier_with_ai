@@ -6,11 +6,12 @@ what is and is not implemented yet.
 - AD-07 "Products and portfolio versions" (admin) + PU-02 "Portfolio
   catalog" (public): create/save/reload a Product draft, see its exact
   publication blockers, and a truthfully empty public catalog until
-  something is really published. No publish/release-review action is
-  implemented here at all -- that is a distinct, separately reviewed
-  admission decision (app/services/publication_admission.py) this
-  screen has no authority over, matching AD-07's own "Confirm: Submit
-  version for review; not directly publish."
+  something is really published. Submitting a zero-blocker draft for
+  review (AD-07's own "Confirm: Submit version for review; not directly
+  publish") is now real too -- see AD-08 below. Actual publication
+  remains a distinct, separately reviewed admission decision
+  (app/services/publication_admission.py) neither screen has authority
+  over.
 - AD-02 "Rights and service approvals": a read-only grant register.
   Create/attach-evidence/approve are NOT implemented -- they need
   private document upload/malware-scan infrastructure and an audit-
@@ -26,6 +27,13 @@ what is and is not implemented yet.
   summary (release blockers per product, active subscriptions,
   unknown-state publications). "Open incidents" has no backing model
   at all yet, so it's shown as unsupported, never a fabricated zero.
+- AD-08 "Release and change approvals": a real release-review queue.
+  Requesting review (from AD-07) is refused unless the product's
+  publication blockers are genuinely empty; deciding enforces a real
+  independent-reviewer gate (the reviewer cannot be the proposer) and
+  refuses a stale review (the product changed since it was requested).
+  Approving moves a Product to APPROVED, never to PUBLISHED -- release
+  is not publication.
 """
 from __future__ import annotations
 
@@ -53,6 +61,16 @@ from app.services.product_admin import (
     update_product_draft,
 )
 from app.services.operations_overview import get_operations_overview
+from app.services.release_review import (
+    InvalidReviewDecisionError,
+    ReviewNotEligibleError,
+    SelfReviewNotAllowedError,
+    StaleReviewTargetError,
+    decide_release_review,
+    get_release_review,
+    list_release_reviews,
+    request_release_review,
+)
 from app.services.rights_registry import list_rights_grants
 from app.services.sleeve_admin import InvalidSleeveDraftError, create_sleeve, list_sleeves
 
@@ -221,6 +239,130 @@ def update_product_draft_route(
         )
 
     return RedirectResponse(url=f"/ops/products/{product_id}", status_code=303)
+
+
+@router.post("/ops/products/{product_id}/request-review")
+def request_release_review_route(
+    product_id: str,
+    request: Request,
+    evidence_manifest_id: str = Form(...),
+    audience_policy_id: str = Form(...),
+    scope: TenantScope = Depends(get_current_scope),
+    session: Session = Depends(get_db_session),
+):
+    """AD-07's own "Confirm: Submit version for review" -- creates a
+    real AD-08 release review. Reuses `manage_product_draft`: proposing
+    a review is a research/release decision, same trio of roles as
+    drafting the product itself."""
+    _require_product_admin(scope)
+    set_tenant_scope(session, scope.tenant_id)
+    product = get_product(session, product_id, tenant_id=scope.tenant_id)
+    if product is None:
+        raise HTTPException(status_code=404, detail="not found")
+
+    try:
+        review = request_release_review(
+            session,
+            tenant_id=scope.tenant_id,
+            product=product,
+            proposer_user_id=scope.user_id,
+            evidence_manifest_id=evidence_manifest_id,
+            audience_policy_id=audience_policy_id,
+        )
+        session.commit()
+    except ReviewNotEligibleError as exc:
+        session.rollback()
+        set_tenant_scope(session, scope.tenant_id)
+        product = get_product(session, product_id, tenant_id=scope.tenant_id)
+        blockers = compute_publication_blockers(session, product) if product is not None else []
+        return templates.TemplateResponse(
+            request,
+            "ad07_product_detail.html",
+            {
+                "product": product,
+                "blockers": blockers,
+                "all_service_modes": _ALL_SERVICE_MODES,
+                "conflict": False,
+                "error": str(exc),
+            },
+            status_code=400,
+        )
+    return RedirectResponse(url=f"/ops/reviews/{review.release_review_id}", status_code=303)
+
+
+def _require_release_reviewer(scope: TenantScope) -> None:
+    try:
+        require_permission(scope.role, "release_strategy")
+    except PermissionDenied as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+
+@router.get("/ops/reviews")
+def release_review_queue_page(
+    request: Request,
+    scope: TenantScope = Depends(get_current_scope),
+    session: Session = Depends(get_db_session),
+):
+    _require_release_reviewer(scope)
+    set_tenant_scope(session, scope.tenant_id)
+    reviews = list_release_reviews(session, tenant_id=scope.tenant_id)
+    return templates.TemplateResponse(request, "ad08_reviews.html", {"reviews": reviews})
+
+
+@router.get("/ops/reviews/{release_review_id}")
+def release_review_detail_page(
+    release_review_id: str,
+    request: Request,
+    scope: TenantScope = Depends(get_current_scope),
+    session: Session = Depends(get_db_session),
+):
+    _require_release_reviewer(scope)
+    set_tenant_scope(session, scope.tenant_id)
+    review = get_release_review(session, release_review_id, tenant_id=scope.tenant_id)
+    if review is None:
+        raise HTTPException(status_code=404, detail="not found")
+    product = get_product(session, review.product_id, tenant_id=scope.tenant_id)
+    return templates.TemplateResponse(
+        request, "ad08_review_detail.html", {"review": review, "product": product}
+    )
+
+
+@router.post("/ops/reviews/{release_review_id}")
+def decide_release_review_route(
+    release_review_id: str,
+    request: Request,
+    decision: str = Form(...),
+    reason: str = Form(...),
+    scope: TenantScope = Depends(get_current_scope),
+    session: Session = Depends(get_db_session),
+):
+    _require_release_reviewer(scope)
+    set_tenant_scope(session, scope.tenant_id)
+    review = get_release_review(session, release_review_id, tenant_id=scope.tenant_id)
+    if review is None:
+        raise HTTPException(status_code=404, detail="not found")
+    product = get_product(session, review.product_id, tenant_id=scope.tenant_id)
+    if product is None:
+        raise HTTPException(status_code=404, detail="not found")
+
+    try:
+        decide_release_review(
+            session, review, product, reviewer_user_id=scope.user_id, decision=decision, reason=reason
+        )
+        session.commit()
+    except (SelfReviewNotAllowedError, StaleReviewTargetError, ReviewNotEligibleError, InvalidReviewDecisionError) as exc:
+        session.rollback()
+        set_tenant_scope(session, scope.tenant_id)
+        review = get_release_review(session, release_review_id, tenant_id=scope.tenant_id)
+        product = get_product(session, review.product_id, tenant_id=scope.tenant_id) if review is not None else None
+        return templates.TemplateResponse(
+            request,
+            "ad08_review_detail.html",
+            {"review": review, "product": product, "error": str(exc)},
+            status_code=400,
+        )
+
+    return RedirectResponse(url=f"/ops/reviews/{release_review_id}", status_code=303)
 
 
 @router.get("/ops/rights")
