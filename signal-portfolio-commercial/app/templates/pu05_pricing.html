@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pricing and service compatibility</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 0; padding: 0; color: #1a1a1a; background: #fafafa; }
+    header { background: #111827; color: #f9fafb; padding: 0.75rem 1.25rem; }
+    header a { color: inherit; text-decoration: none; }
+    main { max-width: 960px; margin: 1.5rem auto; padding: 0 1rem; }
+    .panel { background: #fff; border: 1px solid #e5e7eb; border-radius: 0.5rem; padding: 1rem 1.25rem; margin-bottom: 1rem; }
+    .panel h2 { margin-top: 0; font-size: 1rem; }
+    table { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+    th, td { text-align: left; padding: 0.5rem 0.75rem; border-bottom: 1px solid #e5e7eb; }
+    .empty-state { padding: 1.5rem; text-align: center; color: #4b5563; border: 1px dashed #d1d5db; border-radius: 0.5rem; }
+  </style>
+</head>
+<body>
+  <header><a href="/">signal-portfolio-commercial</a></header>
+  <main>
+    <h1>Pricing and service compatibility</h1>
+
+    <div class="panel">
+      <h2>Plan cards</h2>
+      {% if plans %}
+      <table>
+        <thead><tr><th>Plan</th><th>Interval</th><th>Currency</th><th>Price</th></tr></thead>
+        <tbody>
+          {% for plan in plans %}
+          <tr>
+            <td>{{ plan.tier }}</td>
+            <td>monthly</td>
+            <td>{{ plan.currency | upper }}</td>
+            <td>{{ "%.2f"|format(plan.monthly_price_cents / 100) }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+      <div class="empty-state">
+        <p>Subscriptions are not open for purchase yet.</p>
+      </div>
+      {% endif %}
+    </div>
+
+    <div class="panel">
+      <h2>External platform fee notice</h2>
+      <p>Subscription price is separate from any external broker or platform fee. This build does not model or collect any external platform fee schedule -- consult your broker's own fee disclosures.</p>
+    </div>
+
+    <div class="panel">
+      <h2>Eligibility and refunds</h2>
+      <ul>
+        {% for item in service_status %}
+        {% if item.name == "Billing (Stripe)" %}
+        <li><strong>{{ item.status }}</strong> -- {{ item.reason }}</li>
+        {% endif %}
+        {% endfor %}
+      </ul>
+    </div>
+
+    <div class="panel">
+      <h2>FAQ</h2>
+      <p>Prices shown, when present, are proposed test-mode fixture amounts pending real payment-processor connection -- never a live charge. No trading authorization is implied by any plan.</p>
+    </div>
+  </main>
+</body>
+</html>

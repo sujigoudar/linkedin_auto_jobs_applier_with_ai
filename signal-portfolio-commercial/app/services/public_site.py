@@ -20,6 +20,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app import config
+from app.models.billing import TEST_MODE_MONTHLY_PRICE_CENTS
 from app.models.portfolio_version import PortfolioVersion, PortfolioVersionSleeve
 from app.models.product import Product, ProductLifecycleState
 
@@ -103,6 +104,32 @@ def get_published_portfolio_detail(session: Session, slug: str) -> PortfolioDeta
         methodology_document_id=product.methodology_document_id,
         research_report_id=product.research_report_id,
     )
+
+
+@dataclass(frozen=True)
+class PlanCard:
+    tier: str
+    monthly_price_cents: int
+    currency: str
+
+
+def get_pricing_plans() -> list[PlanCard]:
+    """PU-05 "Pricing and service compatibility" -- Plan cards.
+
+    app/models/billing.py's own docstring calls TEST_MODE_MONTHLY_PRICE_CENTS
+    "founder-review pricing hypotheses and test fixtures, not
+    user-approved prices". PU-05's own acceptance criterion is
+    "Unapproved price drafts are absent from public responses" -- so
+    this returns nothing at all until billing is genuinely connected
+    (the same real config signal PU-01's Service status already
+    reports), never the fixture prices leaking onto a public page just
+    because rows exist in code."""
+    if config.STRIPE_WEBHOOK_SECRET == _PLACEHOLDER_STRIPE_SECRET:
+        return []
+    return [
+        PlanCard(tier=tier.value, monthly_price_cents=price_cents, currency="usd")
+        for tier, price_cents in TEST_MODE_MONTHLY_PRICE_CENTS.items()
+    ]
 
 
 def get_channel_compatibility() -> list[ChannelCompatibilityItem]:

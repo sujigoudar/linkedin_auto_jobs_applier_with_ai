@@ -756,3 +756,22 @@ def test_portfolio_detail_shows_real_facts_for_a_published_product(db_session):
     assert "method-1" in response.text
     assert "A released track record is not available for this version." in response.text
     assert "Collective2" in response.text
+
+
+def test_pricing_page_shows_the_real_empty_state_while_billing_is_unconfigured(db_session):
+    client = _client(db_session)
+    response = client.get("/pricing")
+    assert response.status_code == 200
+    assert "Subscriptions are not open for purchase yet." in response.text
+    assert "NOT_CONFIGURED" in response.text
+
+
+def test_pricing_page_shows_real_plan_cards_once_billing_is_configured(db_session, monkeypatch):
+    from app import config
+
+    monkeypatch.setattr(config, "STRIPE_WEBHOOK_SECRET", "whsec_a_real_looking_secret")
+    client = _client(db_session)
+    response = client.get("/pricing")
+    assert response.status_code == 200
+    assert "ALERTS_ONE" in response.text
+    assert "Subscriptions are not open for purchase yet." not in response.text

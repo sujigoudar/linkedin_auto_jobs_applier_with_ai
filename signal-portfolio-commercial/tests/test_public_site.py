@@ -8,8 +8,10 @@ from app import config
 from app.models.portfolio_version import PortfolioVersion, PortfolioVersionSleeve
 from app.models.product import Product, ProductLifecycleState
 from app.models.sleeve import Sleeve
+from app.models.billing import ProductTier, TEST_MODE_MONTHLY_PRICE_CENTS
 from app.services.public_site import (
     get_channel_compatibility,
+    get_pricing_plans,
     get_published_portfolio_detail,
     get_service_status,
 )
@@ -105,3 +107,14 @@ def test_a_published_product_with_a_version_returns_its_real_facts(db_session):
     assert detail.sleeve_count == 1
     assert detail.max_subscriber_capacity == 250
     assert detail.methodology_document_id == "method-1"
+
+
+def test_pricing_plans_are_absent_while_billing_is_unconfigured(monkeypatch):
+    monkeypatch.setattr(config, "STRIPE_WEBHOOK_SECRET", "whsec_LOCAL_SIM_not_a_real_stripe_secret")
+    assert get_pricing_plans() == []
+
+
+def test_pricing_plans_appear_once_billing_is_genuinely_configured(monkeypatch):
+    monkeypatch.setattr(config, "STRIPE_WEBHOOK_SECRET", "whsec_a_real_looking_secret")
+    plans = {plan.tier: plan.monthly_price_cents for plan in get_pricing_plans()}
+    assert plans[ProductTier.ALERTS_ONE.value] == TEST_MODE_MONTHLY_PRICE_CENTS[ProductTier.ALERTS_ONE]

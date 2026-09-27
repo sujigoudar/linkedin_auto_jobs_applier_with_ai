@@ -116,8 +116,19 @@
     ],
     "deliberately_not_built": "Enrollment action (PU-03-A01/A02, linking to ID-04 eligibility and PU-06 disclosures) is rendered as an explicit unsupported note, not a dead link -- neither ID-04 nor PU-06 exist yet. Methodology and change history has no immutable event/audit-log timeline (AD-18 doesn't exist yet) -- only the current methodology/research document references are shown."
   },
-  "screens_done": ["AD-07", "PU-02", "AD-02 (read-only slice)", "AD-03 (create/list slice)", "AD-01 (overview slice)", "AD-08 (review queue/decision slice)", "AD-04 (run declaration/preview slice)", "PU-01", "PU-08", "PU-03 (detail slice)"],
-  "screens_not_started": "56 of 66 (AD-01, AD-02, AD-03, AD-04, AD-08, PU-03 partially done) -- see signal_platform_dashboard_v2/catalog/screens.json for the full list.",
+  "tenth_slice": {
+    "name": "PU-05 (Pricing and service compatibility) -- anonymous pricing page",
+    "status": "done, deliberately partial",
+    "why_this_slice": "app/models/billing.py already carries real ProductTier/TEST_MODE_MONTHLY_PRICE_CENTS fixtures, documented in its own docstring as 'founder-review pricing hypotheses ... not user-approved prices'. PU-05's own acceptance text is 'Unapproved price drafts are absent from public responses' -- so the honest behavior is to gate those fixture prices behind the same real billing-configured signal PU-01's Service status already computes, not to display them just because rows exist in code.",
+    "what_was_built": [
+      "app/services/public_site.py -- PlanCard dataclass + get_pricing_plans: returns [] while STRIPE_WEBHOOK_SECRET is still the local placeholder (this deployment's real state), the real fixture plans once billing is genuinely configured",
+      "app/api/dashboard_routes.py + app/templates/pu05_pricing.html -- GET /pricing (anonymous); Eligibility and refunds panel reuses get_service_status's real Billing (Stripe) item rather than a duplicate check",
+      "tests/test_public_site.py (+2) + tests/test_dashboard_routes.py (+2) -- plans absent with the placeholder secret, real plans appear once a real-looking secret is configured, both at the service layer and over real HTTP. Load-bearing-verified: temporarily removed the billing-configured gate so fixture prices always returned, confirmed all four new tests failed (prices leaking while billing was still unconfigured), restored."
+    ],
+    "deliberately_not_built": "Feature comparison panel is not built as a separate per-tier feature matrix -- no real mapping from ProductTier to specific delivery-channel/portfolio-count entitlements exists yet, and inventing one would be exactly the kind of unexplained calculated value PU-05's own panel contract forbids. External platform fee notice is static text (no real external fee schedule is modeled anywhere in this build)."
+  },
+  "screens_done": ["AD-07", "PU-02", "AD-02 (read-only slice)", "AD-03 (create/list slice)", "AD-01 (overview slice)", "AD-08 (review queue/decision slice)", "AD-04 (run declaration/preview slice)", "PU-01", "PU-08", "PU-03 (detail slice)", "PU-05 (pricing slice)"],
+  "screens_not_started": "55 of 66 (AD-01, AD-02, AD-03, AD-04, AD-08, PU-03, PU-05 partially done) -- see signal_platform_dashboard_v2/catalog/screens.json for the full list.",
   "standing_constraints_from_master_prompt": [
     "No live orders/cancellations, customer charges/subscriptions, live publication, production resets, credential rotation, or unapproved infrastructure spending.",
     "Isolated synthetic fixtures are authorized only in test/browser databases, never seeded into production.",

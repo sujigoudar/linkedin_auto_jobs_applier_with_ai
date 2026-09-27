@@ -54,6 +54,11 @@ what is and is not implemented yet.
   so the performance/drawdown panel always honestly reports the track
   record as unavailable, never a guessed curve. A draft/unpublished
   slug returns a scoped 404, never its content.
+- PU-05 "Pricing and service compatibility": real plan-cards data
+  (app/models/billing.py's TEST_MODE_MONTHLY_PRICE_CENTS), but ONLY
+  once billing is genuinely connected -- those fixture prices are
+  documented as "not user-approved", so this deployment (billing
+  unconfigured) truthfully renders PU-05's own empty state instead.
 """
 from __future__ import annotations
 
@@ -94,6 +99,7 @@ from app.services.release_review import (
 )
 from app.services.public_site import (
     get_channel_compatibility,
+    get_pricing_plans,
     get_published_portfolio_detail,
     get_service_status,
 )
@@ -635,3 +641,17 @@ def public_portfolio_detail_page(slug: str, request: Request, session: Session =
         raise HTTPException(status_code=404, detail="not found")
     channels = get_channel_compatibility()
     return templates.TemplateResponse(request, "pu03_portfolio_detail.html", {"detail": detail, "channels": channels})
+
+
+@router.get("/pricing")
+def public_pricing_page(request: Request):
+    """PU-05 "Pricing and service compatibility" -- anonymous, no
+    database query. `get_pricing_plans` returns nothing at all until
+    billing is genuinely connected, per PU-05's own "Unapproved price
+    drafts are absent from public responses" -- the fixture prices in
+    app/models/billing.py are explicitly not user-approved, so an
+    unconfigured deployment (this one) truthfully shows PU-05's own
+    empty state instead of a plan-cards table."""
+    plans = get_pricing_plans()
+    service_status = get_service_status()
+    return templates.TemplateResponse(request, "pu05_pricing.html", {"plans": plans, "service_status": service_status})
