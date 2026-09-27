@@ -1,0 +1,99 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:signal-portfolio:ReleaseApproval:1",
+  "title": "ReleaseApproval",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "release_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "artifact_digest": {
+      "type": "string",
+      "minLength": 1
+    },
+    "portfolio_version_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "channel": {
+      "type": "string",
+      "minLength": 1
+    },
+    "entity_approval_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "rights_snapshot_hash": {
+      "type": "string",
+      "minLength": 1
+    },
+    "audience_policy_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "capacity_policy_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "risk_policy_hash": {
+      "type": "string",
+      "minLength": 1
+    },
+    "performance_report_ids": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "test_manifest_hash": {
+      "type": "string",
+      "minLength": 1
+    },
+    "reviewer_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "owner_authorization_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "effective_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "expires_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "state": {
+      "enum": [
+        "DRAFT",
+        "APPROVED_INACTIVE",
+        "ACTIVE",
+        "REVOKED",
+        "EXPIRED"
+      ]
+    }
+  },
+  "required": [
+    "release_id",
+    "artifact_digest",
+    "portfolio_version_id",
+    "channel",
+    "entity_approval_id",
+    "rights_snapshot_hash",
+    "audience_policy_id",
+    "capacity_policy_id",
+    "risk_policy_hash",
+    "performance_report_ids",
+    "test_manifest_hash",
+    "reviewer_id",
+    "owner_authorization_id",
+    "effective_at",
+    "expires_at",
+    "state"
+  ]
+}

@@ -1,0 +1,84 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:signal-portfolio:BillingState:1",
+  "title": "BillingState",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "tenant_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "processor": {
+      "type": "string",
+      "minLength": 1
+    },
+    "environment": {
+      "enum": [
+        "TEST",
+        "LIVE"
+      ]
+    },
+    "processor_customer_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "subscription_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "price_version_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "canonical_snapshot_hash": {
+      "type": "string",
+      "minLength": 1
+    },
+    "paid_through": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "state": {
+      "enum": [
+        "PENDING_PAYMENT",
+        "ACTIVE_PAID",
+        "CANCEL_AT_PERIOD_END",
+        "PAST_DUE",
+        "SUSPENDED_NEW_ENTRIES",
+        "ENDED",
+        "DISPUTED",
+        "MANUAL_REVIEW"
+      ]
+    },
+    "last_verified_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "entitlement_revision": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "safety_obligation_ids": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  },
+  "required": [
+    "tenant_id",
+    "processor",
+    "environment",
+    "processor_customer_id",
+    "subscription_id",
+    "price_version_id",
+    "canonical_snapshot_hash",
+    "paid_through",
+    "state",
+    "last_verified_at",
+    "entitlement_revision",
+    "safety_obligation_ids"
+  ]
+}

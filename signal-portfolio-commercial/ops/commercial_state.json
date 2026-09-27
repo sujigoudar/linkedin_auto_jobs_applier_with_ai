@@ -1,0 +1,51 @@
+{
+  "package_version": "Signal_Portfolio_Commercial_Platform_Claude_Code_Pack_v1",
+  "build_scope_decision": "user selected 'Do all' -- full 13-phase build, not a narrower slice, not paused",
+  "phases": {
+    "00_discovery": {
+      "status": "done",
+      "notes": "signal-portfolio-commercial/docs/00_discovery.md reconciles package's own single-commit review against actual current app state (real HEAD ahead of package's inspected commit); confirms completed_trade_win_rate naming issue is real (tracked to Phase 03); confirms local disposable Postgres verified available; confirms no Supabase/Stripe/external accounts created."
+    },
+    "01_rights_registry": {
+      "status": "done",
+      "notes": "RightsGrant SQLAlchemy model + Pydantic schema (mirrors spec/contracts/RightsGrant.schema.json exactly), check_rights() fail-closed enforcement (no grant / wrong status / expired / not-yet-effective / channel-jurisdiction-asset not explicitly listed -> denied; empty list means nothing approved, never unrestricted; payment/subscription status is never a rights basis, structurally checked via signature inspection), seed_unknown_source() for the three named UNKNOWN providers (buyalerts, tradealgo, kamdenai). 15 tests, all passing against a real disposable Postgres cluster (tests/conftest.py). Load-bearing verification done: temporarily broke empty-channels-fail-closed, DENIED-status-fail-closed, and REVOKED-status-fail-closed one at a time, confirmed the corresponding test failed each time, restored exactly. ruff and mypy clean.",
+      "not_yet_wired": "check_rights() has no callers yet -- Phases 04/05/06/07 must each call it again immediately before their own action, not cache an earlier result. Not yet exposed via any API route (Phase 02 has no routes yet either)."
+    },
+    "02_tenant_api_scaffold": { "status": "not_started" },
+    "03_economic_journal": { "status": "not_started", "notes": "Must NOT simply wrap/re-export signal-copier/app/provider_value.py -- that is a narrower, single-owner tool. Also carries forward the completed_trade_win_rate naming fix noted in Phase 00." },
+    "04_portfolio_research_engine": { "status": "not_started" },
+    "05_publication_customer_copy_lifecycle": { "status": "not_started" },
+    "06_collective2_publisher": { "status": "not_started", "notes": "Must resolve the API4 price-only-modification / TIF inconsistency against current Collective2 docs before implementing." },
+    "07_etoro_copyfactory_adapters": { "status": "not_started" },
+    "08_subscriptions_billing": { "status": "not_started", "notes": "Payment is never a trading mandate. Cancellation/payment failure must never abandon open exposure or auto-flatten. No investment deposits through SaaS billing." },
+    "09_public_customer_operator_website": { "status": "not_started" },
+    "10_pamm_mam_domain_model": { "status": "not_started", "notes": "Simulation only in this build -- no real broker-managed program, no real customer deposits." },
+    "11_llm_assistance": { "status": "not_started", "notes": "Optional, narrow-scope research/support aid only -- cannot grant rights, change risk/fees/NAV, publish signals, access other tenants, or approve its own production changes." },
+    "12_validation_deployment_owner_cards": {
+      "status": "not_started",
+      "owner_action_cards_not_yet_surfaced": [
+        "CARD-1 legal entity / jurisdiction / assets",
+        "CARD-2 source rights contracts",
+        "CARD-3 platform agreements",
+        "CARD-4 payment processor / tax / bank (merchant approval)",
+        "CARD-5 customer agreements / disclosures",
+        "CARD-6 exact financial production release"
+      ]
+    }
+  },
+  "standing_constraints": [
+    "Never place live orders or rotate live credentials.",
+    "No live publishing, customer charges, brokerage operations, purchases, production resets, or permission increases during build.",
+    "Payment is not a trading mandate; cancellation/payment failure must not abandon open exposure or auto-flatten.",
+    "No investment deposits through SaaS billing or improvised pooled wallets.",
+    "LLMs are optional reviewed aids only -- no rights, risk, fee, NAV, publishing, cross-tenant, or self-approval authority.",
+    "Missing drivers/credentials remain BLOCKED/NOT_RUN, never PASS.",
+    "Never paste passwords, customer documents, platform keys, or signed contracts into source control.",
+    "signal-copier/ (existing execution service) stays untouched by this build; separate Postgres database, never the owner's SQLite store or broker credentials.",
+    "Every test suite run must pass, and every load-bearing fix must be verified by temporarily breaking it and confirming a test catches the regression."
+  ],
+  "environment_facts_verified_this_session": [
+    "postgresql-16 server binaries + psql client pre-installed; psycopg (v3) pip-installable; initdb/pg_ctl must run via `su postgres -c` since the sandbox runs as root; tmp_path_factory's ancestor dirs must have their execute bit opened (0711) for the postgres user to traverse down to a chowned data dir.",
+    "No Supabase/Stripe/broker-platform accounts exist or were created in this environment -- those remain external deployment tasks."
+  ]
+}

@@ -1,0 +1,110 @@
+{
+  "version": "commercial-v1",
+  "review_date": "2026-09-27",
+  "baseline_repo": "sujigoudar/linkedin_auto_jobs_applier_with_ai",
+  "baseline_commit": "cdbcd1eca999adfaabea76fffda856852f3ecd08",
+  "scope": "Commercial extension; no authorization to publish real signals, charge real customers, or manage their capital during build",
+  "architecture": {
+    "private_execution": "Preserve corrected current app/store and single account writer",
+    "commercial_control": "Separate FastAPI role; PostgreSQL + Supabase Auth/RLS for new customers",
+    "frontend": "Reuse HTML/JS Chart.js/Tabulator assets; separate public/customer/operator shells",
+    "database_migration": "No forced migration/reset of private SQLite; commercial PostgreSQL isolated",
+    "event_delivery": "Transactional outbox and scoped workers; no mandatory external queue cluster",
+    "source_storage": "Private immutable originals/revisions with rights-aware retention",
+    "research": "Existing Python numerical stack offline",
+    "deployment": "Inactive non-live first; guarded active/passive financial writers"
+  },
+  "publication": {
+    "first_channel": "Collective2 API4, subject to exact rights/approval/account verification",
+    "initial_c2_mode": "API_STRATEGY_PUBLISHER",
+    "etoro": "Official demo/real API adapters plus separate provider program eligibility",
+    "other_copy": "MetaApi CopyFactory qualified adapter",
+    "managed": "Broker-native PAMM/MAM, disabled until approved",
+    "new_subscriber": "NEW_ENTRIES_ONLY",
+    "account_sync": "Separate fresh-price/risk/consent transition",
+    "commercial_live_enabled": false
+  },
+  "rights": {
+    "kamdenai": "UNKNOWN_COMMERCIAL_RIGHTS",
+    "buyalerts": "RESTRICTED_UNLESS_WRITTEN_GRANT",
+    "tradealgo": "RESTRICTED_UNLESS_WRITTEN_GRANT",
+    "public_hypothetical_marketing": false,
+    "customer_jurisdictions_approved": [],
+    "raw_signal_republication": false
+  },
+  "research": {
+    "subset_min": 2,
+    "subset_max": 5,
+    "universe_per_approved_run_max": 12,
+    "cash_bps": 1500,
+    "max_sleeve_bps": 3500,
+    "max_cluster_bps": 5000,
+    "training_sessions": 252,
+    "test_sessions": 63,
+    "min_screen_sessions": 126,
+    "min_screen_closed_episodes": 30,
+    "holdout_fraction": "0.20",
+    "recipes": [
+      "equal_capital",
+      "inverse_volatility",
+      "HRP",
+      "minimum_CVaR"
+    ],
+    "weight_update": "weekly,new_admissions_only",
+    "auto_new_policy_release": false,
+    "defaults_status": "Research-only screening conventions; not validated profit/risk optimum or changes to live limits"
+  },
+  "pricing": {
+    "live_approved": false,
+    "currency": "USD",
+    "test_drafts": [
+      {
+        "sku": "FREE_RESEARCH",
+        "month_minor": 0,
+        "year_minor": 0
+      },
+      {
+        "sku": "ALERTS_ONE",
+        "month_minor": 3900,
+        "year_minor": 39000
+      },
+      {
+        "sku": "PORTFOLIOS_THREE",
+        "month_minor": 9900,
+        "year_minor": 99000
+      },
+      {
+        "sku": "PRO_RESEARCH_API",
+        "month_minor": 19900,
+        "year_minor": 199000
+      }
+    ],
+    "platform_fees": "separately disclosed unless approved integrated contract",
+    "performance_fees_enabled": false
+  },
+  "models": {
+    "required": false,
+    "live_financial_authority": false,
+    "JEV": "Optional offline measurable classifier experiment, not execution core",
+    "data_processing_rights_required": true,
+    "paid_fallback": false
+  },
+  "disabled_additions": [
+    "FinRL",
+    "Optuna",
+    "River",
+    "another live trading engine",
+    "custodial wallet",
+    "automatically pooled customer funds",
+    "unrestricted runtime MCP trading tools",
+    "blanket permissions bypass"
+  ],
+  "owner_actions": [
+    "entity_jurisdictions_legal_modes",
+    "written_redistribution_data_grants",
+    "platform_accounts_provider_approval",
+    "merchant_live_prices_tax_refunds",
+    "customer_agreements_disclosures",
+    "exact_financial_release_and_capacity"
+  ]
+}

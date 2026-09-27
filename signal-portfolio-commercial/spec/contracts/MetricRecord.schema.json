@@ -1,0 +1,122 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:signal-portfolio:MetricRecord:1",
+  "title": "MetricRecord",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "metric_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "definition_version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "entity_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "tenant_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "origin": {
+      "enum": [
+        "RECONSTRUCTED_BACKTEST",
+        "FORWARD_MODEL",
+        "VENUE_PAPER",
+        "PLATFORM_MODEL",
+        "VERIFIED_OWNER_LIVE",
+        "VERIFIED_CUSTOMER_LIVE"
+      ]
+    },
+    "value": {
+      "anyOf": [
+        {
+          "type": "string",
+          "pattern": "^-?(0|[1-9][0-9]*)(\\.[0-9]+)?$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "unit": {
+      "type": "string",
+      "minLength": 1
+    },
+    "currency": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "period_start": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "period_end": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "as_of": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "sample_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "quality": {
+      "enum": [
+        "COMPLETE",
+        "INCOMPLETE",
+        "STALE",
+        "UNDEFINED",
+        "CONFLICTED"
+      ]
+    },
+    "cost_basis": {
+      "enum": [
+        "GROSS",
+        "NET_VERIFIED",
+        "NET_MODELED",
+        "INCOMPLETE_COSTS"
+      ]
+    },
+    "dataset_hash": {
+      "type": "string",
+      "minLength": 1
+    },
+    "calculation_hash": {
+      "type": "string",
+      "minLength": 1
+    },
+    "disclosure_version": {
+      "type": "string",
+      "minLength": 1
+    }
+  },
+  "required": [
+    "metric_id",
+    "definition_version",
+    "entity_id",
+    "tenant_id",
+    "origin",
+    "value",
+    "unit",
+    "currency",
+    "period_start",
+    "period_end",
+    "as_of",
+    "sample_count",
+    "quality",
+    "cost_basis",
+    "dataset_hash",
+    "calculation_hash",
+    "disclosure_version"
+  ]
+}

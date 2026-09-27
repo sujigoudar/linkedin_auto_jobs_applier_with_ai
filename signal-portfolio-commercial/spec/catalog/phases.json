@@ -1,0 +1,106 @@
+[
+  {
+    "id": "00",
+    "title": "Current-code discovery and reuse",
+    "prompt": "prompts/00.md",
+    "spec": "docs/00_current_state_and_scope.md",
+    "objective": "Record actual HEAD/dirty files, all prior safety blockers and current dashboard/API/economics consumers. Inventory libraries, platform integrations and data grants. Produce immutable reuse/requirement map. Do not claim the full old audit is still open or repaired without verification.",
+    "status": "NOT_STARTED"
+  },
+  {
+    "id": "01",
+    "title": "Rights, contracts and approval gates",
+    "prompt": "prompts/01.md",
+    "spec": "docs/01_rights_legal_and_launch_gates.md",
+    "objective": "Implement application-owned schema validation and rights/legal/source/audience approvals with expiry and lawful wind-down. Named paid providers start unqualified for commercial use. Create the six owner cards; continue all independent coding on synthetic/owned data.",
+    "status": "NOT_STARTED"
+  },
+  {
+    "id": "02",
+    "title": "Commercial tenancy and architecture",
+    "prompt": "prompts/02.md",
+    "spec": "docs/02_architecture_and_tenancy.md",
+    "objective": "Add separate commercial API process and PostgreSQL/Auth/RLS customer store. Retain private execution app. Implement compound ownership constraints, secrets/roles, public projections and test cross-tenant DB/API/cache/stream/export denial.",
+    "status": "NOT_STARTED"
+  },
+  {
+    "id": "03",
+    "title": "Economic journal and metrics",
+    "prompt": "prompts/03.md",
+    "spec": "docs/04_metrics_accounting_and_truth.md",
+    "objective": "Complete exact net accounting and series origins. Correct reducing-fill versus completed-episode naming. Maintain source/model/platform/customer books, fees/marks/cashflows, report versions, partial execution/correction and independent broker reconciliation.",
+    "status": "NOT_STARTED"
+  },
+  {
+    "id": "04",
+    "title": "Portfolio research and selection",
+    "prompt": "prompts/04.md",
+    "spec": "docs/03_portfolio_research_and_selection.md",
+    "objective": "Implement sleeves, original histories, point-in-time alignment, complementarity/capacity and complete subset/recipe enumeration. Run realistic common-capital chronology and holdout/shadow. Publish no claims or live weights. Persist every candidate and failed/insufficient result.",
+    "status": "NOT_STARTED"
+  },
+  {
+    "id": "05",
+    "title": "Publication and customer lifecycle",
+    "prompt": "prompts/05.md",
+    "spec": "docs/05_publication_and_copy_lifecycle.md",
+    "objective": "Implement canonical portfolio events, durable writer/outbox, exact cohorts, mandates, new-only joining, optional sync and cancellation/wind-down. Preserve existing quantity/order-family safety. Test mixed products/accounts, late events and license/payment loss without abandonment.",
+    "status": "NOT_STARTED"
+  },
+  {
+    "id": "06",
+    "title": "Collective2 API4",
+    "prompt": "prompts/06.md",
+    "spec": "docs/06_platform_adapters.md",
+    "objective": "Implement current API4 with explicit strategy identity/children, no legacy key reuse, exact symbology and modification limits. Resolve TIF documentation discrepancy. Local protocol tests first; authorized external test strategy only with verified zero subscribers/AutoTrade. General/AutoTrade are not test sandboxes.",
+    "status": "NOT_STARTED"
+  },
+  {
+    "id": "07",
+    "title": "eToro and other copier channels",
+    "prompt": "prompts/07.md",
+    "spec": "docs/06_platform_adapters.md",
+    "objective": "Implement official eToro demo/API eligibility and dedicated provider-account integration, not assumed copying approval. Add qualified CopyFactory semantics, including destructive external-signal removal and close-only variants. Isolate inactive unsupported channels with precise blockers.",
+    "status": "NOT_STARTED"
+  },
+  {
+    "id": "08",
+    "title": "Subscriptions and business operations",
+    "prompt": "prompts/08.md",
+    "spec": "docs/08_products_billing_and_entitlements.md",
+    "objective": "Implement hosted test-mode checkout/portal, price whitelist, canonical billing reconciliation, tenant-scoped entitlements and fees/royalties. New entry access and open-exposure safety differ. No live charge or investment-capital custody; current approval/prices required.",
+    "status": "NOT_STARTED"
+  },
+  {
+    "id": "09",
+    "title": "Actual public/customer/operator website",
+    "prompt": "prompts/09.md",
+    "spec": "docs/09_website_dashboards_and_journeys.md",
+    "objective": "Build all24 actual journeys across three surfaces using shared existing assets. Bind every public metric to approved projection, correct performance origins and costs. Test all states/browser projects plus direct APIs. Do not substitute an attractive static screenshot for functionality.",
+    "status": "NOT_STARTED"
+  },
+  {
+    "id": "10",
+    "title": "Broker-managed account extension",
+    "prompt": "prompts/10.md",
+    "spec": "docs/07_managed_accounts_pamm_mam.md",
+    "objective": "Implement PAMM/MAM models, isolated numerical simulator, fair allocations, units/dealing cutoffs and fee/HWM correction tests. Native broker identity/API/agreements mandatory before effects. Missing broker data is a blocker, not a fabricated account service.",
+    "status": "NOT_STARTED"
+  },
+  {
+    "id": "11",
+    "title": "Optional model assistance",
+    "prompt": "prompts/11.md",
+    "spec": "docs/11_models_skills_and_optional_ai.md",
+    "objective": "Keep models optional and finance-independent. Only implement a selected justified draft/tag/summary/support task with permitted data, cost limits, tenant isolation, factual evaluations and review. JEV execution loop is not adopted. If no task qualifies, record deliberately omitted optional model runtime.",
+    "status": "NOT_STARTED"
+  },
+  {
+    "id": "12",
+    "title": "Full validation, deployment and handoff",
+    "prompt": "prompts/12.md",
+    "spec": "docs/12_validation_and_acceptance.md",
+    "objective": "Execute all applicable focused/gate/GUI/discovered cases and inherited safety requirements. Repair actual failures. Deploy approved inactive commercial services with working auth/backup/monitoring, capacity/cost evidence, safe recovery and exact remaining owner/platform/legal actions. No production effect or automatic approval.",
+    "status": "NOT_STARTED"
+  }
+]

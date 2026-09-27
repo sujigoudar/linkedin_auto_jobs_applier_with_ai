@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:signal-portfolio:ManagedProgram:1",
+  "title": "ManagedProgram",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "program_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "broker_contract_hash": {
+      "type": "string",
+      "minLength": 1
+    },
+    "entity_approval_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "mode": {
+      "enum": [
+        "PAMM",
+        "MAM"
+      ]
+    },
+    "broker_identity": {
+      "type": "string",
+      "minLength": 1
+    },
+    "allocation_rule_hash": {
+      "type": "string",
+      "minLength": 1
+    },
+    "dealing_calendar_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "valuation_policy_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "fee_policy_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "customer_mandate_ids": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "state": {
+      "enum": [
+        "SIMULATION",
+        "PENDING_APPROVAL",
+        "APPROVED_INACTIVE",
+        "ACTIVE",
+        "WIND_DOWN",
+        "CLOSED"
+      ]
+    }
+  },
+  "required": [
+    "program_id",
+    "broker_contract_hash",
+    "entity_approval_id",
+    "mode",
+    "broker_identity",
+    "allocation_rule_hash",
+    "dealing_calendar_id",
+    "valuation_policy_id",
+    "fee_policy_id",
+    "customer_mandate_ids",
+    "state"
+  ]
+}

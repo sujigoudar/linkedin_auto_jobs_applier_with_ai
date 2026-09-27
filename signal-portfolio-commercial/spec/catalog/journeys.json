@@ -1,0 +1,170 @@
+[
+  {
+    "id": "J-PUBLIC_CATALOG",
+    "title": "Public product discovery",
+    "expected": "Only approved projections, costs, drawdown and performance origin are visible.",
+    "role": "PUBLIC",
+    "implementation_status": "NOT_VERIFIED"
+  },
+  {
+    "id": "J-PUBLIC_DETAIL",
+    "title": "Portfolio detail and track record",
+    "expected": "Correct version/history, disclosure, risk and compatibility; no restricted source raw text.",
+    "role": "PUBLIC",
+    "implementation_status": "NOT_VERIFIED"
+  },
+  {
+    "id": "J-SIGNUP",
+    "title": "Signup and email verification",
+    "expected": "Tenant-bound identity, no paid or trading privilege before independent gates.",
+    "role": "SCOPED_CUSTOMER_OR_OPERATOR",
+    "implementation_status": "NOT_VERIFIED"
+  },
+  {
+    "id": "J-ELIGIBILITY",
+    "title": "Residence and service eligibility",
+    "expected": "Exact legal/product/channel approval, no inferred or user-editable bypass.",
+    "role": "SCOPED_CUSTOMER_OR_OPERATOR",
+    "implementation_status": "NOT_VERIFIED"
+  },
+  {
+    "id": "J-CHECKOUT",
+    "title": "Hosted checkout",
+    "expected": "Whitelisted price and customer identity; success page never creates entitlement.",
+    "role": "SCOPED_CUSTOMER_OR_OPERATOR",
+    "implementation_status": "NOT_VERIFIED"
+  },
+  {
+    "id": "J-SUBSCRIPTIONS",
+    "title": "Upgrade/downgrade/cancel",
+    "expected": "Correct interval/fees, safe open-episode treatment and separate platform state.",
+    "role": "SCOPED_CUSTOMER_OR_OPERATOR",
+    "implementation_status": "NOT_VERIFIED"
+  },
+  {
+    "id": "J-PORTFOLIO_SELECT",
+    "title": "Select licensed portfolio",
+    "expected": "Effective version, risk/capacity/rights and customer scope preserved.",
+    "role": "SCOPED_CUSTOMER_OR_OPERATOR",
+    "implementation_status": "NOT_VERIFIED"
+  },
+  {
+    "id": "J-ALERTS",
+    "title": "Alert stream and history",
+    "expected": "Correct lifecycle sequence, expiry, origin and delivered-versus-filled distinction.",
+    "role": "SCOPED_CUSTOMER_OR_OPERATOR",
+    "implementation_status": "NOT_VERIFIED"
+  },
+  {
+    "id": "J-DELIVERY_PREFS",
+    "title": "Email/API delivery preferences",
+    "expected": "Verified endpoint and lawful consent; safety policy distinguished from marketing.",
+    "role": "SCOPED_CUSTOMER_OR_OPERATOR",
+    "implementation_status": "NOT_VERIFIED"
+  },
+  {
+    "id": "J-PLATFORM_CONNECT",
+    "title": "Hosted platform connection",
+    "expected": "Correct account/environment and token scope; no browser or other-tenant key leakage.",
+    "role": "SCOPED_CUSTOMER_OR_OPERATOR",
+    "implementation_status": "NOT_VERIFIED"
+  },
+  {
+    "id": "J-COPY_ACTIVATE",
+    "title": "Copy mandate and activation",
+    "expected": "Explicit new-only/sync choice, exact constraints, independent billing and mandate.",
+    "role": "SCOPED_CUSTOMER_OR_OPERATOR",
+    "implementation_status": "NOT_VERIFIED"
+  },
+  {
+    "id": "J-CUSTOMER_PERFORMANCE",
+    "title": "Customer performance",
+    "expected": "Only customer actual observations, real fees/marks and incomplete flags.",
+    "role": "SCOPED_CUSTOMER_OR_OPERATOR",
+    "implementation_status": "NOT_VERIFIED"
+  },
+  {
+    "id": "J-TRADE_DETAIL",
+    "title": "Trade and order-family detail",
+    "expected": "Actual quantities, uncertainty, children, corrections and stop coverage reconcile.",
+    "role": "SCOPED_CUSTOMER_OR_OPERATOR",
+    "implementation_status": "NOT_VERIFIED"
+  },
+  {
+    "id": "J-SAFETY_EXIT",
+    "title": "Pause, stop copying and handoff",
+    "expected": "Scope-specific approved wind-down; no whole-account surprise flatten.",
+    "role": "SCOPED_CUSTOMER_OR_OPERATOR",
+    "implementation_status": "NOT_VERIFIED"
+  },
+  {
+    "id": "J-SUPPORT",
+    "title": "Support and incident reporting",
+    "expected": "Narrow staff rights, audit trail and safe communications.",
+    "role": "SCOPED_CUSTOMER_OR_OPERATOR",
+    "implementation_status": "NOT_VERIFIED"
+  },
+  {
+    "id": "J-LAB_UNIVERSE",
+    "title": "Research source universe",
+    "expected": "Licensed complete history, known-flat versus missing, exact source versions.",
+    "role": "SCOPED_CUSTOMER_OR_OPERATOR",
+    "implementation_status": "NOT_VERIFIED"
+  },
+  {
+    "id": "J-LAB_RUN",
+    "title": "Candidate research job",
+    "expected": "All fixed subsets/recipes terminal outcomes, resumable deterministic shards.",
+    "role": "SCOPED_CUSTOMER_OR_OPERATOR",
+    "implementation_status": "NOT_VERIFIED"
+  },
+  {
+    "id": "J-LAB_COMPARE",
+    "title": "Compare portfolio candidates",
+    "expected": "Holdout separation, fees/capacity/correlations and rejected candidates visible.",
+    "role": "SCOPED_CUSTOMER_OR_OPERATOR",
+    "implementation_status": "NOT_VERIFIED"
+  },
+  {
+    "id": "J-RELEASE_REVIEW",
+    "title": "Release approval",
+    "expected": "Separate reviewer, immutable artifact/version/rights and audience scope.",
+    "role": "SCOPED_CUSTOMER_OR_OPERATOR",
+    "implementation_status": "NOT_VERIFIED"
+  },
+  {
+    "id": "J-PUBLISHER",
+    "title": "Publisher control and reconciliation",
+    "expected": "Exact external strategy, unknown operations, quota and writer state.",
+    "role": "SCOPED_CUSTOMER_OR_OPERATOR",
+    "implementation_status": "NOT_VERIFIED"
+  },
+  {
+    "id": "J-RIGHTS",
+    "title": "Rights and legal review administration",
+    "expected": "Evidence-only permissions, restricted changes and expiry/wind-down preview.",
+    "role": "SCOPED_CUSTOMER_OR_OPERATOR",
+    "implementation_status": "NOT_VERIFIED"
+  },
+  {
+    "id": "J-BUSINESS",
+    "title": "Business economics and royalty reports",
+    "expected": "Subscription revenue/costs separate from trading P&L.",
+    "role": "SCOPED_CUSTOMER_OR_OPERATOR",
+    "implementation_status": "NOT_VERIFIED"
+  },
+  {
+    "id": "J-MANAGED_ACCOUNT",
+    "title": "PAMM/MAM onboarding/report",
+    "expected": "Broker-native status, mandates, units/NAV/fees, no SaaS custody.",
+    "role": "SCOPED_CUSTOMER_OR_OPERATOR",
+    "implementation_status": "NOT_VERIFIED"
+  },
+  {
+    "id": "J-RECOVERY",
+    "title": "Standby/restore/incident operation",
+    "expected": "No financial authority before fence, current grants and external reconciliation.",
+    "role": "SCOPED_CUSTOMER_OR_OPERATOR",
+    "implementation_status": "NOT_VERIFIED"
+  }
+]

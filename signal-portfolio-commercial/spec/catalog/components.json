@@ -1,0 +1,191 @@
+[
+  {
+    "id": "existing-app",
+    "repository": "existing FastAPI/HTML execution app",
+    "decision": "REUSE_IN_PLACE",
+    "purpose": "Keep audited financial core; no copied-trader rewrite",
+    "url": null,
+    "license_status": "VERIFY_PINNED_VERSION_BEFORE_REUSE",
+    "integration_status": "NOT_PERFORMED_BY_THIS_PACKAGE"
+  },
+  {
+    "id": "skfolio",
+    "repository": "skfolio/skfolio",
+    "decision": "REUSE_OR_ADD_RESEARCH_ONLY",
+    "purpose": "Complementarity/HRP/CVaR comparisons with common constraints",
+    "url": "https://github.com/skfolio/skfolio",
+    "license_status": "VERIFY_PINNED_VERSION_BEFORE_REUSE",
+    "integration_status": "NOT_PERFORMED_BY_THIS_PACKAGE"
+  },
+  {
+    "id": "scipy",
+    "repository": "scipy/scipy",
+    "decision": "REUSE_RESEARCH",
+    "purpose": "Deterministic bounded optimizer and baseline checks",
+    "url": "https://github.com/scipy/scipy",
+    "license_status": "VERIFY_PINNED_VERSION_BEFORE_REUSE",
+    "integration_status": "NOT_PERFORMED_BY_THIS_PACKAGE"
+  },
+  {
+    "id": "arch",
+    "repository": "bashtage/arch",
+    "decision": "REUSE_RESEARCH",
+    "purpose": "Dependent bootstrap and multiple-comparison tests",
+    "url": "https://github.com/bashtage/arch",
+    "license_status": "VERIFY_PINNED_VERSION_BEFORE_REUSE",
+    "integration_status": "NOT_PERFORMED_BY_THIS_PACKAGE"
+  },
+  {
+    "id": "duckdb",
+    "repository": "duckdb/duckdb",
+    "decision": "REUSE_RESEARCH",
+    "purpose": "Immutable histories and candidate results",
+    "url": "https://github.com/duckdb/duckdb",
+    "license_status": "VERIFY_PINNED_VERSION_BEFORE_REUSE",
+    "integration_status": "NOT_PERFORMED_BY_THIS_PACKAGE"
+  },
+  {
+    "id": "pandera",
+    "repository": "unionai-oss/pandera",
+    "decision": "REUSE_OR_ADD_RESEARCH",
+    "purpose": "Data admission validation",
+    "url": "https://github.com/unionai-oss/pandera",
+    "license_status": "VERIFY_PINNED_VERSION_BEFORE_REUSE",
+    "integration_status": "NOT_PERFORMED_BY_THIS_PACKAGE"
+  },
+  {
+    "id": "stripe",
+    "repository": "stripe/stripe-python",
+    "decision": "ADD_TEST_MODE_FIRST",
+    "purpose": "Billing/Checkout/customer portal; no investment custody",
+    "url": "https://github.com/stripe/stripe-python",
+    "license_status": "VERIFY_PINNED_VERSION_BEFORE_REUSE",
+    "integration_status": "NOT_PERFORMED_BY_THIS_PACKAGE"
+  },
+  {
+    "id": "supabase",
+    "repository": "supabase/supabase-py",
+    "decision": "ADD_COMMERCIAL_SCOPE_ONLY",
+    "purpose": "Customer Auth/PostgreSQL/RLS/storage, separate service keys",
+    "url": "https://github.com/supabase/supabase-py",
+    "license_status": "VERIFY_PINNED_VERSION_BEFORE_REUSE",
+    "integration_status": "NOT_PERFORMED_BY_THIS_PACKAGE"
+  },
+  {
+    "id": "sqlalchemy",
+    "repository": "sqlalchemy/sqlalchemy",
+    "decision": "REUSE",
+    "purpose": "Commercial transactions/constraints, no broker I/O inside DB transaction",
+    "url": "https://github.com/sqlalchemy/sqlalchemy",
+    "license_status": "VERIFY_PINNED_VERSION_BEFORE_REUSE",
+    "integration_status": "NOT_PERFORMED_BY_THIS_PACKAGE"
+  },
+  {
+    "id": "alembic",
+    "repository": "sqlalchemy/alembic",
+    "decision": "REUSE",
+    "purpose": "Reviewed migrations, no invented financial history",
+    "url": "https://github.com/sqlalchemy/alembic",
+    "license_status": "VERIFY_PINNED_VERSION_BEFORE_REUSE",
+    "integration_status": "NOT_PERFORMED_BY_THIS_PACKAGE"
+  },
+  {
+    "id": "chartjs",
+    "repository": "chartjs/Chart.js",
+    "decision": "REUSE_CURRENT_VENDOR",
+    "purpose": "Truthful portfolio/return/drawdown charts",
+    "url": "https://github.com/chartjs/Chart.js",
+    "license_status": "VERIFY_PINNED_VERSION_BEFORE_REUSE",
+    "integration_status": "NOT_PERFORMED_BY_THIS_PACKAGE"
+  },
+  {
+    "id": "tabulator",
+    "repository": "tabulator-tables/tabulator",
+    "decision": "REUSE_CURRENT_VENDOR",
+    "purpose": "Safe tables, stable paging and drilldown",
+    "url": "https://github.com/tabulator-tables/tabulator",
+    "license_status": "VERIFY_PINNED_VERSION_BEFORE_REUSE",
+    "integration_status": "NOT_PERFORMED_BY_THIS_PACKAGE"
+  },
+  {
+    "id": "collective2",
+    "repository": "Official API4 documentation",
+    "decision": "IMPLEMENT_QUALIFIED_HTTPX_CLIENT",
+    "purpose": "No unverified legacy SDK or guessed endpoint",
+    "url": "https://trade.collective2.com/c2-api",
+    "license_status": "VERIFY_PINNED_VERSION_BEFORE_REUSE",
+    "integration_status": "NOT_PERFORMED_BY_THIS_PACKAGE"
+  },
+  {
+    "id": "etoro",
+    "repository": "eToro official Builders tools",
+    "decision": "VERIFY_OFFICIAL_CLIENT_OR_HTTPX",
+    "purpose": "Real/demo + separate investor eligibility; no scraped unofficial route",
+    "url": "https://builders.etoro.com/",
+    "license_status": "VERIFY_PINNED_VERSION_BEFORE_REUSE",
+    "integration_status": "NOT_PERFORMED_BY_THIS_PACKAGE"
+  },
+  {
+    "id": "metaapi",
+    "repository": "metaapi/metaapi-python-sdk",
+    "decision": "REUSE_QUALIFIED_EXTENSION",
+    "purpose": "CopyFactory external signal lifecycle and exact close-only handling",
+    "url": "https://github.com/metaapi/metaapi-python-sdk",
+    "license_status": "VERIFY_PINNED_VERSION_BEFORE_REUSE",
+    "integration_status": "NOT_PERFORMED_BY_THIS_PACKAGE"
+  },
+  {
+    "id": "jev",
+    "repository": "jarrodwatts/jev-trader",
+    "decision": "REFERENCE_ONLY",
+    "purpose": "Event-stream UX ideas; license verification; no model-loop/keys borrowed",
+    "url": "https://github.com/jarrodwatts/jev-trader",
+    "license_status": "VERIFY_PINNED_VERSION_BEFORE_REUSE",
+    "integration_status": "NOT_PERFORMED_BY_THIS_PACKAGE"
+  },
+  {
+    "id": "promptfoo",
+    "repository": "promptfoo/promptfoo",
+    "decision": "OPTIONAL_MODEL_EVAL_ONLY",
+    "purpose": "Only when optional model feature is selected; no financial tool authority",
+    "url": "https://github.com/promptfoo/promptfoo",
+    "license_status": "VERIFY_PINNED_VERSION_BEFORE_REUSE",
+    "integration_status": "NOT_PERFORMED_BY_THIS_PACKAGE"
+  },
+  {
+    "id": "playwright",
+    "repository": "microsoft/playwright-python",
+    "decision": "REUSE_TEST",
+    "purpose": "Actual three-surface GUI multi-browser evidence",
+    "url": "https://github.com/microsoft/playwright-python",
+    "license_status": "VERIFY_PINNED_VERSION_BEFORE_REUSE",
+    "integration_status": "NOT_PERFORMED_BY_THIS_PACKAGE"
+  },
+  {
+    "id": "hypothesis",
+    "repository": "HypothesisWorks/hypothesis",
+    "decision": "REUSE_TEST",
+    "purpose": "Supplement exhaustive finite cases with stateful counterexamples",
+    "url": "https://github.com/HypothesisWorks/hypothesis",
+    "license_status": "VERIFY_PINNED_VERSION_BEFORE_REUSE",
+    "integration_status": "NOT_PERFORMED_BY_THIS_PACKAGE"
+  },
+  {
+    "id": "schemathesis",
+    "repository": "schemathesis/schemathesis",
+    "decision": "REUSE_TEST",
+    "purpose": "Actual auth/API/schema boundaries with isolated effects",
+    "url": "https://github.com/schemathesis/schemathesis",
+    "license_status": "VERIFY_PINNED_VERSION_BEFORE_REUSE",
+    "integration_status": "NOT_PERFORMED_BY_THIS_PACKAGE"
+  },
+  {
+    "id": "vectorbt",
+    "repository": "polakowo/vectorbt",
+    "decision": "LICENSE_REVIEW_CONDITIONAL",
+    "purpose": "Do not assume prior personal research license covers paid product",
+    "url": "https://github.com/polakowo/vectorbt",
+    "license_status": "VERIFY_PINNED_VERSION_BEFORE_REUSE",
+    "integration_status": "NOT_PERFORMED_BY_THIS_PACKAGE"
+  }
+]

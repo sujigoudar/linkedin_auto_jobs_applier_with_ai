@@ -1,0 +1,281 @@
+[
+  {
+    "id": "SRC01",
+    "title": "Collective2 API4 overview",
+    "url": "https://trade.collective2.com/c2-api",
+    "checked_date": "2026-09-27",
+    "notes": "API4 bearer keys; no separate sandbox; Strategies test strategies differ from General/AutoTrade real data.",
+    "source_type": "primary",
+    "qualification": "Documentation only; no account access or upstream execution tested"
+  },
+  {
+    "id": "SRC02",
+    "title": "Collective2 signal guide",
+    "url": "https://api-docs.collective2.com/guides/how-to-submit-signals",
+    "checked_date": "2026-09-27",
+    "notes": "Order wrapper, child IDs/OCA, integer quantity, documented price-only changes; TIF sample inconsistency requires resolution.",
+    "source_type": "primary",
+    "qualification": "Documentation only; no account access or upstream execution tested"
+  },
+  {
+    "id": "SRC03",
+    "title": "Collective2 developer products",
+    "url": "https://collective2.com/build-with-c2.html",
+    "checked_date": "2026-09-27",
+    "notes": "Strategies, subscribers, integration modes and separately approved WhiteLabel.",
+    "source_type": "primary",
+    "qualification": "Documentation only; no account access or upstream execution tested"
+  },
+  {
+    "id": "SRC04",
+    "title": "eToro Builders trading",
+    "url": "https://builders.etoro.com/products/trading",
+    "checked_date": "2026-09-27",
+    "notes": "Official real/demo trading API; API availability does not confer regulated advisory/management status.",
+    "source_type": "primary",
+    "qualification": "Documentation only; no account access or upstream execution tested"
+  },
+  {
+    "id": "SRC05",
+    "title": "eToro social discovery",
+    "url": "https://builders.etoro.com/products/social-discovery",
+    "checked_date": "2026-09-27",
+    "notes": "Social/profile information and investor discovery; verify applicable account/program eligibility.",
+    "source_type": "primary",
+    "qualification": "Documentation only; no account access or upstream execution tested"
+  },
+  {
+    "id": "SRC06",
+    "title": "BuyAlerts terms",
+    "url": "https://signup.buyalerts.com/terms",
+    "checked_date": "2026-09-27",
+    "notes": "Personal-use and republishing/redistribution limitations. No user-specific resale grant established.",
+    "source_type": "primary",
+    "qualification": "Documentation only; no account access or upstream execution tested"
+  },
+  {
+    "id": "SRC07",
+    "title": "TradeAlgo terms",
+    "url": "https://www.tradealgo.com/legal/terms-of-service",
+    "checked_date": "2026-09-27",
+    "notes": "Personal noncommercial use and prior-written-consent requirement for sharing alerts/info.",
+    "source_type": "primary",
+    "qualification": "Documentation only; no account access or upstream execution tested"
+  },
+  {
+    "id": "SRC08",
+    "title": "KamdenAI",
+    "url": "https://kamdenai.com/",
+    "checked_date": "2026-09-27",
+    "notes": "Own-account automation capability is not evidence of commercial redistribution rights.",
+    "source_type": "primary",
+    "qualification": "Documentation only; no account access or upstream execution tested"
+  },
+  {
+    "id": "SRC09",
+    "title": "SEC investment adviser marketing",
+    "url": "https://www.sec.gov/resources-small-businesses/small-business-compliance-guides/investment-adviser-marketing",
+    "checked_date": "2026-09-27",
+    "notes": "Applicable adviser marketing, substantiation, gross/net and hypothetical-performance requirements; legal applicability requires review.",
+    "source_type": "primary",
+    "qualification": "Documentation only; no account access or upstream execution tested"
+  },
+  {
+    "id": "SRC10",
+    "title": "NFA hypothetical performance interpretive notice",
+    "url": "https://www.nfa.futures.org/rulebooksql/rules.aspx?Section=9&RuleID=9025",
+    "checked_date": "2026-09-27",
+    "notes": "Hypothetical results and combined programs require careful labeling and applicable treatment.",
+    "source_type": "primary",
+    "qualification": "Documentation only; no account access or upstream execution tested"
+  },
+  {
+    "id": "SRC11",
+    "title": "NFA CTA registration overview",
+    "url": "https://www.nfa.futures.org/registration-membership/who-has-to-register/cta.html",
+    "checked_date": "2026-09-27",
+    "notes": "Compensated commodity-interest advice/management may trigger registration or exemption analysis.",
+    "source_type": "primary",
+    "qualification": "Documentation only; no account access or upstream execution tested"
+  },
+  {
+    "id": "SRC12",
+    "title": "Stripe restricted businesses",
+    "url": "https://stripe.com/legal/restricted-businesses",
+    "checked_date": "2026-09-27",
+    "notes": "Financial businesses can require additional review; no merchant approval assumed.",
+    "source_type": "primary",
+    "qualification": "Documentation only; no account access or upstream execution tested"
+  },
+  {
+    "id": "SRC13",
+    "title": "Stripe subscription webhooks",
+    "url": "https://docs.stripe.com/billing/subscriptions/webhooks",
+    "checked_date": "2026-09-27",
+    "notes": "Authoritative subscription lifecycle and asynchronous billing events.",
+    "source_type": "primary",
+    "qualification": "Documentation only; no account access or upstream execution tested"
+  },
+  {
+    "id": "SRC14",
+    "title": "CopyFactory external signals",
+    "url": "https://metaapi.cloud/docs/copyfactory/models/externalSignal/",
+    "checked_date": "2026-09-27",
+    "notes": "External signals and copier identifiers; verify effects and current API.",
+    "source_type": "primary",
+    "qualification": "Documentation only; no account access or upstream execution tested"
+  },
+  {
+    "id": "SRC15",
+    "title": "CopyFactory close-only",
+    "url": "https://metaapi.cloud/docs/copyfactory/features/tradeCopyingSettings/closeOnly/",
+    "checked_date": "2026-09-27",
+    "notes": "by-symbol is not necessarily strict no-new-position semantics; immediate mode has closing effects.",
+    "source_type": "primary",
+    "qualification": "Documentation only; no account access or upstream execution tested"
+  },
+  {
+    "id": "SRC16",
+    "title": "MAM/PAMM broker illustration",
+    "url": "https://www.cwgmarkets.co.uk/mam-pamm",
+    "checked_date": "2026-09-27",
+    "notes": "Broker-operated managed allocation; not a universal public API or eligibility confirmation.",
+    "source_type": "primary",
+    "qualification": "Documentation only; no account access or upstream execution tested"
+  },
+  {
+    "id": "SRC17",
+    "title": "Claude Code skills",
+    "url": "https://code.claude.com/docs/en/skills",
+    "checked_date": "2026-09-27",
+    "notes": "Project skills and progressive disclosure; actual installed CLI must be checked.",
+    "source_type": "primary",
+    "qualification": "Documentation only; no account access or upstream execution tested"
+  },
+  {
+    "id": "SRC18",
+    "title": "Claude Code best practices",
+    "url": "https://code.claude.com/docs/en/best-practices",
+    "checked_date": "2026-09-27",
+    "notes": "Focused context, verification, scoped tasks and independent review.",
+    "source_type": "primary",
+    "qualification": "Documentation only; no account access or upstream execution tested"
+  },
+  {
+    "id": "SRC19",
+    "title": "JEV reference repository",
+    "url": "https://github.com/jarrodwatts/jev-trader",
+    "checked_date": "2026-09-27",
+    "notes": "MON-USDC/Monad per-block demo, mock model default and dry-run deployment described; not proof of screenshot profits.",
+    "source_type": "primary",
+    "qualification": "Documentation only; no account access or upstream execution tested"
+  },
+  {
+    "id": "SRC20",
+    "title": "skfolio",
+    "url": "https://github.com/skfolio/skfolio",
+    "checked_date": "2026-09-27",
+    "notes": "Portfolio research components; pinned-license and integration review required.",
+    "source_type": "primary",
+    "qualification": "Documentation only; no account access or upstream execution tested"
+  },
+  {
+    "id": "SRC21",
+    "title": "Stripe Python",
+    "url": "https://github.com/stripe/stripe-python",
+    "checked_date": "2026-09-27",
+    "notes": "Official payment client; no funds custody or merchant acceptance guarantee.",
+    "source_type": "primary",
+    "qualification": "Documentation only; no account access or upstream execution tested"
+  },
+  {
+    "id": "SRC22",
+    "title": "Supabase Python",
+    "url": "https://github.com/supabase/supabase-py",
+    "checked_date": "2026-09-27",
+    "notes": "Official control-plane/auth/storage client; service role must remain private.",
+    "source_type": "primary",
+    "qualification": "Documentation only; no account access or upstream execution tested"
+  },
+  {
+    "id": "SRC23",
+    "title": "Promptfoo",
+    "url": "https://github.com/promptfoo/promptfoo",
+    "checked_date": "2026-09-27",
+    "notes": "Optional isolated model evaluations; not live trading authority.",
+    "source_type": "primary",
+    "qualification": "Documentation only; no account access or upstream execution tested"
+  },
+  {
+    "id": "SRC24",
+    "title": "PostgreSQL row security",
+    "url": "https://www.postgresql.org/docs/current/ddl-rowsecurity.html",
+    "checked_date": "2026-09-27",
+    "notes": "RLS supplements API authorization; table owners/superusers bypass unless architecture addresses it.",
+    "source_type": "primary",
+    "qualification": "Documentation only; no account access or upstream execution tested"
+  },
+  {
+    "id": "SRC25",
+    "title": "Supabase RLS",
+    "url": "https://supabase.com/docs/guides/database/postgres/row-level-security",
+    "checked_date": "2026-09-27",
+    "notes": "Customer row isolation and privileged service-key boundaries.",
+    "source_type": "primary",
+    "qualification": "Documentation only; no account access or upstream execution tested"
+  },
+  {
+    "id": "SRC26",
+    "title": "Chart.js",
+    "url": "https://github.com/chartjs/Chart.js",
+    "checked_date": "2026-09-27",
+    "notes": "Reuse pinned existing frontend charts; verify data and attribution separately.",
+    "source_type": "primary",
+    "qualification": "Documentation only; no account access or upstream execution tested"
+  },
+  {
+    "id": "SRC27",
+    "title": "Tabulator",
+    "url": "https://github.com/tabulator-tables/tabulator",
+    "checked_date": "2026-09-27",
+    "notes": "Reuse existing safe tables, pagination and filtering.",
+    "source_type": "primary",
+    "qualification": "Documentation only; no account access or upstream execution tested"
+  },
+  {
+    "id": "SRC28",
+    "title": "arch",
+    "url": "https://github.com/bashtage/arch",
+    "checked_date": "2026-09-27",
+    "notes": "Bootstrap and multiple-comparison research; methodological assumptions remain explicit.",
+    "source_type": "primary",
+    "qualification": "Documentation only; no account access or upstream execution tested"
+  },
+  {
+    "id": "SRC29",
+    "title": "DuckDB",
+    "url": "https://github.com/duckdb/duckdb",
+    "checked_date": "2026-09-27",
+    "notes": "Offline immutable research snapshots, not competing live accounting authority.",
+    "source_type": "primary",
+    "qualification": "Documentation only; no account access or upstream execution tested"
+  },
+  {
+    "id": "SRC30",
+    "title": "Pandera",
+    "url": "https://github.com/unionai-oss/pandera",
+    "checked_date": "2026-09-27",
+    "notes": "Dataset validation; cannot create missing evidence.",
+    "source_type": "primary",
+    "qualification": "Documentation only; no account access or upstream execution tested"
+  },
+  {
+    "id": "SRC31",
+    "title": "vectorbt license",
+    "url": "https://github.com/polakowo/vectorbt/blob/master/LICENSE.md",
+    "checked_date": "2026-09-27",
+    "notes": "Commercial-use license review required; not assumed unrestricted for paid SaaS.",
+    "source_type": "primary",
+    "qualification": "Documentation only; no account access or upstream execution tested"
+  }
+]

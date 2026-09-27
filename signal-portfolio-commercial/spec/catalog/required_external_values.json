@@ -1,0 +1,102 @@
+[
+  {
+    "id": "OWNER-1",
+    "fields": [
+      "legal_entity",
+      "approved_service_modes",
+      "approved_customer_jurisdictions",
+      "legal_approval_ids"
+    ],
+    "resolve": "Owner/counsel record scoped determination; no automated assumption",
+    "blocks": [
+      "commercial live enrollment",
+      "discretionary management"
+    ],
+    "does_not_block": [
+      "synthetic local implementation"
+    ]
+  },
+  {
+    "id": "OWNER-2",
+    "fields": [
+      "source_grants",
+      "data_display_grants",
+      "attribution",
+      "wind_down_retention"
+    ],
+    "resolve": "Signed rights agreements for each real component; personal subscriptions insufficient",
+    "blocks": [
+      "affected real history external processing",
+      "resale",
+      "published portfolio"
+    ],
+    "does_not_block": [
+      "owned or synthetic strategy research"
+    ]
+  },
+  {
+    "id": "OWNER-3",
+    "fields": [
+      "platform_strategy_ids",
+      "roles_keys",
+      "provider_program_eligibility",
+      "managed_broker_contract"
+    ],
+    "resolve": "Owner authenticated onboarding and provider acceptance; no secrets in chat",
+    "blocks": [
+      "external publication and management qualification"
+    ],
+    "does_not_block": [
+      "local protocol implementations"
+    ]
+  },
+  {
+    "id": "OWNER-4",
+    "fields": [
+      "merchant_approval",
+      "live_price_ids",
+      "tax_refund_policy",
+      "payment_account"
+    ],
+    "resolve": "Processor secure onboarding and owner-reviewed prices",
+    "blocks": [
+      "live checkout/charges"
+    ],
+    "does_not_block": [
+      "test-mode subscription implementation"
+    ]
+  },
+  {
+    "id": "OWNER-5",
+    "fields": [
+      "customer_agreements",
+      "privacy",
+      "marketing_audience_disclosure",
+      "support_escalation"
+    ],
+    "resolve": "Scoped approved documents and operating owner",
+    "blocks": [
+      "public commercial launch"
+    ],
+    "does_not_block": [
+      "UI sandbox and policy draft creation"
+    ]
+  },
+  {
+    "id": "OWNER-6",
+    "fields": [
+      "risk_caps",
+      "capacity",
+      "artifact_release",
+      "mandate",
+      "production_role_keys"
+    ],
+    "resolve": "Exact owner-approved live financial release after complete tests",
+    "blocks": [
+      "customer money effects"
+    ],
+    "does_not_block": [
+      "inactive staging"
+    ]
+  }
+]

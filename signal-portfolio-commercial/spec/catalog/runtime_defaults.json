@@ -1,0 +1,74 @@
+{
+  "commercial_mode": "NONLIVE_INACTIVE",
+  "commercial_live_enabled": false,
+  "customer_trading_enabled": false,
+  "processor_mode": "TEST",
+  "publisher_channels": {
+    "collective2": "LOCAL_PROTOCOL_ONLY",
+    "etoro": "LOCAL_PROTOCOL_THEN_AUTHORIZED_DEMO",
+    "copyfactory": "LOCAL_PROTOCOL_ONLY",
+    "managed_accounts": "SIMULATOR_ONLY"
+  },
+  "all_approvals_default": "UNKNOWN_DENY_NEW_EFFECT",
+  "public_hypothetical_reports_enabled": false,
+  "auth": {
+    "issuer": null,
+    "allowed_origins": [],
+    "trusted_proxies": [],
+    "session_idle_minutes": 30,
+    "session_absolute_hours": 12,
+    "step_up_minutes": 10,
+    "secure_cookies_required": true,
+    "public_signup_live": false
+  },
+  "billing": {
+    "webhook_clock_tolerance_seconds": 300,
+    "live_price_ids": {},
+    "live_merchant_approval_id": null,
+    "customer_portal_enabled_after_config": true,
+    "grant_on_return_url": false
+  },
+  "publication": {
+    "one_writer_per_strategy": true,
+    "new_subscriber_mode": "NEW_ENTRIES_ONLY",
+    "retry_ambiguous_writes": false,
+    "max_read_attempts": 3,
+    "read_timeout_seconds": 10,
+    "connect_timeout_seconds": 5,
+    "quota_policy": "EXACT_VENDOR_ACCOUNT_APPROVED",
+    "close_only_default": "NO_NEW_EPISODES_WITH_LAWFUL_CONTINUITY"
+  },
+  "research": {
+    "max_concurrent_jobs": 1,
+    "max_approved_universe": 12,
+    "exhaustive_subsets": true,
+    "random_sampling_as_complete": false,
+    "max_memory_fraction": 0.25,
+    "pause_if_protection_degraded": true
+  },
+  "llm": {
+    "enabled": false,
+    "financial_tools": [],
+    "external_data_processing_grant_required": true,
+    "daily_spend_minor": 0,
+    "paid_fallback": false
+  },
+  "observability": {
+    "metrics_public": false,
+    "raw_source_in_logs": false,
+    "secrets_in_logs": false,
+    "provider_error_passthrough": false,
+    "external_status_is_financial_health": false
+  },
+  "deployment": {
+    "public_hostname": null,
+    "customer_hostname": null,
+    "operator_hostname": null,
+    "postgres_secret_ref": null,
+    "publisher_secret_refs": {},
+    "role_keys_on_standby": false,
+    "auto_failover_enabled": false,
+    "new_purchases_authorized": false
+  },
+  "note": "Engineering defaults only, not live financial limits or customer legal policy. Exact vendor timeout/quotas, actual identity, agreement and release are discovered and reviewed before enabling."
+}

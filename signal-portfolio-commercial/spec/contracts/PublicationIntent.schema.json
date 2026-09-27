@@ -1,0 +1,163 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:signal-portfolio:PublicationIntent:1",
+  "title": "PublicationIntent",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "intent_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "environment": {
+      "enum": [
+        "LOCAL_SIM",
+        "INTEGRATION_ISOLATED",
+        "PLATFORM_DEMO",
+        "PRIVATE_SHADOW",
+        "COMMERCIAL_LIVE"
+      ]
+    },
+    "portfolio_version_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "episode_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "revision": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "action": {
+      "enum": [
+        "OPEN",
+        "ADD",
+        "REDUCE",
+        "CLOSE",
+        "STOP_UPDATE",
+        "TARGET_UPSERT",
+        "TARGET_REMOVE",
+        "TARGET_CLEAR",
+        "ENTRY_CANCEL",
+        "STATUS_CORRECTION",
+        "STRATEGY_PAUSE"
+      ]
+    },
+    "channel": {
+      "type": "string",
+      "minLength": 1
+    },
+    "external_strategy_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "instrument_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "quantity": {
+      "anyOf": [
+        {
+          "type": "string",
+          "pattern": "^-?(0|[1-9][0-9]*)(\\.[0-9]+)?$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "quantity_basis": {
+      "enum": [
+        "UNITS",
+        "CONTRACTS",
+        "ORIGINAL_FRACTION",
+        "REMAINING_FRACTION",
+        "TARGET_POSITION",
+        "NOT_APPLICABLE"
+      ]
+    },
+    "price_basis": {
+      "type": "string",
+      "minLength": 1
+    },
+    "policy_hash": {
+      "type": "string",
+      "minLength": 1
+    },
+    "audience_snapshot_hash": {
+      "type": "string",
+      "minLength": 1
+    },
+    "source_revision_ids": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "rights_grant_ids": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "body_hash": {
+      "type": "string",
+      "minLength": 1
+    },
+    "idempotency_key": {
+      "type": "string",
+      "minLength": 1
+    },
+    "valid_from": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "expires_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "state": {
+      "enum": [
+        "DRAFT",
+        "ELIGIBLE",
+        "QUEUED",
+        "SENDING",
+        "ACKNOWLEDGED",
+        "UNKNOWN",
+        "REJECTED",
+        "RECONCILING",
+        "SUPERSEDED",
+        "TERMINAL"
+      ]
+    }
+  },
+  "required": [
+    "intent_id",
+    "environment",
+    "portfolio_version_id",
+    "episode_id",
+    "revision",
+    "action",
+    "channel",
+    "external_strategy_id",
+    "instrument_id",
+    "quantity",
+    "quantity_basis",
+    "price_basis",
+    "policy_hash",
+    "audience_snapshot_hash",
+    "source_revision_ids",
+    "rights_grant_ids",
+    "body_hash",
+    "idempotency_key",
+    "valid_from",
+    "expires_at",
+    "state"
+  ]
+}

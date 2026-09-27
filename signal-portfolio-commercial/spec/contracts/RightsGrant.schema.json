@@ -1,0 +1,108 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:signal-portfolio:RightsGrant:1",
+  "title": "RightsGrant",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "grant_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "source_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "grantee_entity": {
+      "type": "string",
+      "minLength": 1
+    },
+    "contract_hash": {
+      "type": "string",
+      "minLength": 1
+    },
+    "status": {
+      "enum": [
+        "UNKNOWN",
+        "GRANTED",
+        "DENIED",
+        "REVOKED"
+      ]
+    },
+    "uses": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "PRIVATE_RESEARCH",
+          "DERIVED_RESEARCH",
+          "PUBLIC_METRICS",
+          "COMMERCIAL_ALERTS",
+          "AUTOMATED_PUBLICATION",
+          "MANAGED_ACCOUNTS",
+          "MODEL_PROCESSING"
+        ]
+      }
+    },
+    "channels": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "jurisdictions": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "assets": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "effective_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "expires_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "attribution_policy_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "wind_down_policy_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "review_id": {
+      "type": "string",
+      "minLength": 1
+    }
+  },
+  "required": [
+    "grant_id",
+    "source_id",
+    "grantee_entity",
+    "contract_hash",
+    "status",
+    "uses",
+    "channels",
+    "jurisdictions",
+    "assets",
+    "effective_at",
+    "expires_at",
+    "attribution_policy_id",
+    "wind_down_policy_id",
+    "review_id"
+  ]
+}
