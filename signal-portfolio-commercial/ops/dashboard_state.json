@@ -18,8 +18,20 @@
     ],
     "deliberately_not_built": "No publish/release-review route or action exists anywhere in this slice -- AD-07's own 'Confirm: Submit version for review; not directly publish' is a separate, distinct admission decision (app/services/publication_admission.py) this screen has no authority over. No multi-step wizard UI (Identity -> Sleeves/weights -> ... -> Preview) -- a single edit form covers the modeled fields; full 66-screen visual/interaction fidelity is out of scope for this bounded first slice."
   },
-  "screens_done": ["AD-07", "PU-02"],
-  "screens_not_started": "64 of 66 -- see signal_platform_dashboard_v2/catalog/screens.json for the full list.",
+  "second_slice": {
+    "name": "AD-02 (Rights and service approvals, admin) -- read-only grant register",
+    "status": "done, deliberately partial",
+    "why_this_slice": "RightsGrant (Phase 01) already models exactly what the spec's grant register needs (uses/channels/jurisdictions/assets/effective/expiry/status); a real read-only list is honestly buildable now. Create/attach-evidence/approve are NOT built -- they need private document upload + malware-scan infrastructure and an audit-logged owner-only approval workflow that don't exist yet, so building an empty create form around them would be scaffolding around nothing.",
+    "what_was_built": [
+      "app/services/rights_registry.py -- list_rights_grants (platform-wide, no tenant_id on RightsGrant, gated by role not RLS)",
+      "app/services/permissions.py -- 'view_rights_register' action (owner/reviewer only, deliberately not researcher)",
+      "app/api/dashboard_routes.py + app/templates/ad02_rights.html -- GET /ops/rights",
+      "tests/test_rights_registry.py (+2) + tests/test_dashboard_routes.py (+4) -- empty state, real listing, and permission-denial; the permission guard was load-bearing-verified (temporarily widened, confirmed the denial test failed, restored)"
+    ],
+    "deliberately_not_built": "AD-02-A01 (create grant draft), AD-02-A02 (attach evidence), AD-02-A03 (submit approval) -- no draft/revision lifecycle on RightsGrant, no evidence-document storage, no approval audit log."
+  },
+  "screens_done": ["AD-07", "PU-02", "AD-02 (read-only slice)"],
+  "screens_not_started": "63 of 66 (AD-02 partially done) -- see signal_platform_dashboard_v2/catalog/screens.json for the full list.",
   "standing_constraints_from_master_prompt": [
     "No live orders/cancellations, customer charges/subscriptions, live publication, production resets, credential rotation, or unapproved infrastructure spending.",
     "Isolated synthetic fixtures are authorized only in test/browser databases, never seeded into production.",

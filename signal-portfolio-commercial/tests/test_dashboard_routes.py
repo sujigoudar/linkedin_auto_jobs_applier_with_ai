@@ -173,3 +173,57 @@ def test_public_catalog_never_shows_an_unpublished_draft(db_session):
     assert response.status_code == 200
     assert "Still Draft" not in response.text
     assert "No portfolios have been released" in response.text
+
+
+def test_rights_register_requires_authentication(db_session):
+    client = _client(db_session)
+    response = client.get("/ops/rights")
+    assert response.status_code == 401
+
+
+def test_rights_register_denies_a_role_without_view_rights_register(db_session):
+    client = _client(db_session)
+    headers = _auth_headers(role=MembershipRole.RESEARCHER)
+    response = client.get("/ops/rights", headers=headers)
+    assert response.status_code == 403
+
+
+def test_rights_register_shows_the_real_empty_state(db_session):
+    client = _client(db_session)
+    response = client.get("/ops/rights", headers=_auth_headers(role=MembershipRole.OWNER))
+    assert response.status_code == 200
+    assert "No commercial rights grants have been approved" in response.text
+
+
+def test_rights_register_lists_a_real_recorded_grant(db_session):
+    from datetime import datetime, timedelta, timezone
+
+    from app.models.rights import RightsGrant, RightsStatus, RightsUse
+
+    now = datetime.now(timezone.utc)
+    db_session.add(
+        RightsGrant(
+            grant_id="grant-http-1",
+            source_id="acme-research",
+            grantee_entity="Owner LLC",
+            contract_hash="hash",
+            status=RightsStatus.GRANTED,
+            uses=[RightsUse.COMMERCIAL_ALERTS.value],
+            channels=["web"],
+            jurisdictions=["US"],
+            assets=["EQUITY"],
+            effective_at=now - timedelta(days=1),
+            expires_at=now + timedelta(days=365),
+            attribution_policy_id="attr-1",
+            wind_down_policy_id="wind-1",
+            review_id="review-1",
+        )
+    )
+    db_session.commit()
+
+    client = _client(db_session)
+    response = client.get("/ops/rights", headers=_auth_headers(role=MembershipRole.REVIEWER))
+    assert response.status_code == 200
+    assert "grant-http-1" in response.text
+    assert "acme-research" in response.text
+    assert "GRANTED" in response.text

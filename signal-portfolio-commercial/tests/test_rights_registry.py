@@ -9,6 +9,7 @@ from app.models.rights import RightsGrant, RightsStatus, RightsUse
 from app.services.rights_registry import (
     NAMED_UNKNOWN_SOURCES,
     check_rights,
+    list_rights_grants,
     seed_unknown_source,
 )
 
@@ -221,3 +222,17 @@ def test_seeded_unknown_source_is_denied_for_every_use(db_session):
 
 def test_named_unknown_sources_constant_matches_the_request():
     assert set(NAMED_UNKNOWN_SOURCES) == {"buyalerts", "tradealgo", "kamdenai"}
+
+
+def test_list_rights_grants_is_empty_before_any_grant_is_recorded(db_session):
+    """AD-02's own empty state -- "No commercial rights grants have been
+    approved" -- is a real, valid result, not a fixture gap."""
+    assert list_rights_grants(db_session) == []
+
+
+def test_list_rights_grants_returns_every_recorded_grant_regardless_of_status(db_session):
+    granted = _granted(db_session, source_id="acme")
+    seeded_unknown = seed_unknown_source(db_session, "tradealgo", "Owner LLC")
+
+    grants = list_rights_grants(db_session)
+    assert {g.grant_id for g in grants} == {granted.grant_id, seeded_unknown.grant_id}

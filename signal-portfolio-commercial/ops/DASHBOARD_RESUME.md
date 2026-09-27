@@ -22,16 +22,27 @@ tests; never fabricate data to make an empty state look populated.
 
 ## Where things stand
 
-The first vertical slice (AD-07 Products admin screen + PU-02 public
-catalog) is DONE: real model/service/routes/templates/migration, 26
-passing tests (16 service-level + 10 HTTP-level), full suite (252
-tests)/ruff/mypy all green, and the two most safety-critical invariants
-(the stale-revision conflict guard, and the `product_visibility` RLS
-policy hiding cross-tenant unpublished drafts) were each load-bearing
-verified by temporarily breaking them and confirming the relevant test
-failed, then restoring. See `dashboard_state.json`'s `current_slice.
-what_was_built` for the exact file list. All other 64 screens are not
-started -- pick the next one following the steps below.
+Two slices are DONE:
+- AD-07 Products admin screen + PU-02 public catalog: real model/
+  service/routes/templates/migration, 26 tests, load-bearing verified
+  (stale-revision guard, `product_visibility` RLS policy).
+- AD-02 Rights and service approvals: a real, tested, read-only grant
+  register (`GET /ops/rights`), deliberately NOT including create/
+  attach-evidence/approve -- those need document-upload/malware-scan
+  infrastructure and an audit-logged approval workflow that don't
+  exist yet.
+
+Full suite is 258 tests, ruff and mypy both green (**use `python3 -m
+ruff`/`python3 -m mypy`/`python3 -m pytest` explicitly** -- this sandbox
+has a stray `uv tool`-installed `ruff`/`mypy` shadowing the project's
+real declared versions on bare `PATH`, which produced a false-negative
+locally once already; CI always uses the `requirements.txt`-installed
+versions via `pip install -r requirements.txt`).
+
+See `dashboard_state.json`'s `current_slice`/`second_slice` for the
+exact file lists and what was deliberately left unbuilt in each. 63 of
+66 screens (AD-02 partially done) remain -- pick the next one following
+the steps below.
 
 ## How to pick the next screen
 

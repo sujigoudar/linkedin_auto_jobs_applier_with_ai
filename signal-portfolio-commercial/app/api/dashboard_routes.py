@@ -1,15 +1,22 @@
-"""Real HTTP routes + Jinja2 templates for the first dashboard vertical
-slice: AD-07 "Products and portfolio versions" (admin) and PU-02
-"Portfolio catalog" (public), per dashboard_spec/screens/AD-07.md and
-dashboard_spec/screens/PU-02.md.
+"""Real HTTP routes + Jinja2 templates for the dashboard build, per
+dashboard_spec/screens/*.md. Each screen here is a bounded, honestly
+scoped slice of its full spec -- see each route's own docstring for
+what is and is not implemented yet.
 
-Deliberately bounded to what that slice actually needs: create/save/
-reload a draft, see its exact publication blockers, and a truthfully
-empty public catalog until something is really published. No publish/
-release-review action is implemented here at all -- that is a distinct,
-separately reviewed admission decision (app/services/publication_admission.py)
-this screen has no authority over, matching AD-07's own "Confirm: Submit
-version for review; not directly publish."
+- AD-07 "Products and portfolio versions" (admin) + PU-02 "Portfolio
+  catalog" (public): create/save/reload a Product draft, see its exact
+  publication blockers, and a truthfully empty public catalog until
+  something is really published. No publish/release-review action is
+  implemented here at all -- that is a distinct, separately reviewed
+  admission decision (app/services/publication_admission.py) this
+  screen has no authority over, matching AD-07's own "Confirm: Submit
+  version for review; not directly publish."
+- AD-02 "Rights and service approvals": a read-only grant register.
+  Create/attach-evidence/approve are NOT implemented -- they need
+  private document upload/malware-scan infrastructure and an audit-
+  logged approval workflow that don't exist yet; building an empty
+  create form around them would be exactly the kind of scaffolding
+  around nothing this build avoids.
 """
 from __future__ import annotations
 
@@ -36,6 +43,7 @@ from app.services.product_admin import (
     list_published_products,
     update_product_draft,
 )
+from app.services.rights_registry import list_rights_grants
 
 router = APIRouter()
 
@@ -183,6 +191,26 @@ def update_product_draft_route(
         )
 
     return RedirectResponse(url=f"/ops/products/{product_id}", status_code=303)
+
+
+@router.get("/ops/rights")
+def rights_register_page(
+    request: Request,
+    scope: TenantScope = Depends(get_current_scope),
+    session: Session = Depends(get_db_session),
+):
+    """AD-02 "Rights and service approvals" -- read-only grant register
+    (this route's own docstring above explains what's deliberately not
+    built yet: create/attach-evidence/approve). `RightsGrant` carries no
+    tenant_id, so there is no `set_tenant_scope` call here -- visibility
+    is gated purely by role (owner/reviewer), not by tenant."""
+    try:
+        require_permission(scope.role, "view_rights_register")
+    except PermissionDenied as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+    grants = list_rights_grants(session)
+    return templates.TemplateResponse(request, "ad02_rights.html", {"grants": grants})
 
 
 @router.get("/portfolios")

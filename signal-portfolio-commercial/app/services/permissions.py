@@ -33,6 +33,15 @@ _ALLOWED: dict[str, frozenset[Role]] = {
     #: release decision, not a billing, publication, support or
     #: customer action.
     "manage_product_draft": frozenset({Role.OWNER, Role.RESEARCHER, Role.REVIEWER}),
+    #: AD-02 "Rights and service approvals" -- read the grant register.
+    #: Deliberately separate from "grant_rights" (owner-only, the actual
+    #: approval authority): a reviewer can see the register and the
+    #: scope-intersection evidence without being able to approve a grant
+    #: -- "researcher cannot approve rights" (AD-02's own acceptance
+    #: text) applies with equal force to reviewer for the write side,
+    #: which this build doesn't implement yet (see product_admin's own
+    #: precedent of not building the approval/publish step until it is).
+    "view_rights_register": frozenset({Role.OWNER, Role.REVIEWER}),
 }
 
 

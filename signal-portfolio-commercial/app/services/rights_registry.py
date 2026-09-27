@@ -81,6 +81,18 @@ def check_rights(
     return _DENIED_NO_GRANT
 
 
+def list_rights_grants(session: Session) -> list[RightsGrant]:
+    """AD-02 "Rights and service approvals" -- the grant register panel's
+    own query. `RightsGrant` carries no `tenant_id` (rights are recorded
+    against a source/provider, not a tenant -- see this module's own
+    docstring), so this is a plain platform-wide list, gated by role
+    (owner/reviewer) rather than by row-level security. Correctly returns
+    an empty list before any grant has ever been recorded -- "No
+    commercial rights grants have been approved" (AD-02's own empty
+    state) is a real, valid result, not a loading failure."""
+    return list(session.scalars(select(RightsGrant).order_by(RightsGrant.effective_at.desc())).all())
+
+
 def seed_unknown_source(session: Session, source_id: str, grantee_entity: str) -> RightsGrant:
     """Record a source as explicitly reviewed-and-UNKNOWN (not silently
     absent) -- idempotent by `source_id`+UNKNOWN (a second call for the
