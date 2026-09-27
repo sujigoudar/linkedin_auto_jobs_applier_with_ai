@@ -1,0 +1,53 @@
+name: signal-portfolio-commercial CI
+
+on:
+  push:
+    paths:
+      - 'signal-portfolio-commercial/**'
+      - '.github/workflows/signal-portfolio-commercial-ci.yml'
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - 'signal-portfolio-commercial/**'
+      - '.github/workflows/signal-portfolio-commercial-ci.yml'
+
+defaults:
+  run:
+    working-directory: signal-portfolio-commercial
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      # tests/conftest.py starts and tears down its own disposable
+      # PostgreSQL cluster per test session (see that file's own
+      # docstring) -- it expects real postgresql-16 server binaries at
+      # /usr/lib/postgresql/16/bin, matching this development
+      # environment, so the runner needs the same package installed
+      # rather than relying on whatever Postgres version happens to be
+      # preinstalled on the image.
+      - name: Install PostgreSQL 16 server binaries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-16
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Lint (ruff)
+        run: ruff check .
+
+      - name: Type check (mypy)
+        run: mypy app --ignore-missing-imports
+
+      - name: Run tests
+        run: pytest -q

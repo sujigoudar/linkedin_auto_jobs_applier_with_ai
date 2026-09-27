@@ -7,3 +7,5 @@ pyjwt>=2.8
 alembic
 pytest
 pytest-asyncio
+ruff>=0.6      # dev-only: lint (CI)
+mypy>=1.11     # dev-only: type checking (CI)

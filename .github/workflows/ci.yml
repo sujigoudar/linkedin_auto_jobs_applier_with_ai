@@ -22,13 +22,17 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Run tests
-        # signal-copier/ is a separate, unrelated project (see its own
-        # README) with its own dependency set and its own dedicated,
-        # path-scoped CI (.github/workflows/signal-copier-ci.yml) --
-        # this root job's `pip install -r requirements.txt` never installs
-        # signal-copier's requirements, so letting bare `pytest` also
-        # collect signal-copier/tests/** here fails at collection time.
-        # The root project itself has no tests of its own yet, so with
-        # signal-copier excluded, pytest exits 5 ("no tests collected") --
-        # that's correct, not a failure, so it's tolerated explicitly here.
-        run: pytest --ignore=signal-copier || [ $? -eq 5 ]
+        # signal-copier/ and signal-portfolio-commercial/ are separate,
+        # unrelated projects (see their own READMEs) with their own
+        # dependency sets and their own dedicated, path-scoped CI
+        # (.github/workflows/signal-copier-ci.yml,
+        # .github/workflows/signal-portfolio-commercial-ci.yml) -- this
+        # root job's `pip install -r requirements.txt` never installs
+        # either one's requirements, so letting bare `pytest` also collect
+        # their tests/** here fails at collection time (missing imports)
+        # or, for signal-portfolio-commercial, needs a real disposable
+        # Postgres cluster this job never provisions. The root project
+        # itself has no tests of its own yet, so with both excluded,
+        # pytest exits 5 ("no tests collected") -- that's correct, not a
+        # failure, so it's tolerated explicitly here.
+        run: pytest --ignore=signal-copier --ignore=signal-portfolio-commercial || [ $? -eq 5 ]
