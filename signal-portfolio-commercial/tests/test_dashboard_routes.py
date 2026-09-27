@@ -1960,3 +1960,42 @@ def test_managed_operations_page_shows_a_real_configured_program(db_session):
     assert response.status_code == 200
     assert "AD-15 Program" in response.text
     assert "broker-ad15-1" in response.text
+
+
+def _seed_published_product_for_compare(db_session, *, slug, tenant_id="tenant-a"):
+    from app.models.product import Product, ProductLifecycleState
+
+    product = Product(
+        tenant_id=tenant_id, product_name=f"Compare {slug}", slug=slug, lifecycle_state=ProductLifecycleState.PUBLISHED
+    )
+    db_session.add(product)
+    db_session.commit()
+    return product
+
+
+def test_compare_page_is_anonymous_and_shows_the_real_empty_state(db_session):
+    client = _client(db_session)
+    response = client.get("/compare")
+    assert response.status_code == 200
+    assert "Select at least two published portfolios to compare." in response.text
+
+
+def test_compare_page_shows_real_matched_portfolios_and_reports_unmatched(db_session):
+    _seed_published_product_for_compare(db_session, slug="http-compare-a")
+    _seed_published_product_for_compare(db_session, slug="http-compare-b")
+
+    client = _client(db_session)
+    response = client.get("/compare", params=[("slug", "http-compare-a"), ("slug", "http-compare-b"), ("slug", "http-compare-unknown")])
+    assert response.status_code == 200
+    assert "http-compare-a" in response.text
+    assert "http-compare-b" in response.text
+    assert "http-compare-unknown" in response.text
+    assert "UNSUPPORTED" in response.text
+
+
+def test_compare_page_rejects_more_than_the_max_slugs(db_session):
+    client = _client(db_session)
+    params = [("slug", f"http-compare-max-{i}") for i in range(5)]
+    response = client.get("/compare", params=params)
+    assert response.status_code == 400
+    assert "cannot compare more than" in response.text

@@ -4,12 +4,17 @@ get_published_portfolio_detail's own tests."""
 from datetime import datetime, timezone
 from decimal import Decimal
 
+import pytest
+
 from app import config
 from app.models.portfolio_version import PortfolioVersion, PortfolioVersionSleeve
 from app.models.product import Product, ProductLifecycleState
 from app.models.sleeve import Sleeve
 from app.models.billing import ProductTier, TEST_MODE_MONTHLY_PRICE_CENTS
 from app.services.public_site import (
+    MAX_COMPARISON_SLUGS,
+    TooManyComparisonSlugsError,
+    compare_published_portfolios,
     get_channel_compatibility,
     get_pricing_plans,
     get_published_portfolio_detail,
@@ -118,3 +123,59 @@ def test_pricing_plans_appear_once_billing_is_genuinely_configured(monkeypatch):
     monkeypatch.setattr(config, "STRIPE_WEBHOOK_SECRET", "whsec_a_real_looking_secret")
     plans = {plan.tier: plan.monthly_price_cents for plan in get_pricing_plans()}
     assert plans[ProductTier.ALERTS_ONE.value] == TEST_MODE_MONTHLY_PRICE_CENTS[ProductTier.ALERTS_ONE]
+
+
+def _published_product(db_session, *, slug, tenant_id="tenant-a"):
+    product = Product(
+        tenant_id=tenant_id, product_name=f"Product {slug}", slug=slug, lifecycle_state=ProductLifecycleState.PUBLISHED
+    )
+    db_session.add(product)
+    db_session.commit()
+    return product
+
+
+def test_compare_published_portfolios_is_empty_for_no_slugs(db_session):
+    result = compare_published_portfolios(db_session, [])
+    assert result.matched == []
+    assert result.unmatched_slugs == []
+
+
+def test_compare_published_portfolios_matches_real_published_slugs(db_session):
+    _published_product(db_session, slug="compare-a")
+    _published_product(db_session, slug="compare-b")
+
+    result = compare_published_portfolios(db_session, ["compare-a", "compare-b"])
+    assert {d.slug for d in result.matched} == {"compare-a", "compare-b"}
+    assert result.unmatched_slugs == []
+
+
+def test_compare_published_portfolios_reports_unknown_slugs_by_name(db_session):
+    _published_product(db_session, slug="compare-c")
+
+    result = compare_published_portfolios(db_session, ["compare-c", "never-existed"])
+    assert {d.slug for d in result.matched} == {"compare-c"}
+    assert result.unmatched_slugs == ["never-existed"]
+
+
+def test_compare_published_portfolios_excludes_a_draft_slug(db_session):
+    db_session.add(Product(tenant_id="tenant-a", product_name="Draft", slug="compare-draft"))
+    db_session.commit()
+
+    result = compare_published_portfolios(db_session, ["compare-draft"])
+    assert result.matched == []
+    assert result.unmatched_slugs == ["compare-draft"]
+
+
+def test_compare_published_portfolios_rejects_more_than_the_max(db_session):
+    slugs = [f"compare-max-{i}" for i in range(MAX_COMPARISON_SLUGS + 1)]
+    for slug in slugs:
+        _published_product(db_session, slug=slug)
+
+    with pytest.raises(TooManyComparisonSlugsError):
+        compare_published_portfolios(db_session, slugs)
+
+
+def test_compare_published_portfolios_dedupes_a_repeated_slug(db_session):
+    _published_product(db_session, slug="compare-dedupe")
+    result = compare_published_portfolios(db_session, ["compare-dedupe", "compare-dedupe"])
+    assert len(result.matched) == 1

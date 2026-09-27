@@ -142,7 +142,7 @@ from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, Form, HTTPException, Request
+from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
@@ -254,6 +254,8 @@ from app.services.release_review import (
     request_release_review,
 )
 from app.services.public_site import (
+    TooManyComparisonSlugsError,
+    compare_published_portfolios,
     get_channel_compatibility,
     get_pricing_plans,
     get_published_portfolio_detail,
@@ -830,6 +832,31 @@ def public_portfolio_detail_page(slug: str, request: Request, session: Session =
         raise HTTPException(status_code=404, detail="not found")
     channels = get_channel_compatibility()
     return templates.TemplateResponse(request, "pu03_portfolio_detail.html", {"detail": detail, "channels": channels})
+
+
+@router.get("/compare")
+def public_portfolio_comparison_page(
+    request: Request, slug: list[str] = Query([]), session: Session = Depends(get_db_session)
+):
+    """PU-04 "Portfolio comparison" -- anonymous, no tenant scope.
+    Reuses PU-03's own `get_published_portfolio_detail` per requested
+    slug rather than a duplicate query. Requesting more than
+    `MAX_COMPARISON_SLUGS` (4) is a real, named error, never a silent
+    truncation to the first four. No NAV/marks-history model exists in
+    this build, so the normalized return/co-drawdown panels always
+    honestly report the series as unavailable, matching PU-03's own
+    established precedent."""
+    try:
+        result = compare_published_portfolios(session, slug)
+    except TooManyComparisonSlugsError as exc:
+        return templates.TemplateResponse(
+            request, "pu04_compare.html", {"matched": [], "unmatched_slugs": [], "error": str(exc)}, status_code=400
+        )
+    return templates.TemplateResponse(
+        request,
+        "pu04_compare.html",
+        {"matched": result.matched, "unmatched_slugs": result.unmatched_slugs, "error": None},
+    )
 
 
 @router.get("/pricing")

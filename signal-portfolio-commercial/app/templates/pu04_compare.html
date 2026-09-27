@@ -1,0 +1,57 @@
+{% extends "_base.html" %}
+{% block title %}Portfolio comparison{% endblock %}
+{% block content %}
+<h1>Portfolio comparison</h1>
+
+{% if error %}<div class="conflict">{{ error }}</div>{% endif %}
+
+<div class="panel">
+  <h2>Selection tray</h2>
+  {% if unmatched_slugs %}
+  <p class="help">Not shown (unknown or not published): {{ unmatched_slugs | join(", ") }}</p>
+  {% endif %}
+  {% if matched | length < 2 %}
+  <div class="empty-state">
+    <p>Select at least two published portfolios to compare.</p>
+  </div>
+  <p><a href="/portfolios">Browse the public catalog</a> to pick portfolios, then add up to four <code>?slug=</code> query parameters to this page.</p>
+  {% endif %}
+</div>
+
+{% if matched | length >= 2 %}
+<div class="panel">
+  <h2>Comparable metric matrix</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>Metric</th>
+        {% for d in matched %}<th>{{ d.product_name }}</th>{% endfor %}
+      </tr>
+    </thead>
+    <tbody>
+      <tr><th>Slug</th>{% for d in matched %}<td>{{ d.slug }}</td>{% endfor %}</tr>
+      <tr><th>Portfolio version</th>{% for d in matched %}<td>{{ d.portfolio_version_number or "(unknown)" }}</td>{% endfor %}</tr>
+      <tr><th>Sleeves</th>{% for d in matched %}<td>{{ d.sleeve_count if d.sleeve_count is not none else "(unknown)" }}</td>{% endfor %}</tr>
+      <tr><th>Cash allocation</th>{% for d in matched %}<td>{{ d.cash_bps }} bps</td>{% endfor %}</tr>
+      <tr><th>Max subscriber capacity</th>{% for d in matched %}<td>{{ d.max_subscriber_capacity if d.max_subscriber_capacity is not none else "(unknown)" }}</td>{% endfor %}</tr>
+      <tr><th>Research cutoff</th>{% for d in matched %}<td>{{ d.research_cutoff if d.research_cutoff else "(unknown)" }}</td>{% endfor %}</tr>
+    </tbody>
+  </table>
+</div>
+
+<div class="panel">
+  <h2>Normalized return chart</h2>
+  <p><span class="badge badge-unknown">UNSUPPORTED</span> -- no NAV/marks-history model exists in this build; there is no measured return series to normalize or plot.</p>
+</div>
+
+<div class="panel">
+  <h2>Co-drawdown and exposure</h2>
+  <p><span class="badge badge-unknown">UNSUPPORTED</span> -- same gap as the return chart above.</p>
+</div>
+
+<div class="panel">
+  <h2>Missing-data explanation</h2>
+  <p>Every metric above is a real, current fact about each portfolio's identity, cash policy and capacity -- never a guessed or zero-filled performance figure.</p>
+</div>
+{% endif %}
+{% endblock %}

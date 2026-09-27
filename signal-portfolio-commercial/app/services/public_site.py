@@ -161,6 +161,48 @@ def get_channel_compatibility() -> list[ChannelCompatibilityItem]:
     ]
 
 
+#: "Compare up to four approved portfolios" (PU-04's own purpose text).
+MAX_COMPARISON_SLUGS = 4
+
+
+@dataclass(frozen=True)
+class ComparisonResult:
+    matched: list[PortfolioDetail]
+    #: Slugs that were requested but are unknown or not (yet) PUBLISHED
+    #: -- reported by name rather than silently dropped, so a caller
+    #: never wonders why a requested portfolio is simply missing.
+    unmatched_slugs: list[str]
+
+
+class TooManyComparisonSlugsError(Exception):
+    pass
+
+
+def compare_published_portfolios(session: Session, slugs: list[str]) -> ComparisonResult:
+    """PU-04 "Portfolio comparison" -- reuses `get_published_portfolio_detail`
+    per slug rather than a duplicate query, so there is exactly one code
+    path that decides what counts as a real, published portfolio.
+
+    No NAV/marks-history model exists in this build (the same gap PU-03's
+    own slice already documented) -- normalized return/co-drawdown series
+    are therefore always reported as genuinely unavailable by the
+    template, never a guessed or zero-filled curve."""
+    deduped_slugs = list(dict.fromkeys(slugs))
+    if len(deduped_slugs) > MAX_COMPARISON_SLUGS:
+        raise TooManyComparisonSlugsError(f"cannot compare more than {MAX_COMPARISON_SLUGS} portfolios at once")
+
+    matched: list[PortfolioDetail] = []
+    unmatched: list[str] = []
+    for slug in deduped_slugs:
+        detail = get_published_portfolio_detail(session, slug)
+        if detail is None:
+            unmatched.append(slug)
+        else:
+            matched.append(detail)
+
+    return ComparisonResult(matched=matched, unmatched_slugs=unmatched)
+
+
 def get_service_status() -> list[ServiceStatusItem]:
     billing_configured = config.STRIPE_WEBHOOK_SECRET != _PLACEHOLDER_STRIPE_SECRET
     return [
