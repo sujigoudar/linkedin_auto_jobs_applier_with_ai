@@ -62,7 +62,15 @@ readable companion: how to actually pick the work back up.
   `commercial_state.json`'s `06_collective2_publisher` notes for what's
   still missing (real transport/credentials, StrategyId/symbol
   resolution, OCA reconciliation).
-- **Phase 07-12**: not started. See `commercial_state.json` for phase-specific
+- **Phase 07 (eToro/CopyFactory adapters)**: partially done --
+  `app/services/etoro_adapter.py` (demo-only enforced structurally,
+  position-id required for REDUCE/CLOSE) and
+  `app/services/copyfactory_close_only.py` (by-symbol never satisfies a
+  strict no-new-position gate). No real eToro app/credentials exist in
+  this environment -- request-shape mapping only, same bounded scope as
+  Phase 06. See `commercial_state.json`'s
+  `07_etoro_copyfactory_adapters` notes.
+- **Phase 08-12**: not started. See `commercial_state.json` for phase-specific
   notes carried forward from the original request (e.g. PAMM/MAM being
   simulation-only in this build).
 
@@ -101,12 +109,15 @@ directory of pytest's tmp dir (this bit us once; the fix is in
 
 ## Next step
 
-Phase 07: eToro + other copier channel adapters (MetaApi CopyFactory,
-etc.), following the same pattern as Phase 06 -- build the transport-
-independent request-shape mapping, never send anything live, and if a
-vendor-documentation question needs live verification, attempt it
-honestly and record BLOCKED rather than guess if egress is refused. This
-is also a natural point to add a FastAPI `commercial_api` app skeleton
-and real Alembic migrations, since the ledger/tenancy/rights/sleeve/
-publication schemas are now stable enough to give a first migration
-something real to cover.
+Phase 08: subscriptions/billing and business operations
+(docs/08_products_billing_and_entitlements.md) -- this phase needs real
+owner decisions before much can be built safely: a Stripe test-mode
+account, product/price tiers, and the explicit billing rules already
+flagged throughout this build (payment is never a trading mandate;
+cancellation/payment failure must never abandon open exposure or
+auto-flatten; no investment deposits through SaaS billing). Surface
+CARD-4 (payment processor/tax/bank) to the user before assuming any
+processor account exists. This is also a natural point to add a FastAPI
+`commercial_api` app skeleton and real Alembic migrations, since the
+ledger/tenancy/rights/sleeve/publication schemas are now stable enough
+to give a first migration something real to cover.
