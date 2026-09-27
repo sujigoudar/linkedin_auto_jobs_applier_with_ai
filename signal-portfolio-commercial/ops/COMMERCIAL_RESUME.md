@@ -30,7 +30,18 @@ readable companion: how to actually pick the work back up.
   Postgres trigger rejects direct UPDATE/DELETE, and corrections are new
   rows, never edits. Not yet wired -- no caller appends real entries, and
   there's no projection/aggregation (NAV, per-book P&L) layer yet.
-- **Phases 04-12**: not started. See `commercial_state.json` for phase-specific
+- **Phase 04 (portfolio research/selection)**: partially done -- only the
+  deterministic, data-free half. `app/models/sleeve.py` (the Sleeve unit-
+  of-combination), `app/services/portfolio_research.py` (candidate subset
+  enumeration with the 12-sleeve/2-5-size limits, single-sleeve
+  benchmarks, and the equal-weight recipe with its 35%-cap/extra-cash
+  rule). Explicitly NOT built: correlation/complementarity statistics,
+  the other three recipes, walk-forward/holdout evaluation, capacity
+  stress, or `portfolio_version` itself -- all need real authorized
+  historical sleeve data this environment doesn't have, and fabricating
+  it would violate the build's own rules. See `commercial_state.json`'s
+  `04_portfolio_research_engine` notes.
+- **Phases 05-12**: not started. See `commercial_state.json` for phase-specific
   notes carried forward from the original request (e.g. the Collective2 API4
   TIF inconsistency to resolve, PAMM/MAM being simulation-only in this build).
 
@@ -69,10 +80,12 @@ directory of pytest's tmp dir (this bit us once; the fix is in
 
 ## Next step
 
-Phase 04: portfolio research and selection (sleeves, original histories,
-point-in-time alignment, complementarity/capacity, complete subset/recipe
-enumeration, realistic common-capital chronology, holdout/shadow
-evaluation). This is also a natural point to add a FastAPI `commercial_api`
-app skeleton and real Alembic migrations, since the ledger/tenancy/rights
-schemas are now stable enough to give a first migration something real to
-cover.
+Phase 05: publication and customer copy lifecycle (canonical portfolio
+events, durable writer/outbox, cohorts, mandates, cancellation/wind-down
+without abandoning exposure). Phase 04's remaining data-dependent pieces
+(correlation/complementarity, the other three recipes, walk-forward
+evaluation, portfolio_version) stay open until real authorized historical
+sleeve data is available -- do not fabricate it to unblock them. This is
+also a natural point to add a FastAPI `commercial_api` app skeleton and
+real Alembic migrations, since the ledger/tenancy/rights/sleeve schemas
+are now stable enough to give a first migration something real to cover.
