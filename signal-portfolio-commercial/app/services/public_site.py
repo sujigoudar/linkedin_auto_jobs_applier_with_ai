@@ -27,6 +27,42 @@ class ServiceStatusItem:
     reason: str
 
 
+@dataclass(frozen=True)
+class ChannelCompatibilityItem:
+    channel: str
+    supported_service: str
+    limitation: str
+
+
+def get_channel_compatibility() -> list[ChannelCompatibilityItem]:
+    """PU-08 "Help and compatibility guide" -- Compatibility directory.
+    Grounded in the actual state of each adapter module
+    (app/services/collective2_publisher.py, etoro_adapter.py,
+    copyfactory_close_only.py), not a marketing claim: request-building
+    is real and tested; live transmission is blocked in every case by
+    the same fact -- no real platform credentials exist in this
+    environment. "Only verified capabilities appear as available; no
+    promises of universal broker coverage" (PU-08's own acceptance
+    text)."""
+    return [
+        ChannelCompatibilityItem(
+            channel="Collective2",
+            supported_service="Request building/validation (API4 order envelope)",
+            limitation="Not transmitted -- no Collective2 sandbox or real credentials exist in this environment.",
+        ),
+        ChannelCompatibilityItem(
+            channel="eToro",
+            supported_service="Request building (Builders API trade request shape), demo transport only",
+            limitation="No application is registered with eToro; the code path refuses any non-demo account mode outright.",
+        ),
+        ChannelCompatibilityItem(
+            channel="MetaApi CopyFactory (close-only)",
+            supported_service="Close-only mode classification (by-position/by-symbol/immediately)",
+            limitation="Classification only -- this module never calls CopyFactory itself.",
+        ),
+    ]
+
+
 def get_service_status() -> list[ServiceStatusItem]:
     billing_configured = config.STRIPE_WEBHOOK_SECRET != _PLACEHOLDER_STRIPE_SECRET
     return [

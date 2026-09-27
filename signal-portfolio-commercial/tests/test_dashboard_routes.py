@@ -694,3 +694,12 @@ def test_public_home_lists_a_real_published_product(db_session):
     response = client.get("/")
     assert response.status_code == 200
     assert "Home Page Product" in response.text
+
+
+def test_help_page_lists_the_real_compatibility_directory(db_session):
+    client = _client(db_session)
+    response = client.get("/help")
+    assert response.status_code == 200
+    assert "Collective2" in response.text
+    assert "eToro" in response.text
+    assert "Only verified capabilities appear here" in response.text

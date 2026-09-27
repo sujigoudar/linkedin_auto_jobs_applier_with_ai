@@ -68,8 +68,13 @@ Seven slices are DONE:
   status" checklist computed from actual config state (environment tag,
   whether Stripe billing is genuinely connected) rather than a
   decorative banner.
+- PU-08 Help and compatibility guide: the anonymous help page
+  (`GET /help`), with a real compatibility directory grounded in the
+  already-audited state of the three real publisher adapters
+  (Collective2, eToro, MetaApi CopyFactory close-only) -- never a
+  marketing claim of universal broker coverage.
 
-Full suite is 316 tests, ruff and mypy both green (**use `python3 -m
+Full suite is 318 tests, ruff and mypy both green (**use `python3 -m
 ruff`/`python3 -m mypy`/`python3 -m pytest` explicitly** -- this sandbox
 has a stray `uv tool`-installed `ruff`/`mypy` shadowing the project's
 real declared versions on bare `PATH`, which produced a false-negative
@@ -85,10 +90,10 @@ you need to repeat this for a future demo; nothing from that throwaway
 demo is checked into the repo itself.
 
 See `dashboard_state.json`'s `current_slice`/`second_slice`/
-`third_slice`/`fourth_slice`/`fifth_slice`/`sixth_slice`/`seventh_slice`
-for the exact file lists and what was deliberately left unbuilt in
-each. 58 of 66 screens (AD-01, AD-02, AD-03, AD-04, AD-08 partially
-done) remain -- pick the next one following the steps below. **If you add a new table to
+`third_slice`/`fourth_slice`/`fifth_slice`/`sixth_slice`/`seventh_slice`/
+`eighth_slice` for the exact file lists and what was deliberately left
+unbuilt in each. 57 of 66 screens (AD-01, AD-02, AD-03, AD-04, AD-08
+partially done) remain -- pick the next one following the steps below. **If you add a new table to
 `_TENANT_SCOPED_TABLES` in app/db.py, pin any EARLIER migration that
 already calls `_apply_row_level_security` with no explicit `tables`
 argument to its own frozen snapshot of the tables that existed at that

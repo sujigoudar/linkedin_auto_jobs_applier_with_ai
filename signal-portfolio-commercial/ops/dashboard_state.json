@@ -93,8 +93,19 @@
     ],
     "deliberately_not_built": "No real per-product performance/history display (no product has real disclosed history data yet). No document downloads (PU-06 -- no document-storage model exists)."
   },
-  "screens_done": ["AD-07", "PU-02", "AD-02 (read-only slice)", "AD-03 (create/list slice)", "AD-01 (overview slice)", "AD-08 (review queue/decision slice)", "AD-04 (run declaration/preview slice)", "PU-01"],
-  "screens_not_started": "58 of 66 (AD-01, AD-02, AD-03, AD-04, AD-08 partially done) -- see signal_platform_dashboard_v2/catalog/screens.json for the full list.",
+  "eighth_slice": {
+    "name": "PU-08 (Help and compatibility guide) -- anonymous help page",
+    "status": "done",
+    "why_this_slice": "PU-08's own acceptance text ('only verified capabilities appear here; no promise of universal broker coverage') is exactly the same honesty discipline already used for PU-01's Service status -- a real compatibility directory grounded in the already-audited state of the three real publisher adapter modules (Collective2, eToro, MetaApi CopyFactory close-only), not marketing copy.",
+    "what_was_built": [
+      "app/services/public_site.py -- get_channel_compatibility: one real, named limitation per adapter, sourced from each module's own already-verified behavior (request-building works; live transmission is blocked by the absence of real credentials/sandbox access in this environment, or -- for eToro -- refused outright by the code path itself outside demo mode)",
+      "app/api/dashboard_routes.py + app/templates/pu08_help.html -- GET /help (anonymous, no database query)",
+      "tests/test_public_site.py (+1) + tests/test_dashboard_routes.py (+1) -- the compatibility directory names every real adapter and its real limitation. Load-bearing-verified: temporarily replaced the Collective2 limitation text with a false 'fully supported end to end' claim, confirmed the test failed, restored."
+    ],
+    "deliberately_not_built": "No live support-ticket system (support entry is static text pointing at the support_readonly staff role). No document downloads or per-topic help articles beyond the single compatibility directory and task-based links to already-built pages."
+  },
+  "screens_done": ["AD-07", "PU-02", "AD-02 (read-only slice)", "AD-03 (create/list slice)", "AD-01 (overview slice)", "AD-08 (review queue/decision slice)", "AD-04 (run declaration/preview slice)", "PU-01", "PU-08"],
+  "screens_not_started": "57 of 66 (AD-01, AD-02, AD-03, AD-04, AD-08 partially done) -- see signal_platform_dashboard_v2/catalog/screens.json for the full list.",
   "standing_constraints_from_master_prompt": [
     "No live orders/cancellations, customer charges/subscriptions, live publication, production resets, credential rotation, or unapproved infrastructure spending.",
     "Isolated synthetic fixtures are authorized only in test/browser databases, never seeded into production.",

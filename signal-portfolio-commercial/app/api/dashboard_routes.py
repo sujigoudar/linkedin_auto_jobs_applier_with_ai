@@ -84,7 +84,7 @@ from app.services.release_review import (
     list_release_reviews,
     request_release_review,
 )
-from app.services.public_site import get_service_status
+from app.services.public_site import get_channel_compatibility, get_service_status
 from app.services.research_run import (
     InvalidResearchRunError,
     compute_research_run_preview,
@@ -595,3 +595,13 @@ def public_home_page(request: Request, session: Session = Depends(get_db_session
     products = list_published_products(session)
     service_status = get_service_status()
     return templates.TemplateResponse(request, "pu01_home.html", {"products": products, "service_status": service_status})
+
+
+@router.get("/help")
+def public_help_page(request: Request):
+    """PU-08 "Help and compatibility guide" -- anonymous, no database
+    query at all: the compatibility directory is grounded in the actual
+    state of the publisher adapter modules (see
+    app/services/public_site.py's own docstring), not live data."""
+    channels = get_channel_compatibility()
+    return templates.TemplateResponse(request, "pu08_help.html", {"channels": channels})
