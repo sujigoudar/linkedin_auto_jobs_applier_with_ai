@@ -971,3 +971,79 @@ def test_create_support_case_with_a_cross_tenant_related_object_id_is_refused(db
     )
     assert response.status_code == 400
     assert "does not reference a record you can access" in response.text
+
+
+def test_publisher_destinations_page_requires_publisher_permission(db_session):
+    client = _client(db_session)
+    response = client.get("/ops/publishers", headers=_auth_headers(role=MembershipRole.SUPPORT_READONLY))
+    assert response.status_code == 403
+
+
+def test_publisher_destinations_page_shows_the_real_empty_state(db_session):
+    client = _client(db_session)
+    response = client.get("/ops/publishers", headers=_auth_headers())
+    assert response.status_code == 200
+    assert "No publishing destinations are configured." in response.text
+
+
+def test_save_then_view_publisher_destination_over_real_http(db_session):
+    client = _client(db_session)
+    headers = _auth_headers()
+    create_response = client.post(
+        "/ops/publishers",
+        data={
+            "platform": "collective2",
+            "external_strategy_id": "strat-http-1",
+            "environment": "local_simulation",
+            "publication_mode": "api_strategy_publisher",
+        },
+        headers=headers,
+    )
+    assert create_response.status_code == 303
+
+    response = client.get("/ops/publishers", headers=headers)
+    assert "strat-http-1" in response.text
+    assert "collective2" in response.text
+
+
+def test_save_publisher_destination_rejects_a_non_local_environment_over_real_http(db_session):
+    client = _client(db_session)
+    headers = _auth_headers()
+    response = client.post(
+        "/ops/publishers",
+        data={
+            "platform": "collective2",
+            "external_strategy_id": "strat-http-2",
+            "environment": "live",
+            "publication_mode": "api_strategy_publisher",
+        },
+        headers=headers,
+    )
+    assert response.status_code == 400
+    assert "EXTERNAL_ENVIRONMENT_NOT_AUTHORIZED" in response.text
+
+
+def test_save_publisher_destination_rejects_a_cross_tenant_double_claim_over_real_http(db_session):
+    client = _client(db_session)
+    client.post(
+        "/ops/publishers",
+        data={
+            "platform": "collective2",
+            "external_strategy_id": "strat-shared-http",
+            "environment": "local_simulation",
+            "publication_mode": "api_strategy_publisher",
+        },
+        headers=_auth_headers(tenant_id="tenant-a"),
+    )
+    response = client.post(
+        "/ops/publishers",
+        data={
+            "platform": "collective2",
+            "external_strategy_id": "strat-shared-http",
+            "environment": "local_simulation",
+            "publication_mode": "api_strategy_publisher",
+        },
+        headers=_auth_headers(tenant_id="tenant-b"),
+    )
+    assert response.status_code == 400
+    assert "already claimed" in response.text

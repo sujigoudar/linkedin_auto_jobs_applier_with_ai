@@ -102,8 +102,14 @@ Seven slices are DONE:
   customer's own support cases. `related_object_id`, when given, must
   reference a real Subscription in the caller's OWN tenant -- a real,
   enforced cross-tenant guard, not just documented.
+- AD-09 Publisher channels and strategies: `GET`/`POST /ops/publishers`
+  (OWNER, PUBLISHER_OPERATOR) -- a real "save inactive destination"
+  that reuses the EXISTING claim_writer mechanism (from an earlier
+  phase, previously uncalled by any screen) for real single-publication-
+  authority enforcement. Only local_simulation is accepted; every other
+  mode is a named EXTERNAL_ENVIRONMENT_NOT_AUTHORIZED blocker.
 
-Full suite is 366 tests, ruff and mypy both green (**use `python3 -m
+Full suite is 377 tests, ruff and mypy both green (**use `python3 -m
 ruff`/`python3 -m mypy`/`python3 -m pytest` explicitly** -- this sandbox
 has a stray `uv tool`-installed `ruff`/`mypy` shadowing the project's
 real declared versions on bare `PATH`, which produced a false-negative
@@ -121,10 +127,11 @@ demo is checked into the repo itself.
 See `dashboard_state.json`'s `current_slice`/`second_slice`/
 `third_slice`/`fourth_slice`/`fifth_slice`/`sixth_slice`/`seventh_slice`/
 `eighth_slice`/`ninth_slice`/`tenth_slice`/`eleventh_slice`/
-`twelfth_slice`/`thirteenth_slice` for the exact file lists and what
-was deliberately left unbuilt in each. 52 of 66 screens (AD-01, AD-02,
-AD-03, AD-04, AD-08, PU-03, PU-05, ID-04, AD-16, CU-14 partially done)
-remain -- pick the next one following the steps below. **If you add a new table to
+`twelfth_slice`/`thirteenth_slice`/`fourteenth_slice` for the exact
+file lists and what was deliberately left unbuilt in each. 51 of 66
+screens (AD-01, AD-02, AD-03, AD-04, AD-08, PU-03, PU-05, ID-04, AD-16,
+CU-14, AD-09 partially done) remain -- pick the next one following the
+steps below. **If you add a new table to
 `_TENANT_SCOPED_TABLES` in app/db.py, pin any EARLIER migration that
 already calls `_apply_row_level_security` with no explicit `tables`
 argument to its own frozen snapshot of the tables that existed at that

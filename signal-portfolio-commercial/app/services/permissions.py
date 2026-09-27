@@ -73,6 +73,11 @@ _ALLOWED: dict[str, frozenset[Role]] = {
     #: CU-14 "Support and incident case" -- a customer's own cases,
     #: same shape as "manage_own_eligibility".
     "manage_own_support_case": frozenset({Role.CUSTOMER}),
+    #: AD-09 "Publisher channels and strategies" -- exactly this
+    #: screen's own access list. Declaring which external strategy a
+    #: tenant claims publication authority over is not a research,
+    #: billing or support decision.
+    "manage_publisher_destinations": frozenset({Role.OWNER, Role.PUBLISHER_OPERATOR}),
 }
 
 

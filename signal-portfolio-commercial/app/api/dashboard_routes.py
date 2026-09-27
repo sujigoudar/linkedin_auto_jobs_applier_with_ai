@@ -76,6 +76,15 @@ what is and is not implemented yet.
   the caller's own tenant -- never a cross-tenant id, even one that
   genuinely exists. Attachments are plain id references, not real
   uploaded/scanned files -- no malware-scan/upload pipeline exists yet.
+- AD-09 "Publisher channels and strategies": a real "save inactive
+  destination" (never sends a signal -- nothing in the publication
+  pipeline reads this table). Reuses the existing `claim_writer`
+  mechanism for real "one approved path per external account/strategy".
+  Only `local_simulation` is accepted; every other mode is a named
+  EXTERNAL_ENVIRONMENT_NOT_AUTHORIZED blocker, since no real platform
+  credentials or sandbox access exist in this environment. "Verify
+  read-only identity" and "Prepare qualification" are NOT implemented --
+  both need real external connectivity this build doesn't have.
 """
 from __future__ import annotations
 
@@ -108,6 +117,11 @@ from app.services.staff_access import (
     invite_staff_member,
     list_staff_memberships,
     revoke_staff_member,
+)
+from app.services.publisher_destination import (
+    InvalidPublisherDestinationError,
+    create_publisher_destination,
+    list_publisher_destinations,
 )
 from app.services.support_case import InvalidSupportCaseError, create_support_case, list_support_cases
 from app.services.product_admin import (
@@ -903,3 +917,85 @@ def create_support_case_page(
         )
     session.commit()
     return RedirectResponse(url="/app/support", status_code=303)
+
+
+_ALL_PLATFORMS = ["collective2", "etoro", "copyfactory", "broker_native"]
+_ALL_PUBLISHER_ENVIRONMENTS = ["local_simulation", "external_test", "demo", "live"]
+_ALL_PUBLICATION_MODES = ["api_strategy_publisher", "approved_master_copy"]
+
+
+def _require_publisher_destinations(scope: TenantScope) -> None:
+    try:
+        require_permission(scope.role, "manage_publisher_destinations")
+    except PermissionDenied as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+
+@router.get("/ops/publishers")
+def publisher_destinations_page(
+    request: Request,
+    scope: TenantScope = Depends(get_current_scope),
+    session: Session = Depends(get_db_session),
+    error: str | None = None,
+):
+    """AD-09 "Publisher channels and strategies" -- "Verify read-only
+    identity" and "Prepare qualification" are NOT implemented: both need
+    real external platform connectivity this build doesn't have."""
+    _require_publisher_destinations(scope)
+    set_tenant_scope(session, scope.tenant_id)
+    destinations = list_publisher_destinations(session, tenant_id=scope.tenant_id)
+    return templates.TemplateResponse(
+        request,
+        "ad09_publishers.html",
+        {
+            "destinations": destinations,
+            "all_platforms": _ALL_PLATFORMS,
+            "all_environments": _ALL_PUBLISHER_ENVIRONMENTS,
+            "all_publication_modes": _ALL_PUBLICATION_MODES,
+            "error": error,
+        },
+    )
+
+
+@router.post("/ops/publishers")
+def create_publisher_destination_page(
+    request: Request,
+    platform: str = Form(...),
+    external_strategy_id: str = Form(...),
+    environment: str = Form("local_simulation"),
+    credential_ref: str = Form(""),
+    capability_manifest_id: str = Form(""),
+    publication_mode: str = Form("api_strategy_publisher"),
+    scope: TenantScope = Depends(get_current_scope),
+    session: Session = Depends(get_db_session),
+):
+    _require_publisher_destinations(scope)
+    set_tenant_scope(session, scope.tenant_id)
+    try:
+        create_publisher_destination(
+            session,
+            tenant_id=scope.tenant_id,
+            platform=platform,
+            external_strategy_id=external_strategy_id,
+            environment=environment,
+            credential_ref=credential_ref or None,
+            capability_manifest_id=capability_manifest_id or None,
+            publication_mode=publication_mode,
+        )
+    except InvalidPublisherDestinationError as exc:
+        session.rollback()
+        destinations = list_publisher_destinations(session, tenant_id=scope.tenant_id)
+        return templates.TemplateResponse(
+            request,
+            "ad09_publishers.html",
+            {
+                "destinations": destinations,
+                "all_platforms": _ALL_PLATFORMS,
+                "all_environments": _ALL_PUBLISHER_ENVIRONMENTS,
+                "all_publication_modes": _ALL_PUBLICATION_MODES,
+                "error": str(exc),
+            },
+            status_code=400,
+        )
+    session.commit()
+    return RedirectResponse(url="/ops/publishers", status_code=303)

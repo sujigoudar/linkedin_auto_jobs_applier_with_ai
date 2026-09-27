@@ -1,0 +1,70 @@
+{% extends "_base.html" %}
+{% block title %}Publisher channels and strategies{% endblock %}
+{% block content %}
+<h1>Publisher channels and strategies</h1>
+
+{% if error %}<div class="conflict">{{ error }}</div>{% endif %}
+
+<div class="panel">
+  <h2>Channel registry</h2>
+  {% if destinations %}
+  <table>
+    <thead><tr><th>Channel</th><th>External strategy</th><th>Mode</th><th>Publication mode</th></tr></thead>
+    <tbody>
+      {% for d in destinations %}
+      <tr>
+        <td>{{ d.platform.value }}</td>
+        <td>{{ d.external_strategy_id }}</td>
+        <td>{{ d.environment.value }}</td>
+        <td>{{ d.publication_mode.value }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="empty-state">
+    <p>No publishing destinations are configured.</p>
+  </div>
+  {% endif %}
+</div>
+
+<div class="panel">
+  <h2>Save inactive destination</h2>
+  <p>Saving a destination has no live effect -- nothing in the publication pipeline reads this table yet.</p>
+  <form method="post" action="/ops/publishers">
+    <label for="platform">Platform</label>
+    <select id="platform" name="platform">
+      {% for p in all_platforms %}<option value="{{ p }}">{{ p }}</option>{% endfor %}
+    </select>
+
+    <label for="external_strategy_id">External strategy ID</label>
+    <input type="text" id="external_strategy_id" name="external_strategy_id" required>
+
+    <label for="environment">Mode</label>
+    <select id="environment" name="environment">
+      {% for e in all_environments %}<option value="{{ e }}">{{ e }}</option>{% endfor %}
+    </select>
+    <p><small>Only "local_simulation" is accepted -- no real Collective2/eToro/CopyFactory sandbox or live credentials exist in this environment.</small></p>
+
+    <label for="publication_mode">Publication mode</label>
+    <select id="publication_mode" name="publication_mode">
+      {% for m in all_publication_modes %}<option value="{{ m }}">{{ m }}</option>{% endfor %}
+    </select>
+
+    <label for="capability_manifest_id">Capabilities manifest ID (optional)</label>
+    <input type="text" id="capability_manifest_id" name="capability_manifest_id">
+
+    <p><button type="submit">Save inactive destination</button></p>
+  </form>
+</div>
+
+<div class="panel">
+  <h2>Verify read-only identity</h2>
+  <p><span class="badge badge-unknown">UNSUPPORTED</span> -- this requires a real read-only call to the external platform, which needs real credentials this environment does not have.</p>
+</div>
+
+<div class="panel">
+  <h2>Prepare qualification</h2>
+  <p><span class="badge badge-unknown">UNSUPPORTED</span> -- qualification is a real external platform decision; no such workflow exists to request it from in this environment.</p>
+</div>
+{% endblock %}
