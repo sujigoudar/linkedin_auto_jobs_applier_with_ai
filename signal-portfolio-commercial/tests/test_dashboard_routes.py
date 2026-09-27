@@ -284,3 +284,36 @@ def test_create_sleeve_rejects_a_missing_required_field_with_an_error_banner(db_
     response = client.post("/ops/research/universe", data=fields, headers=headers)
     assert response.status_code == 400
     assert "missing required field" in response.text
+
+
+def test_operations_overview_requires_authentication(db_session):
+    client = _client(db_session)
+    response = client.get("/ops")
+    assert response.status_code == 401
+
+
+def test_operations_overview_denies_a_customer(db_session):
+    client = _client(db_session)
+    headers = _auth_headers(role=MembershipRole.CUSTOMER)
+    response = client.get("/ops", headers=headers)
+    assert response.status_code == 403
+
+
+def test_operations_overview_shows_the_real_empty_state(db_session):
+    client = _client(db_session)
+    response = client.get("/ops", headers=_auth_headers(role=MembershipRole.SUPPORT_READONLY))
+    assert response.status_code == 200
+    assert "No commercial products or subscriptions exist yet" in response.text
+
+
+def test_operations_overview_lists_a_real_products_blockers_and_marks_incidents_unsupported(db_session):
+    client = _client(db_session)
+    headers = _auth_headers()
+
+    client.post("/ops/products", data={"product_name": "Overview Test", "slug": "overview-http"}, headers=headers)
+
+    response = client.get("/ops", headers=headers)
+    assert response.status_code == 200
+    assert "Overview Test" in response.text
+    assert "NO_PORTFOLIO_VERSION_SELECTED" in response.text
+    assert "UNSUPPORTED" in response.text

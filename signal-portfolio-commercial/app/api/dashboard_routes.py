@@ -22,6 +22,10 @@ what is and is not implemented yet.
   distinct DRAFT/QUALIFIED lifecycle or "Confirm: qualified status"
   step -- that needs real coverage/overlap statistics against actual
   historical data this environment doesn't have.
+- AD-01 "Commercial operations overview": a real cross-subsystem
+  summary (release blockers per product, active subscriptions,
+  unknown-state publications). "Open incidents" has no backing model
+  at all yet, so it's shown as unsupported, never a fabricated zero.
 """
 from __future__ import annotations
 
@@ -48,6 +52,7 @@ from app.services.product_admin import (
     list_published_products,
     update_product_draft,
 )
+from app.services.operations_overview import get_operations_overview
 from app.services.rights_registry import list_rights_grants
 from app.services.sleeve_admin import InvalidSleeveDraftError, create_sleeve, list_sleeves
 
@@ -64,6 +69,25 @@ def _require_product_admin(scope: TenantScope) -> None:
         require_permission(scope.role, "manage_product_draft")
     except PermissionDenied as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+
+@router.get("/ops")
+def operations_overview_page(
+    request: Request,
+    scope: TenantScope = Depends(get_current_scope),
+    session: Session = Depends(get_db_session),
+):
+    """AD-01 "Commercial operations overview" -- see this route module's
+    own docstring above for what's deliberately not built (Open
+    incidents has no backing model, so it's rendered as unsupported)."""
+    try:
+        require_permission(scope.role, "view_operations_overview")
+    except PermissionDenied as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+    set_tenant_scope(session, scope.tenant_id)
+    overview = get_operations_overview(session, tenant_id=scope.tenant_id)
+    return templates.TemplateResponse(request, "ad01_overview.html", {"overview": overview})
 
 
 @router.get("/ops/products")

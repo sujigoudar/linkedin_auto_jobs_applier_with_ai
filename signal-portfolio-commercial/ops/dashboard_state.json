@@ -42,8 +42,20 @@
     ],
     "deliberately_not_built": "AD-03-A02 (inspect coverage), AD-03-A03 (open portfolio lab) -- coverage/overlap analysis needs real historical sleeve data; portfolio lab (AD-04) is a separate unbuilt screen."
   },
-  "screens_done": ["AD-07", "PU-02", "AD-02 (read-only slice)", "AD-03 (create/list slice)"],
-  "screens_not_started": "62 of 66 (AD-02, AD-03 partially done) -- see signal_platform_dashboard_v2/catalog/screens.json for the full list.",
+  "fourth_slice": {
+    "name": "AD-01 (Commercial operations overview, admin) -- cross-subsystem summary",
+    "status": "done, deliberately partial",
+    "why_this_slice": "AD-01 is /ops, the operator landing page every other admin screen links back to -- two of its four business indicators (Eligible products, Active subscriptions) and its Release blockers panel are honestly computable now by reusing product_admin.py's own list_products/compute_publication_blockers and the existing Subscription model. 'Unknown-state publications' needed a real tenant-scoped join through PortfolioVersion, since PublicationIntent carries no tenant_id of its own.",
+    "what_was_built": [
+      "app/services/operations_overview.py -- get_operations_overview: eligible/blocked products (reused from product_admin.py), active_subscriptions_count, unknown_publications_count (via a real join through PortfolioVersion)",
+      "app/services/permissions.py -- 'view_operations_overview' action (every operator role except customer)",
+      "app/api/dashboard_routes.py + app/templates/ad01_overview.html -- GET /ops (now the header's home link)",
+      "tests/test_operations_overview.py (5 tests) + tests/test_dashboard_routes.py (+4) -- empty state, real blocked-product listing, subscription-state filtering, and tenant-scoped publication counting. Both the permission guard and the PublicationState.UNKNOWN filter were load-bearing-verified (each temporarily broken, confirmed to fail its test, restored). A third check (removing the explicit tenant_id join clause) surfaced that RLS on portfolio_versions already prevents the leak on its own -- the explicit filter is defense in depth, not the only protection; documented in the module's own comment rather than treated as a failed verification."
+    ],
+    "deliberately_not_built": "'Open incidents' has no backing model at all (a real incident-tracking screen doesn't exist yet) -- rendered as an explicit UNSUPPORTED state, never a fabricated zero, per AD-01's own 'Zero only if query complete and count truly zero' rule. Customers/entitlements and Publisher health panels are not built as separate panels; Business indicators covers what's computable."
+  },
+  "screens_done": ["AD-07", "PU-02", "AD-02 (read-only slice)", "AD-03 (create/list slice)", "AD-01 (overview slice)"],
+  "screens_not_started": "61 of 66 (AD-01, AD-02, AD-03 partially done) -- see signal_platform_dashboard_v2/catalog/screens.json for the full list.",
   "standing_constraints_from_master_prompt": [
     "No live orders/cancellations, customer charges/subscriptions, live publication, production resets, credential rotation, or unapproved infrastructure spending.",
     "Isolated synthetic fixtures are authorized only in test/browser databases, never seeded into production.",

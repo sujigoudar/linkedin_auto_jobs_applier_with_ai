@@ -46,6 +46,21 @@ _ALLOWED: dict[str, frozenset[Role]] = {
     #: lineage records. Same trio as `manage_product_draft`: a research/
     #: release decision, not billing/publication/support/customer.
     "manage_sleeve_draft": frozenset({Role.OWNER, Role.RESEARCHER, Role.REVIEWER}),
+    #: AD-01 "Commercial operations overview" -- every operator role
+    #: except CUSTOMER can see the cross-subsystem summary; a customer
+    #: has no operator scope at all, matching this screen's own access
+    #: list (owner, researcher, reviewer, publisher_operator,
+    #: billing_operator, support_readonly).
+    "view_operations_overview": frozenset(
+        {
+            Role.OWNER,
+            Role.RESEARCHER,
+            Role.REVIEWER,
+            Role.PUBLISHER_OPERATOR,
+            Role.BILLING_OPERATOR,
+            Role.SUPPORT_READONLY,
+        }
+    ),
 }
 
 

@@ -1,0 +1,51 @@
+{% extends "_base.html" %}
+{% block title %}Commercial operations overview{% endblock %}
+{% block content %}
+<h1>Commercial operations overview</h1>
+
+{% if not overview.eligible_products and not overview.blocked_products and overview.active_subscriptions_count == 0 %}
+<div class="empty-state">
+  <p>No commercial products or subscriptions exist yet.</p>
+  <p><a href="/ops/products">Create a product draft &rarr;</a></p>
+</div>
+{% else %}
+
+<div class="panel">
+  <h2>Release blockers</h2>
+  {% if overview.blocked_products %}
+  <table>
+    <thead><tr><th>Product</th><th>Blockers</th></tr></thead>
+    <tbody>
+      {% for product, blockers in overview.blocked_products %}
+      <tr>
+        <td><a href="/ops/products/{{ product.product_id }}">{{ product.product_name }}</a></td>
+        <td>
+          <ul class="blockers">
+            {% for blocker in blockers %}<li>{{ blocker }}</li>{% endfor %}
+          </ul>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p>No product currently has an outstanding publication blocker.</p>
+  {% endif %}
+</div>
+
+<div class="panel">
+  <h2>Business indicators</h2>
+  <table>
+    <tbody>
+      <tr><th>Eligible products</th><td>{{ overview.eligible_products | length }}</td></tr>
+      <tr><th>Active subscriptions</th><td>{{ overview.active_subscriptions_count }}</td></tr>
+      <tr><th>Unknown-state publications</th><td>{{ overview.unknown_publications_count }}</td></tr>
+      <tr>
+        <th>Open incidents</th>
+        <td><span class="badge badge-unknown">UNSUPPORTED</span> &mdash; no incident-tracking model exists yet</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+{% endif %}
+{% endblock %}
