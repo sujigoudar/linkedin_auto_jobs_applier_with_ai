@@ -1127,8 +1127,17 @@ every financial command independent of any single route's own auth logic
   flatten/backtest/signals/orders endpoint requires a valid owner session
   (see "Owner authentication" below) — and if either env var is unset,
   those endpoints fail closed with `503`, they do **not** silently become
-  public. Generate both with e.g.
+  public. Generate `SESSION_SECRET` with e.g.
   `python -c "import secrets; print(secrets.token_urlsafe(32))"`.
+- **C05: `OWNER_PASSWORD_HASH` (recommended) vs. `OWNER_PASSWORD` (legacy).**
+  Set exactly one, never both (both set is treated as misconfigured and
+  fails closed, same as neither being set — there'd be no reliable way to
+  know which one governs). `OWNER_PASSWORD`'s actual value is directly
+  usable by anything that can read this process's environment (a log
+  dump, a leaked `.env`, a config export); `OWNER_PASSWORD_HASH` is an
+  argon2id hash (via `pwdlib`) that isn't itself a usable credential even
+  if it leaks. Generate one with:
+  `python -c "from pwdlib import PasswordHash; print(PasswordHash.recommended().hash('<your password>'))"`
 - Set `WEBHOOK_SHARED_SECRET` before exposing `/webhook/*` publicly — an
   unset secret now makes that route `503` (disabled), not open; the same
   applies to `/sms/twilio` and `TWILIO_AUTH_TOKEN`. The shared-secret

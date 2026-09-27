@@ -44,13 +44,23 @@ class _Settings(BaseSettings):
     WEBHOOK_SHARED_SECRET: str = ""
 
     # Owner authentication (see app/auth.py). Every account/routing/position/
-    # close/flatten/backtest endpoint requires a valid owner session; both of
-    # these must be set or every one of those endpoints fails closed (503),
-    # never silently open. OWNER_PASSWORD is compared with a constant-time
-    # check, same trust level as every other secret this project keeps in an
-    # env var (see README's Security notes). SESSION_SECRET signs/derives
-    # session data.
+    # close/flatten/backtest endpoint requires a valid owner session; either
+    # OWNER_PASSWORD or OWNER_PASSWORD_HASH (never both -- see app/auth.py's
+    # auth_configured()) plus SESSION_SECRET must be set or every one of
+    # those endpoints fails closed (503), never silently open.
+    #
+    # OWNER_PASSWORD (legacy, plain): compared with a constant-time check,
+    # same trust level as every other secret this project keeps in an env
+    # var. Its actual value is directly usable by anything that can read
+    # this process's environment (a log dump, a leaked .env, a config
+    # export) -- OWNER_PASSWORD_HASH (C05) is the same security property
+    # PLUS that: an argon2id hash (via pwdlib) that isn't itself a usable
+    # credential even if it leaks. Generate one with:
+    #   python -c "from pwdlib import PasswordHash; print(PasswordHash.recommended().hash('<password>'))"
+    #
+    # SESSION_SECRET signs/derives session data.
     OWNER_PASSWORD: str = ""
+    OWNER_PASSWORD_HASH: str = ""
     SESSION_SECRET: str = ""
     SESSION_TTL_SECONDS: float = float(60 * 60 * 12)  # 12h
     # Set true when this process sits behind a TLS-terminating reverse proxy
@@ -139,6 +149,7 @@ DATABASE_PATH = _settings.DATABASE_PATH
 WEBHOOK_SHARED_SECRET = _settings.WEBHOOK_SHARED_SECRET
 
 OWNER_PASSWORD = _settings.OWNER_PASSWORD
+OWNER_PASSWORD_HASH = _settings.OWNER_PASSWORD_HASH
 SESSION_SECRET = _settings.SESSION_SECRET
 SESSION_TTL_SECONDS = _settings.SESSION_TTL_SECONDS
 FORCE_SECURE_COOKIES = _settings.FORCE_SECURE_COOKIES

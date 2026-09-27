@@ -11,6 +11,7 @@ httpx>=0.27      # used by SignalStackBroker, AlpacaBroker, NinjaTraderBroker (p
 python-multipart>=0.0.9  # required by FastAPI's Form() parsing, used by the /sms/twilio route
 slowapi>=0.1.9           # C06: per-IP rate limiting on the webhook/SMS ingress routes (app/rate_limit.py)
 aiolimiter>=1.1          # C07: outbound quota limiter for app/context/* (SEC EDGAR, FRED, Frankfurter)
+pwdlib[argon2]>=0.2      # C05: optional OWNER_PASSWORD_HASH (argon2id) alternative to plain OWNER_PASSWORD (app/auth.py)
 
 # Optional, needed only for adapters you actually enable:
 # ccxt>=4.3                    # crypto exchange execution (CCXTBroker)
