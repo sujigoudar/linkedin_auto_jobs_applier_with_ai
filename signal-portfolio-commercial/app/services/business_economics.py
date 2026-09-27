@@ -9,11 +9,25 @@ Deliberately separate from anything in app/models/ledger.py: "Subscription
 revenue is not investment P&L" (same doc) -- this module never reads
 trading P&L and has no way to blend the two, which is the whole point
 of keeping them apart.
+
+AD-12 "Business economics and royalties" (dashboard_spec/screens/AD-12.md)
+adds `get_business_economics` below: a real, bounded booked-revenue
+query from actual `Subscription` rows. `compute_unit_contribution`/
+`compute_break_even` above remain unused by that screen for now --
+"All six inputs are required and none default to zero" and this build
+has no real refunds/processor-fee/variable-cost/royalty data to supply
+them with honestly, so AD-12's own Margin panel stays an explicit
+UNSUPPORTED rather than calling these with fabricated zeros.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
 from decimal import Decimal
+
+from sqlalchemy import func, select
+from sqlalchemy.orm import Session
+
+from app.models.billing import Subscription, SubscriptionState
 
 
 @dataclass(frozen=True)
@@ -61,3 +75,42 @@ def compute_break_even(*, approved_fixed_costs: Decimal, unit_contribution: Unit
     if unit_contribution.is_warning:
         return BreakEvenResult(units_to_break_even=None, is_warning=True)
     return BreakEvenResult(units_to_break_even=approved_fixed_costs / unit_contribution.value, is_warning=False)
+
+
+#: A charge has genuinely been collected (or the customer remains
+#: obligated under an already-collected period) in exactly these
+#: states. PAST_DUE is included -- the prior period was paid; only the
+#: NEXT charge is outstanding. DISPUTED is deliberately excluded: a
+#: contested charge is not safely booked.
+_REVENUE_RECOGNIZED_STATES: frozenset[SubscriptionState] = frozenset(
+    {SubscriptionState.ACTIVE_PAID, SubscriptionState.PAST_DUE, SubscriptionState.CANCEL_AT_PERIOD_END}
+)
+
+
+@dataclass(frozen=True)
+class RevenueByCurrency:
+    currency: str
+    booked_revenue_cents: int
+
+
+@dataclass(frozen=True)
+class BusinessEconomics:
+    revenue_by_currency: list[RevenueByCurrency]
+
+
+def get_business_economics(session: Session, *, tenant_id: str) -> BusinessEconomics:
+    """AD-12 "Business economics and royalties" -- Revenue/retention.
+    Booked only from real Subscription rows in a genuinely payment-
+    recognized state, grouped by currency (never silently summed
+    across currencies)."""
+    rows = session.execute(
+        select(Subscription.currency, func.sum(Subscription.price_cents))
+        .where(Subscription.tenant_id == tenant_id, Subscription.state.in_(_REVENUE_RECOGNIZED_STATES))
+        .group_by(Subscription.currency)
+        .order_by(Subscription.currency)
+    ).all()
+
+    revenue_by_currency = [
+        RevenueByCurrency(currency=currency, booked_revenue_cents=int(total or Decimal(0))) for currency, total in rows
+    ]
+    return BusinessEconomics(revenue_by_currency=revenue_by_currency)

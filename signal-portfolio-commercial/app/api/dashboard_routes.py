@@ -90,6 +90,12 @@ what is and is not implemented yet.
   and a future expires_at are accepted; only a SHA-256 hash of the
   generated secret is ever persisted -- the raw secret is returned once,
   in the create response, and never again. Revocation is idempotent.
+- AD-12 "Business economics and royalties": real booked revenue per
+  currency, computed only from Subscription rows in a genuinely
+  payment-recognized state (never LedgerEntry -- investment profits are
+  not revenue). Refunds/royalties/cost attribution/margin are NOT
+  implemented -- no such model exists, so each is rendered as an
+  explicit UNSUPPORTED, never a fabricated zero or an incomplete margin.
 """
 from __future__ import annotations
 
@@ -131,6 +137,7 @@ from app.services.api_key import (
     list_api_keys,
     revoke_api_key,
 )
+from app.services.business_economics import get_business_economics
 from app.services.publisher_destination import (
     InvalidPublisherDestinationError,
     create_publisher_destination,
@@ -1112,3 +1119,21 @@ def revoke_api_key_page(
         )
     session.commit()
     return RedirectResponse(url="/app/developer", status_code=303)
+
+
+@router.get("/ops/business")
+def business_economics_page(
+    request: Request,
+    scope: TenantScope = Depends(get_current_scope),
+    session: Session = Depends(get_db_session),
+):
+    """AD-12 "Business economics and royalties" -- see this route
+    module's own docstring above for what is and is not implemented."""
+    try:
+        require_permission(scope.role, "view_business_economics")
+    except PermissionDenied as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+    set_tenant_scope(session, scope.tenant_id)
+    economics = get_business_economics(session, tenant_id=scope.tenant_id)
+    return templates.TemplateResponse(request, "ad12_business.html", {"economics": economics})

@@ -1,0 +1,52 @@
+{% extends "_base.html" %}
+{% block title %}Business economics and royalties{% endblock %}
+{% block content %}
+<h1>Business economics and royalties</h1>
+
+<div class="panel">
+  <h2>Revenue/retention</h2>
+  {% if economics.revenue_by_currency %}
+  <table>
+    <thead><tr><th>Currency</th><th>Booked revenue</th></tr></thead>
+    <tbody>
+      {% for row in economics.revenue_by_currency %}
+      <tr>
+        <td>{{ row.currency | upper }}</td>
+        <td>{{ "%.2f"|format(row.booked_revenue_cents / 100) }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <p><small>Booked from subscriptions in a genuinely payment-recognized state only (ACTIVE_PAID, PAST_DUE, CANCEL_AT_PERIOD_END) -- never investment/trading P&amp;L.</small></p>
+  {% else %}
+  <div class="empty-state">
+    <p>No financial business records are available.</p>
+  </div>
+  {% endif %}
+</div>
+
+<div class="panel">
+  <h2>Fees/refunds</h2>
+  <p><span class="badge badge-unknown">UNSUPPORTED</span> -- no refund/processor-fee model exists in this build.</p>
+</div>
+
+<div class="panel">
+  <h2>Provider royalties</h2>
+  <p><span class="badge badge-unknown">UNSUPPORTED</span> -- no provider-royalty model exists in this build.</p>
+</div>
+
+<div class="panel">
+  <h2>Cost attribution</h2>
+  <p><span class="badge badge-unknown">UNSUPPORTED</span> -- no platform/data/cloud cost model exists in this build.</p>
+</div>
+
+<div class="panel">
+  <h2>Margin</h2>
+  <p><span class="badge badge-unknown">UNSUPPORTED</span> -- margin requires real cost/royalty data this build does not have; it is never computed from admittedly incomplete inputs.</p>
+</div>
+
+<div class="panel">
+  <h2>Statement exceptions</h2>
+  <p><span class="badge badge-unknown">UNSUPPORTED</span> -- no statement-exception tracking exists in this build.</p>
+</div>
+{% endblock %}

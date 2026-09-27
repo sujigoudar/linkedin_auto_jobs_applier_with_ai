@@ -1124,3 +1124,50 @@ def test_revoke_api_key_is_idempotent_over_real_http(db_session):
     assert first.status_code == 303
     second = client.post(f"/app/developer/{key_id}/revoke", headers=headers)
     assert second.status_code == 303
+
+
+def test_business_economics_page_requires_owner_or_billing_operator(db_session):
+    client = _client(db_session)
+    response = client.get("/ops/business", headers=_auth_headers(role=MembershipRole.RESEARCHER))
+    assert response.status_code == 403
+
+
+def test_business_economics_page_shows_the_real_empty_state(db_session):
+    client = _client(db_session)
+    response = client.get("/ops/business", headers=_auth_headers())
+    assert response.status_code == 200
+    assert "No financial business records are available." in response.text
+
+
+def test_business_economics_page_shows_real_booked_revenue_and_never_unpaid_subscriptions(db_session):
+    from datetime import datetime, timedelta, timezone
+
+    from app.models.billing import ProductTier, Subscription, SubscriptionState
+
+    client = _client(db_session)
+    db_session.add(
+        Subscription(
+            tenant_id="tenant-a",
+            tier=ProductTier.ALERTS_ONE,
+            state=SubscriptionState.ACTIVE_PAID,
+            price_cents=3900,
+            currency="usd",
+            current_period_end=datetime.now(timezone.utc) + timedelta(days=30),
+        )
+    )
+    db_session.add(
+        Subscription(
+            tenant_id="tenant-a",
+            tier=ProductTier.PORTFOLIOS_THREE,
+            state=SubscriptionState.PENDING_PAYMENT,
+            price_cents=9900,
+            currency="usd",
+            current_period_end=datetime.now(timezone.utc) + timedelta(days=30),
+        )
+    )
+    db_session.commit()
+
+    response = client.get("/ops/business", headers=_auth_headers())
+    assert response.status_code == 200
+    assert "39.00" in response.text
+    assert "99.00" not in response.text

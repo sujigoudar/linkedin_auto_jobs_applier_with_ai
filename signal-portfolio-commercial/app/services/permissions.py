@@ -81,6 +81,10 @@ _ALLOWED: dict[str, frozenset[Role]] = {
     #: CU-16 "API delivery, keys and exports" -- a customer's own keys,
     #: same shape as "manage_own_eligibility"/"manage_own_support_case".
     "manage_own_api_keys": frozenset({Role.CUSTOMER}),
+    #: AD-12 "Business economics and royalties" -- exactly this
+    #: screen's own access list. Business revenue is a billing/
+    #: ownership decision, not a research/support/publisher concern.
+    "view_business_economics": frozenset({Role.OWNER, Role.BILLING_OPERATOR}),
 }
 
 
