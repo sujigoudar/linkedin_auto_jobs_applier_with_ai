@@ -206,8 +206,15 @@ Seven slices are DONE:
   security, data export/deletion, and disclosure history are all
   explicit UNSUPPORTED -- no session store, export-job pipeline, or
   disclosure-acknowledgment model exists in this build.
+- AD-15 Managed allocations, NAV and dealing: `GET /ops/managed-
+  operations` (OWNER, PUBLISHER_OPERATOR, REVIEWER) -- reuses AD-14's
+  own `list_managed_programs`, no new model or migration needed. Every
+  panel about broker-originated dealing/NAV/cashflow/fee/restatement
+  activity is an explicit UNSUPPORTED -- no such tracking model exists
+  anywhere in this build (Phase 10's own domain model is
+  simulation-only configuration, never a NAV ledger).
 
-Full suite is 532 tests, ruff and mypy both green (**use `python3 -m
+Full suite is 535 tests, ruff and mypy both green (**use `python3 -m
 ruff`/`python3 -m mypy`/`python3 -m pytest` explicitly** -- this sandbox
 has a stray `uv tool`-installed `ruff`/`mypy` shadowing the project's
 real declared versions on bare `PATH`, which produced a false-negative
@@ -230,11 +237,12 @@ See `dashboard_state.json`'s `current_slice`/`second_slice`/
 `nineteenth_slice`/`twentieth_slice`/`twentyfirst_slice`/
 `twentysecond_slice`/`twentythird_slice`/`twentyfourth_slice`/
 `twentyfifth_slice`/`twentysixth_slice`/`twentyseventh_slice`/
-`twentyeighth_slice` for the exact file lists and what was deliberately
-left unbuilt in each. 37 of 66 screens (AD-01, AD-02, AD-03, AD-04,
-AD-05, AD-08, AD-10, PU-03, PU-05, ID-04, AD-16, CU-14, AD-09, CU-16,
-AD-12, AD-11, AD-17, AD-13, AD-19, AD-14, AD-18, AD-20, CU-02, CU-12,
-CU-13 partially done) remain -- pick the next one following the steps
+`twentyeighth_slice`/`twentyninth_slice` for the exact file lists and
+what was deliberately left unbuilt in each. 36 of 66 screens (AD-01,
+AD-02, AD-03, AD-04, AD-05, AD-08, AD-10, PU-03, PU-05, ID-04, AD-16,
+CU-14, AD-09, CU-16, AD-12, AD-11, AD-17, AD-13, AD-19, AD-14, AD-18,
+AD-20, CU-02, CU-12, CU-13, AD-15 partially done) remain -- pick the
+next one following the steps
 below. **If you add a
 new table to
 `_TENANT_SCOPED_TABLES` in app/db.py, pin any EARLIER migration that

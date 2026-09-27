@@ -2029,3 +2029,31 @@ def save_display_preferences_page(
         )
     session.commit()
     return RedirectResponse(url="/app/settings", status_code=303)
+
+
+def _require_managed_operations(scope: TenantScope) -> None:
+    try:
+        require_permission(scope.role, "view_managed_operations")
+    except PermissionDenied as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+
+@router.get("/ops/managed-operations")
+def managed_operations_page(
+    request: Request,
+    scope: TenantScope = Depends(get_current_scope),
+    session: Session = Depends(get_db_session),
+):
+    """AD-15 "Managed allocations, NAV and dealing" -- see this route
+    module's own docstring above for what is and is not implemented.
+
+    Reuses AD-14's own list_managed_programs rather than a duplicate
+    query: no dealing-queue/NAV-generation/cashflow/fee/restatement
+    tracking model exists anywhere in this build (Phase 10's own
+    domain model is simulation-only config, not a NAV ledger), so every
+    panel about broker-originated activity is an explicit UNSUPPORTED,
+    never a fabricated zero or a computed figure with no real input."""
+    _require_managed_operations(scope)
+    set_tenant_scope(session, scope.tenant_id)
+    programs = list_managed_programs(session, tenant_id=scope.tenant_id)
+    return templates.TemplateResponse(request, "ad15_managed_operations.html", {"programs": programs})

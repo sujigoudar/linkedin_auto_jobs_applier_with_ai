@@ -1,0 +1,58 @@
+{% extends "_base.html" %}
+{% block title %}Managed allocations, NAV and dealing{% endblock %}
+{% block content %}
+<h1>Managed allocations, NAV and dealing</h1>
+
+<div class="panel">
+  <h2>Programs</h2>
+  {% if programs %}
+  <table>
+    <thead><tr><th>Program</th><th>Mode</th><th>Broker program id</th><th>State</th></tr></thead>
+    <tbody>
+      {% for p in programs %}
+      <tr>
+        <td>{{ p.program_name }}</td>
+        <td>{{ p.mode.value }}</td>
+        <td>{{ p.broker_program_id }}</td>
+        <td>{{ p.state.value }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="empty-state">
+    <p>No managed-account program is configured for this tenant.</p>
+  </div>
+  {% endif %}
+</div>
+
+<div class="panel">
+  <h2>Dealing queue</h2>
+  <p><span class="badge badge-unknown">UNSUPPORTED</span> -- no dealing-request tracking model exists in this build.</p>
+</div>
+
+<div class="panel">
+  <h2>Precommitted allocation</h2>
+  <p><span class="badge badge-unknown">UNSUPPORTED</span> -- no broker-originated allocation record exists in this build.</p>
+</div>
+
+<div class="panel">
+  <h2>NAV generation</h2>
+  <p><span class="badge badge-unknown">UNSUPPORTED</span> -- no NAV-generation ledger exists in this build; Phase 10's own managed-program domain model is simulation-only configuration, not a NAV ledger.</p>
+</div>
+
+<div class="panel">
+  <h2>Cash flows/units</h2>
+  <p><span class="badge badge-unknown">UNSUPPORTED</span> -- no cashflow/units tracking model exists in this build.</p>
+</div>
+
+<div class="panel">
+  <h2>Fee/HWM review</h2>
+  <p><span class="badge badge-unknown">UNSUPPORTED</span> -- no fee/high-water-mark record exists in this build.</p>
+</div>
+
+<div class="panel">
+  <h2>Restatements</h2>
+  <p><span class="badge badge-unknown">UNSUPPORTED</span> -- no restatement record exists in this build.</p>
+</div>
+{% endblock %}

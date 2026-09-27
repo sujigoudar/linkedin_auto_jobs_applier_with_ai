@@ -1923,3 +1923,40 @@ def test_save_then_reload_display_preferences_over_real_http(db_session):
     final_response = client.get("/app/settings", headers=headers)
     assert "HTTP Jane" in final_response.text
     assert "America/New_York" in final_response.text
+
+
+def test_managed_operations_page_requires_owner_publisher_operator_or_reviewer(db_session):
+    client = _client(db_session)
+    response = client.get("/ops/managed-operations", headers=_auth_headers(role=MembershipRole.BILLING_OPERATOR))
+    assert response.status_code == 403
+
+
+def test_managed_operations_page_shows_the_real_empty_state(db_session):
+    client = _client(db_session)
+    response = client.get("/ops/managed-operations", headers=_auth_headers(role=MembershipRole.PUBLISHER_OPERATOR))
+    assert response.status_code == 200
+    assert "No managed-account program is configured for this tenant." in response.text
+    assert "UNSUPPORTED" in response.text
+
+
+def test_managed_operations_page_shows_a_real_configured_program(db_session):
+    client = _client(db_session)
+    headers = _auth_headers(role=MembershipRole.OWNER)
+    client.post(
+        "/ops/managed-programs",
+        data={
+            "program_name": "AD-15 Program",
+            "broker_program_id": "broker-ad15-1",
+            "mode": "pamm",
+            "allocation_policy_id": "alloc-1",
+            "nav_policy_id": "nav-1",
+            "dealing_schedule_id": "dealing-1",
+            "agreement_evidence_ids": "evidence-1",
+        },
+        headers=headers,
+    )
+
+    response = client.get("/ops/managed-operations", headers=_auth_headers(role=MembershipRole.REVIEWER))
+    assert response.status_code == 200
+    assert "AD-15 Program" in response.text
+    assert "broker-ad15-1" in response.text

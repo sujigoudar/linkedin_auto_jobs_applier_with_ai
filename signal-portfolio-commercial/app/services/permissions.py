@@ -135,6 +135,13 @@ _ALLOWED: dict[str, frozenset[Role]] = {
     #: customer's own preferences, same shape as
     #: "manage_own_notification_preferences" and its siblings.
     "manage_own_display_preferences": frozenset({Role.CUSTOMER}),
+    #: AD-15 "Managed allocations, NAV and dealing" -- exactly this
+    #: screen's own access list (owner, publisher_operator, reviewer).
+    #: Deliberately separate from "manage_managed_programs" (owner/
+    #: reviewer, the program-config authority): a publisher_operator can
+    #: read this operations view without being able to configure a new
+    #: program, matching AD-02's own view/write split precedent.
+    "view_managed_operations": frozenset({Role.OWNER, Role.PUBLISHER_OPERATOR, Role.REVIEWER}),
 }
 
 
