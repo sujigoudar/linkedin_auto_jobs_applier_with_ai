@@ -137,9 +137,25 @@ class _Settings(BaseSettings):
     RECONCILE_INTERVAL_SECONDS: float = 30.0
 
     # How often app/pricing.py's PriceMonitor polls each open managed-lifecycle
-    # position's broker for a current price (currently ccxt only — see
-    # app/pricing.py's module docstring).
+    # position's broker for a current price (currently ccxt, Alpaca and IBKR —
+    # see app/pricing.py's module docstring).
     PRICE_MONITOR_INTERVAL_SECONDS: float = 15.0
+
+    # How often app/provider_scout.py re-evaluates every signal source/analyst
+    # that ISN'T yet a tracked provider_subscriptions row against
+    # PROVIDER_VALUE_* below, looking for a free provider worth promoting.
+    # Default: once a day -- there's no value in re-scanning more often than
+    # new closed trades can plausibly accumulate.
+    PROVIDER_SCOUT_INTERVAL_SECONDS: float = 86400.0
+
+    # Thresholds app/provider_value.py's verdict logic uses for both the
+    # subscribed-provider "still worth paying for" recommendation and
+    # app/provider_scout.py's free-provider "worth promoting" recommendation
+    # -- see that module's docstring for the exact decision tree. Deliberately
+    # a heuristic disclosed as such, not a claim of statistical significance.
+    PROVIDER_VALUE_MIN_SAMPLE_SIZE: int = 10
+    PROVIDER_VALUE_WIN_RATE_THRESHOLD: float = 0.4
+    PROVIDER_VALUE_PROFIT_FACTOR_THRESHOLD: float = 1.0
 
     # Read-only market/economic context lookups (see app/context/ — SEC
     # filings, FRED macro series, FX reference rates). None of these are used
@@ -206,6 +222,10 @@ RITHMIC_SOURCE_ACCOUNT_ID = _settings.RITHMIC_SOURCE_ACCOUNT_ID
 
 RECONCILE_INTERVAL_SECONDS = _settings.RECONCILE_INTERVAL_SECONDS
 PRICE_MONITOR_INTERVAL_SECONDS = _settings.PRICE_MONITOR_INTERVAL_SECONDS
+PROVIDER_SCOUT_INTERVAL_SECONDS = _settings.PROVIDER_SCOUT_INTERVAL_SECONDS
+PROVIDER_VALUE_MIN_SAMPLE_SIZE = _settings.PROVIDER_VALUE_MIN_SAMPLE_SIZE
+PROVIDER_VALUE_WIN_RATE_THRESHOLD = _settings.PROVIDER_VALUE_WIN_RATE_THRESHOLD
+PROVIDER_VALUE_PROFIT_FACTOR_THRESHOLD = _settings.PROVIDER_VALUE_PROFIT_FACTOR_THRESHOLD
 
 SEC_EDGAR_USER_AGENT = _settings.SEC_EDGAR_USER_AGENT
 FRED_API_KEY = _settings.FRED_API_KEY

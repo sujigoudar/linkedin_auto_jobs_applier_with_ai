@@ -144,6 +144,52 @@ CREATE TABLE IF NOT EXISTS config_analysts (
     PRIMARY KEY (provider_id, analyst_id)
 );
 
+-- Subscription cost/billing tracking for a signal provider (see
+-- app/provider_value.py) -- keyed by provider_id (Signal.source /
+-- ProviderConfig.provider_id), since a subscription is normally billed
+-- per channel/provider, not per individual analyst within a shared one.
+-- `cost_amount` is the cost of ONE `billing_cycle`, not a lifetime total.
+-- `subscribed_since` anchors the "how many billing cycles have elapsed"
+-- estimate app/provider_value.py's cost-to-date calculation uses; it is
+-- NOT the same thing as `renewal_date` (the next upcoming renewal,
+-- informational only). status='candidate' marks a provider
+-- app/provider_scout.py (or the owner, manually) added here without yet
+-- treating it as a real, paid subscription -- see that module.
+CREATE TABLE IF NOT EXISTS provider_subscriptions (
+    provider_id TEXT PRIMARY KEY,
+    display_name TEXT NOT NULL DEFAULT '',
+    cost_amount REAL NOT NULL DEFAULT 0.0,
+    currency TEXT NOT NULL DEFAULT 'USD',
+    billing_cycle TEXT NOT NULL DEFAULT 'monthly',
+    subscribed_since TEXT NOT NULL,
+    renewal_date TEXT,
+    status TEXT NOT NULL DEFAULT 'active',
+    notes TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+-- app/provider_scout.py's last-computed snapshot for a (source, analyst,
+-- asset_class) that is NOT currently a provider_subscriptions row --
+-- persisted so GET /providers/candidates can show "last evaluated at X"
+-- without recomputing the full replay on every dashboard load, and so the
+-- scheduled scan (not a live request) is what actually produces this.
+-- `analyst` is '' (never NULL) for "no analyst on the signal" so it can be
+-- part of this table's primary key.
+CREATE TABLE IF NOT EXISTS provider_candidates (
+    source TEXT NOT NULL,
+    analyst TEXT NOT NULL DEFAULT '',
+    asset_class TEXT NOT NULL,
+    closing_fills INTEGER NOT NULL,
+    winning_closing_fills INTEGER NOT NULL,
+    realized_pnl REAL NOT NULL,
+    win_rate REAL,
+    profit_factor REAL,
+    recommendation TEXT NOT NULL,
+    evaluated_at TEXT NOT NULL,
+    PRIMARY KEY (source, analyst, asset_class)
+);
+
 -- Server-side owner sessions (see app/auth.py). `session_id` is the opaque
 -- value carried in the session cookie; `csrf_token` is returned once at
 -- login and must be echoed back as the X-CSRF-Token header on every
@@ -825,6 +871,185 @@ class SignalStore:
             conn.execute(
                 "DELETE FROM config_analysts WHERE provider_id = ? AND analyst_id = ?", (provider_id, analyst_id)
             )
+
+    # --- Signal-provider subscription cost/value tracking (app/provider_value.py) ---
+
+    def list_provider_subscriptions(self) -> list[dict]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT provider_id, display_name, cost_amount, currency, billing_cycle,
+                          subscribed_since, renewal_date, status, notes, created_at, updated_at
+                   FROM provider_subscriptions ORDER BY provider_id"""
+            ).fetchall()
+        return [
+            {
+                "provider_id": r[0],
+                "display_name": r[1],
+                "cost_amount": r[2],
+                "currency": r[3],
+                "billing_cycle": r[4],
+                "subscribed_since": r[5],
+                "renewal_date": r[6],
+                "status": r[7],
+                "notes": r[8],
+                "created_at": r[9],
+                "updated_at": r[10],
+            }
+            for r in rows
+        ]
+
+    def get_provider_subscription(self, provider_id: str) -> dict | None:
+        matches = [r for r in self.list_provider_subscriptions() if r["provider_id"] == provider_id]
+        return matches[0] if matches else None
+
+    def upsert_provider_subscription(
+        self,
+        provider_id: str,
+        *,
+        display_name: str = "",
+        cost_amount: float = 0.0,
+        currency: str = "USD",
+        billing_cycle: str = "monthly",
+        subscribed_since: str | None = None,
+        renewal_date: str | None = None,
+        status: str = "active",
+        notes: str = "",
+    ) -> None:
+        """`subscribed_since` defaults to today (as an ISO date string) when
+        creating a brand-new row -- never re-anchored on a later update to
+        an EXISTING row (see the `COALESCE` below), so editing a
+        subscription's cost/notes doesn't silently reset how long it's
+        been tracked for the cost-to-date estimate."""
+        now = datetime.now(timezone.utc).isoformat()
+        anchor = subscribed_since or datetime.now(timezone.utc).date().isoformat()
+        with self._connect() as conn:
+            conn.execute(
+                """INSERT INTO provider_subscriptions
+                   (provider_id, display_name, cost_amount, currency, billing_cycle, subscribed_since,
+                    renewal_date, status, notes, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT (provider_id) DO UPDATE SET
+                     display_name = excluded.display_name, cost_amount = excluded.cost_amount,
+                     currency = excluded.currency, billing_cycle = excluded.billing_cycle,
+                     subscribed_since = COALESCE(?, provider_subscriptions.subscribed_since),
+                     renewal_date = excluded.renewal_date, status = excluded.status,
+                     notes = excluded.notes, updated_at = excluded.updated_at""",
+                (
+                    provider_id, display_name, cost_amount, currency, billing_cycle, anchor,
+                    renewal_date, status, notes, now, now,
+                    subscribed_since,
+                ),
+            )
+
+    def delete_provider_subscription(self, provider_id: str) -> None:
+        with self._connect() as conn:
+            conn.execute("DELETE FROM provider_subscriptions WHERE provider_id = ?", (provider_id,))
+
+    # --- Free-provider scouting snapshot (app/provider_scout.py) ---
+
+    def list_provider_candidates(self) -> list[dict]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT source, analyst, asset_class, closing_fills, winning_closing_fills, realized_pnl,
+                          win_rate, profit_factor, recommendation, evaluated_at
+                   FROM provider_candidates ORDER BY evaluated_at DESC"""
+            ).fetchall()
+        return [
+            {
+                "source": r[0],
+                "analyst": r[1] or None,
+                "asset_class": r[2],
+                "closing_fills": r[3],
+                "winning_closing_fills": r[4],
+                "realized_pnl": r[5],
+                "win_rate": r[6],
+                "profit_factor": r[7],
+                "recommendation": r[8],
+                "evaluated_at": r[9],
+            }
+            for r in rows
+        ]
+
+    def upsert_provider_candidate(
+        self,
+        *,
+        source: str,
+        analyst: str | None,
+        asset_class: str,
+        closing_fills: int,
+        winning_closing_fills: int,
+        realized_pnl: float,
+        win_rate: float | None,
+        profit_factor: float | None,
+        recommendation: str,
+    ) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            conn.execute(
+                """INSERT INTO provider_candidates
+                   (source, analyst, asset_class, closing_fills, winning_closing_fills, realized_pnl,
+                    win_rate, profit_factor, recommendation, evaluated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT (source, analyst, asset_class) DO UPDATE SET
+                     closing_fills = excluded.closing_fills, winning_closing_fills = excluded.winning_closing_fills,
+                     realized_pnl = excluded.realized_pnl, win_rate = excluded.win_rate,
+                     profit_factor = excluded.profit_factor, recommendation = excluded.recommendation,
+                     evaluated_at = excluded.evaluated_at""",
+                (
+                    source, analyst or "", asset_class, closing_fills, winning_closing_fills, realized_pnl,
+                    win_rate, profit_factor, recommendation, now,
+                ),
+            )
+
+    def delete_provider_candidate(self, source: str, analyst: str | None, asset_class: str) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "DELETE FROM provider_candidates WHERE source = ? AND analyst = ? AND asset_class = ?",
+                (source, analyst or "", asset_class),
+            )
+
+    def delete_provider_candidates_for_source(self, source: str) -> None:
+        """Called once a source is promoted (a provider_subscriptions row
+        now exists for it) -- every asset_class/analyst breakdown row
+        app/provider_scout.py had accumulated for it stops being a
+        "candidate" at once, not just the one row a caller happened to act
+        on."""
+        with self._connect() as conn:
+            conn.execute("DELETE FROM provider_candidates WHERE source = ?", (source,))
+
+    # --- Global (cross-account) fill replay for provider attribution (app/provider_value.py) ---
+
+    def list_filled_orders_with_signal_chronological(self) -> list[dict]:
+        """Every FILLED order across every account, oldest first, joined
+        with its originating signal's source/analyst/asset_class -- the
+        provider-attribution equivalent of `list_filled_orders_chronological`
+        (which is scoped to one account and doesn't need signal identity at
+        all). See app/provider_value.py for what this does and doesn't
+        cover (in particular: a managed-lifecycle stop/target/trailing exit
+        never reaches this table at all -- see that module's docstring)."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT o.account_id, o.symbol, o.side, o.filled_quantity, o.filled_price, o.executed_at,
+                          s.source, s.analyst, s.asset_class
+                   FROM orders o
+                   JOIN signals s ON s.id = o.signal_id
+                   WHERE o.status = 'filled'
+                   ORDER BY o.executed_at ASC, o.id ASC"""
+            ).fetchall()
+        return [
+            {
+                "account_id": r[0],
+                "symbol": r[1],
+                "side": r[2],
+                "filled_quantity": r[3],
+                "filled_price": r[4],
+                "executed_at": r[5],
+                "source": r[6],
+                "analyst": r[7],
+                "asset_class": r[8],
+            }
+            for r in rows
+        ]
 
     def list_signals_in_range(
         self,

@@ -266,6 +266,52 @@
     </section>
 
     <section class="panel full">
+      <h2>Signal provider value &amp; subscriptions <span class="count" id="provider-value-count"></span></h2>
+      <div class="section-note">Realized P&amp;L, win rate and profit factor per provider (and, within it, per asset class), replayed from this service's own confirmed executions and attributed by FIFO entry lot -- see <code>GET /providers/value</code>. A provider's subscription cost (below) is weighed against its realized P&amp;L for the "still worth paying for" verdict. <strong>Not counted here:</strong> a managed-lifecycle position's stop-loss/target/trailing exit never creates the order row this replay reads -- a provider whose losses are mostly caught by a stop, rather than an explicit close signal, will look better here than it really is. Corroborate against "Managed-lifecycle coverage" above before cancelling or promoting anything on this alone.</div>
+      <form class="inline-form" id="provider-subscription-form">
+        <label>Provider ID (= signal source)<input type="text" name="provider_id" required placeholder="telegram"></label>
+        <label>Display name<input type="text" name="display_name" placeholder="Telegram signals"></label>
+        <label>Cost per cycle<input type="number" step="any" min="0" name="cost_amount" value="0"></label>
+        <label>Currency<input type="text" name="currency" value="USD" style="width:60px"></label>
+        <label>Billing cycle
+          <select name="billing_cycle">
+            <option value="monthly">monthly</option>
+            <option value="annual">annual</option>
+            <option value="one_time">one_time</option>
+            <option value="free">free</option>
+          </select>
+        </label>
+        <label>Subscribed since<input type="text" name="subscribed_since" placeholder="YYYY-MM-DD (blank = today)"></label>
+        <label>Renewal date<input type="text" name="renewal_date" placeholder="YYYY-MM-DD (optional)"></label>
+        <label>Status
+          <select name="status">
+            <option value="active">active</option>
+            <option value="cancelled">cancelled</option>
+            <option value="candidate">candidate</option>
+          </select>
+        </label>
+        <label>Notes<input type="text" name="notes" placeholder="(optional)"></label>
+        <div class="actions"><button type="submit">Add / update subscription</button></div>
+      </form>
+      <div class="form-error" id="provider-subscription-form-error"></div>
+      <div id="provider-subscriptions-table"><div class="empty">Loading…</div></div>
+
+      <form class="inline-form" id="provider-value-filter-form" style="margin-top:14px;">
+        <label>Provider (source)<input type="text" name="source" placeholder="(any)"></label>
+        <label>Analyst<input type="text" name="analyst" placeholder="(any)"></label>
+        <label>Asset class<input type="text" name="asset_class" placeholder="(any)"></label>
+        <div class="actions"><button type="submit">Search</button> <button type="button" class="ghost" onclick="clearProviderValueFilter()">Clear</button></div>
+      </form>
+      <div id="provider-value-table"><div class="empty">Loading…</div></div>
+    </section>
+
+    <section class="panel full">
+      <h2>Free-provider candidates <span class="count" id="provider-candidates-count"></span></h2>
+      <div class="section-note">app/provider_scout.py's scheduled scan (default: once a day) of every signal source/analyst this service has real fill data for that ISN'T yet a tracked subscription above -- i.e. every "free" source already being executed. "Promote" adds it as a tracked (free, by default) subscription so its value shows in the table above and it stops being scouted here; it does NOT change routing or sizing.</div>
+      <div id="provider-candidates-table"><div class="empty">Loading…</div></div>
+    </section>
+
+    <section class="panel full">
       <h2>Recent signals <span class="count" id="signals-count"></span></h2>
       <div id="signals-table"><div class="empty">Loading…</div></div>
     </section>
@@ -937,6 +983,148 @@ async function loadEconomics() {
   }
 }
 
+// --- Signal-provider value / subscriptions / candidates ---
+
+function verdictPill(verdict) {
+  const kind = { keep: "ok", cancel_candidate: "bad", underperforming_free: "warn", insufficient_data: "muted" }[verdict] || "muted";
+  return pill(verdict || "—", kind);
+}
+
+async function loadProviderSubscriptions() {
+  const data = await fetchJSON("/providers/subscriptions");
+  const subs = data.subscriptions || [];
+  const rows = subs.map((s) => [
+    `<span class="mono">${escapeHtml(s.provider_id)}</span>`,
+    escapeHtml(s.display_name || "—"),
+    `<span class="num">${fmtNum(s.cost_amount)} ${escapeHtml(s.currency)}</span>`,
+    escapeHtml(s.billing_cycle),
+    escapeHtml(s.subscribed_since || "—"),
+    escapeHtml(s.renewal_date || "—"),
+    pill(s.status, s.status === "active" ? "ok" : s.status === "cancelled" ? "bad" : "muted"),
+    escapeHtml(s.notes || ""),
+    `<button class="danger" onclick="deleteProviderSubscription('${escapeAttr(s.provider_id)}')">Delete</button>`,
+  ]);
+  $("provider-subscriptions-table").innerHTML = table(
+    ["Provider", "Display name", "Cost/cycle", "Billing cycle", "Subscribed since", "Renewal date", "Status", "Notes", ""],
+    rows,
+    "No subscriptions tracked yet -- add one above, or promote a free candidate below."
+  );
+}
+
+async function deleteProviderSubscription(providerId) {
+  if (!confirm(`Delete the subscription tracking for "${providerId}"? This only stops cost tracking -- it does not touch routing rules.`)) return;
+  await deleteJSON(`/providers/${encodeURIComponent(providerId)}/subscription`);
+  await loadProviderSubscriptions();
+  await loadProviderValue();
+}
+
+$("provider-subscription-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const f = new FormData(e.target);
+  const errorEl = $("provider-subscription-form-error");
+  errorEl.textContent = "";
+  try {
+    await putJSON(`/providers/${encodeURIComponent(f.get("provider_id").trim())}/subscription`, {
+      display_name: f.get("display_name") || "",
+      cost_amount: parseFloat(f.get("cost_amount") || "0"),
+      currency: f.get("currency") || "USD",
+      billing_cycle: f.get("billing_cycle"),
+      subscribed_since: (f.get("subscribed_since") || "").trim() || null,
+      renewal_date: (f.get("renewal_date") || "").trim() || null,
+      status: f.get("status"),
+      notes: f.get("notes") || "",
+    });
+    e.target.reset();
+    await loadProviderSubscriptions();
+    await loadProviderValue();
+    await loadProviderCandidates();
+  } catch (err) {
+    errorEl.textContent = err.message;
+  }
+});
+
+function clearProviderValueFilter() {
+  $("provider-value-filter-form").reset();
+  loadProviderValue();
+}
+
+$("provider-value-filter-form").addEventListener("submit", (e) => {
+  e.preventDefault();
+  loadProviderValue();
+});
+
+async function loadProviderValue() {
+  const f = new FormData($("provider-value-filter-form"));
+  const params = new URLSearchParams();
+  for (const key of ["source", "analyst", "asset_class"]) {
+    const v = (f.get(key) || "").trim();
+    if (v) params.set(key, v);
+  }
+  const query = params.toString();
+  const data = await fetchJSON(`/providers/value${query ? "?" + query : ""}`);
+  const rows = data.providers || [];
+  $("provider-value-count").textContent = rows.length;
+  const tableRows = rows.map((r) => {
+    const sub = r.subscription;
+    const detail = r.provider_verdict_detail || {};
+    return [
+      `<span class="mono">${escapeHtml(r.source)}</span>`,
+      escapeHtml(r.analyst || "(none)"),
+      `<span class="mono">${escapeHtml(r.asset_class)}</span>`,
+      `<span class="num ${r.realized_pnl >= 0 ? "ok-text" : "bad-text"}">${fmtNum(r.realized_pnl)}</span>`,
+      `<span class="num">${r.win_rate === null || r.win_rate === undefined ? "—" : (r.win_rate * 100).toFixed(1) + "%"}</span>`,
+      `<span class="num">${fmtNum(r.profit_factor)}</span>`,
+      `<span class="num">${r.closing_fills}</span>`,
+      sub ? `${fmtNum(sub.cost_amount)} ${escapeHtml(sub.currency)}/${escapeHtml(sub.billing_cycle)}` : `<span class="empty">not tracked</span>`,
+      detail.net_value === undefined ? "—" : `<span class="num ${detail.net_value >= 0 ? "ok-text" : "bad-text"}">${fmtNum(detail.net_value)}</span>`,
+      verdictPill(r.provider_verdict),
+    ];
+  });
+  $("provider-value-table").innerHTML = table(
+    ["Provider", "Analyst", "Asset class", "Realized P&amp;L", "Win rate", "Profit factor", "Closing fills", "Subscription cost", "Net value (cost-adjusted)", "Verdict"],
+    tableRows,
+    "No confirmed-fill data for any provider yet."
+  );
+}
+
+async function loadProviderCandidates() {
+  const data = await fetchJSON("/providers/candidates");
+  const candidates = data.candidates || [];
+  $("provider-candidates-count").textContent = candidates.length;
+  const rows = candidates.map((c) => [
+    `<span class="mono">${escapeHtml(c.source)}</span>`,
+    escapeHtml(c.analyst || "(none)"),
+    `<span class="mono">${escapeHtml(c.asset_class)}</span>`,
+    `<span class="num ${c.realized_pnl >= 0 ? "ok-text" : "bad-text"}">${fmtNum(c.realized_pnl)}</span>`,
+    `<span class="num">${c.win_rate === null || c.win_rate === undefined ? "—" : (c.win_rate * 100).toFixed(1) + "%"}</span>`,
+    `<span class="num">${fmtNum(c.profit_factor)}</span>`,
+    `<span class="num">${c.closing_fills}</span>`,
+    pill(c.recommendation, c.recommendation === "promote" ? "ok" : c.recommendation === "not_promising" ? "bad" : "muted"),
+    c.evaluated_at || "—",
+    c.recommendation === "promote"
+      ? `<button onclick="promoteCandidate('${escapeAttr(c.source)}', ${c.analyst ? `'${escapeAttr(c.analyst)}'` : "null"})">Promote</button>`
+      : "",
+  ]);
+  $("provider-candidates-table").innerHTML = table(
+    ["Source", "Analyst", "Asset class", "Realized P&amp;L", "Win rate", "Profit factor", "Closing fills", "Recommendation", "Last evaluated", ""],
+    rows,
+    "No free-provider candidates recorded yet -- the scheduled scan runs once every PROVIDER_SCOUT_INTERVAL_SECONDS."
+  );
+}
+
+async function promoteCandidate(source, analyst) {
+  if (!confirm(`Promote "${source}" to a tracked (free) provider subscription? You can edit its cost/billing details afterward.`)) return;
+  try {
+    await postJSON("/providers/candidates/promote", { source, analyst });
+  } catch (err) {
+    alert(`Promote failed: ${err.message}`);
+    return;
+  }
+  await loadProviderSubscriptions();
+  await loadProviderValue();
+  await loadProviderCandidates();
+}
+
 async function refreshAll() {
   await Promise.allSettled([
     loadHealth(),
@@ -945,6 +1133,9 @@ async function refreshAll() {
     loadAccounts(),
     loadRoutingRules(),
     loadProviders(),
+    loadProviderSubscriptions(),
+    loadProviderValue(),
+    loadProviderCandidates(),
     loadSignals(),
     loadOrders(),
   ]);

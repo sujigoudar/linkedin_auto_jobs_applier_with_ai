@@ -14,7 +14,7 @@ import json
 import logging
 from collections import defaultdict
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
 
@@ -56,6 +56,8 @@ from app.lifecycle.manager import PositionLifecycleManager
 from app.models import AccountBalance, AssetClass
 from app.pricing import PriceMonitor
 from app.providers import SettingsOverride, load_provider_registry_from_store
+from app.provider_scout import ProviderScout
+from app.provider_value import compute_provider_value_report
 from app.rate_limit import INGRESS_RATE_LIMIT, limiter
 from app.reconciliation import OrderReconciler
 from app.routing import load_routing_config_from_store
@@ -136,6 +138,13 @@ price_monitor = PriceMonitor(
     brokers=brokers,
     interval_seconds=config.PRICE_MONITOR_INTERVAL_SECONDS,
 )
+provider_scout = ProviderScout(
+    store=store,
+    interval_seconds=config.PROVIDER_SCOUT_INTERVAL_SECONDS,
+    min_sample_size=config.PROVIDER_VALUE_MIN_SAMPLE_SIZE,
+    win_rate_threshold=config.PROVIDER_VALUE_WIN_RATE_THRESHOLD,
+    profit_factor_threshold=config.PROVIDER_VALUE_PROFIT_FACTOR_THRESHOLD,
+)
 
 # Pull-based sources only start if fully configured via env vars.
 _background_sources: list[SourceAdapter] = []
@@ -193,9 +202,11 @@ async def lifespan(app: FastAPI):
             logger.exception("failed to start source '%s'", source.name)
     await reconciler.start()
     await price_monitor.start()
+    await provider_scout.start()
 
     yield
 
+    await provider_scout.stop()
     await price_monitor.stop()
     await reconciler.stop()
     for source in _background_sources:
@@ -299,6 +310,12 @@ async def health() -> dict:
 
     price_monitor_ok = _fresh(price_monitor.last_success_at, config.PRICE_MONITOR_INTERVAL_SECONDS)
     reconciler_ok = _fresh(reconciler.last_success_at, config.RECONCILE_INTERVAL_SECONDS)
+    # Informational only -- deliberately NOT part of the overall `status`
+    # gate below. Unlike price_monitor/reconciler, nothing about position
+    # protection depends on this job; its interval also defaults to a full
+    # day, so gating overall health on it would report "degraded" for
+    # hours after every fresh install/restart despite nothing being wrong.
+    provider_scout_ok = _fresh(provider_scout.last_success_at, config.PROVIDER_SCOUT_INTERVAL_SECONDS)
     return {
         # OPS-01: `status` was hardcoded to "ok" regardless of the flags
         # right next to it -- a fresh startup (before either worker's
@@ -308,6 +325,7 @@ async def health() -> dict:
         "database_ok": db_ok,
         "price_monitor_ok": price_monitor_ok,
         "reconciler_ok": reconciler_ok,
+        "provider_scout_ok": provider_scout_ok,
     }
 
 
@@ -1117,6 +1135,141 @@ async def delete_analyst(provider_id: str, analyst_id: str, _owner: dict = Depen
     store.delete_config_analyst(provider_id, analyst_id)
     _reload_provider_registry()
     return {"provider_id": provider_id, "analyst_id": analyst_id, "status": "deleted"}
+
+
+# --- Signal-provider value/subscription management (app/provider_value.py,
+# app/provider_scout.py) -- cost/renewal tracking per provider, a
+# win-rate/profit-factor breakdown per provider AND asset class computed
+# from this service's own confirmed execution journal, and the scheduled
+# free-provider promotion scan's results. See both modules' docstrings for
+# the FIFO attribution methodology and its disclosed scope limits (most
+# importantly: a managed-lifecycle stop/target/trailing exit is NOT
+# visible to any of this).
+
+
+class ProviderSubscriptionRequest(BaseModel):
+    display_name: str = ""
+    cost_amount: float = Field(default=0.0, ge=0)
+    currency: str = "USD"
+    billing_cycle: str = "monthly"  # monthly | annual | one_time | free
+    subscribed_since: str | None = None  # ISO date; None keeps the existing anchor on an update, else defaults to today
+    renewal_date: str | None = None  # ISO date, informational
+    status: str = "active"  # active | cancelled | candidate
+    notes: str = ""
+
+    _reject_bool_cost = field_validator("cost_amount", mode="before")(_reject_bool_scaling_value)
+
+    @field_validator("billing_cycle")
+    @classmethod
+    def _valid_billing_cycle(cls, v: str) -> str:
+        if v not in ("monthly", "annual", "one_time", "free"):
+            raise ValueError("billing_cycle must be one of: monthly, annual, one_time, free")
+        return v
+
+    @field_validator("status")
+    @classmethod
+    def _valid_status(cls, v: str) -> str:
+        if v not in ("active", "cancelled", "candidate"):
+            raise ValueError("status must be one of: active, cancelled, candidate")
+        return v
+
+    @field_validator("subscribed_since", "renewal_date")
+    @classmethod
+    def _valid_iso_date(cls, v: str | None) -> str | None:
+        if v is not None:
+            date.fromisoformat(v)  # raises ValueError with a clear message if malformed
+        return v
+
+
+@app.get("/providers/subscriptions")
+async def list_provider_subscriptions(_owner: dict = Depends(require_owner_read)) -> dict:
+    return {"subscriptions": store.list_provider_subscriptions()}
+
+
+@app.put("/providers/{provider_id}/subscription")
+async def upsert_provider_subscription(
+    provider_id: str, request: ProviderSubscriptionRequest, _owner: dict = Depends(require_owner)
+) -> dict:
+    store.upsert_provider_subscription(
+        provider_id,
+        display_name=request.display_name,
+        cost_amount=request.cost_amount,
+        currency=request.currency,
+        billing_cycle=request.billing_cycle,
+        subscribed_since=request.subscribed_since,
+        renewal_date=request.renewal_date,
+        status=request.status,
+        notes=request.notes,
+    )
+    # This provider is now explicitly tracked -- it's no longer a "free,
+    # unadopted" candidate app/provider_scout.py should keep surfacing.
+    store.delete_provider_candidates_for_source(provider_id)
+    return {"provider_id": provider_id, "status": "saved"}
+
+
+@app.delete("/providers/{provider_id}/subscription")
+async def delete_provider_subscription(provider_id: str, _owner: dict = Depends(require_owner)) -> dict:
+    store.delete_provider_subscription(provider_id)
+    return {"provider_id": provider_id, "status": "deleted"}
+
+
+@app.get("/providers/value")
+async def get_provider_value(
+    source: str | None = None,
+    analyst: str | None = None,
+    asset_class: str | None = None,
+    _owner: dict = Depends(require_owner_read),
+) -> dict:
+    """Every (source, analyst, asset_class) this service has real,
+    confirmed-fill data for, with a subscription cost + "still worth
+    paying for" verdict attached wherever a `provider_subscriptions` row
+    exists for that source. Filter with any combination of the three
+    query params; `analyst=` (empty string) means "no analyst on the
+    signal," matching signals that never carried one."""
+    return {"providers": compute_provider_value_report(store, source=source, analyst=analyst, asset_class=asset_class)}
+
+
+@app.get("/providers/candidates")
+async def list_provider_candidates(_owner: dict = Depends(require_owner_read)) -> dict:
+    """app/provider_scout.py's last scheduled scan results for every free
+    (source, analyst, asset_class) that isn't yet a tracked
+    `provider_subscriptions` row -- see that module's docstring for the
+    recommendation logic and `PROVIDER_SCOUT_INTERVAL_SECONDS` for how
+    often this is recomputed."""
+    return {"candidates": store.list_provider_candidates()}
+
+
+class PromoteCandidateRequest(BaseModel):
+    source: str
+    analyst: str | None = None
+    display_name: str = ""
+    cost_amount: float = Field(default=0.0, ge=0)
+    billing_cycle: str = "free"
+
+    _reject_bool_cost = field_validator("cost_amount", mode="before")(_reject_bool_scaling_value)
+
+
+@app.post("/providers/candidates/promote")
+async def promote_provider_candidate(request: PromoteCandidateRequest, _owner: dict = Depends(require_owner)) -> dict:
+    """Adopt a scouted free provider as a formally tracked one -- creates a
+    `provider_subscriptions` row (defaulting to `cost_amount=0`/
+    `billing_cycle="free"`, since this is promoting something that was
+    free) and clears every candidate snapshot row for this `source` (see
+    `delete_provider_candidates_for_source`). Deliberately does NOT touch
+    routing rules or provider/analyst settings overrides -- promoting a
+    provider here is a cost/value-tracking decision, not a "start trading
+    this more aggressively" one; if this source doesn't already have a
+    routing rule, its signals were never actually being executed, and this
+    endpoint doesn't change that."""
+    store.upsert_provider_subscription(
+        request.source,
+        display_name=request.display_name or request.source,
+        cost_amount=request.cost_amount,
+        billing_cycle=request.billing_cycle,
+        status="active",
+    )
+    store.delete_provider_candidates_for_source(request.source)
+    return {"source": request.source, "status": "promoted"}
 
 
 def _managed_lifecycle_snapshot() -> list[dict]:

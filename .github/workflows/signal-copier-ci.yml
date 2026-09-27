@@ -51,7 +51,7 @@ jobs:
                app/sources/text_parser.py app/sources/base.py app/brokers/alpaca.py app/brokers/base.py \
                app/brokers/paper.py app/brokers/ccxt_broker.py app/brokers/signalstack.py app/brokers/ninjatrader.py \
                app/config.py app/auth.py app/rate_limit.py app/context/sec_edgar.py app/context/fred.py app/context/fx.py \
-               app/capital_allocator.py \
+               app/capital_allocator.py app/provider_value.py app/provider_scout.py \
                --follow-imports=silent
 
       - name: Run tests

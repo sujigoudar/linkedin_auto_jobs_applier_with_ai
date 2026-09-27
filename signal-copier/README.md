@@ -140,6 +140,79 @@ alongside the effective settings it resolves to for each destination
 account, so "what does this analyst's signal actually do here" is
 answerable without doing the account->provider->analyst merge by hand.
 
+## Signal-provider value analysis & subscription management
+
+Separate from the settings-inheritance layer above: `app/provider_value.py`,
+`app/provider_scout.py` and a "Signal provider value & subscriptions"
+dashboard panel answer "is this provider still worth what I'm paying for
+it" and "is any free source I'm already trading worth adopting properly."
+
+**Subscription cost tracking** (`provider_subscriptions`, one row per
+provider — `PUT/DELETE /providers/{id}/subscription`, `GET
+/providers/subscriptions`): cost per billing cycle, currency, billing
+cycle (`monthly`/`annual`/`one_time`/`free`), when you started tracking it
+(`subscribed_since`, the anchor for the cost-to-date estimate below — kept
+across edits unless you explicitly change it), an informational next
+renewal date, and a status. Purely a cost record; it never touches routing
+or sizing.
+
+**Value calculation** (`app/provider_value.py`, `GET /providers/value`,
+filterable by `source`/`analyst`/`asset_class`): realized P&L, win rate
+and profit factor per (provider, analyst, asset class), replayed from this
+service's own confirmed execution journal — never self-reported. Two
+providers can share one destination account/symbol (a second analyst
+adding to a position the first one opened), so this uses **FIFO lot
+attribution**, not `app/economics.py`'s per-account volume-weighted
+average: each entry fill opens a lot tagged with its own signal's
+provider, and a reducing fill consumes those lots oldest-first, crediting
+each lot's realized P&L to ITS provider regardless of which provider's
+signal (if any) triggered the close. See that module's own docstring for
+the full methodology.
+
+**Read this before acting on a "cancel this provider" number:** a
+managed-lifecycle position's stop-loss, profit-target, or trailing exit
+fill **never appears in this calculation at all** — those are applied
+directly to the tracked position/lifecycle state (see "Managed
+lifecycle" above) and never create the `orders` row this replay reads (the
+same disclosed limitation `app/economics.py`'s account-level P&L already
+has). A provider whose losing trades are mostly caught by a stop, rather
+than an explicit CLOSE signal, will look artificially better here than it
+really is. Corroborate against the dashboard's "Managed-lifecycle
+coverage" panel first.
+
+**"Still worth paying for" verdict:** each provider's totals (summed
+across every analyst/asset_class) are compared against
+`PROVIDER_VALUE_MIN_SAMPLE_SIZE` closing fills (default 10),
+`PROVIDER_VALUE_WIN_RATE_THRESHOLD` (default 0.4) and
+`PROVIDER_VALUE_PROFIT_FACTOR_THRESHOLD` (default 1.0) — a disclosed
+heuristic, not a claim of statistical significance:
+
+- `insufficient_data` — fewer closing fills than the sample-size floor.
+- `cancel_candidate` — win rate AND profit factor both poor, AND
+  realized P&L minus an estimated cost-to-date (`cost_amount` × billing
+  cycles elapsed since `subscribed_since` — a coarse estimate, not
+  proration-exact) is negative.
+- `underperforming_free` — same poor performance, but `cost_amount` is 0
+  (free/untracked) so there's no $ to weigh it against.
+- `keep` — otherwise.
+
+**Scheduled free-provider scouting** (`app/provider_scout.py`, a
+background loop started the same way as `OrderReconciler`/`PriceMonitor`,
+interval `PROVIDER_SCOUT_INTERVAL_SECONDS`, default once a day): every
+(source, analyst, asset_class) with real fill data that ISN'T yet a
+`provider_subscriptions` row — i.e. every free source already being
+executed — gets the same win-rate/profit-factor evaluation (minus the
+cost half, since there's nothing to weigh yet) and a `promote` /
+`not_promising` / `insufficient_data` recommendation, persisted to
+`provider_candidates` (`GET /providers/candidates`) so the dashboard shows
+"last evaluated at X" without recomputing the full replay on every page
+load. **Promoting a candidate** (`POST /providers/candidates/promote`)
+only creates a `provider_subscriptions` row (defaulting to
+`cost_amount=0`/`billing_cycle="free"`) and clears its candidate
+snapshot — it deliberately does NOT create a routing rule or change any
+provider/analyst setting; a source with no routing rule was never
+actually being executed, and promoting it here doesn't change that.
+
 ## Multi-asset routing, account selection, and balances
 
 Direct, honest answers to how this actually behaves today — not what a
@@ -989,6 +1062,7 @@ an environment with normal internet access before relying on this.
 | NinjaTrader signal *source* | 🚧 Stub — every open-source NinjaTrader bridge found (TradeRouter, ninja-webhook, tv-ninjatrader-bridge) is one-way (external signal → NinjaTrader order); none reads trade/fill events back out. Doing that needs a custom NinjaScript AddOn this project can't write and verify without the actual platform. See the file's docstring. |
 | Asset-class routing gate (a signal can't reach a broker that can't trade its asset class) | ✅ Working, tested — declared for Alpaca/IBKR (equity-only) and ccxt (crypto-only); undeclared (unrestricted) elsewhere pending verification. See "Multi-asset routing" above. |
 | Balance/margin tracking per broker | ✅ Working, tested for **Alpaca** (`GET /v2/account` — cash/equity/buying_power/maintenance_margin) via `get_account_balance`/`GET /accounts/{account_id}/balance`. Deliberately not implemented for **ccxt** (spot crypto has no single account-wide balance figure — see `CCXTBroker`'s docstring). Read-only observability only — sizing (`app/risk.py`) still doesn't read live buying power before submitting an order. |
+| Signal-provider value analysis & subscription cost tracking | ✅ Working, tested (`app/provider_value.py`/`app/provider_scout.py`, `GET /providers/value`/`/providers/subscriptions`/`/providers/candidates`, dashboard's "Signal provider value & subscriptions" panel) — FIFO-lot P&L attribution per provider/analyst/asset class, a cost-vs-value verdict, and a scheduled scan recommending free providers to promote. **Does NOT see a managed-lifecycle stop/target/trailing exit at all** (same gap as account economics below) — see that module's docstring before trusting a "cancel this provider" verdict. |
 | Live price feed driving trailing/target monitoring (`PriceMonitor`) | ✅ Working, tested for **ccxt, Alpaca, and IBKR** (REST/RPC polling, not a websocket/persistent subscription). Other brokers' (SignalStack/MT5/MetaApi/NinjaTrader/Rithmic) managed-lifecycle positions stay protected but their trailing stop doesn't move between fill/exit events yet — see "Continuous monitoring" above. |
 
 The Telegram/Discord/Slack/SMS/Twitter parsers all share one generic
