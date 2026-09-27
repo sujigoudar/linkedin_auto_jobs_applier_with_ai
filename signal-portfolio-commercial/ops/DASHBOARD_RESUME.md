@@ -22,7 +22,7 @@ tests; never fabricate data to make an empty state look populated.
 
 ## Where things stand
 
-Four slices are DONE:
+Six slices are DONE:
 - AD-07 Products admin screen + PU-02 public catalog: real model/
   service/routes/templates/migration, 26 tests, load-bearing verified
   (stale-revision guard, `product_visibility` RLS policy).
@@ -54,8 +54,16 @@ Four slices are DONE:
   migration call a shared RLS-application helper with the CURRENT,
   ever-growing `_TENANT_SCOPED_TABLES` tuple -- pin it to an explicit,
   frozen snapshot of the tables that existed at that point in history.
+- AD-04 Portfolio Lab builder: a real research-run declaration
+  (`GET`/`POST /ops/research/new`) and a real preview that recomputes
+  the exact candidate denominator by reusing Phase 04's own
+  combinatorics (extended with configurable min/max subset size, kept
+  backward compatible). Only "equal_capital" is an implemented recipe
+  -- any other requested recipe is a real, named blocker, never
+  silently accepted. No job queue exists, so "Confirm: Enqueue
+  research job" is not implemented.
 
-Full suite is 293 tests, ruff and mypy both green (**use `python3 -m
+Full suite is 311 tests, ruff and mypy both green (**use `python3 -m
 ruff`/`python3 -m mypy`/`python3 -m pytest` explicitly** -- this sandbox
 has a stray `uv tool`-installed `ruff`/`mypy` shadowing the project's
 real declared versions on bare `PATH`, which produced a false-negative
@@ -71,10 +79,10 @@ you need to repeat this for a future demo; nothing from that throwaway
 demo is checked into the repo itself.
 
 See `dashboard_state.json`'s `current_slice`/`second_slice`/
-`third_slice`/`fourth_slice`/`fifth_slice` for the exact file lists and
-what was deliberately left unbuilt in each. 60 of 66 screens (AD-01,
-AD-02, AD-03, AD-08 partially done) remain -- pick the next one
-following the steps below. **If you add a new table to
+`third_slice`/`fourth_slice`/`fifth_slice`/`sixth_slice` for the exact
+file lists and what was deliberately left unbuilt in each. 59 of 66
+screens (AD-01, AD-02, AD-03, AD-04, AD-08 partially done) remain --
+pick the next one following the steps below. **If you add a new table to
 `_TENANT_SCOPED_TABLES` in app/db.py, pin any EARLIER migration that
 already calls `_apply_row_level_security` with no explicit `tables`
 argument to its own frozen snapshot of the tables that existed at that

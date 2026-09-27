@@ -1,0 +1,56 @@
+{% extends "_base.html" %}
+{% block title %}Research run {{ run.research_run_id[:8] }}{% endblock %}
+{% block content %}
+<p><a href="/ops/research/new">&larr; Research runs</a></p>
+<h1>Research run declaration</h1>
+
+<div class="panel">
+  <h2>Universe selection</h2>
+  <p>{{ run.sleeve_ids | length }} sleeve(s) declared.</p>
+</div>
+
+<div class="panel">
+  <h2>Weights/cash bounds</h2>
+  <table>
+    <tbody>
+      <tr><th>Cash allocation</th><td>{{ run.cash_bps }} bps</td></tr>
+      <tr><th>Sleeve ceiling</th><td>{{ run.max_sleeve_bps }} bps</td></tr>
+      <tr><th>Cluster ceiling</th><td>{{ run.max_cluster_bps }} bps</td></tr>
+      <tr><th>Subset size</th><td>{{ run.subset_min }}&ndash;{{ run.subset_max }}</td></tr>
+      <tr><th>Recipes</th><td>{{ run.recipes | join(", ") or "none selected" }}</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<div class="panel">
+  <h2>Training/holdout</h2>
+  <table>
+    <tbody>
+      <tr><th>Training sessions</th><td>{{ run.train_sessions }}</td></tr>
+      <tr><th>Test sessions</th><td>{{ run.test_sessions }}</td></tr>
+      <tr><th>Holdout fraction</th><td>{{ run.holdout_fraction }}</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<div class="panel">
+  <h2>Budget and preflight</h2>
+  {% if preview.blockers %}
+  <ul class="blockers">
+    {% for blocker in preview.blockers %}
+    <li>{{ blocker }}</li>
+    {% endfor %}
+  </ul>
+  <p class="help">Infeasible candidates are retained with reasons, not silently dropped.</p>
+  {% else %}
+  <table>
+    <tbody>
+      <tr><th>Declared candidates</th><td>{{ preview.declared_candidates_count }}</td></tr>
+      <tr><th>Benchmarks</th><td>{{ preview.benchmark_count }}</td></tr>
+      <tr><th>Expected resource budget</th><td>{{ preview.expected_resource_budget_estimated }} resource_units <span class="badge badge-unknown">ESTIMATED</span></td></tr>
+    </tbody>
+  </table>
+  <p class="help">Not a guaranteed runtime. "Confirm: Enqueue research job" is not implemented -- there is no job queue in this build.</p>
+  {% endif %}
+</div>
+{% endblock %}

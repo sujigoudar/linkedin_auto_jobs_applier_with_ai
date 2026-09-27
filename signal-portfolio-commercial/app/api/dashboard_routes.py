@@ -34,9 +34,18 @@ what is and is not implemented yet.
   refuses a stale review (the product changed since it was requested).
   Approving moves a Product to APPROVED, never to PUBLISHED -- release
   is not publication.
+- AD-04 "Portfolio Lab builder": create/save a real research-run
+  declaration (candidate universe drawn from real Sleeve rows) and a
+  real preview that computes the exact candidate denominator (reusing
+  app/services/portfolio_research.py's own combinatorics). "Confirm:
+  Enqueue research job only" is NOT implemented -- there is no job
+  queue, and only the "equal_capital" recipe actually exists; any other
+  requested recipe is a real, named preview blocker, never silently
+  accepted.
 """
 from __future__ import annotations
 
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
@@ -70,6 +79,13 @@ from app.services.release_review import (
     get_release_review,
     list_release_reviews,
     request_release_review,
+)
+from app.services.research_run import (
+    InvalidResearchRunError,
+    compute_research_run_preview,
+    create_research_run,
+    get_research_run,
+    list_research_runs,
 )
 from app.services.rights_registry import list_rights_grants
 from app.services.sleeve_admin import InvalidSleeveDraftError, create_sleeve, list_sleeves
@@ -363,6 +379,99 @@ def decide_release_review_route(
         )
 
     return RedirectResponse(url=f"/ops/reviews/{release_review_id}", status_code=303)
+
+
+def _require_research_run_admin(scope: TenantScope) -> None:
+    try:
+        require_permission(scope.role, "run_research_job")
+    except PermissionDenied as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+
+@router.get("/ops/research/new")
+def research_run_list_page(
+    request: Request,
+    scope: TenantScope = Depends(get_current_scope),
+    session: Session = Depends(get_db_session),
+):
+    _require_research_run_admin(scope)
+    set_tenant_scope(session, scope.tenant_id)
+    runs = list_research_runs(session, tenant_id=scope.tenant_id)
+    sleeves = list_sleeves(session, tenant_id=scope.tenant_id)
+    return templates.TemplateResponse(request, "ad04_research_runs.html", {"runs": runs, "sleeves": sleeves})
+
+
+@router.post("/ops/research/new")
+def create_research_run_route(
+    request: Request,
+    sleeve_ids: list[str] = Form([]),
+    recipes: list[str] = Form([]),
+    subset_min: int = Form(2),
+    subset_max: int = Form(5),
+    cash_bps: int = Form(1500),
+    max_sleeve_bps: int = Form(3500),
+    max_cluster_bps: int = Form(5000),
+    train_sessions: int = Form(252),
+    test_sessions: int = Form(63),
+    holdout_fraction: str = Form("0.20"),
+    cost_scenario_ids: str = Form(""),
+    resource_profile_id: str = Form(""),
+    scope: TenantScope = Depends(get_current_scope),
+    session: Session = Depends(get_db_session),
+):
+    _require_research_run_admin(scope)
+    set_tenant_scope(session, scope.tenant_id)
+    try:
+        try:
+            holdout_fraction_decimal = Decimal(holdout_fraction)
+        except InvalidOperation as exc:
+            raise InvalidResearchRunError(f"invalid holdout_fraction: {holdout_fraction!r}") from exc
+
+        run = create_research_run(
+            session,
+            tenant_id=scope.tenant_id,
+            sleeve_ids=sleeve_ids,
+            recipes=recipes,
+            subset_min=subset_min,
+            subset_max=subset_max,
+            cash_bps=cash_bps,
+            max_sleeve_bps=max_sleeve_bps,
+            max_cluster_bps=max_cluster_bps,
+            train_sessions=train_sessions,
+            test_sessions=test_sessions,
+            holdout_fraction=holdout_fraction_decimal,
+            cost_scenario_ids=[s.strip() for s in cost_scenario_ids.split(",") if s.strip()],
+            resource_profile_id=resource_profile_id or None,
+        )
+        session.commit()
+    except InvalidResearchRunError as exc:
+        session.rollback()
+        set_tenant_scope(session, scope.tenant_id)
+        runs = list_research_runs(session, tenant_id=scope.tenant_id)
+        sleeves = list_sleeves(session, tenant_id=scope.tenant_id)
+        return templates.TemplateResponse(
+            request,
+            "ad04_research_runs.html",
+            {"runs": runs, "sleeves": sleeves, "error": str(exc)},
+            status_code=400,
+        )
+    return RedirectResponse(url=f"/ops/research/new/{run.research_run_id}", status_code=303)
+
+
+@router.get("/ops/research/new/{research_run_id}")
+def research_run_detail_page(
+    research_run_id: str,
+    request: Request,
+    scope: TenantScope = Depends(get_current_scope),
+    session: Session = Depends(get_db_session),
+):
+    _require_research_run_admin(scope)
+    set_tenant_scope(session, scope.tenant_id)
+    run = get_research_run(session, research_run_id, tenant_id=scope.tenant_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="not found")
+    preview = compute_research_run_preview(session, run, tenant_id=scope.tenant_id)
+    return templates.TemplateResponse(request, "ad04_research_run_detail.html", {"run": run, "preview": preview})
 
 
 @router.get("/ops/rights")

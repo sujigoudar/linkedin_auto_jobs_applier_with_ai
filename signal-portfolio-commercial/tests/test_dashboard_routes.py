@@ -559,3 +559,111 @@ def test_decide_approve_over_http_moves_product_to_approved(db_session):
 
     product_page = client.get(detail_url, headers=proposer_headers)
     assert "APPROVED" in product_page.text
+
+
+def test_research_runs_page_requires_authentication(db_session):
+    client = _client(db_session)
+    response = client.get("/ops/research/new")
+    assert response.status_code == 401
+
+
+def test_research_runs_page_denies_a_role_without_run_research_job(db_session):
+    client = _client(db_session)
+    headers = _auth_headers(role=MembershipRole.REVIEWER)
+    response = client.get("/ops/research/new", headers=headers)
+    assert response.status_code == 403
+
+
+def test_research_runs_page_shows_the_real_empty_state(db_session):
+    client = _client(db_session)
+    response = client.get("/ops/research/new", headers=_auth_headers())
+    assert response.status_code == 200
+    assert "Select a rights-qualified universe" in response.text
+
+
+def test_create_research_run_then_view_preview(db_session):
+    client = _client(db_session)
+    headers = _auth_headers()
+
+    sleeve_response = client.post("/ops/research/universe", data=_SLEEVE_FORM_FIELDS, headers=headers)
+    assert sleeve_response.status_code == 303
+
+    universe_page = client.get("/ops/research/universe", headers=headers)
+    assert "north-star-research" in universe_page.text
+
+    from app.models.sleeve import Sleeve
+
+    sleeve_id = db_session.query(Sleeve).filter_by(provider="north-star-research").one().sleeve_id
+
+    create_response = client.post(
+        "/ops/research/new",
+        data={
+            "sleeve_ids": [sleeve_id],
+            "recipes": ["equal_capital"],
+            "subset_min": "1",
+            "subset_max": "1",
+            "cash_bps": "1500",
+            "max_sleeve_bps": "3500",
+            "max_cluster_bps": "5000",
+            "train_sessions": "252",
+            "test_sessions": "63",
+            "holdout_fraction": "0.20",
+            "cost_scenario_ids": "scenario-1",
+            "resource_profile_id": "profile-1",
+        },
+        headers=headers,
+    )
+    assert create_response.status_code == 303
+    detail_url = create_response.headers["location"]
+
+    detail_response = client.get(detail_url, headers=headers)
+    assert detail_response.status_code == 200
+    assert "Declared candidates" in detail_response.text
+    assert "ESTIMATED" in detail_response.text
+
+
+def test_create_research_run_rejects_invalid_subset_bounds_over_http(db_session):
+    client = _client(db_session)
+    headers = _auth_headers()
+
+    response = client.post(
+        "/ops/research/new",
+        data={
+            "recipes": ["equal_capital"],
+            "subset_min": "5",
+            "subset_max": "2",
+            "cash_bps": "1500",
+            "max_sleeve_bps": "3500",
+            "max_cluster_bps": "5000",
+            "train_sessions": "252",
+            "test_sessions": "63",
+            "holdout_fraction": "0.20",
+        },
+        headers=headers,
+    )
+    assert response.status_code == 400
+    assert "invalid subset bounds" in response.text
+
+
+def test_research_run_detail_flags_an_unimplemented_recipe_over_http(db_session):
+    client = _client(db_session)
+    headers = _auth_headers()
+
+    create_response = client.post(
+        "/ops/research/new",
+        data={
+            "recipes": ["hrp"],
+            "subset_min": "2",
+            "subset_max": "5",
+            "cash_bps": "1500",
+            "max_sleeve_bps": "3500",
+            "max_cluster_bps": "5000",
+            "train_sessions": "252",
+            "test_sessions": "63",
+            "holdout_fraction": "0.20",
+        },
+        headers=headers,
+    )
+    detail_url = create_response.headers["location"]
+    response = client.get(detail_url, headers=headers)
+    assert "RECIPE_NOT_IMPLEMENTED:hrp" in response.text

@@ -45,6 +45,19 @@ def test_exactly_twelve_sleeves_is_allowed():
     assert len(subsets) > 0
 
 
+def test_enumerate_candidate_subsets_honors_custom_min_and_max_size():
+    sleeves = ["a", "b", "c", "d"]
+    subsets = enumerate_candidate_subsets(sleeves, min_size=3, max_size=3)
+    assert all(len(s) == 3 for s in subsets)
+    expected_count = len(list(itertools.combinations(sleeves, 3)))
+    assert len(subsets) == expected_count
+
+
+def test_enumerate_candidate_subsets_rejects_an_invalid_size_range():
+    with pytest.raises(ValueError):
+        enumerate_candidate_subsets(["a", "b"], min_size=5, max_size=2)
+
+
 def test_benchmark_subsets_are_single_sleeve_only():
     sleeves = ["a", "b", "c"]
     benchmarks = benchmark_subsets(sleeves)

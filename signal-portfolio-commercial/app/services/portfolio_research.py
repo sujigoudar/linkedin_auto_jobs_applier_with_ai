@@ -52,17 +52,27 @@ def _check_universe_size(sleeve_ids: Sequence[str]) -> None:
         )
 
 
-def enumerate_candidate_subsets(sleeve_ids: Sequence[str]) -> list[tuple[str, ...]]:
-    """Every subset of size MIN_SLEEVES_PER_CANDIDATE..MAX_SLEEVES_PER_CANDIDATE
-    from the eligible universe -- "enumerate every subset within the
-    approved run universe and size bound... do not silently drop awkward
-    subsets." Deterministic order (sorted sleeve_ids, combinations in their
-    natural itertools order) so re-running against the same universe always
-    produces the same candidate list in the same order."""
+def enumerate_candidate_subsets(
+    sleeve_ids: Sequence[str],
+    *,
+    min_size: int = MIN_SLEEVES_PER_CANDIDATE,
+    max_size: int = MAX_SLEEVES_PER_CANDIDATE,
+) -> list[tuple[str, ...]]:
+    """Every subset of size min_size..max_size (AD-04's own "Minimum
+    sleeves"/"Maximum sleeves" fields) from the eligible universe --
+    "enumerate every subset within the approved run universe and size
+    bound... do not silently drop awkward subsets." Deterministic order
+    (sorted sleeve_ids, combinations in their natural itertools order)
+    so re-running against the same universe always produces the same
+    candidate list in the same order. Defaults to the module's own
+    2..5 bounds -- callers that never pass min_size/max_size see
+    unchanged behavior."""
+    if min_size < 1 or max_size < min_size:
+        raise ValueError(f"invalid subset bounds: min_size={min_size}, max_size={max_size}")
     _check_universe_size(sleeve_ids)
     ordered = sorted(set(sleeve_ids))
     subsets: list[tuple[str, ...]] = []
-    for size in range(MIN_SLEEVES_PER_CANDIDATE, min(MAX_SLEEVES_PER_CANDIDATE, len(ordered)) + 1):
+    for size in range(min_size, min(max_size, len(ordered)) + 1):
         subsets.extend(itertools.combinations(ordered, size))
     return subsets
 

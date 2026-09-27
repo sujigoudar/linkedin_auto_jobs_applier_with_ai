@@ -1,0 +1,89 @@
+{% extends "_base.html" %}
+{% block title %}Portfolio Lab builder{% endblock %}
+{% block content %}
+<h1>Portfolio Lab builder</h1>
+
+{% if error %}
+<div class="conflict">{{ error }}</div>
+{% endif %}
+
+<div class="panel">
+  <h2>Saved research runs</h2>
+  {% if runs %}
+  <table>
+    <thead><tr><th>Run</th><th>Sleeves</th><th>Recipes</th><th>Created</th></tr></thead>
+    <tbody>
+      {% for run in runs %}
+      <tr>
+        <td><a href="/ops/research/new/{{ run.research_run_id }}">{{ run.research_run_id[:8] }}&hellip;</a></td>
+        <td>{{ run.sleeve_ids | length }}</td>
+        <td>{{ run.recipes | join(", ") or "none selected" }}</td>
+        <td>{{ run.created_at.date() }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="empty-state">
+    <p>Select a rights-qualified universe before preparing a run.</p>
+    <p><a href="/ops/research/universe">Research universe and sleeves &rarr;</a></p>
+  </div>
+  {% endif %}
+</div>
+
+{% if sleeves %}
+<div class="panel">
+  <h2>Declare a new run</h2>
+  <form method="post" action="/ops/research/new">
+    <label>Universe (sleeves)</label>
+    {% for sleeve in sleeves %}
+    <label style="font-weight:normal; display:block;">
+      <input type="checkbox" name="sleeve_ids" value="{{ sleeve.sleeve_id }}" style="width:auto; display:inline;">
+      {{ sleeve.provider }} / {{ sleeve.analyst }} ({{ sleeve.strategy_horizon }})
+    </label>
+    {% endfor %}
+    <p class="help">Whole approved universe enumerated. Rights checked separately.</p>
+
+    <label>Recipes</label>
+    <label style="font-weight:normal; display:block;"><input type="checkbox" name="recipes" value="equal_capital" style="width:auto; display:inline;"> equal_capital (implemented)</label>
+    <label style="font-weight:normal; display:block;"><input type="checkbox" name="recipes" value="inverse_volatility" style="width:auto; display:inline;"> inverse_volatility (not implemented)</label>
+    <label style="font-weight:normal; display:block;"><input type="checkbox" name="recipes" value="hrp" style="width:auto; display:inline;"> hrp (not implemented)</label>
+    <label style="font-weight:normal; display:block;"><input type="checkbox" name="recipes" value="min_cvar" style="width:auto; display:inline;"> min_cvar (not implemented)</label>
+    <p class="help">Only equal_capital is an implemented, deterministic recipe. Others are recorded but always flagged as a blocker.</p>
+
+    <label for="subset_min">Minimum sleeves</label>
+    <input id="subset_min" name="subset_min" type="number" value="2" min="1" required>
+
+    <label for="subset_max">Maximum sleeves</label>
+    <input id="subset_max" name="subset_max" type="number" value="5" min="1" required>
+
+    <label for="cash_bps">Cash allocation (bps)</label>
+    <input id="cash_bps" name="cash_bps" type="number" value="1500" min="0" max="10000" required>
+
+    <label for="max_sleeve_bps">Sleeve ceiling (bps)</label>
+    <input id="max_sleeve_bps" name="max_sleeve_bps" type="number" value="3500" min="0" max="10000" required>
+
+    <label for="max_cluster_bps">Cluster ceiling (bps)</label>
+    <input id="max_cluster_bps" name="max_cluster_bps" type="number" value="5000" min="0" max="10000" required>
+
+    <label for="train_sessions">Training sessions</label>
+    <input id="train_sessions" name="train_sessions" type="number" value="252" min="1" required>
+
+    <label for="test_sessions">Test sessions</label>
+    <input id="test_sessions" name="test_sessions" type="number" value="63" min="1" required>
+
+    <label for="holdout_fraction">Holdout fraction</label>
+    <input id="holdout_fraction" name="holdout_fraction" type="text" value="0.20" required>
+    <p class="help">Strictly between 0 and 1. Lock dataset before search -- no repeated tuning on holdout.</p>
+
+    <label for="cost_scenario_ids">Costs/stress scenarios (comma separated)</label>
+    <input id="cost_scenario_ids" name="cost_scenario_ids" type="text">
+
+    <label for="resource_profile_id">Resource profile</label>
+    <input id="resource_profile_id" name="resource_profile_id" type="text">
+
+    <button type="submit" style="margin-top:1rem;">Save run draft</button>
+  </form>
+</div>
+{% endif %}
+{% endblock %}

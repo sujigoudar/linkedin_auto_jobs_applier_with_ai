@@ -24,6 +24,7 @@ import app.models.product  # noqa: E402,F401
 import app.models.publication  # noqa: E402,F401
 import app.models.publisher_writer_claim  # noqa: E402,F401
 import app.models.release_review  # noqa: E402,F401
+import app.models.research_run  # noqa: E402,F401
 import app.models.rights  # noqa: E402,F401
 import app.models.sleeve  # noqa: E402,F401
 import app.models.tenancy  # noqa: E402,F401
