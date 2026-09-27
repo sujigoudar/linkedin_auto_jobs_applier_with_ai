@@ -41,7 +41,17 @@ readable companion: how to actually pick the work back up.
   historical sleeve data this environment doesn't have, and fabricating
   it would violate the build's own rules. See `commercial_state.json`'s
   `04_portfolio_research_engine` notes.
-- **Phases 05-12**: not started. See `commercial_state.json` for phase-specific
+- **Phase 05 (publication/copy lifecycle)**: partially done -- the durable
+  `PublicationIntent` write-path only. `app/models/publication.py`
+  (mirrors `spec/contracts/PublicationIntent.schema.json` field-for-
+  field, with the idempotency_key and natural-key uniqueness
+  constraints enforced at the DB level), `app/services/publication.py`
+  (idempotent `enqueue_intent`, fail-closed `transition` state machine).
+  Explicitly NOT built: any destination adapter to actually send a
+  queued intent anywhere, cohorts/consent/audience determination,
+  follower allocation, capacity/fairness tracking. See
+  `commercial_state.json`'s `05_publication_customer_copy_lifecycle` notes.
+- **Phases 06-12**: not started. See `commercial_state.json` for phase-specific
   notes carried forward from the original request (e.g. the Collective2 API4
   TIF inconsistency to resolve, PAMM/MAM being simulation-only in this build).
 
@@ -80,12 +90,13 @@ directory of pytest's tmp dir (this bit us once; the fix is in
 
 ## Next step
 
-Phase 05: publication and customer copy lifecycle (canonical portfolio
-events, durable writer/outbox, cohorts, mandates, cancellation/wind-down
-without abandoning exposure). Phase 04's remaining data-dependent pieces
-(correlation/complementarity, the other three recipes, walk-forward
-evaluation, portfolio_version) stay open until real authorized historical
-sleeve data is available -- do not fabricate it to unblock them. This is
-also a natural point to add a FastAPI `commercial_api` app skeleton and
-real Alembic migrations, since the ledger/tenancy/rights/sleeve schemas
+Phase 06: Collective2 API4 publisher -- the first destination adapter
+that would actually consume a QUEUED PublicationIntent and drive it
+through `transition()` toward ACKNOWLEDGED/REJECTED/UNKNOWN using a real
+external acknowledgment. Per the original request, resolve the API4
+price-only-modification/TIF inconsistency against current Collective2
+docs before implementing (no sandbox exists for this -- no live
+publishing during this build regardless). This is also a natural point
+to add a FastAPI `commercial_api` app skeleton and real Alembic
+migrations, since the ledger/tenancy/rights/sleeve/publication schemas
 are now stable enough to give a first migration something real to cover.
