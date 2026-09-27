@@ -3,6 +3,7 @@ sqlalchemy>=2.0
 psycopg[binary]>=3.1
 pydantic>=2.0
 pydantic-settings>=2.0
+pyjwt>=2.8
 alembic
 pytest
 pytest-asyncio

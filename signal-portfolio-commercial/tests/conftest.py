@@ -24,8 +24,9 @@ from contextlib import closing
 from pathlib import Path
 
 import pytest
+from sqlalchemy import text
 
-from app.db import Base, make_engine, make_session_factory
+from app.db import Base, enable_row_level_security, make_engine, make_session_factory
 
 _PG_BIN = Path("/usr/lib/postgresql/16/bin")
 
@@ -97,7 +98,21 @@ def postgres_cluster(tmp_path_factory):
         _run_as_postgres(
             [str(_PG_BIN / "createdb"), "-h", "127.0.0.1", "-p", str(port), "-U", "postgres", "commercial"]
         )
-        yield f"postgresql+psycopg://postgres@127.0.0.1:{port}/commercial"
+        # A plain, non-superuser, non-BYPASSRLS login role -- RLS tests must
+        # run as this role, never as the `postgres` superuser used
+        # everywhere else, since superusers bypass row-level security
+        # regardless of FORCE ROW LEVEL SECURITY.
+        _run_as_postgres(
+            [
+                str(_PG_BIN / "psql"),
+                "-h", "127.0.0.1", "-p", str(port), "-U", "postgres", "-d", "commercial",
+                "-c", "CREATE ROLE app_role LOGIN NOSUPERUSER NOBYPASSRLS",
+            ]
+        )
+        yield {
+            "admin_url": f"postgresql+psycopg://postgres@127.0.0.1:{port}/commercial",
+            "app_role_url": f"postgresql+psycopg://app_role@127.0.0.1:{port}/commercial",
+        }
     finally:
         _run_as_postgres([str(_PG_BIN / "pg_ctl"), "-D", str(data_dir), "-m", "fast", "stop"])
         shutil.rmtree(data_dir, ignore_errors=True)
@@ -121,13 +136,30 @@ def _tail(path: Path, lines: int = 40) -> str:
 
 @pytest.fixture
 def db_session(postgres_cluster):
-    engine = make_engine(postgres_cluster)
+    engine = make_engine(postgres_cluster["admin_url"])
     Base.metadata.drop_all(engine)
     Base.metadata.create_all(engine)
+    with engine.begin() as conn:
+        conn.execute(text("GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO app_role"))
+    enable_row_level_security(engine)
     session_factory = make_session_factory(engine)
     session = session_factory()
     try:
         yield session
     finally:
         session.close()
+        engine.dispose()
+
+
+@pytest.fixture
+def tenant_session_factory(postgres_cluster, db_session):
+    """A session factory bound to the plain `app_role` login -- the role
+    row-level-security tests actually exercise. Depends on `db_session` so
+    the schema/grants/RLS policies it sets up exist first; the two
+    fixtures' engines point at the same already-created database, `app_role`
+    just sees it through RLS instead of as the unrestricted owner."""
+    engine = make_engine(postgres_cluster["app_role_url"])
+    try:
+        yield make_session_factory(engine)
+    finally:
         engine.dispose()

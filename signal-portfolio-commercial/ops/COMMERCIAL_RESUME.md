@@ -12,7 +12,16 @@ readable companion: how to actually pick the work back up.
   `tests/test_rights_registry.py`, `tests/conftest.py`). Not yet wired into
   anything -- there are no callers of `check_rights()` yet, because there is
   no Phase 02 API and no Phase 04-07 candidate/publication/delivery code yet.
-- **Phases 02-12**: not started. See `commercial_state.json` for phase-specific
+- **Phase 02 (tenancy/architecture)**: done and tested
+  (`app/models/tenancy.py`, `app/services/auth.py`, `app/services/permissions.py`,
+  `app/db.py`'s `enable_row_level_security`/`set_tenant_scope`,
+  `tests/test_tenancy_models.py`, `tests/test_cross_tenant_foreign_key.py`,
+  `tests/test_row_level_security.py`, `tests/test_permissions.py`,
+  `tests/test_auth.py`). Real Postgres RLS, a compound-FK cross-tenant
+  guard, a local JWT issuer, and an explicit role-permission allow-list.
+  Not yet wired into anything -- no FastAPI app/routes exist yet, and no
+  Alembic migrations (still `Base.metadata.create_all` in tests).
+- **Phases 03-12**: not started. See `commercial_state.json` for phase-specific
   notes carried forward from the original request (e.g. the Collective2 API4
   TIF inconsistency to resolve, the Phase 03 accounting-journal scope
   boundary against `signal-copier/app/provider_value.py`, PAMM/MAM being
@@ -53,9 +62,12 @@ directory of pytest's tmp dir (this bit us once; the fix is in
 
 ## Next step
 
-Phase 02: a `commercial_api` FastAPI service skeleton with Postgres
-tenant / user_identity / membership / customer_profile models (RLS-ready
-schema design, matching `spec/contracts/*.schema.json` for those entities),
-a controlled/local JWT issuer for tests, and Alembic migrations (deferred
-until now because the schema was still moving during Phase 01 -- it should
-stabilize enough during Phase 02 to set up meaningfully).
+Phase 03: the economic journal (four-book accounting -- source/model/
+platform/follower) and corrected metrics. Must NOT simply wrap or
+re-export `signal-copier/app/provider_value.py` -- see `docs/00_discovery.md`
+and `commercial_state.json`'s `03_economic_journal` notes for why (it's a
+narrower, single-owner tool) and for the `completed_trade_win_rate` naming
+fix this phase also carries forward. This is also a natural point to add a
+FastAPI `commercial_api` app skeleton (routes calling into the Phase 01/02
+services) and real Alembic migrations, once the accounting schema gives a
+fuller picture of what the first migration needs to cover.
