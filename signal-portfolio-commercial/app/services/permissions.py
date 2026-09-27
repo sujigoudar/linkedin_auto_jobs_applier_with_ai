@@ -78,6 +78,9 @@ _ALLOWED: dict[str, frozenset[Role]] = {
     #: tenant claims publication authority over is not a research,
     #: billing or support decision.
     "manage_publisher_destinations": frozenset({Role.OWNER, Role.PUBLISHER_OPERATOR}),
+    #: CU-16 "API delivery, keys and exports" -- a customer's own keys,
+    #: same shape as "manage_own_eligibility"/"manage_own_support_case".
+    "manage_own_api_keys": frozenset({Role.CUSTOMER}),
 }
 
 

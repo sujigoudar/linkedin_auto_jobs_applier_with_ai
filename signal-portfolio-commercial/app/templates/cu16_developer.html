@@ -1,0 +1,83 @@
+{% extends "_base.html" %}
+{% block title %}API delivery, keys and exports{% endblock %}
+{% block content %}
+<h1>API delivery, keys and exports</h1>
+
+{% if error %}<div class="conflict">{{ error }}</div>{% endif %}
+
+{% if new_secret %}
+<div class="panel" style="border-color:#166534;">
+  <h2>New key generated</h2>
+  <p><strong>Copy this now -- it will never be shown again:</strong></p>
+  <p><code>{{ new_secret }}</code></p>
+</div>
+{% endif %}
+
+<div class="panel">
+  <h2>API scopes / Credential metadata</h2>
+  {% if keys %}
+  <table>
+    <thead><tr><th>Key label</th><th>Scope</th><th>Created</th><th>Expires</th><th>Revoked</th><th></th></tr></thead>
+    <tbody>
+      {% for k in keys %}
+      <tr>
+        <td>{{ k.label }}</td>
+        <td>{{ k.scopes | join(", ") }}</td>
+        <td>{{ k.created_at }}</td>
+        <td>{{ k.expires_at }}</td>
+        <td>{{ k.revoked_at if k.revoked_at else "-" }}</td>
+        <td>
+          {% if not k.revoked_at %}
+          <form method="post" action="/app/developer/{{ k.key_id }}/revoke" style="display:inline;">
+            <button type="submit">Revoke</button>
+          </form>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="empty-state">
+    <p>No API access is active for this subscription.</p>
+  </div>
+  {% endif %}
+</div>
+
+<div class="panel">
+  <h2>Create scoped key</h2>
+  <form method="post" action="/app/developer">
+    <label for="label">Key label</label>
+    <input type="text" id="label" name="label" maxlength="80" required>
+
+    <fieldset>
+      <legend>Scopes</legend>
+      {% for s in all_scopes %}
+      <label><input type="checkbox" name="scopes" value="{{ s }}"> {{ s }}</label>
+      {% endfor %}
+    </fieldset>
+    <p><small>No trading or admin scope exists -- read/delivery only.</small></p>
+
+    <label for="expires_at">Expiry</label>
+    <input type="datetime-local" id="expires_at" name="expires_at" required>
+    <p><small>Required -- there is no never-expire default.</small></p>
+
+    <p><button type="submit">Create scoped key</button></p>
+  </form>
+</div>
+
+<div class="panel">
+  <h2>Webhook destinations</h2>
+  <p><span class="badge badge-unknown">UNSUPPORTED</span> -- there is no webhook-destination infrastructure in this build.</p>
+</div>
+
+<div class="panel">
+  <h2>Usage/quotas</h2>
+  <p><span class="badge badge-unknown">UNSUPPORTED</span> -- no request usage is tracked against these keys yet.</p>
+</div>
+
+<div class="panel">
+  <h2>Export jobs</h2>
+  <p><span class="badge badge-unknown">UNSUPPORTED</span> -- there is no export-job infrastructure in this build.</p>
+</div>
+{% endblock %}

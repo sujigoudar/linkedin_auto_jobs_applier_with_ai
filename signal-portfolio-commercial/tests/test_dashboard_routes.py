@@ -1047,3 +1047,80 @@ def test_save_publisher_destination_rejects_a_cross_tenant_double_claim_over_rea
     )
     assert response.status_code == 400
     assert "already claimed" in response.text
+
+
+def test_api_keys_page_requires_a_customer_role(db_session):
+    client = _client(db_session)
+    response = client.get("/app/developer", headers=_auth_headers(role=MembershipRole.OWNER))
+    assert response.status_code == 403
+
+
+def test_api_keys_page_shows_the_real_empty_state(db_session):
+    _seed_customer_membership(db_session)
+    client = _client(db_session)
+    response = client.get("/app/developer", headers=_auth_headers(role=MembershipRole.CUSTOMER))
+    assert response.status_code == 200
+    assert "No API access is active for this subscription." in response.text
+
+
+def test_create_api_key_shows_the_secret_once_and_never_on_reload(db_session):
+    _seed_customer_membership(db_session)
+    client = _client(db_session)
+    headers = _auth_headers(role=MembershipRole.CUSTOMER)
+    create_response = client.post(
+        "/app/developer",
+        data={
+            "label": "My integration",
+            "scopes": ["alerts_read"],
+            "expires_at": "2027-01-01T00:00",
+        },
+        headers=headers,
+    )
+    assert create_response.status_code == 200
+    assert "New key generated" in create_response.text
+
+    import re
+
+    match = re.search(r"<code>([^<]+)</code>", create_response.text)
+    assert match is not None
+    raw_secret = match.group(1)
+
+    reload_response = client.get("/app/developer", headers=headers)
+    assert raw_secret not in reload_response.text
+    assert "My integration" in reload_response.text
+
+
+def test_create_api_key_rejects_a_trading_scope_over_real_http(db_session):
+    _seed_customer_membership(db_session)
+    client = _client(db_session)
+    headers = _auth_headers(role=MembershipRole.CUSTOMER)
+    response = client.post(
+        "/app/developer",
+        data={"label": "Bad key", "scopes": ["trading_write"], "expires_at": "2027-01-01T00:00"},
+        headers=headers,
+    )
+    assert response.status_code == 400
+    assert "unauthorized scope" in response.text
+
+
+def test_revoke_api_key_is_idempotent_over_real_http(db_session):
+    _seed_customer_membership(db_session)
+    client = _client(db_session)
+    headers = _auth_headers(role=MembershipRole.CUSTOMER)
+    client.post(
+        "/app/developer",
+        data={"label": "My integration", "scopes": ["alerts_read"], "expires_at": "2027-01-01T00:00"},
+        headers=headers,
+    )
+    list_response = client.get("/app/developer", headers=headers)
+
+    import re
+
+    key_id_match = re.search(r"/app/developer/([^/]+)/revoke", list_response.text)
+    assert key_id_match is not None
+    key_id = key_id_match.group(1)
+
+    first = client.post(f"/app/developer/{key_id}/revoke", headers=headers)
+    assert first.status_code == 303
+    second = client.post(f"/app/developer/{key_id}/revoke", headers=headers)
+    assert second.status_code == 303

@@ -85,9 +85,15 @@ what is and is not implemented yet.
   credentials or sandbox access exist in this environment. "Verify
   read-only identity" and "Prepare qualification" are NOT implemented --
   both need real external connectivity this build doesn't have.
+- CU-16 "API delivery, keys and exports": a customer's own real scoped
+  API keys. Only a fixed, safe scope allowlist (no trading/admin scope)
+  and a future expires_at are accepted; only a SHA-256 hash of the
+  generated secret is ever persisted -- the raw secret is returned once,
+  in the create response, and never again. Revocation is idempotent.
 """
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
@@ -117,6 +123,13 @@ from app.services.staff_access import (
     invite_staff_member,
     list_staff_memberships,
     revoke_staff_member,
+)
+from app.services.api_key import (
+    ApiKeyNotFoundError,
+    InvalidApiKeyRequestError,
+    generate_scoped_key,
+    list_api_keys,
+    revoke_api_key,
 )
 from app.services.publisher_destination import (
     InvalidPublisherDestinationError,
@@ -999,3 +1012,103 @@ def create_publisher_destination_page(
         )
     session.commit()
     return RedirectResponse(url="/ops/publishers", status_code=303)
+
+
+_ALL_API_KEY_SCOPES = ["alerts_read", "reports_read", "delivery_receive"]
+
+
+def _require_own_api_keys(scope: TenantScope) -> None:
+    try:
+        require_permission(scope.role, "manage_own_api_keys")
+    except PermissionDenied as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+
+@router.get("/app/developer")
+def api_keys_page(
+    request: Request,
+    scope: TenantScope = Depends(get_current_scope),
+    session: Session = Depends(get_db_session),
+    error: str | None = None,
+    new_secret: str | None = None,
+):
+    """CU-16 "API delivery, keys and exports" -- a customer's own keys
+    only. Webhook destinations/export jobs are NOT implemented -- there
+    is no webhook-destination or export-job infrastructure in this
+    build."""
+    _require_own_api_keys(scope)
+    set_tenant_scope(session, scope.tenant_id)
+    keys = list_api_keys(session, tenant_id=scope.tenant_id, user_id=scope.user_id)
+    return templates.TemplateResponse(
+        request,
+        "cu16_developer.html",
+        {"keys": keys, "all_scopes": _ALL_API_KEY_SCOPES, "error": error, "new_secret": new_secret},
+    )
+
+
+@router.post("/app/developer")
+def create_api_key_page(
+    request: Request,
+    label: str = Form(...),
+    scopes: list[str] = Form([]),
+    expires_at: str = Form(...),
+    scope: TenantScope = Depends(get_current_scope),
+    session: Session = Depends(get_db_session),
+):
+    """Returns 200 (never a redirect) on success -- the freshly
+    generated secret exists only in THIS response and must be shown
+    here, per "Generated key shown once only"."""
+    _require_own_api_keys(scope)
+    set_tenant_scope(session, scope.tenant_id)
+    try:
+        expires_at_parsed = datetime.fromisoformat(expires_at)
+        if expires_at_parsed.tzinfo is None:
+            expires_at_parsed = expires_at_parsed.replace(tzinfo=timezone.utc)
+        _, raw_secret = generate_scoped_key(
+            session,
+            tenant_id=scope.tenant_id,
+            user_id=scope.user_id,
+            label=label,
+            scopes=scopes,
+            expires_at=expires_at_parsed,
+        )
+    except (ValueError, InvalidApiKeyRequestError) as exc:
+        session.rollback()
+        keys = list_api_keys(session, tenant_id=scope.tenant_id, user_id=scope.user_id)
+        return templates.TemplateResponse(
+            request,
+            "cu16_developer.html",
+            {"keys": keys, "all_scopes": _ALL_API_KEY_SCOPES, "error": str(exc), "new_secret": None},
+            status_code=400,
+        )
+    session.commit()
+    keys = list_api_keys(session, tenant_id=scope.tenant_id, user_id=scope.user_id)
+    return templates.TemplateResponse(
+        request,
+        "cu16_developer.html",
+        {"keys": keys, "all_scopes": _ALL_API_KEY_SCOPES, "error": None, "new_secret": raw_secret},
+    )
+
+
+@router.post("/app/developer/{key_id}/revoke")
+def revoke_api_key_page(
+    key_id: str,
+    request: Request,
+    scope: TenantScope = Depends(get_current_scope),
+    session: Session = Depends(get_db_session),
+):
+    _require_own_api_keys(scope)
+    set_tenant_scope(session, scope.tenant_id)
+    try:
+        revoke_api_key(session, tenant_id=scope.tenant_id, user_id=scope.user_id, key_id=key_id)
+    except ApiKeyNotFoundError as exc:
+        session.rollback()
+        keys = list_api_keys(session, tenant_id=scope.tenant_id, user_id=scope.user_id)
+        return templates.TemplateResponse(
+            request,
+            "cu16_developer.html",
+            {"keys": keys, "all_scopes": _ALL_API_KEY_SCOPES, "error": str(exc), "new_secret": None},
+            status_code=400,
+        )
+    session.commit()
+    return RedirectResponse(url="/app/developer", status_code=303)

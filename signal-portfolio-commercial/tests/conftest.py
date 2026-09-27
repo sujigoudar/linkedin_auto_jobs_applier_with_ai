@@ -41,6 +41,7 @@ from app.db import (
 # `pytest tests/test_ledger.py`) would create only the tables THAT file's
 # own imports happened to register, silently dropping tables other tests
 # in the same session/run depend on existing.
+import app.models.api_key  # noqa: F401
 import app.models.billing  # noqa: F401
 import app.models.eligibility  # noqa: F401
 import app.models.ledger  # noqa: F401
