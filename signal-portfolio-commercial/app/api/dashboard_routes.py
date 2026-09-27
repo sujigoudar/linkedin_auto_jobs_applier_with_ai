@@ -42,6 +42,10 @@ what is and is not implemented yet.
   queue, and only the "equal_capital" recipe actually exists; any other
   requested recipe is a real, named preview blocker, never silently
   accepted.
+- PU-01 "Public home": the anonymous landing page. Shares PU-02's own
+  `list_published_products` query; a real, computed "Service status"
+  checklist (environment tag, whether billing is genuinely connected)
+  rather than a decorative "all systems operational" banner.
 """
 from __future__ import annotations
 
@@ -80,6 +84,7 @@ from app.services.release_review import (
     list_release_reviews,
     request_release_review,
 )
+from app.services.public_site import get_service_status
 from app.services.research_run import (
     InvalidResearchRunError,
     compute_research_run_preview,
@@ -578,3 +583,15 @@ def public_portfolio_catalog(request: Request, session: Session = Depends(get_db
     "if logged in" check standing in for it."""
     products = list_published_products(session)
     return templates.TemplateResponse(request, "pu02_catalog.html", {"products": products})
+
+
+@router.get("/")
+def public_home_page(request: Request, session: Session = Depends(get_db_session)):
+    """PU-01 "Public home" -- anonymous, no tenant scope. Shares
+    PU-02's own `list_published_products` query rather than a separate
+    "featured products" concept that doesn't exist. Service status is
+    computed from real config state (app/services/public_site.py), never
+    a decorative "all systems operational" banner."""
+    products = list_published_products(session)
+    service_status = get_service_status()
+    return templates.TemplateResponse(request, "pu01_home.html", {"products": products, "service_status": service_status})

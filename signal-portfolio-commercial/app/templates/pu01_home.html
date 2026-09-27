@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>signal-portfolio-commercial</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 0; padding: 0; color: #1a1a1a; background: #fafafa; }
+    header { background: #111827; color: #f9fafb; padding: 0.75rem 1.25rem; }
+    main { max-width: 960px; margin: 1.5rem auto; padding: 0 1rem; }
+    .panel { background: #fff; border: 1px solid #e5e7eb; border-radius: 0.5rem; padding: 1rem 1.25rem; margin-bottom: 1rem; }
+    .panel h2 { margin-top: 0; font-size: 1rem; }
+    table { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+    th, td { text-align: left; padding: 0.5rem 0.75rem; border-bottom: 1px solid #e5e7eb; }
+    .empty-state { padding: 2rem; text-align: center; color: #4b5563; border: 1px dashed #d1d5db; border-radius: 0.5rem; }
+    .badge { display: inline-block; padding: 0.15rem 0.5rem; border-radius: 999px; font-size: 0.75rem; font-weight: 600; }
+    .badge-configured { background: #d1fae5; color: #065f46; }
+    .badge-not_configured { background: #f3f4f6; color: #374151; }
+    a { color: #1e40af; }
+  </style>
+</head>
+<body>
+  <header>signal-portfolio-commercial</header>
+  <main>
+    <div class="panel">
+      <h2>Service description</h2>
+      <p>Research-backed portfolio alerts and copy-trading services. Every published product is backed by a real, versioned portfolio and reviewed methodology -- never a manufactured track record.</p>
+    </div>
+
+    <div class="panel">
+      <h2>Available products</h2>
+      {% if products %}
+      <table>
+        <thead><tr><th>Product</th><th>Service modes</th></tr></thead>
+        <tbody>
+          {% for product in products %}
+          <tr><td>{{ product.product_name }}</td><td>{{ product.service_modes | join(", ") }}</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      <p><a href="/portfolios">Browse portfolios &rarr;</a></p>
+      {% else %}
+      <div class="empty-state">
+        <p>No portfolios are currently available.</p>
+        <p><a href="/portfolios">Portfolio catalog &rarr;</a></p>
+      </div>
+      {% endif %}
+    </div>
+
+    <div class="panel">
+      <h2>How alerts and copying differ</h2>
+      <p><strong>Alerts:</strong> notifications only -- you place your own trades.</p>
+      <p><strong>Copying:</strong> a connected broker account mirrors published position changes automatically, only once you have explicitly authorized a copy mandate.</p>
+    </div>
+
+    <div class="panel">
+      <h2>Risk and fee notice</h2>
+      <p>Trading involves risk of loss. Past performance, where shown, reflects the exact history basis disclosed on each product page -- never a hypothetical or extrapolated result. Fees are disclosed per subscription tier before checkout.</p>
+    </div>
+
+    <div class="panel">
+      <h2>Service status</h2>
+      <table>
+        <tbody>
+          {% for item in service_status %}
+          <tr>
+            <th>{{ item.name }}</th>
+            <td><span class="badge badge-{{ item.status.lower() }}">{{ item.status }}</span></td>
+            <td>{{ item.reason }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </main>
+</body>
+</html>

@@ -82,8 +82,19 @@
     ],
     "deliberately_not_built": "AD-04-A03 'Confirm: Enqueue research job only' -- there is no job queue, and running the actual walk-forward study needs real authorized historical sleeve data this environment doesn't have. No cluster-concentration enforcement (Sleeve has no cluster_id field yet) -- max_cluster_bps is stored but not checked against anything. No edit/update action on a saved run (create + list + preview only, matching AD-03's own bounded precedent)."
   },
-  "screens_done": ["AD-07", "PU-02", "AD-02 (read-only slice)", "AD-03 (create/list slice)", "AD-01 (overview slice)", "AD-08 (review queue/decision slice)", "AD-04 (run declaration/preview slice)"],
-  "screens_not_started": "59 of 66 (AD-01, AD-02, AD-03, AD-04, AD-08 partially done) -- see signal_platform_dashboard_v2/catalog/screens.json for the full list.",
+  "seventh_slice": {
+    "name": "PU-01 (Public home) -- anonymous landing page",
+    "status": "done",
+    "why_this_slice": "PU-01 shares PU-02's own already-real list_published_products query, so it's a small, honest addition: a real, computed 'Service status' checklist (environment tag, whether billing is genuinely connected) instead of a decorative 'all systems operational' banner.",
+    "what_was_built": [
+      "app/services/public_site.py -- get_service_status: reads app.config directly (environment tag, whether STRIPE_WEBHOOK_SECRET is still the local placeholder) -- never a fabricated 'connected' status",
+      "app/api/dashboard_routes.py + app/templates/pu01_home.html -- GET / (anonymous)",
+      "tests/test_public_site.py (3 tests) + tests/test_dashboard_routes.py (+2) -- empty state, a real published product appearing, and the billing status flipping with the real config value. The billing-status check was load-bearing-verified (temporarily hardcoded to always report CONFIGURED, confirmed both tests failed, restored)."
+    ],
+    "deliberately_not_built": "No real per-product performance/history display (no product has real disclosed history data yet). No document downloads (PU-06 -- no document-storage model exists)."
+  },
+  "screens_done": ["AD-07", "PU-02", "AD-02 (read-only slice)", "AD-03 (create/list slice)", "AD-01 (overview slice)", "AD-08 (review queue/decision slice)", "AD-04 (run declaration/preview slice)", "PU-01"],
+  "screens_not_started": "58 of 66 (AD-01, AD-02, AD-03, AD-04, AD-08 partially done) -- see signal_platform_dashboard_v2/catalog/screens.json for the full list.",
   "standing_constraints_from_master_prompt": [
     "No live orders/cancellations, customer charges/subscriptions, live publication, production resets, credential rotation, or unapproved infrastructure spending.",
     "Isolated synthetic fixtures are authorized only in test/browser databases, never seeded into production.",

@@ -667,3 +667,30 @@ def test_research_run_detail_flags_an_unimplemented_recipe_over_http(db_session)
     detail_url = create_response.headers["location"]
     response = client.get(detail_url, headers=headers)
     assert "RECIPE_NOT_IMPLEMENTED:hrp" in response.text
+
+
+def test_public_home_is_anonymous_and_shows_the_real_empty_state(db_session):
+    client = _client(db_session)
+    response = client.get("/")
+    assert response.status_code == 200
+    assert "No portfolios are currently available" in response.text
+    assert "NOT_CONFIGURED" in response.text
+
+
+def test_public_home_lists_a_real_published_product(db_session):
+    client = _client(db_session)
+    headers = _auth_headers()
+    create_response = client.post(
+        "/ops/products", data={"product_name": "Home Page Product", "slug": "home-page-product"}, headers=headers
+    )
+    detail_url = create_response.headers["location"]
+    from app.models.product import Product, ProductLifecycleState
+
+    product_id = detail_url.rsplit("/", 1)[-1]
+    product = db_session.get(Product, product_id)
+    product.lifecycle_state = ProductLifecycleState.PUBLISHED
+    db_session.commit()
+
+    response = client.get("/")
+    assert response.status_code == 200
+    assert "Home Page Product" in response.text
