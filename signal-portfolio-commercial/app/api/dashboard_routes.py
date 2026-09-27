@@ -65,6 +65,12 @@ what is and is not implemented yet.
   verdict. Only "US" residence is a supported jurisdiction and entity
   onboarding is a real, named UNSUPPORTED reason -- neither is silently
   approved.
+- AD-16 "Staff roles and access reviews": real invite/revoke of a
+  colleague's operator role (reuses the existing `Membership` model --
+  no new table). OWNER can never be granted through this form nor
+  revoked through it, and a caller can never revoke their own
+  membership. Session audit is NOT implemented -- there is no session/
+  audit-log store in this build.
 """
 from __future__ import annotations
 
@@ -79,6 +85,7 @@ from sqlalchemy.orm import Session
 from app.api.dependencies import get_current_scope, get_db_session
 from app.db import set_tenant_scope
 from app.models.product import ServiceMode
+from app.models.tenancy import MembershipRole
 from app.services.auth import TenantScope
 from app.services.eligibility import (
     InvalidEligibilityFactsError,
@@ -87,6 +94,16 @@ from app.services.eligibility import (
     save_eligibility_facts,
 )
 from app.services.permissions import PermissionDenied, require_permission
+from app.services.staff_access import (
+    GRANTABLE_ROLES,
+    CannotRevokeOwnerError,
+    CannotRevokeSelfError,
+    InvalidStaffGrantError,
+    MembershipNotFoundError,
+    invite_staff_member,
+    list_staff_memberships,
+    revoke_staff_member,
+)
 from app.services.product_admin import (
     InvalidProductDraftError,
     SlugAlreadyExistsError,
@@ -131,6 +148,7 @@ _TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
 templates = Jinja2Templates(directory=str(_TEMPLATES_DIR))
 
 _ALL_SERVICE_MODES = [mode.value for mode in ServiceMode]
+_GRANTABLE_ROLE_VALUES = [role.value for role in GRANTABLE_ROLES]
 
 
 def _require_product_admin(scope: TenantScope) -> None:
@@ -731,3 +749,81 @@ def save_eligibility_page(
         )
     session.commit()
     return RedirectResponse(url="/onboarding/eligibility", status_code=303)
+
+
+def _require_staff_access(scope: TenantScope) -> None:
+    try:
+        require_permission(scope.role, "manage_staff_access")
+    except PermissionDenied as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+
+@router.get("/ops/access")
+def staff_access_page(
+    request: Request,
+    scope: TenantScope = Depends(get_current_scope),
+    session: Session = Depends(get_db_session),
+    error: str | None = None,
+):
+    """AD-16 "Staff roles and access reviews" -- owner-only. Session
+    audit has no backing model (no session/audit-log store exists), so
+    it's rendered as an explicit unsupported note, never a fabricated
+    empty table."""
+    _require_staff_access(scope)
+    set_tenant_scope(session, scope.tenant_id)
+    memberships = list_staff_memberships(session, tenant_id=scope.tenant_id)
+    return templates.TemplateResponse(
+        request,
+        "ad16_access.html",
+        {"memberships": memberships, "all_grantable_roles": _GRANTABLE_ROLE_VALUES, "error": error},
+    )
+
+
+@router.post("/ops/access/invite")
+def invite_staff_page(
+    request: Request,
+    user_id: str = Form(...),
+    role: str = Form(...),
+    scope: TenantScope = Depends(get_current_scope),
+    session: Session = Depends(get_db_session),
+):
+    _require_staff_access(scope)
+    set_tenant_scope(session, scope.tenant_id)
+    try:
+        role_enum = MembershipRole(role)
+        invite_staff_member(session, tenant_id=scope.tenant_id, user_id=user_id, role=role_enum)
+    except (ValueError, InvalidStaffGrantError) as exc:
+        session.rollback()
+        memberships = list_staff_memberships(session, tenant_id=scope.tenant_id)
+        return templates.TemplateResponse(
+            request,
+            "ad16_access.html",
+            {"memberships": memberships, "all_grantable_roles": _GRANTABLE_ROLE_VALUES, "error": str(exc)},
+            status_code=400,
+        )
+    session.commit()
+    return RedirectResponse(url="/ops/access", status_code=303)
+
+
+@router.post("/ops/access/{user_id}/revoke")
+def revoke_staff_page(
+    user_id: str,
+    request: Request,
+    scope: TenantScope = Depends(get_current_scope),
+    session: Session = Depends(get_db_session),
+):
+    _require_staff_access(scope)
+    set_tenant_scope(session, scope.tenant_id)
+    try:
+        revoke_staff_member(session, tenant_id=scope.tenant_id, user_id=user_id, acting_user_id=scope.user_id)
+    except (MembershipNotFoundError, CannotRevokeOwnerError, CannotRevokeSelfError) as exc:
+        session.rollback()
+        memberships = list_staff_memberships(session, tenant_id=scope.tenant_id)
+        return templates.TemplateResponse(
+            request,
+            "ad16_access.html",
+            {"memberships": memberships, "all_grantable_roles": _GRANTABLE_ROLE_VALUES, "error": str(exc)},
+            status_code=400,
+        )
+    session.commit()
+    return RedirectResponse(url="/ops/access", status_code=303)

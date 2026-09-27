@@ -140,8 +140,19 @@
     ],
     "deliberately_not_built": "No multi-step wizard (Identity facts -> Requested service -> Documents -> Decision are one combined form, not four separate screens/steps). No residence-change-triggers-review notification -- the live recomputation makes a stale decision impossible, but there is no active notification when an existing customer's facts go from eligible to ineligible. Tax residence is accepted but not used by the policy yet (no tax-residence-specific rule exists)."
   },
-  "screens_done": ["AD-07", "PU-02", "AD-02 (read-only slice)", "AD-03 (create/list slice)", "AD-01 (overview slice)", "AD-08 (review queue/decision slice)", "AD-04 (run declaration/preview slice)", "PU-01", "PU-08", "PU-03 (detail slice)", "PU-05 (pricing slice)", "ID-04 (eligibility slice)"],
-  "screens_not_started": "54 of 66 (AD-01, AD-02, AD-03, AD-04, AD-08, PU-03, PU-05, ID-04 partially done) -- see signal_platform_dashboard_v2/catalog/screens.json for the full list.",
+  "twelfth_slice": {
+    "name": "AD-16 (Staff roles and access reviews) -- invite/revoke a colleague's operator role",
+    "status": "done, deliberately partial",
+    "why_this_slice": "No new model needed -- app/models/tenancy.py's Membership already carries every field this screen needs. This is the first screen to give the owner real control over the other 5 roles (researcher/reviewer/publisher_operator/billing_operator/support_readonly) that every earlier permission check already gates against.",
+    "what_was_built": [
+      "app/services/staff_access.py -- list_staff_memberships (excludes CUSTOMER rows), invite_staff_member (requires a real, already-existing UserIdentity; refuses granting OWNER or CUSTOMER through this form; refuses a duplicate membership), revoke_staff_member (refuses revoking OWNER; refuses revoking your own membership -- a real, structural self-lockout guard, not just a discouraged action)",
+      "app/api/dashboard_routes.py + app/templates/ad16_access.html -- GET /ops/access, POST /ops/access/invite, POST /ops/access/{user_id}/revoke, gated by a new 'manage_staff_access' permission (OWNER only)",
+      "tests/test_staff_access.py (10 tests) + tests/test_dashboard_routes.py (+5) -- covers the unknown-identity refusal, the owner/customer grant refusal, the duplicate-membership refusal, and both revoke guards. Both revoke guards (cannot revoke OWNER, cannot revoke yourself) were load-bearing-verified together (temporarily removed both, confirmed all 3 corresponding tests -- 2 unit, 1 HTTP -- failed with the revoke silently succeeding, restored)."
+    ],
+    "deliberately_not_built": "Session audit is NOT implemented -- there is no session/audit-log store in this build; an already-issued JWT for a just-revoked user remains cryptographically valid until it expires (documented honestly in the template, not hidden). Revocation is immediate row deletion, not a separately tracked append-only revocation log. No scoped/temporary support-grant expiry (expires_at) -- every grant here is indefinite until explicitly revoked."
+  },
+  "screens_done": ["AD-07", "PU-02", "AD-02 (read-only slice)", "AD-03 (create/list slice)", "AD-01 (overview slice)", "AD-08 (review queue/decision slice)", "AD-04 (run declaration/preview slice)", "PU-01", "PU-08", "PU-03 (detail slice)", "PU-05 (pricing slice)", "ID-04 (eligibility slice)", "AD-16 (invite/revoke slice)"],
+  "screens_not_started": "53 of 66 (AD-01, AD-02, AD-03, AD-04, AD-08, PU-03, PU-05, ID-04, AD-16 partially done) -- see signal_platform_dashboard_v2/catalog/screens.json for the full list.",
   "standing_constraints_from_master_prompt": [
     "No live orders/cancellations, customer charges/subscriptions, live publication, production resets, credential rotation, or unapproved infrastructure spending.",
     "Isolated synthetic fixtures are authorized only in test/browser databases, never seeded into production.",

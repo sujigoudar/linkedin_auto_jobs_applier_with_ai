@@ -91,8 +91,14 @@ Seven slices are DONE:
   plus the real published-product catalog, never a stored verdict. Only
   "US" residence is supported and entity onboarding is a real named
   UNSUPPORTED reason.
+- AD-16 Staff roles and access reviews: `GET /ops/access` +
+  `POST /ops/access/invite` + `POST /ops/access/{user_id}/revoke`
+  (OWNER only) -- real invite/revoke of a colleague's operator role
+  using the existing Membership model (no new table). OWNER can never
+  be granted or revoked through this form, and a caller can never
+  revoke their own membership (a real self-lockout guard).
 
-Full suite is 341 tests, ruff and mypy both green (**use `python3 -m
+Full suite is 356 tests, ruff and mypy both green (**use `python3 -m
 ruff`/`python3 -m mypy`/`python3 -m pytest` explicitly** -- this sandbox
 has a stray `uv tool`-installed `ruff`/`mypy` shadowing the project's
 real declared versions on bare `PATH`, which produced a false-negative
@@ -109,10 +115,11 @@ demo is checked into the repo itself.
 
 See `dashboard_state.json`'s `current_slice`/`second_slice`/
 `third_slice`/`fourth_slice`/`fifth_slice`/`sixth_slice`/`seventh_slice`/
-`eighth_slice`/`ninth_slice`/`tenth_slice`/`eleventh_slice` for the
-exact file lists and what was deliberately left unbuilt in each. 54 of
-66 screens (AD-01, AD-02, AD-03, AD-04, AD-08, PU-03, PU-05, ID-04
-partially done) remain -- pick the next one following the steps below. **If you add a new table to
+`eighth_slice`/`ninth_slice`/`tenth_slice`/`eleventh_slice`/
+`twelfth_slice` for the exact file lists and what was deliberately left
+unbuilt in each. 53 of 66 screens (AD-01, AD-02, AD-03, AD-04, AD-08,
+PU-03, PU-05, ID-04, AD-16 partially done) remain -- pick the next one
+following the steps below. **If you add a new table to
 `_TENANT_SCOPED_TABLES` in app/db.py, pin any EARLIER migration that
 already calls `_apply_row_level_security` with no explicit `tables`
 argument to its own frozen snapshot of the tables that existed at that

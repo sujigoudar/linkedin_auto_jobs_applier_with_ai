@@ -65,6 +65,11 @@ _ALLOWED: dict[str, frozenset[Role]] = {
     #: never another role's concern (an operator manages products/
     #: reviews/research, not a customer's own onboarding record).
     "manage_own_eligibility": frozenset({Role.CUSTOMER}),
+    #: AD-16 "Staff roles and access reviews" -- owner-only, per this
+    #: screen's own access list. Granting/revoking a colleague's role is
+    #: exactly the kind of authority no other role should have, not even
+    #: REVIEWER or SUPPORT_READONLY.
+    "manage_staff_access": frozenset({Role.OWNER}),
 }
 
 

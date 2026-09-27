@@ -838,3 +838,66 @@ def test_save_eligibility_facts_rejects_an_empty_service_selection(db_session):
     )
     assert response.status_code == 400
     assert "at least one requested service is required" in response.text
+
+
+def _seed_owner_membership(db_session, *, tenant_id="tenant-a", owner_user_id="user-a"):
+    from app.models.tenancy import Membership, Tenant, UserIdentity
+
+    db_session.add(Tenant(tenant_id=tenant_id, display_name="Tenant", environment="LOCAL_SIM"))
+    db_session.flush()
+    db_session.add(UserIdentity(user_id=owner_user_id, email=f"{owner_user_id}@example.com"))
+    db_session.flush()
+    db_session.add(Membership(tenant_id=tenant_id, user_id=owner_user_id, role=MembershipRole.OWNER))
+    db_session.commit()
+
+
+def test_staff_access_page_requires_owner_role(db_session):
+    client = _client(db_session)
+    response = client.get("/ops/access", headers=_auth_headers(role=MembershipRole.RESEARCHER))
+    assert response.status_code == 403
+
+
+def test_staff_access_page_shows_the_real_empty_state(db_session):
+    client = _client(db_session)
+    response = client.get("/ops/access", headers=_auth_headers(role=MembershipRole.OWNER))
+    assert response.status_code == 200
+    assert "No delegated staff memberships exist." in response.text
+
+
+def test_invite_then_view_staff_member_over_real_http(db_session):
+    _seed_owner_membership(db_session)
+    from app.models.tenancy import UserIdentity
+
+    db_session.add(UserIdentity(user_id="new-staff-http", email="new-staff-http@example.com"))
+    db_session.commit()
+
+    client = _client(db_session)
+    headers = _auth_headers(role=MembershipRole.OWNER)
+    invite_response = client.post(
+        "/ops/access/invite", data={"user_id": "new-staff-http", "role": "researcher"}, headers=headers
+    )
+    assert invite_response.status_code == 303
+
+    response = client.get("/ops/access", headers=headers)
+    assert "new-staff-http" in response.text
+    assert "researcher" in response.text
+
+
+def test_invite_rejects_an_unknown_user_identity_over_real_http(db_session):
+    _seed_owner_membership(db_session)
+    client = _client(db_session)
+    headers = _auth_headers(role=MembershipRole.OWNER)
+    response = client.post(
+        "/ops/access/invite", data={"user_id": "never-existed", "role": "researcher"}, headers=headers
+    )
+    assert response.status_code == 400
+    assert "no existing identity" in response.text
+
+
+def test_revoke_the_owner_is_refused_over_real_http(db_session):
+    _seed_owner_membership(db_session)
+    client = _client(db_session)
+    headers = _auth_headers(role=MembershipRole.OWNER)
+    response = client.post("/ops/access/user-a/revoke", headers=headers)
+    assert response.status_code == 400
+    assert "owner role cannot be revoked" in response.text
