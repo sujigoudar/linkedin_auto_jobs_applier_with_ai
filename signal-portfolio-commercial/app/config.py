@@ -34,9 +34,18 @@ class _Settings(BaseSettings):
     #: exercise tenant-scope enforcement against.
     LOCAL_JWT_SECRET: str = "LOCAL_SIM-not-a-real-secret-change-if-ever-deployed"
 
+    #: The Stripe webhook signing secret app/services/stripe_webhook.py
+    #: verifies incoming events against. No real Stripe account exists in
+    #: this environment (CARD-4 not yet obtained) -- this default is a
+    #: placeholder for local/test use only, never a real `whsec_...`
+    #: value, and must be replaced with the real one issued by Stripe's
+    #: dashboard before this endpoint is ever pointed at a real account.
+    STRIPE_WEBHOOK_SECRET: str = "whsec_LOCAL_SIM_not_a_real_stripe_secret"
+
 
 _settings = _Settings()
 
 COMMERCIAL_DATABASE_URL = _settings.COMMERCIAL_DATABASE_URL
 ENVIRONMENT = _settings.ENVIRONMENT
 LOCAL_JWT_SECRET = _settings.LOCAL_JWT_SECRET
+STRIPE_WEBHOOK_SECRET = _settings.STRIPE_WEBHOOK_SECRET
