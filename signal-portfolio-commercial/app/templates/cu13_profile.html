@@ -1,0 +1,72 @@
+{% extends "_base.html" %}
+{% block title %}Profile, security and display preferences{% endblock %}
+{% block content %}
+<h1>Profile, security and display preferences</h1>
+
+{% if error %}<div class="conflict">{{ error }}</div>{% endif %}
+
+<div class="panel">
+  <h2>Profile</h2>
+  {% if not preferences %}
+  <div class="empty-state">
+    <p>No additional profile preferences are saved.</p>
+  </div>
+  {% endif %}
+  <form method="post" action="/app/settings">
+    <label for="display_name">Display name (not published by default)</label>
+    <input type="text" id="display_name" name="display_name" maxlength="80"
+      value="{{ preferences.display_name if preferences and preferences.display_name else '' }}">
+
+    <p><button type="submit">Save preferences</button></p>
+  </form>
+</div>
+
+<div class="panel">
+  <h2>Sessions/security</h2>
+  <p><span class="badge badge-unknown">UNSUPPORTED</span> -- there is no session store in this build (JWT sessions are stateless -- the same gap AD-16's own slice already documented); Revoke session is not implemented.</p>
+</div>
+
+<div class="panel">
+  <h2>Theme/density/timezone</h2>
+  <form method="post" action="/app/settings">
+    <input type="hidden" name="display_name" value="{{ preferences.display_name if preferences and preferences.display_name else '' }}">
+
+    <label for="timezone_name">Timezone (IANA zone)</label>
+    <input type="text" id="timezone_name" name="timezone_name" value="{{ preferences.timezone_name if preferences else 'UTC' }}">
+
+    <label for="theme">Theme</label>
+    <select id="theme" name="theme">
+      {% for t in all_themes %}<option value="{{ t }}">{{ t }}</option>{% endfor %}
+    </select>
+
+    <label for="density">Density</label>
+    <select id="density" name="density">
+      {% for d in all_densities %}<option value="{{ d }}">{{ d }}</option>{% endfor %}
+    </select>
+
+    <label for="number_locale">Number locale (e.g. en-US)</label>
+    <input type="text" id="number_locale" name="number_locale" value="{{ preferences.number_locale if preferences else 'en-US' }}">
+
+    <label for="view_currency">Preferred display currency (optional, e.g. USD)</label>
+    <input type="text" id="view_currency" name="view_currency" value="{{ preferences.view_currency if preferences else '' }}">
+    <p class="help">Display only -- never changes your account currency or converts a stored amount.</p>
+
+    <label for="reduce_motion">Reduce motion</label>
+    <select id="reduce_motion" name="reduce_motion">
+      {% for r in all_reduce_motion_values %}<option value="{{ r }}">{{ r }}</option>{% endfor %}
+    </select>
+
+    <p><button type="submit">Save preferences</button></p>
+  </form>
+</div>
+
+<div class="panel">
+  <h2>Data export/deletion</h2>
+  <p><span class="badge badge-unknown">UNSUPPORTED</span> -- no export-job or account-deletion pipeline exists in this build; deletion must never erase legally retained execution evidence or orphan a mandate, which this build has no infrastructure to guarantee yet.</p>
+</div>
+
+<div class="panel">
+  <h2>Disclosure history</h2>
+  <p><span class="badge badge-unknown">UNSUPPORTED</span> -- no disclosure-acknowledgment model exists in this build.</p>
+</div>
+{% endblock %}

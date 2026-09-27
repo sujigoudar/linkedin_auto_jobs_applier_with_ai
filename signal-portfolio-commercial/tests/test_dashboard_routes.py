@@ -1867,3 +1867,59 @@ def test_save_then_reload_notification_preferences_over_real_http(db_session):
     final_response = client.get("/app/settings/notifications", headers=headers)
     assert "http-customer@example.com" in final_response.text
     assert "America/New_York" in final_response.text
+
+
+def test_display_preferences_page_requires_customer_role(db_session):
+    client = _client(db_session)
+    response = client.get("/app/settings", headers=_auth_headers(role=MembershipRole.OWNER))
+    assert response.status_code == 403
+
+
+def test_display_preferences_page_shows_the_real_empty_state(db_session):
+    client = _client(db_session)
+    response = client.get("/app/settings", headers=_auth_headers(role=MembershipRole.CUSTOMER))
+    assert response.status_code == 200
+    assert "No additional profile preferences are saved." in response.text
+
+
+def test_save_display_preferences_rejects_html_in_display_name_over_http(db_session):
+    _seed_customer_membership(db_session)
+    client = _client(db_session)
+    response = client.post(
+        "/app/settings",
+        data={
+            "display_name": "<script>bad</script>",
+            "timezone_name": "UTC",
+            "theme": "system",
+            "density": "comfortable",
+            "number_locale": "en-US",
+            "reduce_motion": "system",
+        },
+        headers=_auth_headers(role=MembershipRole.CUSTOMER),
+    )
+    assert response.status_code == 400
+    assert "raw HTML" in response.text
+
+
+def test_save_then_reload_display_preferences_over_real_http(db_session):
+    _seed_customer_membership(db_session)
+    client = _client(db_session)
+    headers = _auth_headers(role=MembershipRole.CUSTOMER)
+    create_response = client.post(
+        "/app/settings",
+        data={
+            "display_name": "HTTP Jane",
+            "timezone_name": "America/New_York",
+            "theme": "dark",
+            "density": "compact",
+            "number_locale": "en-US",
+            "view_currency": "USD",
+            "reduce_motion": "on",
+        },
+        headers=headers,
+    )
+    assert create_response.status_code == 303
+
+    final_response = client.get("/app/settings", headers=headers)
+    assert "HTTP Jane" in final_response.text
+    assert "America/New_York" in final_response.text

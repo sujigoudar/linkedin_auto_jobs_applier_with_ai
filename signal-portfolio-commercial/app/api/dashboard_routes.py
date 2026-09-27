@@ -208,6 +208,11 @@ from app.services.publisher_destination import (
 )
 from app.services.support_case import InvalidSupportCaseError, create_support_case, list_support_cases
 from app.services.publication_admin import get_publication_intent_detail
+from app.services.customer_display_preferences import (
+    InvalidDisplayPreferencesError,
+    get_display_preferences,
+    save_display_preferences,
+)
 from app.services.notification_preferences import (
     InvalidNotificationPreferencesError,
     get_notification_preferences,
@@ -1939,3 +1944,88 @@ def save_notification_preferences_page(
         )
     session.commit()
     return RedirectResponse(url="/app/settings/notifications", status_code=303)
+
+
+_ALL_DISPLAY_THEMES = ["system", "dark", "light"]
+_ALL_DISPLAY_DENSITIES = ["comfortable", "compact"]
+_ALL_REDUCE_MOTION_VALUES = ["system", "on"]
+
+
+def _require_display_preferences(scope: TenantScope) -> None:
+    try:
+        require_permission(scope.role, "manage_own_display_preferences")
+    except PermissionDenied as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+
+@router.get("/app/settings")
+def display_preferences_page(
+    request: Request,
+    scope: TenantScope = Depends(get_current_scope),
+    session: Session = Depends(get_db_session),
+    error: str | None = None,
+):
+    """CU-13 "Profile, security and display preferences" -- see this
+    route module's own docstring above for what is and is not
+    implemented."""
+    _require_display_preferences(scope)
+    set_tenant_scope(session, scope.tenant_id)
+    preferences = get_display_preferences(session, tenant_id=scope.tenant_id, user_id=scope.user_id)
+    return templates.TemplateResponse(
+        request,
+        "cu13_profile.html",
+        {
+            "preferences": preferences,
+            "all_themes": _ALL_DISPLAY_THEMES,
+            "all_densities": _ALL_DISPLAY_DENSITIES,
+            "all_reduce_motion_values": _ALL_REDUCE_MOTION_VALUES,
+            "error": error,
+        },
+    )
+
+
+@router.post("/app/settings")
+def save_display_preferences_page(
+    request: Request,
+    display_name: str = Form(""),
+    timezone_name: str = Form("UTC"),
+    theme: str = Form("system"),
+    density: str = Form("comfortable"),
+    number_locale: str = Form("en-US"),
+    view_currency: str = Form(""),
+    reduce_motion: str = Form("system"),
+    scope: TenantScope = Depends(get_current_scope),
+    session: Session = Depends(get_db_session),
+):
+    _require_display_preferences(scope)
+    set_tenant_scope(session, scope.tenant_id)
+    try:
+        save_display_preferences(
+            session,
+            tenant_id=scope.tenant_id,
+            user_id=scope.user_id,
+            display_name=display_name or None,
+            timezone_name=timezone_name,
+            theme=theme,
+            density=density,
+            number_locale=number_locale,
+            view_currency=view_currency or None,
+            reduce_motion=reduce_motion,
+        )
+    except InvalidDisplayPreferencesError as exc:
+        session.rollback()
+        preferences = get_display_preferences(session, tenant_id=scope.tenant_id, user_id=scope.user_id)
+        return templates.TemplateResponse(
+            request,
+            "cu13_profile.html",
+            {
+                "preferences": preferences,
+                "all_themes": _ALL_DISPLAY_THEMES,
+                "all_densities": _ALL_DISPLAY_DENSITIES,
+                "all_reduce_motion_values": _ALL_REDUCE_MOTION_VALUES,
+                "error": str(exc),
+            },
+            status_code=400,
+        )
+    session.commit()
+    return RedirectResponse(url="/app/settings", status_code=303)

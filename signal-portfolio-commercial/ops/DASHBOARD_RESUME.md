@@ -197,8 +197,17 @@ Seven slices are DONE:
   surface to secure. Verify endpoint/Send labeled test and delivery
   failures are explicit UNSUPPORTED -- no outbound delivery or
   delivery-attempt-tracking infrastructure exists in this build.
+- CU-13 Profile, security and display preferences: `GET`/`POST /app/
+  settings` (CUSTOMER only) -- a customer's own display_name/timezone/
+  theme/density/locale/currency-display/reduce-motion preferences,
+  Profile/Display steps only. Reuses AD-19's own "no raw HTML/script"
+  discipline for display_name -- the first time it applies to a
+  customer's own input rather than staff-authored content. Sessions/
+  security, data export/deletion, and disclosure history are all
+  explicit UNSUPPORTED -- no session store, export-job pipeline, or
+  disclosure-acknowledgment model exists in this build.
 
-Full suite is 520 tests, ruff and mypy both green (**use `python3 -m
+Full suite is 532 tests, ruff and mypy both green (**use `python3 -m
 ruff`/`python3 -m mypy`/`python3 -m pytest` explicitly** -- this sandbox
 has a stray `uv tool`-installed `ruff`/`mypy` shadowing the project's
 real declared versions on bare `PATH`, which produced a false-negative
@@ -220,12 +229,13 @@ See `dashboard_state.json`'s `current_slice`/`second_slice`/
 `sixteenth_slice`/`seventeenth_slice`/`eighteenth_slice`/
 `nineteenth_slice`/`twentieth_slice`/`twentyfirst_slice`/
 `twentysecond_slice`/`twentythird_slice`/`twentyfourth_slice`/
-`twentyfifth_slice`/`twentysixth_slice`/`twentyseventh_slice` for the
-exact file lists and what was deliberately left unbuilt in each. 38 of
-66 screens (AD-01, AD-02, AD-03, AD-04, AD-05, AD-08, AD-10, PU-03,
-PU-05, ID-04, AD-16, CU-14, AD-09, CU-16, AD-12, AD-11, AD-17, AD-13,
-AD-19, AD-14, AD-18, AD-20, CU-02, CU-12 partially done) remain -- pick
-the next one following the steps below. **If you add a
+`twentyfifth_slice`/`twentysixth_slice`/`twentyseventh_slice`/
+`twentyeighth_slice` for the exact file lists and what was deliberately
+left unbuilt in each. 37 of 66 screens (AD-01, AD-02, AD-03, AD-04,
+AD-05, AD-08, AD-10, PU-03, PU-05, ID-04, AD-16, CU-14, AD-09, CU-16,
+AD-12, AD-11, AD-17, AD-13, AD-19, AD-14, AD-18, AD-20, CU-02, CU-12,
+CU-13 partially done) remain -- pick the next one following the steps
+below. **If you add a
 new table to
 `_TENANT_SCOPED_TABLES` in app/db.py, pin any EARLIER migration that
 already calls `_apply_row_level_security` with no explicit `tables`
