@@ -119,6 +119,9 @@ _ALLOWED: dict[str, frozenset[Role]] = {
     #: preview without being able to declare a new one, matching
     #: AD-02's own view/write split precedent.
     "view_research_run_detail": frozenset({Role.OWNER, Role.RESEARCHER, Role.REVIEWER}),
+    #: AD-10 "Publication intent and cohort detail" -- exactly this
+    #: screen's own access list.
+    "view_publication_intent_detail": frozenset({Role.OWNER, Role.PUBLISHER_OPERATOR}),
 }
 
 

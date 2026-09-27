@@ -207,6 +207,7 @@ from app.services.publisher_destination import (
     list_publisher_destinations,
 )
 from app.services.support_case import InvalidSupportCaseError, create_support_case, list_support_cases
+from app.services.publication_admin import get_publication_intent_detail
 from app.services.workspace_settings import (
     MANDATORY_PANEL_IDS,
     InvalidWorkspaceSettingsError,
@@ -1757,3 +1758,27 @@ def save_workspace_settings_page(
         )
     session.commit()
     return RedirectResponse(url="/ops/settings", status_code=303)
+
+
+def _require_publication_intent_detail(scope: TenantScope) -> None:
+    try:
+        require_permission(scope.role, "view_publication_intent_detail")
+    except PermissionDenied as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+
+@router.get("/ops/publications/{intent_id}")
+def publication_intent_detail_page(
+    intent_id: str,
+    request: Request,
+    scope: TenantScope = Depends(get_current_scope),
+    session: Session = Depends(get_db_session),
+):
+    """AD-10 "Publication intent and cohort detail" -- see this route
+    module's own docstring above for what is and is not implemented."""
+    _require_publication_intent_detail(scope)
+    set_tenant_scope(session, scope.tenant_id)
+    detail = get_publication_intent_detail(session, intent_id, tenant_id=scope.tenant_id)
+    if detail is None:
+        raise HTTPException(status_code=404, detail="not found")
+    return templates.TemplateResponse(request, "ad10_publication_detail.html", {"detail": detail})

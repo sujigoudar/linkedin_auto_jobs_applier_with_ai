@@ -1638,3 +1638,87 @@ def test_research_run_full_results_page_is_a_scoped_not_found_across_tenants(db_
     other_tenant_headers = _auth_headers(tenant_id="tenant-b", user_id="user-b", role=MembershipRole.OWNER)
     response = client.get(f"/ops/research/runs/{run_id}", headers=other_tenant_headers)
     assert response.status_code == 404
+
+
+def _seed_publication_intent(db_session, *, tenant_id="tenant-a", portfolio_version_id="pv-http-1"):
+    from datetime import datetime, timedelta, timezone
+
+    from app.models.portfolio_version import PortfolioVersion
+    from app.models.publication import (
+        Environment,
+        PublicationAction,
+        PublicationIntent,
+        PublicationState,
+        QuantityBasis,
+    )
+
+    now = datetime.now(timezone.utc)
+    pv = PortfolioVersion(
+        portfolio_version_id=portfolio_version_id,
+        tenant_id=tenant_id,
+        portfolio_id="p-publication-http",
+        version_number=1,
+        cash_weight=0,
+        research_cutoff=now,
+        max_subscriber_capacity=100,
+        consent_disclosure_version="v1",
+    )
+    db_session.add(pv)
+    db_session.flush()
+    intent = PublicationIntent(
+        environment=Environment.LOCAL_SIM,
+        portfolio_version_id=portfolio_version_id,
+        episode_id="ep-http-1",
+        revision=1,
+        action=PublicationAction.OPEN,
+        channel="collective2",
+        external_strategy_id="strategy-http-1",
+        instrument_id="AAPL",
+        quantity="10",
+        quantity_basis=QuantityBasis.UNITS,
+        price_basis="market",
+        policy_hash="policy-hash-http-1",
+        audience_snapshot_hash="audience-hash-http-1",
+        source_revision_ids=["src-rev-http-1"],
+        rights_grant_ids=["grant-http-1"],
+        body_hash="body-hash-http-1",
+        idempotency_key="idem-http-1",
+        valid_from=now,
+        expires_at=now + timedelta(hours=1),
+        state=PublicationState.UNKNOWN,
+    )
+    db_session.add(intent)
+    db_session.commit()
+    return intent
+
+
+def test_publication_intent_detail_page_requires_owner_or_publisher_operator(db_session):
+    client = _client(db_session)
+    response = client.get("/ops/publications/nonexistent-intent", headers=_auth_headers(role=MembershipRole.REVIEWER))
+    assert response.status_code == 403
+
+
+def test_publication_intent_detail_page_is_a_scoped_not_found_for_an_unknown_intent(db_session):
+    client = _client(db_session)
+    response = client.get(
+        "/ops/publications/nonexistent-intent", headers=_auth_headers(role=MembershipRole.PUBLISHER_OPERATOR)
+    )
+    assert response.status_code == 404
+
+
+def test_publication_intent_detail_page_shows_the_real_intent(db_session):
+    intent = _seed_publication_intent(db_session)
+    client = _client(db_session)
+    response = client.get(f"/ops/publications/{intent.intent_id}", headers=_auth_headers(role=MembershipRole.OWNER))
+    assert response.status_code == 200
+    assert "collective2" in response.text
+    assert "UNKNOWN" in response.text
+    assert "UNSUPPORTED" in response.text
+
+
+def test_publication_intent_detail_page_is_a_scoped_not_found_across_tenants(db_session):
+    intent = _seed_publication_intent(db_session, tenant_id="tenant-a", portfolio_version_id="pv-http-2")
+    client = _client(db_session)
+    other_tenant_headers = _auth_headers(tenant_id="tenant-b", user_id="user-b", role=MembershipRole.OWNER)
+    response = client.get(f"/ops/publications/{intent.intent_id}", headers=other_tenant_headers)
+    assert response.status_code == 404

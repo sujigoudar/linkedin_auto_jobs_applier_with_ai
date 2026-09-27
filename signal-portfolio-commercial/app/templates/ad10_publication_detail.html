@@ -1,0 +1,52 @@
+{% extends "_base.html" %}
+{% block title %}Publication intent and cohort detail{% endblock %}
+{% block content %}
+<h1>Publication intent and cohort detail</h1>
+
+<div class="panel">
+  <h2>Intent/revision</h2>
+  <table>
+    <tbody>
+      <tr><th>Intent id</th><td>{{ detail.intent.intent_id }}</td></tr>
+      <tr><th>State</th><td>{{ detail.intent.state.value }}</td></tr>
+      <tr><th>Action</th><td>{{ detail.intent.action.value }}</td></tr>
+      <tr><th>Channel</th><td>{{ detail.intent.channel }}</td></tr>
+      <tr><th>External strategy</th><td>{{ detail.intent.external_strategy_id }}</td></tr>
+      <tr><th>Environment</th><td>{{ detail.intent.environment.value }}</td></tr>
+      <tr><th>Revision</th><td>{{ detail.intent.revision }}</td></tr>
+      <tr><th>Portfolio version</th><td>{{ detail.portfolio_version.portfolio_id }} v{{ detail.portfolio_version.version_number }}</td></tr>
+      <tr><th>Valid from</th><td>{{ detail.intent.valid_from }}</td></tr>
+      <tr><th>Expires at</th><td>{{ detail.intent.expires_at }}</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<div class="panel">
+  <h2>Eligibility and frozen cohort</h2>
+  <p><span class="badge badge-unknown">UNSUPPORTED</span> -- Subscription rows carry no link to any specific product or portfolio version in this build (the same gap AD-13's own slice already documented), so a real recipient cohort cannot be computed here.</p>
+</div>
+
+<div class="panel">
+  <h2>Delivery attempts</h2>
+  <p><span class="badge badge-unknown">UNSUPPORTED</span> -- no per-recipient delivery-attempt tracking model exists in this build.</p>
+</div>
+
+<div class="panel">
+  <h2>External state</h2>
+  <p><span class="badge badge-unknown">UNSUPPORTED</span> -- no real external order-family connectivity exists in this build (the same gap AD-09's own slice already documented for every channel).</p>
+</div>
+
+<div class="panel">
+  <h2>Unknown resolution</h2>
+  {% if detail.intent.state.value == "UNKNOWN" %}
+  <p>This intent's outcome is not confirmed. Reconcile/correction actions are not implemented -- they need real external order-family connectivity this build does not have.</p>
+  {% else %}
+  <p>This intent is not in the UNKNOWN state.</p>
+  {% endif %}
+</div>
+
+<div class="panel">
+  <h2>Safety follow-up</h2>
+  <p><span class="badge badge-unknown">UNSUPPORTED</span> -- no incident-tracking model exists yet (the same gap AD-01/AD-21 already documented).</p>
+</div>
+{% endblock %}
