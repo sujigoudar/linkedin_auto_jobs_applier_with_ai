@@ -18,6 +18,7 @@ from app import config as app_config
 from app.db import Base
 
 import app.models.api_key  # noqa: E402,F401
+import app.models.audit_event  # noqa: E402,F401
 import app.models.billing  # noqa: E402,F401
 import app.models.content_document  # noqa: E402,F401
 import app.models.eligibility  # noqa: E402,F401

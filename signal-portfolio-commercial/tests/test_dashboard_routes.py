@@ -1463,3 +1463,56 @@ def test_save_then_submit_managed_program_for_review_over_real_http(db_session):
 
     final_response = client.get("/ops/managed-programs", headers=headers)
     assert "SUBMITTED_FOR_REVIEW" in final_response.text
+
+
+def test_audit_log_page_requires_owner_or_reviewer(db_session):
+    client = _client(db_session)
+    response = client.get("/ops/audit", headers=_auth_headers(role=MembershipRole.SUPPORT_READONLY))
+    assert response.status_code == 403
+
+
+def test_audit_log_page_shows_the_real_empty_state(db_session):
+    client = _client(db_session)
+    response = client.get("/ops/audit", headers=_auth_headers(role=MembershipRole.REVIEWER))
+    assert response.status_code == 200
+    assert "No audit events match these filters." in response.text
+
+
+def test_invite_staff_member_appends_a_real_audit_event(db_session):
+    from app.models.tenancy import UserIdentity
+
+    _seed_owner_membership(db_session)
+    db_session.add(UserIdentity(user_id="new-staff-audit", email="new-staff-audit@example.com"))
+    db_session.commit()
+
+    client = _client(db_session)
+    headers = _auth_headers(role=MembershipRole.OWNER)
+    client.post(
+        "/ops/access/invite", data={"user_id": "new-staff-audit", "role": "researcher"}, headers=headers
+    )
+
+    response = client.get(
+        "/ops/audit", params={"object_id": "new-staff-audit"}, headers=_auth_headers(role=MembershipRole.REVIEWER)
+    )
+    assert response.status_code == 200
+    assert "invite_staff_member:researcher" in response.text
+    assert "user-a" in response.text
+
+
+def test_revoke_staff_member_appends_a_real_audit_event(db_session):
+    from app.models.tenancy import UserIdentity
+
+    _seed_owner_membership(db_session)
+    db_session.add(UserIdentity(user_id="new-staff-audit-2", email="new-staff-audit-2@example.com"))
+    db_session.commit()
+
+    client = _client(db_session)
+    headers = _auth_headers(role=MembershipRole.OWNER)
+    client.post("/ops/access/invite", data={"user_id": "new-staff-audit-2", "role": "researcher"}, headers=headers)
+    client.post("/ops/access/new-staff-audit-2/revoke", headers=headers)
+
+    response = client.get(
+        "/ops/audit", params={"object_id": "new-staff-audit-2"}, headers=_auth_headers(role=MembershipRole.REVIEWER)
+    )
+    assert response.status_code == 200
+    assert "revoke_staff_member" in response.text

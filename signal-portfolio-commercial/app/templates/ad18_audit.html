@@ -1,0 +1,76 @@
+{% extends "_base.html" %}
+{% block title %}Audit log and release evidence{% endblock %}
+{% block content %}
+<h1>Audit log and release evidence</h1>
+
+<div class="panel">
+  <h2>Event search</h2>
+  <form method="get" action="/ops/audit">
+    <label for="actor_user_id">Actor</label>
+    <input type="text" id="actor_user_id" name="actor_user_id" value="{{ actor_user_id }}">
+
+    <label for="object_id">Object</label>
+    <input type="text" id="object_id" name="object_id" value="{{ object_id }}">
+
+    <label for="action">Action</label>
+    <input type="text" id="action" name="action" value="{{ action }}">
+
+    <p><button type="submit">Search</button></p>
+  </form>
+
+  {% if events %}
+  <table>
+    <thead><tr><th>Event</th><th>Actor</th><th>Object</th><th>Action</th><th>Outcome</th><th>Time</th></tr></thead>
+    <tbody>
+      {% for e in events %}
+      <tr>
+        <td>{{ e.event_id }}</td>
+        <td>{{ e.actor_user_id }}</td>
+        <td>{{ e.object_type }}:{{ e.object_id }}</td>
+        <td>{{ e.action }}</td>
+        <td>{{ e.outcome.value }}</td>
+        <td>{{ e.event_time }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="empty-state">
+    <p>No audit events match these filters.</p>
+  </div>
+  {% endif %}
+</div>
+
+{% if object_id %}
+<div class="panel">
+  <h2>Object timeline</h2>
+  {% if timeline %}
+  <table>
+    <thead><tr><th>Time</th><th>Actor</th><th>Action</th><th>Outcome</th></tr></thead>
+    <tbody>
+      {% for e in timeline %}
+      <tr>
+        <td>{{ e.event_time }}</td>
+        <td>{{ e.actor_user_id }}</td>
+        <td>{{ e.action }}</td>
+        <td>{{ e.outcome.value }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p>No events for this object.</p>
+  {% endif %}
+</div>
+{% endif %}
+
+<div class="panel">
+  <h2>Evidence manifest</h2>
+  <p><span class="badge badge-unknown">UNSUPPORTED</span> -- no evidence-bundling model exists in this build.</p>
+</div>
+
+<div class="panel">
+  <h2>Export queue</h2>
+  <p><span class="badge badge-unknown">UNSUPPORTED</span> -- no export-job infrastructure exists in this build.</p>
+</div>
+{% endblock %}

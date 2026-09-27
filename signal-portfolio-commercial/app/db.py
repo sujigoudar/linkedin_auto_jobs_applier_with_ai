@@ -36,6 +36,7 @@ _TENANT_SCOPED_TABLES: tuple[str, ...] = (
     "memberships", "customer_profiles", "ledger_entries", "sleeves", "subscriptions", "portfolio_versions",
     "release_reviews", "research_runs", "eligibility_assessments", "support_cases", "publisher_destinations",
     "api_keys", "integration_configurations", "price_versions", "content_documents", "managed_programs",
+    "audit_events",
 )
 
 #: Tables that must never be UPDATEd or DELETEd from, only appended to (see
@@ -44,7 +45,9 @@ _TENANT_SCOPED_TABLES: tuple[str, ...] = (
 #: portfolio_version_sleeves are append-only for the same reason
 #: (app/models/portfolio_version.py): "Historical membership is never
 #: overwritten" -- a weight change is a new version's rows, never an edit.
-_APPEND_ONLY_TABLES: tuple[str, ...] = ("ledger_entries", "portfolio_versions", "portfolio_version_sleeves")
+_APPEND_ONLY_TABLES: tuple[str, ...] = (
+    "ledger_entries", "portfolio_versions", "portfolio_version_sleeves", "audit_events",
+)
 
 
 def _apply_row_level_security(conn, tables: tuple[str, ...] = _TENANT_SCOPED_TABLES) -> None:
@@ -88,7 +91,16 @@ def enable_row_level_security(engine) -> None:
         _apply_row_level_security(conn)
 
 
-def _apply_append_only(conn) -> None:
+def _apply_append_only(conn, tables: tuple[str, ...] = _APPEND_ONLY_TABLES) -> None:
+    """`tables` defaults to the CURRENT `_APPEND_ONLY_TABLES` -- correct
+    for a fresh schema or `enforce_append_only` below. An Alembic
+    migration that ran before a later append-only table existed must
+    instead pass its OWN frozen snapshot of table names explicitly (see
+    `04c418cbb547`'s own upgrade()), for the exact same reason
+    `_apply_row_level_security` takes this parameter -- a fresh
+    `alembic upgrade head` replay would otherwise try to create a
+    trigger on a table that doesn't exist yet at that point in
+    migration history."""
     conn.execute(
         text(
             "CREATE OR REPLACE FUNCTION forbid_ledger_mutation() RETURNS trigger AS $$ "
@@ -96,7 +108,7 @@ def _apply_append_only(conn) -> None:
             "END; $$ LANGUAGE plpgsql"
         )
     )
-    for table in _APPEND_ONLY_TABLES:
+    for table in tables:
         conn.execute(text(f"DROP TRIGGER IF EXISTS append_only_guard ON {table}"))
         conn.execute(
             text(

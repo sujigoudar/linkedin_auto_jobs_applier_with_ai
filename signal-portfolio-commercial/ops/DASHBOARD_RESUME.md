@@ -146,8 +146,16 @@ Seven slices are DONE:
   REVIEWER) -- a real inactive PAMM/MAM program config + submit-for-
   review. No raw percentage/rate field exists at all, only opaque
   policy-id references; agreement_evidence_ids must be nonempty.
+- AD-18 Audit log and release evidence: `GET /ops/audit` (OWNER,
+  REVIEWER) -- a real, append-only audit store (retroactively resolves
+  the "no audit-log store exists" gap AD-16/AD-11 both documented).
+  AD-16's invite/revoke is its first real writer. The DB itself refuses
+  any UPDATE/DELETE against audit_events -- proven for real against a
+  live cluster, not just asserted. Also fixed a latent version of the
+  same migration-ordering bug found during AD-08, this time in
+  `_apply_append_only` rather than `_apply_row_level_security`.
 
-Full suite is 458 tests, ruff and mypy both green (**use `python3 -m
+Full suite is 468 tests, ruff and mypy both green (**use `python3 -m
 ruff`/`python3 -m mypy`/`python3 -m pytest` explicitly** -- this sandbox
 has a stray `uv tool`-installed `ruff`/`mypy` shadowing the project's
 real declared versions on bare `PATH`, which produced a false-negative
@@ -167,11 +175,12 @@ See `dashboard_state.json`'s `current_slice`/`second_slice`/
 `eighth_slice`/`ninth_slice`/`tenth_slice`/`eleventh_slice`/
 `twelfth_slice`/`thirteenth_slice`/`fourteenth_slice`/`fifteenth_slice`/
 `sixteenth_slice`/`seventeenth_slice`/`eighteenth_slice`/
-`nineteenth_slice`/`twentieth_slice`/`twentyfirst_slice` for the exact
-file lists and what was deliberately left unbuilt in each. 44 of 66
-screens (AD-01, AD-02, AD-03, AD-04, AD-08, PU-03, PU-05, ID-04, AD-16,
-CU-14, AD-09, CU-16, AD-12, AD-11, AD-17, AD-13, AD-19, AD-14 partially
-done) remain -- pick the next one following the steps below. **If you add a new table to
+`nineteenth_slice`/`twentieth_slice`/`twentyfirst_slice`/
+`twentysecond_slice` for the exact file lists and what was deliberately
+left unbuilt in each. 43 of 66 screens (AD-01, AD-02, AD-03, AD-04,
+AD-08, PU-03, PU-05, ID-04, AD-16, CU-14, AD-09, CU-16, AD-12, AD-11,
+AD-17, AD-13, AD-19, AD-14, AD-18 partially done) remain -- pick the
+next one following the steps below. **If you add a new table to
 `_TENANT_SCOPED_TABLES` in app/db.py, pin any EARLIER migration that
 already calls `_apply_row_level_security` with no explicit `tables`
 argument to its own frozen snapshot of the tables that existed at that

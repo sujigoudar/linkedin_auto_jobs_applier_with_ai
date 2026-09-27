@@ -129,6 +129,12 @@ what is and is not implemented yet.
   field exists, so a program can never be activated from "a local
   percentage table alone". agreement_evidence_ids must be nonempty --
   no automated signing without evidence.
+- AD-18 "Audit log and release evidence": a real, append-only audit
+  store (app/services/audit_log.py). AD-16's invite/revoke actions are
+  its first real writer. The database itself refuses any UPDATE/DELETE
+  against audit_events, matching ledger_entries' own append-only
+  precedent. Evidence manifest and Export queue are NOT implemented --
+  no evidence-bundling or export-job infrastructure exists.
 """
 from __future__ import annotations
 
@@ -179,6 +185,7 @@ from app.services.content_document import (
     request_content_review,
     save_content_draft,
 )
+from app.services.audit_log import get_object_timeline, list_audit_events
 from app.services.customer_support_view import get_customer_support_record, list_customers
 from app.services.managed_program import (
     InvalidManagedProgramError,
@@ -887,7 +894,9 @@ def invite_staff_page(
     set_tenant_scope(session, scope.tenant_id)
     try:
         role_enum = MembershipRole(role)
-        invite_staff_member(session, tenant_id=scope.tenant_id, user_id=user_id, role=role_enum)
+        invite_staff_member(
+            session, tenant_id=scope.tenant_id, user_id=user_id, role=role_enum, acting_user_id=scope.user_id
+        )
     except (ValueError, InvalidStaffGrantError) as exc:
         session.rollback()
         memberships = list_staff_memberships(session, tenant_id=scope.tenant_id)
@@ -1593,3 +1602,37 @@ def request_managed_program_review_page(
         )
     session.commit()
     return RedirectResponse(url="/ops/managed-programs", status_code=303)
+
+
+@router.get("/ops/audit")
+def audit_log_page(
+    request: Request,
+    scope: TenantScope = Depends(get_current_scope),
+    session: Session = Depends(get_db_session),
+    actor_user_id: str | None = None,
+    object_id: str | None = None,
+    action: str | None = None,
+):
+    """AD-18 "Audit log and release evidence" -- see this route
+    module's own docstring above for what is and is not implemented."""
+    try:
+        require_permission(scope.role, "view_audit_log")
+    except PermissionDenied as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+    set_tenant_scope(session, scope.tenant_id)
+    events = list_audit_events(
+        session, tenant_id=scope.tenant_id, actor_user_id=actor_user_id, object_id=object_id, action=action
+    )
+    timeline = get_object_timeline(session, tenant_id=scope.tenant_id, object_id=object_id) if object_id else []
+    return templates.TemplateResponse(
+        request,
+        "ad18_audit.html",
+        {
+            "events": events,
+            "timeline": timeline,
+            "actor_user_id": actor_user_id or "",
+            "object_id": object_id or "",
+            "action": action or "",
+        },
+    )

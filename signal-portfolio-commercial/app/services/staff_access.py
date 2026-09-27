@@ -19,6 +19,11 @@ Two real, named safety guards on revoke, not a single generic
 revoke their own membership -- an owner accidentally locking themselves
 out of their own tenant is exactly the kind of failure a form like this
 must make structurally impossible, not just discouraged.
+
+Every real invite/revoke also appends a real AuditEvent
+(app/services/audit_log.py) -- the first real writer into AD-18's
+append-only audit store, resolving the "no audit-log store exists" gap
+AD-16/AD-11 both previously documented.
 """
 from __future__ import annotations
 
@@ -26,6 +31,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.tenancy import Membership, MembershipRole, UserIdentity
+from app.services.audit_log import append_audit_event
 
 #: OWNER is granted only by direct database/founder action, never
 #: through this self-service form ("Owner grants not through
@@ -76,7 +82,9 @@ def list_staff_memberships(session: Session, *, tenant_id: str) -> list[Membersh
     )
 
 
-def invite_staff_member(session: Session, *, tenant_id: str, user_id: str, role: MembershipRole) -> Membership:
+def invite_staff_member(
+    session: Session, *, tenant_id: str, user_id: str, role: MembershipRole, acting_user_id: str
+) -> Membership:
     if role not in GRANTABLE_ROLES:
         raise InvalidStaffGrantError(f"{role.value!r} cannot be granted through this form")
     if session.get(UserIdentity, user_id) is None:
@@ -89,6 +97,14 @@ def invite_staff_member(session: Session, *, tenant_id: str, user_id: str, role:
     membership = Membership(tenant_id=tenant_id, user_id=user_id, role=role)
     session.add(membership)
     session.flush()
+    append_audit_event(
+        session,
+        tenant_id=tenant_id,
+        actor_user_id=acting_user_id,
+        object_type="membership",
+        object_id=user_id,
+        action=f"invite_staff_member:{role.value}",
+    )
     return membership
 
 
@@ -103,3 +119,11 @@ def revoke_staff_member(session: Session, *, tenant_id: str, user_id: str, actin
 
     session.delete(membership)
     session.flush()
+    append_audit_event(
+        session,
+        tenant_id=tenant_id,
+        actor_user_id=acting_user_id,
+        object_type="membership",
+        object_id=user_id,
+        action="revoke_staff_member",
+    )

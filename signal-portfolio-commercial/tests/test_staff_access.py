@@ -40,7 +40,8 @@ def test_invite_staff_member_requires_an_existing_user_identity(db_session):
     _seed_tenant_with_owner(db_session)
     with pytest.raises(UnknownUserIdentityError):
         invite_staff_member(
-            db_session, tenant_id="tenant-a", user_id="no-such-user", role=MembershipRole.RESEARCHER
+            db_session, tenant_id="tenant-a", user_id="no-such-user", role=MembershipRole.RESEARCHER,
+            acting_user_id="owner-a",
         )
 
 
@@ -49,7 +50,7 @@ def test_invite_staff_member_rejects_granting_owner(db_session):
     db_session.add(UserIdentity(user_id="new-staff", email="new-staff@example.com"))
     db_session.commit()
     with pytest.raises(InvalidStaffGrantError):
-        invite_staff_member(db_session, tenant_id="tenant-a", user_id="new-staff", role=MembershipRole.OWNER)
+        invite_staff_member(db_session, tenant_id="tenant-a", user_id="new-staff", role=MembershipRole.OWNER, acting_user_id="owner-a")
 
 
 def test_invite_staff_member_rejects_granting_customer(db_session):
@@ -57,7 +58,7 @@ def test_invite_staff_member_rejects_granting_customer(db_session):
     db_session.add(UserIdentity(user_id="new-staff", email="new-staff@example.com"))
     db_session.commit()
     with pytest.raises(InvalidStaffGrantError):
-        invite_staff_member(db_session, tenant_id="tenant-a", user_id="new-staff", role=MembershipRole.CUSTOMER)
+        invite_staff_member(db_session, tenant_id="tenant-a", user_id="new-staff", role=MembershipRole.CUSTOMER, acting_user_id="owner-a")
 
 
 def test_invite_then_reload_creates_a_real_membership(db_session):
@@ -65,7 +66,7 @@ def test_invite_then_reload_creates_a_real_membership(db_session):
     db_session.add(UserIdentity(user_id="new-staff", email="new-staff@example.com"))
     db_session.commit()
 
-    invite_staff_member(db_session, tenant_id="tenant-a", user_id="new-staff", role=MembershipRole.RESEARCHER)
+    invite_staff_member(db_session, tenant_id="tenant-a", user_id="new-staff", role=MembershipRole.RESEARCHER, acting_user_id="owner-a")
     db_session.commit()
 
     memberships = {m.user_id: m.role for m in list_staff_memberships(db_session, tenant_id="tenant-a")}
@@ -76,11 +77,11 @@ def test_invite_staff_member_rejects_an_already_existing_membership(db_session):
     _seed_tenant_with_owner(db_session)
     db_session.add(UserIdentity(user_id="new-staff", email="new-staff@example.com"))
     db_session.commit()
-    invite_staff_member(db_session, tenant_id="tenant-a", user_id="new-staff", role=MembershipRole.RESEARCHER)
+    invite_staff_member(db_session, tenant_id="tenant-a", user_id="new-staff", role=MembershipRole.RESEARCHER, acting_user_id="owner-a")
     db_session.commit()
 
     with pytest.raises(AlreadyAMemberError):
-        invite_staff_member(db_session, tenant_id="tenant-a", user_id="new-staff", role=MembershipRole.REVIEWER)
+        invite_staff_member(db_session, tenant_id="tenant-a", user_id="new-staff", role=MembershipRole.REVIEWER, acting_user_id="owner-a")
 
 
 def test_revoke_staff_member_rejects_revoking_the_owner(db_session):
@@ -93,7 +94,7 @@ def test_revoke_staff_member_rejects_revoking_yourself(db_session):
     _seed_tenant_with_owner(db_session)
     db_session.add(UserIdentity(user_id="new-staff", email="new-staff@example.com"))
     db_session.commit()
-    invite_staff_member(db_session, tenant_id="tenant-a", user_id="new-staff", role=MembershipRole.RESEARCHER)
+    invite_staff_member(db_session, tenant_id="tenant-a", user_id="new-staff", role=MembershipRole.RESEARCHER, acting_user_id="owner-a")
     db_session.commit()
 
     with pytest.raises(CannotRevokeSelfError):
@@ -110,7 +111,7 @@ def test_revoke_then_reload_really_removes_the_membership(db_session):
     _seed_tenant_with_owner(db_session)
     db_session.add(UserIdentity(user_id="new-staff", email="new-staff@example.com"))
     db_session.commit()
-    invite_staff_member(db_session, tenant_id="tenant-a", user_id="new-staff", role=MembershipRole.RESEARCHER)
+    invite_staff_member(db_session, tenant_id="tenant-a", user_id="new-staff", role=MembershipRole.RESEARCHER, acting_user_id="owner-a")
     db_session.commit()
 
     revoke_staff_member(db_session, tenant_id="tenant-a", user_id="new-staff", acting_user_id="owner-a")

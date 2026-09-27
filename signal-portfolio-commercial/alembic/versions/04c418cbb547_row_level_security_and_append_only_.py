@@ -53,11 +53,19 @@ _TABLES_AT_THIS_REVISION: tuple[str, ...] = (
     "memberships", "customer_profiles", "ledger_entries", "sleeves", "subscriptions", "portfolio_versions",
 )
 
+#: Same reasoning, for `_apply_append_only`'s own `_APPEND_ONLY_TABLES`
+#: constant -- pinned to the append-only tables that existed at this
+#: point in history (all three of `app.db._APPEND_ONLY_TABLES` as of
+#: this revision), never the live, ever-growing module constant.
+_APPEND_ONLY_TABLES_AT_THIS_REVISION: tuple[str, ...] = (
+    "ledger_entries", "portfolio_versions", "portfolio_version_sleeves",
+)
+
 
 def upgrade() -> None:
     connection = op.get_bind()
     _apply_row_level_security(connection, _TABLES_AT_THIS_REVISION)
-    _apply_append_only(connection)
+    _apply_append_only(connection, _APPEND_ONLY_TABLES_AT_THIS_REVISION)
 
 
 def downgrade() -> None:
