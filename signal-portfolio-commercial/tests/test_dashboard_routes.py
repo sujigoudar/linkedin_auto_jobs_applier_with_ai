@@ -1397,3 +1397,69 @@ def test_save_then_submit_content_draft_for_review_over_real_http(db_session):
 
     final_response = client.get("/ops/content", headers=headers)
     assert "SUBMITTED_FOR_REVIEW" in final_response.text
+
+
+def test_managed_programs_page_requires_owner_or_reviewer(db_session):
+    client = _client(db_session)
+    response = client.get("/ops/managed-programs", headers=_auth_headers(role=MembershipRole.PUBLISHER_OPERATOR))
+    assert response.status_code == 403
+
+
+def test_managed_programs_page_shows_the_real_empty_state(db_session):
+    client = _client(db_session)
+    response = client.get("/ops/managed-programs", headers=_auth_headers(role=MembershipRole.REVIEWER))
+    assert response.status_code == 200
+    assert "No managed-account program is approved." in response.text
+
+
+def test_save_managed_program_rejects_missing_evidence_over_real_http(db_session):
+    client = _client(db_session)
+    response = client.post(
+        "/ops/managed-programs",
+        data={
+            "program_name": "Bad Program",
+            "broker_program_id": "broker-1",
+            "mode": "pamm",
+            "allocation_policy_id": "alloc-1",
+            "nav_policy_id": "nav-1",
+            "dealing_schedule_id": "dealing-1",
+            "agreement_evidence_ids": "",
+        },
+        headers=_auth_headers(),
+    )
+    assert response.status_code == 400
+    assert "no automated signing" in response.text
+
+
+def test_save_then_submit_managed_program_for_review_over_real_http(db_session):
+    client = _client(db_session)
+    headers = _auth_headers()
+    create_response = client.post(
+        "/ops/managed-programs",
+        data={
+            "program_name": "HTTP Program",
+            "broker_program_id": "broker-http-1",
+            "mode": "pamm",
+            "allocation_policy_id": "alloc-1",
+            "nav_policy_id": "nav-1",
+            "dealing_schedule_id": "dealing-1",
+            "agreement_evidence_ids": "evidence-1",
+        },
+        headers=headers,
+    )
+    assert create_response.status_code == 303
+
+    list_response = client.get("/ops/managed-programs", headers=headers)
+    assert "HTTP Program" in list_response.text
+
+    import re
+
+    match = re.search(r"/ops/managed-programs/([^/]+)/request-review", list_response.text)
+    assert match is not None
+    program_id = match.group(1)
+
+    review_response = client.post(f"/ops/managed-programs/{program_id}/request-review", headers=headers)
+    assert review_response.status_code == 303
+
+    final_response = client.get("/ops/managed-programs", headers=headers)
+    assert "SUBMITTED_FOR_REVIEW" in final_response.text

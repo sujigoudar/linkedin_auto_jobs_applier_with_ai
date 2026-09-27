@@ -123,6 +123,12 @@ what is and is not implemented yet.
   (inherently factual claims) require at least one source_evidence_id.
   Actual publication remains a separate, not-yet-built admission
   decision this screen has no authority over.
+- AD-14 "Managed-program setup": a real inactive PAMM/MAM program
+  config + submit-for-review. Every allocation/NAV/dealing convention is
+  a required, opaque policy id reference -- no raw percentage/rate
+  field exists, so a program can never be activated from "a local
+  percentage table alone". agreement_evidence_ids must be nonempty --
+  no automated signing without evidence.
 """
 from __future__ import annotations
 
@@ -174,6 +180,14 @@ from app.services.content_document import (
     save_content_draft,
 )
 from app.services.customer_support_view import get_customer_support_record, list_customers
+from app.services.managed_program import (
+    InvalidManagedProgramError,
+    ProgramNotEligibleForReviewError,
+    create_managed_program,
+    get_managed_program,
+    list_managed_programs,
+    request_managed_program_review,
+)
 from app.services.integration_configuration import (
     InvalidIntegrationConfigurationError,
     create_integration_configuration,
@@ -1480,3 +1494,102 @@ def request_content_review_page(
         )
     session.commit()
     return RedirectResponse(url="/ops/content", status_code=303)
+
+
+_ALL_MANAGED_PROGRAM_MODES = ["pamm", "mam"]
+
+
+def _require_managed_programs(scope: TenantScope) -> None:
+    try:
+        require_permission(scope.role, "manage_managed_programs")
+    except PermissionDenied as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+
+@router.get("/ops/managed-programs")
+def managed_programs_page(
+    request: Request,
+    scope: TenantScope = Depends(get_current_scope),
+    session: Session = Depends(get_db_session),
+    error: str | None = None,
+):
+    """AD-14 "Managed-program setup" -- see this route module's own
+    docstring above for what is and is not implemented."""
+    _require_managed_programs(scope)
+    set_tenant_scope(session, scope.tenant_id)
+    programs = list_managed_programs(session, tenant_id=scope.tenant_id)
+    return templates.TemplateResponse(
+        request,
+        "ad14_managed_programs.html",
+        {"programs": programs, "all_modes": _ALL_MANAGED_PROGRAM_MODES, "error": error},
+    )
+
+
+@router.post("/ops/managed-programs")
+def create_managed_program_page(
+    request: Request,
+    program_name: str = Form(...),
+    broker_program_id: str = Form(...),
+    mode: str = Form(...),
+    allocation_policy_id: str = Form(...),
+    nav_policy_id: str = Form(...),
+    dealing_schedule_id: str = Form(...),
+    fee_policy_id: str = Form(""),
+    agreement_evidence_ids: str = Form(""),
+    scope: TenantScope = Depends(get_current_scope),
+    session: Session = Depends(get_db_session),
+):
+    _require_managed_programs(scope)
+    set_tenant_scope(session, scope.tenant_id)
+    evidence_ids = [v.strip() for v in agreement_evidence_ids.split(",") if v.strip()]
+    try:
+        create_managed_program(
+            session,
+            tenant_id=scope.tenant_id,
+            program_name=program_name,
+            broker_program_id=broker_program_id,
+            mode=mode,
+            allocation_policy_id=allocation_policy_id,
+            nav_policy_id=nav_policy_id,
+            dealing_schedule_id=dealing_schedule_id,
+            fee_policy_id=fee_policy_id or None,
+            agreement_evidence_ids=evidence_ids,
+        )
+    except InvalidManagedProgramError as exc:
+        session.rollback()
+        programs = list_managed_programs(session, tenant_id=scope.tenant_id)
+        return templates.TemplateResponse(
+            request,
+            "ad14_managed_programs.html",
+            {"programs": programs, "all_modes": _ALL_MANAGED_PROGRAM_MODES, "error": str(exc)},
+            status_code=400,
+        )
+    session.commit()
+    return RedirectResponse(url="/ops/managed-programs", status_code=303)
+
+
+@router.post("/ops/managed-programs/{program_id}/request-review")
+def request_managed_program_review_page(
+    program_id: str,
+    request: Request,
+    scope: TenantScope = Depends(get_current_scope),
+    session: Session = Depends(get_db_session),
+):
+    _require_managed_programs(scope)
+    set_tenant_scope(session, scope.tenant_id)
+    program = get_managed_program(session, program_id, tenant_id=scope.tenant_id)
+    if program is None:
+        raise HTTPException(status_code=404, detail="not found")
+    try:
+        request_managed_program_review(session, program)
+    except ProgramNotEligibleForReviewError as exc:
+        session.rollback()
+        programs = list_managed_programs(session, tenant_id=scope.tenant_id)
+        return templates.TemplateResponse(
+            request,
+            "ad14_managed_programs.html",
+            {"programs": programs, "all_modes": _ALL_MANAGED_PROGRAM_MODES, "error": str(exc)},
+            status_code=400,
+        )
+    session.commit()
+    return RedirectResponse(url="/ops/managed-programs", status_code=303)

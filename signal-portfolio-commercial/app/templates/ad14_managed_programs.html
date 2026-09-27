@@ -1,0 +1,95 @@
+{% extends "_base.html" %}
+{% block title %}Managed-program setup{% endblock %}
+{% block content %}
+<h1>Managed-program setup</h1>
+
+{% if error %}<div class="conflict">{{ error }}</div>{% endif %}
+
+<div class="panel">
+  <h2>Program identity</h2>
+  {% if programs %}
+  <table>
+    <thead><tr><th>Program</th><th>Broker</th><th>Mode</th><th>State</th><th></th></tr></thead>
+    <tbody>
+      {% for p in programs %}
+      <tr>
+        <td>{{ p.program_name }}</td>
+        <td>{{ p.broker_program_id }}</td>
+        <td>{{ p.mode.value }}</td>
+        <td>{{ p.state.value }}</td>
+        <td>
+          {% if p.state.value == "DRAFT" %}
+          <form method="post" action="/ops/managed-programs/{{ p.program_id }}/request-review" style="display:inline;">
+            <button type="submit">Request review</button>
+          </form>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="empty-state">
+    <p>No managed-account program is approved.</p>
+  </div>
+  {% endif %}
+</div>
+
+<div class="panel">
+  <h2>Create inactive program</h2>
+  <form method="post" action="/ops/managed-programs">
+    <label for="program_name">Name</label>
+    <input type="text" id="program_name" name="program_name" maxlength="100" required>
+
+    <label for="broker_program_id">Broker program</label>
+    <input type="text" id="broker_program_id" name="broker_program_id" required>
+
+    <label for="mode">Structure</label>
+    <select id="mode" name="mode">
+      {% for m in all_modes %}<option value="{{ m }}">{{ m }}</option>{% endfor %}
+    </select>
+
+    <label for="allocation_policy_id">Allocation policy</label>
+    <input type="text" id="allocation_policy_id" name="allocation_policy_id" required>
+
+    <label for="nav_policy_id">NAV policy</label>
+    <input type="text" id="nav_policy_id" name="nav_policy_id" required>
+
+    <label for="dealing_schedule_id">Dealing schedule</label>
+    <input type="text" id="dealing_schedule_id" name="dealing_schedule_id" required>
+
+    <label for="fee_policy_id">Fee policy (optional)</label>
+    <input type="text" id="fee_policy_id" name="fee_policy_id">
+
+    <label for="agreement_evidence_ids">Evidence (comma-separated)</label>
+    <input type="text" id="agreement_evidence_ids" name="agreement_evidence_ids" required>
+
+    <p><button type="submit">Save inactive program</button></p>
+  </form>
+</div>
+
+<div class="panel">
+  <h2>Jurisdiction/broker gates</h2>
+  <p><span class="badge badge-unknown">UNSUPPORTED</span> -- no real jurisdiction/broker gate evaluation exists in this build yet.</p>
+</div>
+
+<div class="panel">
+  <h2>Allocation method</h2>
+  <p>Allocation, NAV and dealing conventions are opaque policy id references only -- no raw percentage/rate is ever accepted here.</p>
+</div>
+
+<div class="panel">
+  <h2>Mandates</h2>
+  <p><span class="badge badge-unknown">UNSUPPORTED</span> -- no copy-mandate model exists in this build.</p>
+</div>
+
+<div class="panel">
+  <h2>Dealing/fee conventions</h2>
+  <p>Performance fees remain disabled unless a fee_policy_id is set -- no incomplete convention is ever approximated.</p>
+</div>
+
+<div class="panel">
+  <h2>Version review</h2>
+  <p>Requesting review moves a draft to SUBMITTED_FOR_REVIEW only. Actual program release/activation is a separate, not-yet-built admission decision -- never custody or a deposit action.</p>
+</div>
+{% endblock %}

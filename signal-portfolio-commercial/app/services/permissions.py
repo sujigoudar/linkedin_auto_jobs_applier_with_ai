@@ -101,6 +101,9 @@ _ALLOWED: dict[str, frozenset[Role]] = {
     #: AD-19 "Content and disclosure publishing" -- exactly this
     #: screen's own access list.
     "manage_content_documents": frozenset({Role.OWNER, Role.REVIEWER}),
+    #: AD-14 "Managed-program setup" -- exactly this screen's own access
+    #: list.
+    "manage_managed_programs": frozenset({Role.OWNER, Role.REVIEWER}),
 }
 
 
