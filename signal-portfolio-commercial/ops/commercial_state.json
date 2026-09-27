@@ -62,15 +62,17 @@
       "not_yet_wired": "No real model provider (Claude, or any other) is actually called anywhere in this build -- this phase is the boundary/contract only. No prompt/response logging-with-redaction pipeline, no Promptfoo regression harness, no adversarial-prompt-injection evaluation suite (docs/11's evaluation section) -- all deferred until an actual model feature is selected and approved, matching that section's own 'Omit this dependency when no model feature is selected.'"
     },
     "12_validation_deployment_owner_cards": {
-      "status": "not_started",
-      "owner_action_cards_not_yet_surfaced": [
+      "status": "partially_done",
+      "notes": "docs/12_validation_report.md is a genuine scope-ledger audit of all 114 spec/catalog/requirements.json requirements (CP-001-114), classified PASSED/PARTIAL/NOT_RUN/BLOCKED_EXTERNAL based on what was actually built and tested across Phases 00-11 -- not a file-count claim. Roughly 31 PASSED, 8 PARTIAL, 9 BLOCKED_EXTERNAL, 66 NOT_RUN. Honest milestone-gate assessment: G1 (tenancy/RLS/local policy) substantially reached; G0 carried forward unverified (signal-copier's own 928 tests still pass, but its historical audit was not re-run this session); G2 onward not reached (no licensed portfolio data, no real Stripe/broker/platform accounts, no GUI, no deployment). Final full-suite run before writing this report: signal-portfolio-commercial 188/188 passed, signal-copier 928/928 passed. The six owner-only action cards are written up in full in docs/12_validation_report.md's final section and surfaced to the user in this session's own reply (not just filed in this document).",
+      "owner_action_cards_surfaced_this_session": [
         "CARD-1 legal entity / jurisdiction / assets",
         "CARD-2 source rights contracts",
         "CARD-3 platform agreements",
         "CARD-4 payment processor / tax / bank (merchant approval)",
         "CARD-5 customer agreements / disclosures",
         "CARD-6 exact financial production release"
-      ]
+      ],
+      "not_yet_wired": "No FastAPI commercial_api app skeleton exists (deferred across every phase, per each phase's own notes, since no earlier phase's schema was settled enough to justify it until now -- still not built in this phase either, since Phase 12 prioritized the honest audit and card-surfacing over new code). No Alembic migrations (still Base.metadata.create_all in tests). No deployment/backup/monitoring/incident-drill infrastructure. All of test boundaries 3/4/5/7/8/9/10 from docs/12's own 'Required test boundaries' list remain essentially untouched, since they need real infrastructure and credentials this build was never given."
     }
   },
   "standing_constraints": [

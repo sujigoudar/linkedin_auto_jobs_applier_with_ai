@@ -108,8 +108,30 @@ readable companion: how to actually pick the work back up.
   contract only, per docs/11's own "Omit this dependency when no model
   feature is selected." See `commercial_state.json`'s
   `11_llm_assistance` notes.
-- **Phase 12**: not started. See `commercial_state.json` for phase-specific
-  notes carried forward from the original request.
+- **Phase 12 (validation, scope ledger, owner cards)**: partially done.
+  `docs/12_validation_report.md` is a real, honest audit of all 114
+  requirements against what was actually built (roughly 31 PASSED, 8
+  PARTIAL, 9 BLOCKED_EXTERNAL, 66 NOT_RUN), an honest milestone-gate
+  assessment (this build has reached roughly G1; G0 is carried forward
+  unverified; G2 onward not reached), and the six owner-only action
+  cards written up in full and surfaced to the user directly. No
+  FastAPI app/Alembic migrations/deployment infrastructure exist yet.
+
+## Where this build actually stands (read this first if picking up cold)
+
+**This build has NOT reached a state ready for any live/real activity.**
+Read `docs/12_validation_report.md` in full before doing anything that
+could be mistaken for "finishing" this project -- it is the authoritative,
+line-by-line account of what is real versus what is still open. In
+short: strong, tested, real coverage of the tenancy/rights/permission/
+accounting-invariant layer (Phases 00-03, 08, 10-11's boundary pieces);
+essentially nothing yet on the parts that need real licensed market
+data, a real Stripe account, real broker/platform credentials, or an
+actual website -- all deliberately left open rather than faked. Six
+owner-only action cards (legal entity, source rights contracts,
+platform agreements, payment processor, customer agreements, and the
+final financial production release decision) remain outstanding; none
+of them can be advanced by more coding.
 
 ## Standing directive from the user (2026-09-27)
 
@@ -158,16 +180,12 @@ directory of pytest's tmp dir (this bit us once; the fix is in
 
 ## Next step
 
-Phase 12: full validation, deployment, and the six owner-only action
-cards (docs/12_validation_and_acceptance.md). This is the phase where
-the build genuinely needs the user: CARD-1 through CARD-6 (legal
-entity/jurisdiction, source rights contracts, platform agreements,
-payment processor/merchant approval, customer agreements/disclosures,
-and the exact financial production release) cannot be fabricated or
-assumed -- they must be surfaced to the user as explicit asks, not
-built around. What CAN still be done without them: a real, honest
-end-to-end validation pass over everything built so far (Phases 00-11),
-a FastAPI `commercial_api` app skeleton wiring the existing services
-together, and real Alembic migrations, since the ledger/tenancy/rights/
-sleeve/publication/billing schemas are now stable enough to give a
-first migration something real to cover.
+All 13 phases (00-12) have had at least a bounded, honest pass. What
+remains is not a numbered phase but real infrastructure work that does
+not depend on the six owner cards: a FastAPI `commercial_api` app
+skeleton wiring the existing services together into real HTTP routes,
+real Alembic migrations (the ledger/tenancy/rights/sleeve/publication/
+billing schemas are stable enough now), and then the GUI journeys
+(CP-091-114, all NOT_RUN) once there's an API for them to call. None of
+that requires the six cards -- but nothing built here should be
+mistaken for readiness to go live, per `docs/12_validation_report.md`.
