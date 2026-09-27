@@ -96,6 +96,12 @@ what is and is not implemented yet.
   not revenue). Refunds/royalties/cost attribution/margin are NOT
   implemented -- no such model exists, so each is rendered as an
   explicit UNSUPPORTED, never a fabricated zero or an incomplete margin.
+- AD-11 "Customers and scoped support record": a real, read-only staff
+  view over a tenant's own customer memberships, built entirely from
+  data ID-04/CU-14 already made real (eligibility decisions, support
+  cases). A cross-tenant/non-customer user_id returns a scoped 404.
+  Subscription/Mandates/Audit panels are NOT implemented -- no
+  per-customer subscription, copy-mandate or audit-log model exists.
 """
 from __future__ import annotations
 
@@ -138,6 +144,7 @@ from app.services.api_key import (
     revoke_api_key,
 )
 from app.services.business_economics import get_business_economics
+from app.services.customer_support_view import get_customer_support_record, list_customers
 from app.services.publisher_destination import (
     InvalidPublisherDestinationError,
     create_publisher_destination,
@@ -1137,3 +1144,43 @@ def business_economics_page(
     set_tenant_scope(session, scope.tenant_id)
     economics = get_business_economics(session, tenant_id=scope.tenant_id)
     return templates.TemplateResponse(request, "ad12_business.html", {"economics": economics})
+
+
+@router.get("/ops/customers")
+def customers_page(
+    request: Request,
+    scope: TenantScope = Depends(get_current_scope),
+    session: Session = Depends(get_db_session),
+):
+    """AD-11 "Customers and scoped support record" -- see this route
+    module's own docstring above for what is and is not implemented."""
+    try:
+        require_permission(scope.role, "view_customer_support_record")
+    except PermissionDenied as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+    set_tenant_scope(session, scope.tenant_id)
+    customers = list_customers(session, tenant_id=scope.tenant_id)
+    return templates.TemplateResponse(request, "ad11_customers.html", {"customers": customers})
+
+
+@router.get("/ops/customers/{user_id}")
+def customer_detail_page(
+    user_id: str,
+    request: Request,
+    scope: TenantScope = Depends(get_current_scope),
+    session: Session = Depends(get_db_session),
+):
+    """A user_id belonging to another tenant, or that isn't a CUSTOMER
+    membership at all, returns a scoped 404 -- never a 403, which would
+    confirm the id exists (PU-03's own "scoped not-found" precedent)."""
+    try:
+        require_permission(scope.role, "view_customer_support_record")
+    except PermissionDenied as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+    set_tenant_scope(session, scope.tenant_id)
+    record = get_customer_support_record(session, tenant_id=scope.tenant_id, user_id=user_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="not found")
+    return templates.TemplateResponse(request, "ad11_customer_detail.html", {"record": record})

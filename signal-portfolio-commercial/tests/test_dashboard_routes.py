@@ -1171,3 +1171,61 @@ def test_business_economics_page_shows_real_booked_revenue_and_never_unpaid_subs
     assert response.status_code == 200
     assert "39.00" in response.text
     assert "99.00" not in response.text
+
+
+def test_customers_page_requires_owner_or_support_readonly(db_session):
+    client = _client(db_session)
+    response = client.get("/ops/customers", headers=_auth_headers(role=MembershipRole.BILLING_OPERATOR))
+    assert response.status_code == 403
+
+
+def test_customers_page_shows_the_real_empty_state(db_session):
+    client = _client(db_session)
+    response = client.get("/ops/customers", headers=_auth_headers(role=MembershipRole.SUPPORT_READONLY))
+    assert response.status_code == 200
+    assert "No customers have signed up." in response.text
+
+
+def test_customer_detail_returns_scoped_404_for_a_cross_tenant_user(db_session):
+    _seed_customer_membership(db_session, tenant_id="tenant-a", user_id="user-a")
+    _seed_customer_membership(db_session, tenant_id="tenant-b", user_id="user-b")
+    client = _client(db_session)
+    response = client.get(
+        "/ops/customers/user-b", headers=_auth_headers(tenant_id="tenant-a", role=MembershipRole.SUPPORT_READONLY)
+    )
+    assert response.status_code == 404
+
+
+def test_customer_detail_shows_real_eligibility_and_cases_over_real_http(db_session):
+    _seed_customer_membership(db_session)
+    customer_headers = _auth_headers(role=MembershipRole.CUSTOMER)
+    client = _client(db_session)
+    client.post(
+        "/onboarding/eligibility",
+        data={
+            "residence_country": "US",
+            "customer_type": "individual",
+            "requested_service_modes": ["research"],
+            "document_versions": "v1",
+            "facts_confirmed": "true",
+        },
+        headers=customer_headers,
+    )
+    client.post(
+        "/app/support",
+        data={
+            "category": "billing",
+            "related_object_id": "",
+            "subject": "Billing question HTTP",
+            "description": "Why was I charged",
+            "attachment_ids": "",
+        },
+        headers=customer_headers,
+    )
+
+    staff_response = client.get(
+        "/ops/customers/user-a", headers=_auth_headers(role=MembershipRole.SUPPORT_READONLY)
+    )
+    assert staff_response.status_code == 200
+    assert "ELIGIBLE" in staff_response.text
+    assert "Billing question HTTP" in staff_response.text

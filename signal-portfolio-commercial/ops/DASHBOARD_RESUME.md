@@ -120,8 +120,13 @@ Seven slices are DONE:
   recognized states (never LedgerEntry's trading P&L). Fees/refunds/
   royalties/cost attribution/margin are all explicit UNSUPPORTED --
   no such model exists yet.
+- AD-11 Customers and scoped support record: `GET /ops/customers` +
+  `GET /ops/customers/{user_id}` (OWNER, SUPPORT_READONLY) -- a
+  read-only staff view built entirely from ID-04/CU-14's already-real
+  data (eligibility decisions, support cases), no new model. A
+  cross-tenant or non-customer user_id returns a scoped 404.
 
-Full suite is 398 tests, ruff and mypy both green (**use `python3 -m
+Full suite is 410 tests, ruff and mypy both green (**use `python3 -m
 ruff`/`python3 -m mypy`/`python3 -m pytest` explicitly** -- this sandbox
 has a stray `uv tool`-installed `ruff`/`mypy` shadowing the project's
 real declared versions on bare `PATH`, which produced a false-negative
@@ -140,10 +145,11 @@ See `dashboard_state.json`'s `current_slice`/`second_slice`/
 `third_slice`/`fourth_slice`/`fifth_slice`/`sixth_slice`/`seventh_slice`/
 `eighth_slice`/`ninth_slice`/`tenth_slice`/`eleventh_slice`/
 `twelfth_slice`/`thirteenth_slice`/`fourteenth_slice`/`fifteenth_slice`/
-`sixteenth_slice` for the exact file lists and what was deliberately
-left unbuilt in each. 49 of 66 screens (AD-01, AD-02, AD-03, AD-04,
-AD-08, PU-03, PU-05, ID-04, AD-16, CU-14, AD-09, CU-16, AD-12 partially
-done) remain -- pick the next one following the steps below. **If you add a new table to
+`sixteenth_slice`/`seventeenth_slice` for the exact file lists and what
+was deliberately left unbuilt in each. 48 of 66 screens (AD-01, AD-02,
+AD-03, AD-04, AD-08, PU-03, PU-05, ID-04, AD-16, CU-14, AD-09, CU-16,
+AD-12, AD-11 partially done) remain -- pick the next one following the
+steps below. **If you add a new table to
 `_TENANT_SCOPED_TABLES` in app/db.py, pin any EARLIER migration that
 already calls `_apply_row_level_security` with no explicit `tables`
 argument to its own frozen snapshot of the tables that existed at that

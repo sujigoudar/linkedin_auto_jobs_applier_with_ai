@@ -1,0 +1,62 @@
+{% extends "_base.html" %}
+{% block title %}Customer {{ record.user_id }}{% endblock %}
+{% block content %}
+<h1>Customer: {{ record.user_id }}</h1>
+<p><a href="/ops/customers">&larr; Back to customer search</a></p>
+
+<div class="panel">
+  <h2>Profile/eligibility</h2>
+  {% if record.eligibility_decisions %}
+  <table>
+    <thead><tr><th>Service</th><th>Eligibility</th><th>Reason</th></tr></thead>
+    <tbody>
+      {% for d in record.eligibility_decisions %}
+      <tr>
+        <td>{{ d.service }}</td>
+        <td>{{ d.decision }}</td>
+        <td>{{ d.reason }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p>No eligibility facts have been submitted yet.</p>
+  {% endif %}
+</div>
+
+<div class="panel">
+  <h2>Subscription</h2>
+  <p><span class="badge badge-unknown">UNSUPPORTED</span> -- no per-customer subscription linkage exists in this build (Subscription is tenant-scoped, not customer-scoped).</p>
+</div>
+
+<div class="panel">
+  <h2>Mandates read view</h2>
+  <p><span class="badge badge-unknown">UNSUPPORTED</span> -- no copy-mandate model exists in this build.</p>
+</div>
+
+<div class="panel">
+  <h2>Cases</h2>
+  {% if record.cases %}
+  <table>
+    <thead><tr><th>Category</th><th>Subject</th><th>Status</th><th>Updated</th></tr></thead>
+    <tbody>
+      {% for case in record.cases %}
+      <tr>
+        <td>{{ case.category.value }}</td>
+        <td>{{ case.subject }}</td>
+        <td>{{ case.status.value }}</td>
+        <td>{{ case.updated_at }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p>No support cases for this customer.</p>
+  {% endif %}
+</div>
+
+<div class="panel">
+  <h2>Audit</h2>
+  <p><span class="badge badge-unknown">UNSUPPORTED</span> -- no audit-log store exists in this build.</p>
+</div>
+{% endblock %}

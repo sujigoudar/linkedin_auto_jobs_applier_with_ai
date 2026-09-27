@@ -85,6 +85,11 @@ _ALLOWED: dict[str, frozenset[Role]] = {
     #: screen's own access list. Business revenue is a billing/
     #: ownership decision, not a research/support/publisher concern.
     "view_business_economics": frozenset({Role.OWNER, Role.BILLING_OPERATOR}),
+    #: AD-11 "Customers and scoped support record" -- exactly this
+    #: screen's own access list. Reading another user's eligibility
+    #: facts/support cases is a support/ownership decision, not a
+    #: research, billing or publisher concern.
+    "view_customer_support_record": frozenset({Role.OWNER, Role.SUPPORT_READONLY}),
 }
 
 

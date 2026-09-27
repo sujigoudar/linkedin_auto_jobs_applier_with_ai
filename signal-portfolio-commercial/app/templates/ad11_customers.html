@@ -1,0 +1,27 @@
+{% extends "_base.html" %}
+{% block title %}Customers and scoped support record{% endblock %}
+{% block content %}
+<h1>Customers and scoped support record</h1>
+
+<div class="panel">
+  <h2>Customer search</h2>
+  {% if customers %}
+  <table>
+    <thead><tr><th>Customer</th><th>Open cases</th><th></th></tr></thead>
+    <tbody>
+      {% for c in customers %}
+      <tr>
+        <td>{{ c.user_id }}</td>
+        <td>{{ c.open_cases_count }}</td>
+        <td><a href="/ops/customers/{{ c.user_id }}">Open case &rarr;</a></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="empty-state">
+    <p>No customers have signed up.</p>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}
