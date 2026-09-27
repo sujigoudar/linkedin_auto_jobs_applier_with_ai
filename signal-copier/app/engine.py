@@ -565,10 +565,32 @@ class SignalCopierEngine:
         finally:
             self.capital_allocator.release(account.account_id, notional)
 
-        if result.status in (OrderStatus.ERROR, OrderStatus.REJECTED):
-            # The entry never happened — don't leave a plan registered with nothing
-            # protecting it (and nothing to protect).
+        if result.status == OrderStatus.REJECTED:
+            # A broker-confirmed rejection (or a client-side validation
+            # failure that never reached the network) is the one case that
+            # definitely never happened -- nothing to protect, so nothing
+            # to keep registered.
             self.lifecycle_manager.unregister_plan(account.account_id, symbol)
+        elif result.status == OrderStatus.ERROR:
+            # Same ambiguity as the raised-exception branch above, just
+            # returned instead of raised: several adapters (e.g. AlpacaBroker)
+            # catch their own transport/timeout errors and return ERROR
+            # rather than letting the exception propagate, so a request that
+            # actually reached the venue before the timeout looks identical,
+            # from here, to one that never left this process. Treating
+            # every ERROR as "definitely never happened" and unregistering
+            # the plan would silently stop protecting a position that may
+            # already be real. Retain it the same way, for the same
+            # reason: app/reconciliation.py's broker-position readback
+            # (OPS-03) is what can eventually discover whether this filled.
+            logger.error(
+                "managed entry for account=%s symbol=%s returned ERROR (not raised) -- retaining as an "
+                "unresolved pending entry (may already be a real, accepted order): %s",
+                account.account_id,
+                symbol,
+                result.message,
+            )
+            self.lifecycle_manager.register_pending_entry(account, symbol, None, quantity)
         elif result.status == OrderStatus.FILLED:
             filled_quantity = result.filled_quantity if result.filled_quantity is not None else quantity
             self.store.record_fill(account.account_id, symbol, signal.side, filled_quantity)

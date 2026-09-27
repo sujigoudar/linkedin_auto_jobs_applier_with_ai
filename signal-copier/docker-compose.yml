@@ -5,7 +5,15 @@ services:
       # args:
       #   EXTRAS: "ccxt tweepy"   # uncomment and list whichever optional adapters you need
     ports:
-      - "8000:8000"
+      # Loopback-only by default: with no host address, Docker's default is
+      # to publish on ALL host interfaces (0.0.0.0), directly exposing this
+      # app's own HTTP (no TLS, and auth is behind a login page, not a
+      # network boundary) to anything that can reach this host's network.
+      # For a real deployment, put an HTTPS-terminating reverse proxy
+      # (nginx/Caddy) in front and have IT publish 443 -- this app itself
+      # should stay reachable only from that proxy (localhost, as here, or
+      # a private/internal network the proxy itself is on).
+      - "127.0.0.1:8000:8000"
     env_file:
       - .env
     volumes:

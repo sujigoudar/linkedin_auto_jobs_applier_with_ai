@@ -1106,6 +1106,20 @@ Verified: the image builds and runs, `/health` responds, and a webhook
 signal correctly routes through to the paper broker and updates
 `/positions` inside the running container.
 
+`docker-compose.yml`'s port publish is loopback-only
+(`127.0.0.1:8000:8000`) by design — with no host address, Docker's
+default publishes on every host interface, directly exposing this app's
+plain HTTP (no TLS) to the network. Put an HTTPS-terminating reverse
+proxy (nginx/Caddy) in front for anything beyond local use, with this
+container reachable only from that proxy.
+
+The base image (`python:3.11-slim`) is intentionally a floating minor-
+version tag, not pinned to an exact digest — this sandbox has no Docker
+daemon available to resolve and verify a pinned digest actually builds
+correctly (and, critically, on the Oracle ARM standby's architecture
+too, not just the CI runner's amd64). Pin it as part of an actual
+release process, once there's a real multi-arch build to test against.
+
 ## Multi-site deployment (guarded active/passive, draft)
 
 `deploy/` has a design draft and IaC for running this as one active site
@@ -1194,6 +1208,36 @@ every financial command independent of any single route's own auth logic
   "one broker's failure must not block the rest" contract in
   `app/reconciliation.py`, exercised against real fault types instead of
   just asserted in a comment.
+- **EXE-01b (fixed):** a managed-lifecycle entry whose `place_order` call
+  RETURNED `OrderStatus.ERROR` (rather than raising) was unconditionally
+  treated as "never happened" and had its plan unregistered — even
+  though several adapters (e.g. `AlpacaBroker`) catch their own
+  transport/timeout errors internally and return exactly that ERROR
+  result, so a request that actually reached the venue and was accepted
+  before a timeout looked identical, from here, to one that never left
+  this process. This is the same ambiguity `EXE-01` already handled for
+  the raised-exception path; ERROR now gets the same treatment (retained
+  as an unresolved pending entry for `OrderReconciler`'s broker-position
+  readback to eventually resolve), and only a broker-confirmed
+  `REJECTED` unregisters the plan. See
+  `tests/test_exe01b_error_result_response_lost.py`.
+- **E03 capital allocator — known, disclosed gap, not yet closed:** the
+  provisional notional reservation is released as soon as `place_order`
+  returns, for every outcome including `PENDING` — but a `PENDING` order
+  isn't part of confirmed exposure yet (that only counts orders whose
+  stored status is actually `FILLED`). Between "broker accepted,
+  reported PENDING" and "reconciliation later confirms the fill," that
+  notional counts toward neither the reservation ledger nor confirmed
+  exposure, so a second signal admitted in that window can push real
+  combined exposure past the configured ceiling. See
+  `app/capital_allocator.py`'s docstring and
+  `tests/test_e03_capital_exposure_gate.py`'s
+  `test_known_gap_two_sequential_pending_orders_can_both_be_admitted_past_the_ceiling`
+  (a regression-catcher for the eventual fix, not a claim this is fine).
+  Correctly closing it needs the reservation to survive until
+  reconciliation resolves the order to a terminal state; not attempted
+  here since doing it wrong risks a reservation that's never released,
+  worse than the gap it would close.
 - Never commit `.env` or real `config/routing.yaml` /
   `config/accounts.yaml` if they end up containing anything
   account-identifying (they're gitignored by default).

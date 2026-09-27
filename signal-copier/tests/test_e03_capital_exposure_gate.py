@@ -10,7 +10,7 @@ from app.brokers.paper import PaperBroker
 from app.db import SignalStore
 from app.engine import SignalCopierEngine
 from app.lifecycle.manager import PositionLifecycleManager
-from app.models import DestinationAccount, OrderStatus, Side, Signal
+from app.models import DestinationAccount, OrderResult, OrderStatus, Side, Signal
 from app.routing import RoutingConfig, RoutingRule
 
 SOURCE = "tradingview"
@@ -126,3 +126,49 @@ async def test_concurrent_entries_for_the_same_account_cannot_both_exceed_the_ce
 
     statuses = sorted([results_a[0].status.value, results_b[0].status.value])
     assert statuses == [OrderStatus.FILLED.value, OrderStatus.REJECTED.value]
+
+
+@pytest.mark.asyncio
+async def test_known_gap_two_sequential_pending_orders_can_both_be_admitted_past_the_ceiling(tmp_path):
+    """Documents a known, disclosed limitation (see capital_allocator.py's
+    own docstring) rather than asserting it's fine: the provisional
+    reservation is released as soon as `place_order` returns, for EVERY
+    outcome including PENDING -- but a PENDING order isn't part of
+    `confirmed_open_notional` yet (that only counts orders whose STORED
+    status is actually FILLED). Between "broker accepted, reported
+    PENDING" and "reconciliation later confirms the fill," this notional
+    counts toward neither the reservation ledger nor confirmed exposure.
+
+    Two sequential (not even concurrent -- this doesn't need a race)
+    $700 orders both get admitted under a $1000 ceiling, even though both
+    can still go on to fill for $1400 of real combined exposure. This
+    test exists to turn into a real regression the moment this gap is
+    closed (at which point the second order should be REJECTED) --
+    deleting it to "make the suite pass" would hide the fix's own
+    verification, not demonstrate it.
+    """
+    store = SignalStore(tmp_path / "test.db")
+    broker = PaperBroker()
+
+    async def pending_not_filled(signal, account, quantity, symbol):
+        # A real broker's synchronous "accepted, not yet confirmed" reply
+        # (e.g. AlpacaBroker/SignalStackBroker) -- PaperBroker itself
+        # always fills synchronously, so this substitutes a PENDING
+        # response without recording anything in the orders table as
+        # FILLED, matching what confirmed_open_notional actually reads.
+        return OrderResult(account_id=account.account_id, status=OrderStatus.PENDING, signal_id=signal.id)
+
+    broker.place_order = pending_not_filled
+    account = DestinationAccount(account_id="acct1", broker="paper", max_notional_exposure=1000.0)
+    engine = _engine(store, account, broker)
+
+    first = Signal(source=SOURCE, symbol="AAPL", side=Side.BUY, quantity=7.0, price=100.0)  # notional 700
+    second = Signal(source=SOURCE, symbol="MSFT", side=Side.BUY, quantity=7.0, price=100.0)  # notional 700
+
+    first_results = await engine.handle_signal(first)
+    second_results = await engine.handle_signal(second)
+
+    assert first_results[0].status == OrderStatus.PENDING
+    # The known gap: this should be REJECTED once the reservation
+    # correctly survives a PENDING outcome, but currently isn't.
+    assert second_results[0].status == OrderStatus.PENDING

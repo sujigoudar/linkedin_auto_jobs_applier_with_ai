@@ -27,11 +27,28 @@ allowance and legal-units checklist before every admission):
   a per-account asyncio.Lock across "read confirmed exposure, check,
   provisionally reserve" so the second concurrent caller sees the
   first's reservation before deciding. The provisional reservation is
-  released as soon as that order call returns (success or failure) --
-  by then either nothing happened (rejected/errored, nothing to keep
-  reserved) or the fill is now itself part of the confirmed exposure the
-  next admission call will see, so holding the provisional amount any
-  longer would double-count it.
+  released as soon as that order call returns, for every outcome
+  (REJECTED/ERROR/FILLED/PENDING alike) -- for REJECTED/ERROR that's
+  correct (nothing happened, nothing to keep reserved), and for FILLED
+  the fill is immediately part of the confirmed exposure the next
+  admission call will see.
+- **Known gap, not yet closed: a PENDING result's notional is released
+  the same way, but a PENDING order is NOT yet part of confirmed
+  exposure** (confirmed exposure only counts a symbol once its
+  `average_cost` is resolvable from an actual recorded fill -- see
+  `confirmed_open_notional` below). Between "broker accepted, reported
+  PENDING" and "reconciliation later confirms the fill," this specific
+  notional briefly counts toward neither the reservation ledger nor
+  confirmed exposure -- a second signal admitted in that window could
+  push real total exposure past the configured ceiling. Correctly
+  closing this needs the reservation to survive until reconciliation
+  resolves the order to a terminal state (dropped on a confirmed
+  rejection/cancellation, or handed off to confirmed exposure exactly
+  once on a confirmed fill) rather than being released unconditionally
+  right after the synchronous call returns -- deliberately not attempted
+  in this pass: doing it wrong risks a reservation that's never
+  released, which would be worse (silently blocking all future
+  admissions for that account) than the gap it would close.
 - This provisional ledger is in-memory and process-lifetime only, same
   as e.g. app/pricing.py's PriceMonitor cache -- a restart has no
   in-flight admissions to lose (nothing survives a request that never
