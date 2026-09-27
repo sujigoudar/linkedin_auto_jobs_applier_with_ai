@@ -1722,3 +1722,97 @@ def test_publication_intent_detail_page_is_a_scoped_not_found_across_tenants(db_
     other_tenant_headers = _auth_headers(tenant_id="tenant-b", user_id="user-b", role=MembershipRole.OWNER)
     response = client.get(f"/ops/publications/{intent.intent_id}", headers=other_tenant_headers)
     assert response.status_code == 404
+
+
+def _seed_published_product(db_session, *, tenant_id="tenant-a", slug="http-published-product"):
+    from app.models.product import Product, ProductLifecycleState
+
+    product = Product(
+        tenant_id=tenant_id,
+        product_name="HTTP Published Product",
+        slug=slug,
+        lifecycle_state=ProductLifecycleState.PUBLISHED,
+    )
+    db_session.add(product)
+    db_session.commit()
+    return product
+
+
+def test_portfolio_selections_page_requires_customer_role(db_session):
+    client = _client(db_session)
+    response = client.get("/app/portfolios", headers=_auth_headers(role=MembershipRole.OWNER))
+    assert response.status_code == 403
+
+
+def test_portfolio_selections_page_shows_the_real_empty_state(db_session):
+    client = _client(db_session)
+    response = client.get("/app/portfolios", headers=_auth_headers(role=MembershipRole.CUSTOMER))
+    assert response.status_code == 200
+    assert "You have not selected a portfolio." in response.text
+
+
+def test_create_portfolio_selection_rejects_a_draft_product_over_http(db_session):
+    from app.models.product import Product
+
+    product = Product(tenant_id="tenant-a", product_name="Draft HTTP Product", slug="http-draft-product")
+    db_session.add(product)
+    db_session.commit()
+
+    client = _client(db_session)
+    response = client.post(
+        "/app/portfolios", data={"product_id": product.product_id}, headers=_auth_headers(role=MembershipRole.CUSTOMER)
+    )
+    assert response.status_code == 400
+    assert "PRODUCT_NOT_PUBLISHED_OR_NOT_FOUND" in response.text
+
+
+def test_create_then_cancel_portfolio_selection_over_real_http(db_session):
+    _seed_customer_membership(db_session)
+    product = _seed_published_product(db_session)
+    client = _client(db_session)
+    headers = _auth_headers(role=MembershipRole.CUSTOMER)
+
+    create_response = client.post("/app/portfolios", data={"product_id": product.product_id}, headers=headers)
+    assert create_response.status_code == 303
+
+    list_response = client.get("/app/portfolios", headers=headers)
+    assert product.product_id in list_response.text
+    assert "active" in list_response.text
+
+    import re
+
+    match = re.search(r"/app/portfolios/([^/]+)/cancel", list_response.text)
+    assert match is not None
+    selection_id = match.group(1)
+
+    cancel_response = client.post(f"/app/portfolios/{selection_id}/cancel", headers=headers)
+    assert cancel_response.status_code == 303
+
+    final_response = client.get("/app/portfolios", headers=headers)
+    assert "cancelled" in final_response.text
+
+
+def test_cancel_portfolio_selection_is_a_scoped_not_found_for_another_customer(db_session):
+    from app.models.tenancy import Membership, MembershipRole as Role, UserIdentity
+
+    _seed_customer_membership(db_session, user_id="user-a")
+    product = _seed_published_product(db_session)
+    client = _client(db_session)
+    owner_headers = _auth_headers(user_id="user-a", role=MembershipRole.CUSTOMER)
+    create_response = client.post("/app/portfolios", data={"product_id": product.product_id}, headers=owner_headers)
+    assert create_response.status_code == 303
+
+    list_response = client.get("/app/portfolios", headers=owner_headers)
+    import re
+
+    match = re.search(r"/app/portfolios/([^/]+)/cancel", list_response.text)
+    selection_id = match.group(1)
+
+    db_session.add(UserIdentity(user_id="user-other", email="user-other@example.com"))
+    db_session.flush()
+    db_session.add(Membership(tenant_id="tenant-a", user_id="user-other", role=Role.CUSTOMER))
+    db_session.commit()
+
+    other_customer_headers = _auth_headers(user_id="user-other", role=MembershipRole.CUSTOMER)
+    response = client.post(f"/app/portfolios/{selection_id}/cancel", headers=other_customer_headers)
+    assert response.status_code == 404

@@ -49,6 +49,7 @@ import app.models.eligibility  # noqa: F401
 import app.models.integration_configuration  # noqa: F401
 import app.models.ledger  # noqa: F401
 import app.models.managed_program  # noqa: F401
+import app.models.portfolio_selection  # noqa: F401
 import app.models.portfolio_version  # noqa: F401
 import app.models.price_version  # noqa: F401
 import app.models.product  # noqa: F401

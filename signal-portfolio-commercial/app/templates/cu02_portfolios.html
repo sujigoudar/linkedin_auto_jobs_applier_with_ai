@@ -1,0 +1,51 @@
+{% extends "_base.html" %}
+{% block title %}My portfolios{% endblock %}
+{% block content %}
+<h1>My portfolios</h1>
+
+{% if error %}<div class="conflict">{{ error }}</div>{% endif %}
+
+<div class="panel">
+  <h2>My selections</h2>
+  {% if selections %}
+  <table>
+    <thead><tr><th>Product</th><th>State</th><th></th></tr></thead>
+    <tbody>
+      {% for s in selections %}
+      <tr>
+        <td>{{ s.product_id }}</td>
+        <td>{{ s.state.value }}</td>
+        <td>
+          {% if s.state.value == "active" %}
+          <form method="post" action="/app/portfolios/{{ s.selection_id }}/cancel" style="display:inline;">
+            <button type="submit">Cancel selection</button>
+          </form>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="empty-state">
+    <p>You have not selected a portfolio.</p>
+  </div>
+  {% endif %}
+</div>
+
+<div class="panel">
+  <h2>Select a portfolio</h2>
+  {% if selectable_products %}
+  <form method="post" action="/app/portfolios">
+    <label for="product_id">Published portfolio</label>
+    <select id="product_id" name="product_id">
+      {% for p in selectable_products %}<option value="{{ p.product_id }}">{{ p.product_name }}</option>{% endfor %}
+    </select>
+    <p><button type="submit">Select portfolio</button></p>
+  </form>
+  {% else %}
+  <p>No published portfolio is currently available to select. <a href="/portfolios">Browse the public catalog</a>.</p>
+  {% endif %}
+  <p class="help">Selecting a portfolio records your own intent to copy it -- it never places an order or connects to a broker.</p>
+</div>
+{% endblock %}

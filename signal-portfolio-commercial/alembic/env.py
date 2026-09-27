@@ -25,6 +25,7 @@ import app.models.eligibility  # noqa: E402,F401
 import app.models.integration_configuration  # noqa: E402,F401
 import app.models.ledger  # noqa: E402,F401
 import app.models.managed_program  # noqa: E402,F401
+import app.models.portfolio_selection  # noqa: E402,F401
 import app.models.portfolio_version  # noqa: E402,F401
 import app.models.price_version  # noqa: E402,F401
 import app.models.product  # noqa: E402,F401

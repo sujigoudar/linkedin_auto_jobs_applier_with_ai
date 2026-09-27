@@ -149,7 +149,7 @@ from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_current_scope, get_db_session
 from app.db import set_tenant_scope
-from app.models.product import ServiceMode
+from app.models.product import ProductLifecycleState, ServiceMode
 from app.models.tenancy import MembershipRole
 from app.services.auth import TenantScope
 from app.services.eligibility import (
@@ -208,6 +208,13 @@ from app.services.publisher_destination import (
 )
 from app.services.support_case import InvalidSupportCaseError, create_support_case, list_support_cases
 from app.services.publication_admin import get_publication_intent_detail
+from app.services.portfolio_selection import (
+    InvalidPortfolioSelectionError,
+    cancel_portfolio_selection,
+    create_portfolio_selection,
+    get_own_portfolio_selection,
+    list_own_portfolio_selections,
+)
 from app.services.workspace_settings import (
     MANDATORY_PANEL_IDS,
     InvalidWorkspaceSettingsError,
@@ -1782,3 +1789,78 @@ def publication_intent_detail_page(
     if detail is None:
         raise HTTPException(status_code=404, detail="not found")
     return templates.TemplateResponse(request, "ad10_publication_detail.html", {"detail": detail})
+
+
+def _require_portfolio_selections(scope: TenantScope) -> None:
+    try:
+        require_permission(scope.role, "manage_own_portfolio_selections")
+    except PermissionDenied as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+
+@router.get("/app/portfolios")
+def portfolio_selections_page(
+    request: Request,
+    scope: TenantScope = Depends(get_current_scope),
+    session: Session = Depends(get_db_session),
+    error: str | None = None,
+):
+    """CU-02 "My portfolios" -- see this route module's own docstring
+    above for what is and is not implemented."""
+    _require_portfolio_selections(scope)
+    set_tenant_scope(session, scope.tenant_id)
+    selections = list_own_portfolio_selections(session, tenant_id=scope.tenant_id, user_id=scope.user_id)
+    selectable_products = [
+        p for p in list_products(session, tenant_id=scope.tenant_id) if p.lifecycle_state == ProductLifecycleState.PUBLISHED
+    ]
+    return templates.TemplateResponse(
+        request,
+        "cu02_portfolios.html",
+        {"selections": selections, "selectable_products": selectable_products, "error": error},
+    )
+
+
+@router.post("/app/portfolios")
+def create_portfolio_selection_page(
+    request: Request,
+    product_id: str = Form(...),
+    scope: TenantScope = Depends(get_current_scope),
+    session: Session = Depends(get_db_session),
+):
+    _require_portfolio_selections(scope)
+    set_tenant_scope(session, scope.tenant_id)
+    try:
+        create_portfolio_selection(session, tenant_id=scope.tenant_id, user_id=scope.user_id, product_id=product_id)
+    except InvalidPortfolioSelectionError as exc:
+        session.rollback()
+        selections = list_own_portfolio_selections(session, tenant_id=scope.tenant_id, user_id=scope.user_id)
+        selectable_products = [
+            p
+            for p in list_products(session, tenant_id=scope.tenant_id)
+            if p.lifecycle_state == ProductLifecycleState.PUBLISHED
+        ]
+        return templates.TemplateResponse(
+            request,
+            "cu02_portfolios.html",
+            {"selections": selections, "selectable_products": selectable_products, "error": str(exc)},
+            status_code=400,
+        )
+    session.commit()
+    return RedirectResponse(url="/app/portfolios", status_code=303)
+
+
+@router.post("/app/portfolios/{selection_id}/cancel")
+def cancel_portfolio_selection_page(
+    selection_id: str,
+    request: Request,
+    scope: TenantScope = Depends(get_current_scope),
+    session: Session = Depends(get_db_session),
+):
+    _require_portfolio_selections(scope)
+    set_tenant_scope(session, scope.tenant_id)
+    selection = get_own_portfolio_selection(session, selection_id, tenant_id=scope.tenant_id, user_id=scope.user_id)
+    if selection is None:
+        raise HTTPException(status_code=404, detail="not found")
+    cancel_portfolio_selection(session, selection)
+    session.commit()
+    return RedirectResponse(url="/app/portfolios", status_code=303)

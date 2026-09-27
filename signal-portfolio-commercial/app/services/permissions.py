@@ -122,6 +122,10 @@ _ALLOWED: dict[str, frozenset[Role]] = {
     #: AD-10 "Publication intent and cohort detail" -- exactly this
     #: screen's own access list.
     "view_publication_intent_detail": frozenset({Role.OWNER, Role.PUBLISHER_OPERATOR}),
+    #: CU-02 "My portfolios" -- a customer's own selections, same shape
+    #: as "manage_own_eligibility"/"manage_own_support_case"/
+    #: "manage_own_api_keys".
+    "manage_own_portfolio_selections": frozenset({Role.CUSTOMER}),
 }
 
 
