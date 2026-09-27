@@ -100,7 +100,7 @@ def test_a_missing_quantity_for_an_open_is_rejected():
 def test_an_action_with_no_mapping_yet_is_rejected_not_guessed():
     """CLOSE/ENTRY_CANCEL/etc. are not yet mapped -- an unmapped action
     must raise, never silently fall through to some default order shape."""
-    with pytest.raises(Exception):
+    with pytest.raises(UnsupportedQuantityBasisError):
         build_order(_intent(action=PublicationAction.CLOSE, quantity=None), c2_symbol="AAPL")
 
 

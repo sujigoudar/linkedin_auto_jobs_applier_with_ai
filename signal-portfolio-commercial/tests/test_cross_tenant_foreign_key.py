@@ -37,7 +37,7 @@ def test_a_customer_profile_cannot_reference_a_mismatched_tenant_user_pair(db_se
     db_session.add(bad_profile)
     try:
         db_session.flush()
-        assert False, "expected the compound FK to reject a mismatched tenant/user pair"
+        raise AssertionError("expected the compound FK to reject a mismatched tenant/user pair")
     except IntegrityError:
         db_session.rollback()
 

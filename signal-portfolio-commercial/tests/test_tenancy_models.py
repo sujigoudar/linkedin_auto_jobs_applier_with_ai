@@ -62,6 +62,6 @@ def test_a_second_membership_in_the_same_tenant_for_the_same_user_is_rejected(db
     db_session.add(Membership(tenant_id="tenant-1", user_id="user-1", role=MembershipRole.CUSTOMER))
     try:
         db_session.flush()
-        assert False, "expected the unique (tenant_id, user_id) constraint to reject this"
+        raise AssertionError("expected the unique (tenant_id, user_id) constraint to reject this")
     except IntegrityError:
         db_session.rollback()
