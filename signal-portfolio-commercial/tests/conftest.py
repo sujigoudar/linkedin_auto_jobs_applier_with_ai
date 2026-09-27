@@ -91,7 +91,15 @@ def postgres_cluster(tmp_path_factory):
             os.chmod(ancestor, 0o711)
 
     port = _free_port()
-    init = _run_as_postgres([str(_PG_BIN / "initdb"), "--auth=trust", "-D", str(data_dir)])
+    # --username=postgres pins the cluster's superuser role name
+    # regardless of which OS user actually runs initdb -- without it,
+    # initdb defaults the superuser's name to the invoking OS user's own
+    # name (e.g. "runner" on a GitHub Actions runner, "postgres" only in
+    # environments where a `postgres` system user happens to exist and
+    # run this), and every connection string below hardcodes "postgres".
+    init = _run_as_postgres(
+        [str(_PG_BIN / "initdb"), "--auth=trust", "--username=postgres", "-D", str(data_dir)]
+    )
     if init.returncode != 0:
         pytest.fail(f"initdb failed: {init.stdout}\n{init.stderr}")
 
