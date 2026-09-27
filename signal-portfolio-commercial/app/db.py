@@ -33,13 +33,16 @@ def make_session_factory(engine) -> sessionmaker:
 #: make this a no-op against the very role these tables are usually queried
 #: through in this single-role-per-database development setup).
 _TENANT_SCOPED_TABLES: tuple[str, ...] = (
-    "memberships", "customer_profiles", "ledger_entries", "sleeves", "subscriptions",
+    "memberships", "customer_profiles", "ledger_entries", "sleeves", "subscriptions", "portfolio_versions",
 )
 
 #: Tables that must never be UPDATEd or DELETEd from, only appended to (see
 #: app/models/ledger.py) -- a mistaken entry is corrected by inserting a new
-#: row, never by editing or removing the original.
-_APPEND_ONLY_TABLES: tuple[str, ...] = ("ledger_entries",)
+#: row, never by editing or removing the original. portfolio_versions/
+#: portfolio_version_sleeves are append-only for the same reason
+#: (app/models/portfolio_version.py): "Historical membership is never
+#: overwritten" -- a weight change is a new version's rows, never an edit.
+_APPEND_ONLY_TABLES: tuple[str, ...] = ("ledger_entries", "portfolio_versions", "portfolio_version_sleeves")
 
 
 def enable_row_level_security(engine) -> None:
