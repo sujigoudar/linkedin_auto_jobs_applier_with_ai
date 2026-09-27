@@ -90,9 +90,17 @@ readable companion: how to actually pick the work back up.
   04/08 both explicitly stopped short of that for the same "don't
   fabricate data" reason). See `commercial_state.json`'s
   `09_public_customer_operator_website` notes.
-- **Phase 10-12**: not started. See `commercial_state.json` for phase-specific
-  notes carried forward from the original request (e.g. PAMM/MAM being
-  simulation-only in this build).
+- **Phase 10 (PAMM/MAM, simulation only)**: partially done --
+  `app/services/mam_allocation.py` (largest-remainder integer-unit
+  allocation, deterministic tie-break, explicit unallocatable
+  remainder) and `app/services/pamm_accounting.py` (the simple
+  no-cashflow HWM fee, which rejects any interval with a deposit/
+  withdrawal rather than computing a wrong fee; dealing-NAV unit
+  conversion). No AllocationProgram persistence, no real broker
+  integration -- see `commercial_state.json`'s
+  `10_pamm_mam_domain_model` notes.
+- **Phase 11-12**: not started. See `commercial_state.json` for phase-specific
+  notes carried forward from the original request.
 
 ## Standing directive from the user (2026-09-27)
 
@@ -141,15 +149,15 @@ directory of pytest's tmp dir (this bit us once; the fix is in
 
 ## Next step
 
-Phase 10: the broker-managed PAMM/MAM domain model (simulation only --
-docs/07_managed_accounts_pamm_mam.md), which per the master prompt's
-own scope note is real work even before real broker agreements exist:
-the AllocationProgram record, fair MAM allocation (largest-remainder
-integer-unit allocation with deterministic tie-break), and PAMM
-unit/NAV accounting (including the simple test-only high-water-mark fee
-formula, which the spec says must REJECT any deposit/withdrawal input
-rather than compute a wrong fee) are all well-specified, data-
-independent, and buildable now. This is also a natural point to add a
-FastAPI `commercial_api` app skeleton and real Alembic migrations, since
-the ledger/tenancy/rights/sleeve/publication/billing schemas are now
-stable enough to give a first migration something real to cover.
+Phase 11: optional model/LLM assistance (docs/11_models_skills_and_optional_ai.md)
+-- build the narrow, reviewed research/support aid boundary the master
+prompt insists on: an LLM has no rights/risk/fee/NAV/publishing/cross-
+tenant/self-approval authority, ever. This is well-specified as a
+permission/capability boundary (similar in kind to
+app/services/permissions.py from Phase 02) and buildable without any
+real model API key -- the boundary itself, and what it structurally
+forbids, is the deliverable, not a working model integration. This is
+also a natural point to add a FastAPI `commercial_api` app skeleton and
+real Alembic migrations, since the ledger/tenancy/rights/sleeve/
+publication/billing schemas are now stable enough to give a first
+migration something real to cover.
