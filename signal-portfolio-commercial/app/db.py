@@ -32,7 +32,9 @@ def make_session_factory(engine) -> sessionmaker:
 #: SECURITY` alone is bypassed by the owner and by superusers, which would
 #: make this a no-op against the very role these tables are usually queried
 #: through in this single-role-per-database development setup).
-_TENANT_SCOPED_TABLES: tuple[str, ...] = ("memberships", "customer_profiles", "ledger_entries", "sleeves")
+_TENANT_SCOPED_TABLES: tuple[str, ...] = (
+    "memberships", "customer_profiles", "ledger_entries", "sleeves", "subscriptions",
+)
 
 #: Tables that must never be UPDATEd or DELETEd from, only appended to (see
 #: app/models/ledger.py) -- a mistaken entry is corrected by inserting a new

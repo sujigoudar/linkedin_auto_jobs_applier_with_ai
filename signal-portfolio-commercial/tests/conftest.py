@@ -34,11 +34,13 @@ from app.db import Base, enable_row_level_security, enforce_append_only, make_en
 # `pytest tests/test_ledger.py`) would create only the tables THAT file's
 # own imports happened to register, silently dropping tables other tests
 # in the same session/run depend on existing.
+import app.models.billing  # noqa: F401
 import app.models.ledger  # noqa: F401
 import app.models.publication  # noqa: F401
 import app.models.rights  # noqa: F401
 import app.models.sleeve  # noqa: F401
 import app.models.tenancy  # noqa: F401
+import app.models.webhook_event  # noqa: F401
 
 _PG_BIN = Path("/usr/lib/postgresql/16/bin")
 

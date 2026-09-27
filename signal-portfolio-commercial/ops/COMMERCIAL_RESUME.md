@@ -70,9 +70,32 @@ readable companion: how to actually pick the work back up.
   this environment -- request-shape mapping only, same bounded scope as
   Phase 06. See `commercial_state.json`'s
   `07_etoro_copyfactory_adapters` notes.
-- **Phase 08-12**: not started. See `commercial_state.json` for phase-specific
+- **Phase 08 (subscriptions/billing)**: partially done. `app/models/billing.py`
+  (Subscription + the docs/08 state enum + four ProductTier test-mode
+  price fixtures), `app/services/entitlement.py` (the core payment/
+  safety separation: `authorizes_new_entry` vs
+  `authorizes_risk_reducing_management`, so a payment outage never
+  revokes management of exposure that already exists),
+  `app/services/stripe_webhook.py` (signature verification against
+  synthetic payloads + event-ID idempotency -- no real Stripe account
+  exists). See `commercial_state.json`'s `08_subscriptions_billing`
+  notes for what's not yet wired (no Product persistence, no real
+  processor, nothing calls `entitlement.py` yet from Phase 05/06/07).
+- **Phase 09-12**: not started. See `commercial_state.json` for phase-specific
   notes carried forward from the original request (e.g. PAMM/MAM being
   simulation-only in this build).
+
+## Standing directive from the user (2026-09-27)
+
+"Build all, making sure the portfolios are paper traded and notify me
+before they are ready for promotion. Finish building all remaining with
+no stubs, building everything possible before external accounts and
+infrastructure are available." Concretely: keep building every phase for
+real (models + services + real tests + load-bearing verification, same
+pattern as every phase so far), everything stays paper-traded/non-live,
+and BEFORE anything reaches a point of actually going live (a real
+Stripe charge, a real Collective2/eToro publish, a real broker-managed
+account), stop and notify the user explicitly rather than proceeding.
 
 ## How to run the tests
 
@@ -109,15 +132,14 @@ directory of pytest's tmp dir (this bit us once; the fix is in
 
 ## Next step
 
-Phase 08: subscriptions/billing and business operations
-(docs/08_products_billing_and_entitlements.md) -- this phase needs real
-owner decisions before much can be built safely: a Stripe test-mode
-account, product/price tiers, and the explicit billing rules already
-flagged throughout this build (payment is never a trading mandate;
-cancellation/payment failure must never abandon open exposure or
-auto-flatten; no investment deposits through SaaS billing). Surface
-CARD-4 (payment processor/tax/bank) to the user before assuming any
-processor account exists. This is also a natural point to add a FastAPI
-`commercial_api` app skeleton and real Alembic migrations, since the
-ledger/tenancy/rights/sleeve/publication schemas are now stable enough
-to give a first migration something real to cover.
+Phase 09: the actual public/customer/operator website
+(docs/09_website_dashboards_and_journeys.md) -- build real page/dashboard
+scaffolding and the journeys that don't require a live processor or
+broker connection (e.g. public product discovery, signup, the
+operator-side rights/portfolio review screens), reusing the existing
+signal-copier dashboard's Chart.js/Tabulator assets per docs/02's
+"reuse current HTML/JS... no frontend-framework rewrite." This is also a
+natural point to add a FastAPI `commercial_api` app skeleton and real
+Alembic migrations, since the ledger/tenancy/rights/sleeve/publication/
+billing schemas are now stable enough to give a first migration
+something real to cover.
