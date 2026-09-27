@@ -8,7 +8,9 @@ started in the lifespan handler.
 """
 from __future__ import annotations
 
+import hashlib
 import hmac
+import json
 import logging
 from collections import defaultdict
 from contextlib import asynccontextmanager
@@ -67,6 +69,7 @@ from app.sources.sms_twilio import TwilioSMSSource
 from app.sources.telegram import TelegramSource
 from app.sources.twitter import TwitterSource
 from app.sources.webhook import WebhookSource
+from app.sources.whatsapp import WhatsAppSource
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
@@ -120,6 +123,7 @@ engine = SignalCopierEngine(
 )
 webhook_source = WebhookSource(on_signal=engine.handle_signal)
 sms_source = TwilioSMSSource(on_signal=engine.handle_signal)
+whatsapp_source = WhatsAppSource(on_signal=engine.handle_signal)
 reconciler = OrderReconciler(
     store=store,
     brokers=brokers,
@@ -557,6 +561,101 @@ async def receive_sms(
     if cache_key:
         store.save_idempotent_response(cache_key, response)
     return response
+
+
+@app.get("/whatsapp/webhook")
+async def verify_whatsapp_webhook(request: Request) -> Response:
+    """Meta's one-time subscription handshake: after you set the Callback
+    URL in the WhatsApp app dashboard, Meta immediately sends this GET to
+    prove you control the endpoint before it'll ever POST a real message
+    here. Must echo back `hub.challenge` exactly, and only when
+    `hub.verify_token` matches what you configured."""
+    if not config.WHATSAPP_VERIFY_TOKEN:
+        raise HTTPException(
+            status_code=503, detail="WhatsApp ingress is not configured (set WHATSAPP_VERIFY_TOKEN)"
+        )
+    mode = request.query_params.get("hub.mode")
+    token = request.query_params.get("hub.verify_token", "")
+    challenge = request.query_params.get("hub.challenge", "")
+    if mode == "subscribe" and hmac.compare_digest(token, config.WHATSAPP_VERIFY_TOKEN):
+        return Response(content=challenge, media_type="text/plain")
+    raise HTTPException(status_code=403, detail="invalid WhatsApp verify token")
+
+
+@app.post("/whatsapp/webhook")
+@limiter.limit(INGRESS_RATE_LIMIT)
+async def receive_whatsapp(request: Request) -> dict:
+    """WhatsApp Business Cloud API delivery. Meta signs the raw request
+    body with HMAC-SHA256 using the app secret (`X-Hub-Signature-256`) --
+    verified here the same way Twilio's signature is for /sms/twilio,
+    just a plain HMAC rather than a vendor SDK call (no extra pip package
+    needed for this direction).
+
+    A single delivery can batch messages from multiple senders (and
+    non-message events like delivery/read receipts, which simply have no
+    `messages` entry to match) -- unlike Twilio's one-message-per-POST
+    webhook, an unauthorized sender's message is skipped individually,
+    not treated as a reason to reject the whole batch. Meta expects a 200
+    for any successfully-received (i.e. correctly signed) webhook
+    regardless of what happens downstream; returning an error status here
+    for a per-message business decision risks Meta retrying or eventually
+    disabling the webhook subscription entirely.
+    """
+    if not config.WHATSAPP_APP_SECRET:
+        raise HTTPException(status_code=503, detail="WhatsApp ingress is not configured (set WHATSAPP_APP_SECRET)")
+    if not config.WHATSAPP_ALLOWED_FROM_NUMBERS:
+        raise HTTPException(
+            status_code=503,
+            detail="WhatsApp ingress has no authorized senders configured (set WHATSAPP_ALLOWED_FROM_NUMBERS)",
+        )
+
+    raw_body = await request.body()
+    signature_header = request.headers.get("X-Hub-Signature-256", "")
+    expected_signature = (
+        "sha256=" + hmac.new(config.WHATSAPP_APP_SECRET.encode("utf-8"), raw_body, hashlib.sha256).hexdigest()
+    )
+    if not signature_header or not hmac.compare_digest(signature_header, expected_signature):
+        raise HTTPException(status_code=401, detail="invalid WhatsApp webhook signature")
+
+    try:
+        payload = json.loads(raw_body)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"invalid JSON body: {exc}") from exc
+
+    processed = 0
+    for entry in payload.get("entry", []):
+        for change in entry.get("changes", []):
+            for message in change.get("value", {}).get("messages", []):
+                if message.get("type") != "text":
+                    continue  # images/audio/location/reactions/etc. carry no signal text
+                from_number = message.get("from", "")
+                if from_number not in config.WHATSAPP_ALLOWED_FROM_NUMBERS:
+                    logger.warning("WhatsApp message from unauthorized sender=%s rejected", from_number)
+                    continue
+
+                # WHATSAPP-01: Meta can and does redeliver the same webhook
+                # (e.g. if this service's response is slow), and `parse`
+                # stamps a fresh random Signal.id each call -- `message["id"]`
+                # (WhatsApp's own stable per-message id, e.g. "wamid.XXX")
+                # is the same kind of dedup key MessageSid is for Twilio.
+                message_id = message.get("id")
+                cache_key = f"whatsapp:{message_id}" if message_id else None
+                if cache_key and store.get_idempotent_response(cache_key) is not None:
+                    continue
+
+                body_text = message.get("text", {}).get("body", "")
+                try:
+                    signal = whatsapp_source.parse(body_text, analyst=from_number or None)
+                except SignalValidationError:
+                    continue
+
+                results = await engine.handle_signal(signal)
+                response = _orders_response(signal.id, results)
+                if cache_key:
+                    store.save_idempotent_response(cache_key, response)
+                processed += 1
+
+    return {"status": "ok", "processed": processed}
 
 
 @app.get("/positions")

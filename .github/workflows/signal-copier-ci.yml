@@ -47,6 +47,7 @@ jobs:
         run: |
           python -m mypy app/db.py app/engine.py app/reconciliation.py app/lifecycle/manager.py app/routing.py \
                app/risk.py app/models.py app/main.py app/backtest/simulator.py app/sources/webhook.py \
+               app/sources/whatsapp.py app/sources/sms_twilio.py \
                app/sources/text_parser.py app/sources/base.py app/brokers/alpaca.py app/brokers/base.py \
                app/brokers/paper.py app/brokers/ccxt_broker.py app/brokers/signalstack.py app/brokers/ninjatrader.py \
                app/config.py app/auth.py app/rate_limit.py app/context/sec_edgar.py app/context/fred.py app/context/fx.py \

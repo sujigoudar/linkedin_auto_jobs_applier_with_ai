@@ -107,6 +107,22 @@ class _Settings(BaseSettings):
     # ingress here (see app/main.py's receive_sms).
     TWILIO_ALLOWED_FROM_NUMBERS: str = ""
 
+    # WhatsApp signal source, via Meta's official WhatsApp Business Cloud
+    # API (see app/sources/whatsapp.py's docstring for full setup).
+    # APP_SECRET validates the X-Hub-Signature-256 header Meta signs every
+    # webhook POST with; VERIFY_TOKEN answers Meta's one-time GET handshake
+    # when the webhook is first configured. Neither alone authorizes a
+    # sender to submit trading instructions -- same two-part pattern as
+    # Twilio's AUTH_TOKEN (transport) + ALLOWED_FROM_NUMBERS (authorization)
+    # above.
+    WHATSAPP_APP_SECRET: str = ""
+    WHATSAPP_VERIFY_TOKEN: str = ""
+    # Comma-separated E.164 numbers with NO leading '+' (WhatsApp's own
+    # `wa_id` format, e.g. "15551234567,15557654321"); unset/empty means no
+    # sender is authorized, same fail-closed pattern as
+    # TWILIO_ALLOWED_FROM_NUMBERS above.
+    WHATSAPP_ALLOWED_FROM_NUMBERS: str = ""
+
     MT4_MT5_METAAPI_TOKEN: str = ""
     MT4_MT5_METAAPI_SOURCE_ACCOUNT_ID: str = ""
 
@@ -174,6 +190,10 @@ TWITTER_RULES = [r.strip() for r in _settings.TWITTER_RULES.split(",") if r.stri
 TWILIO_AUTH_TOKEN = _settings.TWILIO_AUTH_TOKEN
 TWILIO_WEBHOOK_URL = _settings.TWILIO_WEBHOOK_URL
 TWILIO_ALLOWED_FROM_NUMBERS = [n.strip() for n in _settings.TWILIO_ALLOWED_FROM_NUMBERS.split(",") if n.strip()]
+
+WHATSAPP_APP_SECRET = _settings.WHATSAPP_APP_SECRET
+WHATSAPP_VERIFY_TOKEN = _settings.WHATSAPP_VERIFY_TOKEN
+WHATSAPP_ALLOWED_FROM_NUMBERS = [n.strip() for n in _settings.WHATSAPP_ALLOWED_FROM_NUMBERS.split(",") if n.strip()]
 
 MT4_MT5_METAAPI_TOKEN = _settings.MT4_MT5_METAAPI_TOKEN
 MT4_MT5_METAAPI_SOURCE_ACCOUNT_ID = _settings.MT4_MT5_METAAPI_SOURCE_ACCOUNT_ID
