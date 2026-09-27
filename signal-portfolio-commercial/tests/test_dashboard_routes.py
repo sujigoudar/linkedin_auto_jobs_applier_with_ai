@@ -1278,3 +1278,57 @@ def test_save_integration_configuration_rejects_an_unreviewed_provider_over_real
     )
     assert response.status_code == 400
     assert "REVIEWED_PROVIDER_NOT_FOUND" in response.text
+
+
+def test_pricing_page_requires_owner_or_billing_operator(db_session):
+    client = _client(db_session)
+    response = client.get("/ops/billing", headers=_auth_headers(role=MembershipRole.PUBLISHER_OPERATOR))
+    assert response.status_code == 403
+
+
+def test_pricing_page_shows_the_real_empty_state(db_session):
+    client = _client(db_session)
+    response = client.get("/ops/billing", headers=_auth_headers())
+    assert response.status_code == 200
+    assert "No approved price versions exist" in response.text
+
+
+def test_save_then_view_price_version_over_real_http(db_session):
+    client = _client(db_session)
+    headers = _auth_headers()
+    create_response = client.post(
+        "/ops/billing",
+        data={
+            "sku": "alerts-monthly-http",
+            "currency": "usd",
+            "amount_minor": "3900",
+            "interval": "month",
+            "portfolio_limit": "1",
+            "features": ["alerts_read"],
+            "mode": "test",
+        },
+        headers=headers,
+    )
+    assert create_response.status_code == 303
+
+    response = client.get("/ops/billing", headers=headers)
+    assert "alerts-monthly-http" in response.text
+
+
+def test_save_price_version_rejects_live_mode_over_real_http(db_session):
+    client = _client(db_session)
+    response = client.post(
+        "/ops/billing",
+        data={
+            "sku": "live-sku-http",
+            "currency": "usd",
+            "amount_minor": "3900",
+            "interval": "month",
+            "portfolio_limit": "1",
+            "features": ["alerts_read"],
+            "mode": "live",
+        },
+        headers=_auth_headers(),
+    )
+    assert response.status_code == 400
+    assert "LIVE_MODE_NOT_AUTHORIZED" in response.text

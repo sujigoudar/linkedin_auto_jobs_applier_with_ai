@@ -95,6 +95,9 @@ _ALLOWED: dict[str, frozenset[Role]] = {
     #: destinations (a research/release/ops decision, not billing/
     #: support/customer).
     "manage_integration_configurations": frozenset({Role.OWNER, Role.PUBLISHER_OPERATOR}),
+    #: AD-13 "Pricing, entitlements and billing operations" -- exactly
+    #: this screen's own access list.
+    "manage_pricing": frozenset({Role.OWNER, Role.BILLING_OPERATOR}),
 }
 
 

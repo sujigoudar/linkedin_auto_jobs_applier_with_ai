@@ -1,0 +1,90 @@
+{% extends "_base.html" %}
+{% block title %}Pricing, entitlements and billing operations{% endblock %}
+{% block content %}
+<h1>Pricing, entitlements and billing operations</h1>
+
+{% if error %}<div class="conflict">{{ error }}</div>{% endif %}
+
+<div class="panel">
+  <h2>Price catalog</h2>
+  {% if price_versions %}
+  <table>
+    <thead><tr><th>SKU</th><th>Currency</th><th>Amount</th><th>Interval</th><th>Mode</th></tr></thead>
+    <tbody>
+      {% for p in price_versions %}
+      <tr>
+        <td>{{ p.sku }}</td>
+        <td>{{ p.currency | upper }}</td>
+        <td>{{ "%.2f"|format(p.amount_minor / 100) }}</td>
+        <td>{{ p.interval.value }}</td>
+        <td>{{ p.mode.value }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="empty-state">
+    <p>No approved price versions exist; draft/test prices are private.</p>
+  </div>
+  {% endif %}
+</div>
+
+<div class="panel">
+  <h2>Save test price draft</h2>
+  <form method="post" action="/ops/billing">
+    <label for="sku">SKU</label>
+    <input type="text" id="sku" name="sku" required>
+
+    <label for="currency">Currency</label>
+    <input type="text" id="currency" name="currency" value="usd" required>
+
+    <label for="amount_minor">Amount (minor units, e.g. cents)</label>
+    <input type="number" id="amount_minor" name="amount_minor" min="0" required>
+
+    <label for="interval">Interval</label>
+    <select id="interval" name="interval">
+      {% for i in all_intervals %}<option value="{{ i }}">{{ i }}</option>{% endfor %}
+    </select>
+
+    <label><input type="checkbox" name="is_unlimited_portfolios" value="true"> Unlimited portfolios (explicit policy)</label>
+    <label for="portfolio_limit">Portfolio limit (ignored if unlimited)</label>
+    <input type="number" id="portfolio_limit" name="portfolio_limit" min="0">
+
+    <fieldset>
+      <legend>Features</legend>
+      {% for f in all_features %}
+      <label><input type="checkbox" name="features" value="{{ f }}"> {{ f }}</label>
+      {% endfor %}
+    </fieldset>
+    <p><small>No implicit trading right -- only real, already-implemented API scopes and catalog facts.</small></p>
+
+    <label for="mode">Mode</label>
+    <select id="mode" name="mode">
+      {% for m in all_modes %}<option value="{{ m }}">{{ m }}</option>{% endfor %}
+    </select>
+    <p><small>Only "test" is accepted -- no merchant-approval workflow exists in this build for live prices.</small></p>
+
+    <p><button type="submit">Save test price draft</button></p>
+  </form>
+</div>
+
+<div class="panel">
+  <h2>Feature entitlements</h2>
+  <p>Each saved price's features are drawn from the same reviewed registry as CU-16's own API scopes.</p>
+</div>
+
+<div class="panel">
+  <h2>Processor identity</h2>
+  <p><span class="badge badge-unknown">UNSUPPORTED</span> -- no real Stripe processor connection exists in this build (see the public home page's own Service status).</p>
+</div>
+
+<div class="panel">
+  <h2>Subscription changes</h2>
+  <p><span class="badge badge-unknown">UNSUPPORTED</span> -- Subscription rows have no linkage to a specific PriceVersion in this build.</p>
+</div>
+
+<div class="panel">
+  <h2>Webhook reconciliation</h2>
+  <p><span class="badge badge-unknown">UNSUPPORTED</span> -- no webhook-event store exists in this build.</p>
+</div>
+{% endblock %}

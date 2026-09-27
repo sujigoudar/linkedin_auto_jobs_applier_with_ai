@@ -109,6 +109,14 @@ what is and is not implemented yet.
   reviewed provider at all yet) and by environment (only "test" is
   accepted). Quota/cost and Freshness/history are NOT implemented -- no
   real usage-tracking model exists.
+- AD-13 "Pricing, entitlements and billing operations": a real
+  test-mode price/entitlement draft. Only "test" mode is accepted (live
+  requires a merchant-approval workflow this build doesn't have);
+  features are restricted to the real API scopes CU-16 already
+  implements plus two real catalog facts -- never an implicit trading
+  right. Subscription changes/Webhook reconciliation/Processor identity
+  are NOT implemented -- no per-price subscription linkage or webhook-
+  event store exists in this build.
 """
 from __future__ import annotations
 
@@ -157,6 +165,7 @@ from app.services.integration_configuration import (
     create_integration_configuration,
     list_integration_configurations,
 )
+from app.services.price_version import InvalidPriceVersionError, create_price_version, list_price_versions
 from app.services.publisher_destination import (
     InvalidPublisherDestinationError,
     create_publisher_destination,
@@ -1274,3 +1283,91 @@ def create_integration_page(
         )
     session.commit()
     return RedirectResponse(url="/ops/integrations", status_code=303)
+
+
+_ALL_BILLING_INTERVALS = ["month", "year"]
+_ALL_PRICE_MODES = ["test", "live"]
+_ALL_PRICE_FEATURES = ["alerts_read", "reports_read", "delivery_receive", "portfolios_up_to_three", "research_api"]
+
+
+def _require_pricing(scope: TenantScope) -> None:
+    try:
+        require_permission(scope.role, "manage_pricing")
+    except PermissionDenied as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+
+@router.get("/ops/billing")
+def pricing_page(
+    request: Request,
+    scope: TenantScope = Depends(get_current_scope),
+    session: Session = Depends(get_db_session),
+    error: str | None = None,
+):
+    """AD-13 "Pricing, entitlements and billing operations" -- see this
+    route module's own docstring above for what is and is not
+    implemented."""
+    _require_pricing(scope)
+    set_tenant_scope(session, scope.tenant_id)
+    price_versions = list_price_versions(session, tenant_id=scope.tenant_id)
+    return templates.TemplateResponse(
+        request,
+        "ad13_pricing.html",
+        {
+            "price_versions": price_versions,
+            "all_intervals": _ALL_BILLING_INTERVALS,
+            "all_modes": _ALL_PRICE_MODES,
+            "all_features": _ALL_PRICE_FEATURES,
+            "error": error,
+        },
+    )
+
+
+@router.post("/ops/billing")
+def create_price_version_page(
+    request: Request,
+    sku: str = Form(...),
+    currency: str = Form("usd"),
+    amount_minor: int = Form(...),
+    interval: str = Form("month"),
+    is_unlimited_portfolios: str = Form(""),
+    portfolio_limit: str = Form(""),
+    features: list[str] = Form([]),
+    mode: str = Form("test"),
+    scope: TenantScope = Depends(get_current_scope),
+    session: Session = Depends(get_db_session),
+):
+    _require_pricing(scope)
+    set_tenant_scope(session, scope.tenant_id)
+    unlimited = bool(is_unlimited_portfolios)
+    try:
+        portfolio_limit_parsed = None if unlimited or not portfolio_limit else int(portfolio_limit)
+        create_price_version(
+            session,
+            tenant_id=scope.tenant_id,
+            sku=sku,
+            currency=currency,
+            amount_minor=amount_minor,
+            interval=interval,
+            is_unlimited_portfolios=unlimited,
+            portfolio_limit=portfolio_limit_parsed,
+            features=features,
+            mode=mode,
+        )
+    except (ValueError, InvalidPriceVersionError) as exc:
+        session.rollback()
+        price_versions = list_price_versions(session, tenant_id=scope.tenant_id)
+        return templates.TemplateResponse(
+            request,
+            "ad13_pricing.html",
+            {
+                "price_versions": price_versions,
+                "all_intervals": _ALL_BILLING_INTERVALS,
+                "all_modes": _ALL_PRICE_MODES,
+                "all_features": _ALL_PRICE_FEATURES,
+                "error": str(exc),
+            },
+            status_code=400,
+        )
+    session.commit()
+    return RedirectResponse(url="/ops/billing", status_code=303)

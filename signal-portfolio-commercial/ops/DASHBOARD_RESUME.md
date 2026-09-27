@@ -131,8 +131,13 @@ Seven slices are DONE:
   billing; collective2/etoro/copyfactory for publication -- every
   other purpose has no reviewed adapter yet) and by environment (only
   "test" accepted).
+- AD-13 Pricing, entitlements and billing operations: `GET`/`POST
+  /ops/billing` (OWNER, BILLING_OPERATOR) -- a real test-mode price
+  draft. Features are restricted to CU-16's own real API scopes plus
+  two real catalog facts (no implicit trading right); mode="live" is
+  always refused (no merchant-approval workflow exists).
 
-Full suite is 421 tests, ruff and mypy both green (**use `python3 -m
+Full suite is 433 tests, ruff and mypy both green (**use `python3 -m
 ruff`/`python3 -m mypy`/`python3 -m pytest` explicitly** -- this sandbox
 has a stray `uv tool`-installed `ruff`/`mypy` shadowing the project's
 real declared versions on bare `PATH`, which produced a false-negative
@@ -151,11 +156,12 @@ See `dashboard_state.json`'s `current_slice`/`second_slice`/
 `third_slice`/`fourth_slice`/`fifth_slice`/`sixth_slice`/`seventh_slice`/
 `eighth_slice`/`ninth_slice`/`tenth_slice`/`eleventh_slice`/
 `twelfth_slice`/`thirteenth_slice`/`fourteenth_slice`/`fifteenth_slice`/
-`sixteenth_slice`/`seventeenth_slice`/`eighteenth_slice` for the exact
-file lists and what was deliberately left unbuilt in each. 47 of 66
-screens (AD-01, AD-02, AD-03, AD-04, AD-08, PU-03, PU-05, ID-04, AD-16,
-CU-14, AD-09, CU-16, AD-12, AD-11, AD-17 partially done) remain -- pick
-the next one following the steps below. **If you add a new table to
+`sixteenth_slice`/`seventeenth_slice`/`eighteenth_slice`/
+`nineteenth_slice` for the exact file lists and what was deliberately
+left unbuilt in each. 46 of 66 screens (AD-01, AD-02, AD-03, AD-04,
+AD-08, PU-03, PU-05, ID-04, AD-16, CU-14, AD-09, CU-16, AD-12, AD-11,
+AD-17, AD-13 partially done) remain -- pick the next one following the
+steps below. **If you add a new table to
 `_TENANT_SCOPED_TABLES` in app/db.py, pin any EARLIER migration that
 already calls `_apply_row_level_security` with no explicit `tables`
 argument to its own frozen snapshot of the tables that existed at that

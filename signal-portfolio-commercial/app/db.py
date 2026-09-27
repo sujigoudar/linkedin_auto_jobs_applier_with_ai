@@ -35,7 +35,7 @@ def make_session_factory(engine) -> sessionmaker:
 _TENANT_SCOPED_TABLES: tuple[str, ...] = (
     "memberships", "customer_profiles", "ledger_entries", "sleeves", "subscriptions", "portfolio_versions",
     "release_reviews", "research_runs", "eligibility_assessments", "support_cases", "publisher_destinations",
-    "api_keys", "integration_configurations",
+    "api_keys", "integration_configurations", "price_versions",
 )
 
 #: Tables that must never be UPDATEd or DELETEd from, only appended to (see
