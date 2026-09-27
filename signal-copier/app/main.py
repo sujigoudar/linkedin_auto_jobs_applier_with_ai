@@ -64,6 +64,7 @@ from app.routing import load_routing_config_from_store
 from app.sources.text_parser import classify_batch
 from app.sources.discord import DiscordSource
 from app.sources.mt4_mt5 import MetaApiSource
+from app.sources.ninjatrader import NinjaTraderSource
 from app.sources.rithmic import RithmicSource
 from app.sources.slack import SlackSource
 from app.sources.base import SourceAdapter
@@ -126,6 +127,7 @@ engine = SignalCopierEngine(
 webhook_source = WebhookSource(on_signal=engine.handle_signal)
 sms_source = TwilioSMSSource(on_signal=engine.handle_signal)
 whatsapp_source = WhatsAppSource(on_signal=engine.handle_signal)
+ninjatrader_source = NinjaTraderSource(on_signal=engine.handle_signal)
 reconciler = OrderReconciler(
     store=store,
     brokers=brokers,
@@ -675,6 +677,52 @@ async def receive_whatsapp(request: Request) -> dict:
                 processed += 1
 
     return {"status": "ok", "processed": processed}
+
+
+@app.post("/ninjatrader/webhook")
+@limiter.limit(INGRESS_RATE_LIMIT)
+async def receive_ninjatrader(request: Request) -> dict:
+    """Receives fill events from `ninjascript/SignalCopierAutoJournal.cs`
+    (see app/sources/ninjatrader.py's docstring for the payload shape and
+    what's verified vs. still unverified about that C# side). NinjaScript
+    has no built-in request-signing, so this is a plain shared secret in
+    a custom header, not an HMAC signature like Twilio/Meta's webhooks."""
+    if not config.NINJATRADER_WEBHOOK_SECRET:
+        raise HTTPException(
+            status_code=503, detail="NinjaTrader ingress is not configured (set NINJATRADER_WEBHOOK_SECRET)"
+        )
+    secret_header = request.headers.get("X-NinjaTrader-Secret", "")
+    if not secret_header or not hmac.compare_digest(secret_header, config.NINJATRADER_WEBHOOK_SECRET):
+        raise HTTPException(status_code=401, detail="invalid NinjaTrader webhook secret")
+
+    try:
+        payload = await request.json()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"invalid JSON body: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="request body must be a JSON object")
+
+    # A reversal fill reports an "exit" and an "entry" under the SAME
+    # order_id (see app/sources/ninjatrader.py's docstring) -- action must
+    # be part of the key or those two legs would collide as "duplicates"
+    # of each other.
+    order_id = payload.get("order_id")
+    cache_key = f"ninjatrader:{order_id}:{payload.get('action')}" if order_id else None
+    if cache_key:
+        cached = store.get_idempotent_response(cache_key)
+        if cached is not None:
+            return cached
+
+    try:
+        signal = ninjatrader_source.parse(payload)
+    except SignalValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    results = await engine.handle_signal(signal)
+    response = _orders_response(signal.id, results)
+    if cache_key:
+        store.save_idempotent_response(cache_key, response)
+    return response
 
 
 @app.get("/positions")

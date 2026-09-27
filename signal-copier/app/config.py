@@ -123,6 +123,14 @@ class _Settings(BaseSettings):
     # TWILIO_ALLOWED_FROM_NUMBERS above.
     WHATSAPP_ALLOWED_FROM_NUMBERS: str = ""
 
+    # NinjaTrader signal source (see app/sources/ninjatrader.py's docstring)
+    # -- a NinjaScript AddOn/Indicator POSTs fill events here with this
+    # value in an X-NinjaTrader-Secret header. NinjaScript has no built-in
+    # request-signing the way Twilio/Meta's platforms do, so this is a
+    # plain shared secret (same fail-closed pattern: unset means the
+    # route stays disabled, not open).
+    NINJATRADER_WEBHOOK_SECRET: str = ""
+
     MT4_MT5_METAAPI_TOKEN: str = ""
     MT4_MT5_METAAPI_SOURCE_ACCOUNT_ID: str = ""
 
@@ -210,6 +218,8 @@ TWILIO_ALLOWED_FROM_NUMBERS = [n.strip() for n in _settings.TWILIO_ALLOWED_FROM_
 WHATSAPP_APP_SECRET = _settings.WHATSAPP_APP_SECRET
 WHATSAPP_VERIFY_TOKEN = _settings.WHATSAPP_VERIFY_TOKEN
 WHATSAPP_ALLOWED_FROM_NUMBERS = [n.strip() for n in _settings.WHATSAPP_ALLOWED_FROM_NUMBERS.split(",") if n.strip()]
+
+NINJATRADER_WEBHOOK_SECRET = _settings.NINJATRADER_WEBHOOK_SECRET
 
 MT4_MT5_METAAPI_TOKEN = _settings.MT4_MT5_METAAPI_TOKEN
 MT4_MT5_METAAPI_SOURCE_ACCOUNT_ID = _settings.MT4_MT5_METAAPI_SOURCE_ACCOUNT_ID
