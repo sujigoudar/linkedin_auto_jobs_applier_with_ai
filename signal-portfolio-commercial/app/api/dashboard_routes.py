@@ -266,6 +266,7 @@ from app.services.product_admin import (
 )
 from app.services.integration_status import get_integration_status
 from app.services.operations_overview import get_operations_overview
+from app.services.platform_performance import compute_platform_performance
 from app.services.release_review import (
     InvalidReviewDecisionError,
     ReviewNotEligibleError,
@@ -365,6 +366,42 @@ def integration_status_endpoint(
             for s in report.streams
         ],
         "platform_ledger_entries_count": report.platform_ledger_entries_count,
+    }
+
+
+@router.get("/api/v1/ops/platform-performance")
+def platform_performance_endpoint(
+    scope: TenantScope = Depends(get_current_scope),
+    session: Session = Depends(get_db_session),
+) -> dict:
+    """INTEGRATION_DECISION.md S12 step 4: "Complete scoped financial/
+    provider metrics, reports..." -- real, gross, per-instrument realized
+    P&L replayed from the owner's own Book.PLATFORM ledger entries. See
+    app/services/platform_performance.py's own module docstring for
+    exactly what this does and doesn't compute (gross only; no win
+    rates/episode counts yet). Same access scope as Integration Status:
+    this is private trading telemetry, not a general business metric."""
+    try:
+        require_permission(scope.role, "view_integration_status")
+    except PermissionDenied as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+    set_tenant_scope(session, scope.tenant_id)
+    report = compute_platform_performance(session, tenant_id=scope.tenant_id)
+    return {
+        "realized_pnl": str(report.realized_pnl),
+        "per_instrument": [
+            {
+                "instrument": ip.instrument,
+                "realized_pnl": str(ip.realized_pnl),
+                "open_quantity": str(ip.open_quantity),
+                "average_cost": str(ip.average_cost) if ip.average_cost is not None else None,
+                "last_fill_price": str(ip.last_fill_price) if ip.last_fill_price is not None else None,
+                "closing_fills": ip.closing_fills,
+                "unknown_fee_entry_count": ip.unknown_fee_entry_count,
+            }
+            for ip in report.per_instrument.values()
+        ],
     }
 
 
