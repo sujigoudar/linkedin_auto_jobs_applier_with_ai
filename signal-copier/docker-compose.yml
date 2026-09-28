@@ -1,7 +1,12 @@
 services:
   signal-copier:
     build:
-      context: .
+      # The repo root, not this directory: the Dockerfile's own `COPY
+      # signal_platform_contracts /signal_platform_contracts` needs that
+      # sibling package in the build context -- see this app's own
+      # Dockerfile for the real build failure this fixes.
+      context: ..
+      dockerfile: signal-copier/Dockerfile
       # args:
       #   EXTRAS: "ccxt tweepy"   # uncomment and list whichever optional adapters you need
     ports:

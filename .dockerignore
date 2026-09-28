@@ -1,0 +1,15 @@
+# Applies to every image built from this repo root (docker-compose.yml's
+# own commercial/signal-copier services both use `context: .`, see that
+# file's own comments) -- keeps unrelated build cache, editor state, and
+# already-populated dev DBs out of every image, not just one app's.
+.git/
+**/__pycache__/
+**/*.pyc
+**/.pytest_cache/
+**/.mypy_cache/
+**/.ruff_cache/
+**/.venv/
+**/*.db
+**/.env
+signal-copier/config/routing.yaml
+signal-copier/config/accounts.yaml

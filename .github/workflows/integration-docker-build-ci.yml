@@ -1,0 +1,77 @@
+name: integration Docker build CI
+
+# Both apps' own Dockerfiles now depend on the shared signal_platform_contracts
+# package being present in their build context (see docker-compose.yml's own
+# comments, and both Dockerfiles' own comments, for the real build failure
+# this exact check would have caught: signal-copier/Dockerfile's build
+# context never included that sibling package once the cross-service
+# integration added the dependency, and nothing in CI ever actually ran
+# `docker build` to notice). This workflow's only job is to keep that from
+# silently regressing again -- it builds both images for real (never `docker
+# compose config`/a syntax-only check) on every change that could break
+# either build.
+on:
+  push:
+    paths:
+      - 'signal-copier/**'
+      - 'signal-portfolio-commercial/**'
+      - 'signal_platform_contracts/**'
+      - 'docker-compose.yml'
+      - '.github/workflows/integration-docker-build-ci.yml'
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - 'signal-copier/**'
+      - 'signal-portfolio-commercial/**'
+      - 'signal_platform_contracts/**'
+      - 'docker-compose.yml'
+      - '.github/workflows/integration-docker-build-ci.yml'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Build both real images via docker compose (never a syntax-only check)
+        run: docker compose build
+
+      - name: Boot the real stack and wait for both healthchecks
+        run: |
+          docker compose up -d
+          for i in $(seq 1 40); do
+            commercial_status=$(docker inspect -f '{{.State.Health.Status}}' "$(docker compose ps -q commercial)" 2>/dev/null || echo starting)
+            copier_status=$(docker inspect -f '{{.State.Health.Status}}' "$(docker compose ps -q signal-copier)" 2>/dev/null || echo starting)
+            echo "commercial=$commercial_status signal-copier=$copier_status"
+            if [ "$commercial_status" = "healthy" ] && [ "$copier_status" = "healthy" ]; then
+              exit 0
+            fi
+            sleep 3
+          done
+          echo "stack never became healthy" >&2
+          docker compose logs
+          exit 1
+
+      - name: Real end-to-end smoke -- submit a paper signal and confirm it reaches the commercial ledger
+        run: |
+          curl -sf -X POST http://localhost:8000/webhook/tradingview \
+            -H "Content-Type: application/json" \
+            -H "x-webhook-secret: local-sim-webhook-secret" \
+            -d '{"symbol":"BTCUSDT","side":"BUY","quantity":0.1,"price":65000,"asset_class":"crypto"}'
+          for i in $(seq 1 20); do
+            token=$(docker compose logs commercial 2>/dev/null | grep -A1 "Owner session token" | tail -1)
+            count=$(curl -sf http://localhost:8001/api/v1/ops/source-coverage -H "Authorization: Bearer $token" | python3 -c "import json,sys; print(json.load(sys.stdin)['total_count'])" 2>/dev/null || echo 0)
+            if [ "$count" -ge 1 ]; then
+              echo "real signal reached the commercial ledger"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "signal never reached the commercial inbox" >&2
+          docker compose logs
+          exit 1
+
+      - name: Tear down
+        if: always()
+        run: docker compose down -v

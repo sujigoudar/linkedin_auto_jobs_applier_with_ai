@@ -1,0 +1,125 @@
+########################################################################
+# INT-001 "Empty integrated installation" -- a real, single-command
+# installation of BOTH real apps (signal-copier + signal-portfolio-
+# commercial) plus the relay that already runs in-process inside
+# signal-copier itself (app/relay_worker.py + app/relay_scheduler.py,
+# started from that app's own `lifespan` handler -- there is no
+# separate third "relay" container/process, confirmed by reading that
+# code directly; see this file's own comments below for the exact
+# wiring this session verified end to end, process-to-process, before
+# writing this file).
+#
+# Everything below runs in LOCAL_SIM/paper mode with synthetic secrets
+# -- no live broker, vendor, or payment credentials are needed to bring
+# this stack up and see a real signal flow end to end through both real
+# apps' own real code paths. Swap the marked env vars for real
+# credentials only once real accounts exist; nothing here assumes they
+# do.
+#
+# Usage:
+#   docker compose up --build
+#   # once both services report healthy:
+#   curl http://localhost:8001/healthz
+#   curl -X POST http://localhost:8000/webhook/tradingview \
+#     -H "Content-Type: application/json" \
+#     -H "x-webhook-secret: local-sim-webhook-secret" \
+#     -d '{"symbol":"BTCUSDT","side":"BUY","quantity":0.1,"price":65000,"asset_class":"crypto"}'
+#   # the commercial container's own logs print the owner session token
+#   # ops/bootstrap.py mints -- use it as: Authorization: Bearer <token>
+#   docker compose logs commercial | grep -A2 "Owner session token"
+########################################################################
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: local-sim-postgres-password
+      POSTGRES_DB: commercial
+    ports:
+      - "5432:5432"
+    volumes:
+      - commercial_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d commercial"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+  commercial:
+    build:
+      context: .
+      dockerfile: signal-portfolio-commercial/Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # The restricted runtime connection ops/bootstrap.py's own role-
+      # provisioning step creates -- never superuser, never BYPASSRLS.
+      COMMERCIAL_DATABASE_URL: "postgresql+psycopg://commercial@postgres:5432/commercial"
+      # A SEPARATE, more-privileged connection used ONLY by the
+      # entrypoint's own migration + bootstrap steps -- see deploy/
+      # entrypoint-commercial.sh's own comment for why this must be
+      # distinct from COMMERCIAL_DATABASE_URL above. The Postgres
+      # superuser is fine for this local/paper stack; a real production
+      # deployment should use a dedicated migrator role instead.
+      COMMERCIAL_MIGRATOR_DATABASE_URL: "postgresql+psycopg://postgres:local-sim-postgres-password@postgres:5432/commercial"
+      RELAY_DATABASE_URL: "postgresql+psycopg://relay_role@postgres:5432/commercial"
+      ENVIRONMENT: "LOCAL_SIM"
+      # Must match signal-copier's own RELAY_SIGNING_SECRET below --
+      # both sides already default to the SAME literal LOCAL_SIM value
+      # in app/config.py, so this is only set explicitly here for
+      # clarity; change both together if you override it.
+      RELAY_SIGNING_SECRET: "LOCAL_SIM-not-a-real-relay-secret-change-if-ever-deployed"
+      # --account-id/--source-name here MUST list every enabled account
+      # in signal-copier's own config/accounts.yaml and every source
+      # its own config/routing.yaml names -- see ops/bootstrap.py's own
+      # module docstring for the real bug this session found (and
+      # fixed) when only the account stream was registered: every
+      # SOURCE_RECEIPT event stayed permanently parked as
+      # unregistered_stream.
+      BOOTSTRAP_ARGS: "--account-id paper_main --source-name tradingview --source-name telegram"
+    ports:
+      - "8001:8001"
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/healthz')"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  signal-copier:
+    build:
+      context: .
+      dockerfile: signal-copier/Dockerfile
+    depends_on:
+      commercial:
+        condition: service_healthy
+    environment:
+      ACCOUNTS_CONFIG_PATH: "config/accounts.example.yaml"
+      ROUTING_CONFIG_PATH: "config/routing.example.yaml"
+      # A real, non-empty value is required for the webhook ingress to
+      # accept anything at all (app/main.py's own `receive_webhook`
+      # fails closed with 503 otherwise) -- change this before ever
+      # exposing this port beyond localhost/a private network.
+      WEBHOOK_SHARED_SECRET: "local-sim-webhook-secret"
+      OWNER_PASSWORD: "local-sim-owner-password"
+      DATABASE_PATH: "/app/data/signal_copier.db"
+      # The in-process relay worker's own target -- signal-copier's own
+      # container-network hostname for the commercial service, its
+      # real ingest route (app/api/relay_routes.py).
+      RELAY_INGRESS_URL: "http://commercial:8001/internal/relay/ingest-batch"
+      RELAY_SIGNING_SECRET: "LOCAL_SIM-not-a-real-relay-secret-change-if-ever-deployed"
+      RELAY_POLL_INTERVAL_SECONDS: "2.0"
+    ports:
+      - "8000:8000"
+    volumes:
+      - signal_copier_data:/app/data
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  commercial_postgres_data:
+  signal_copier_data:

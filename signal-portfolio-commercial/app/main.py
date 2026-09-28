@@ -91,3 +91,13 @@ def create_app(database_url: str | None = None, relay_database_url: str | None =
         return {"received": True, "processed": is_new}
 
     return app
+
+
+#: A real, importable module-level instance for a production ASGI server
+#: (`uvicorn app.main:app`, matching signal-copier's own `app/main.py`
+#: precedent) -- every test builds its own isolated instance via
+#: `create_app()` directly instead (a real Postgres/relay connection at
+#: import time would break plain `pytest` collection), so this one is
+#: never imported by the test suite, only by a real deployment's own
+#: process manager.
+app = create_app()
