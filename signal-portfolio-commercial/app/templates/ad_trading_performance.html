@@ -1,0 +1,89 @@
+{% extends "_base.html" %}
+{% block title %}Trading & integration status{% endblock %}
+{% block content %}
+<h1>Trading &amp; integration status</h1>
+<p><a href="/ops">&larr; Back to operations overview</a></p>
+
+<div class="panel">
+  <h2>Integration status</h2>
+  {% if integration_status.streams %}
+  <table>
+    <thead>
+      <tr>
+        <th>Source stream</th>
+        <th>Environment</th>
+        <th>Registered</th>
+        <th>Received</th>
+        <th>Applied</th>
+        <th>Unapplied</th>
+        <th>Last received</th>
+        <th>Last applied</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for stream in integration_status.streams %}
+      <tr>
+        <td>{{ stream.source_stream }}</td>
+        <td>{{ stream.environment }}</td>
+        <td>{{ stream.registered_at }}</td>
+        <td class="num">{{ stream.received_count }}</td>
+        <td class="num">{{ stream.applied_count }}</td>
+        <td class="num">{{ stream.unapplied_count }}</td>
+        <td>{{ stream.latest_received_at or "never" }}</td>
+        <td>{{ stream.latest_applied_at or "never" }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="empty-state">
+    <p>No export streams are registered for this tenant yet.</p>
+  </div>
+  {% endif %}
+  <p class="help">Platform-book ledger entries from these streams: {{ integration_status.platform_ledger_entries_count }}</p>
+</div>
+
+<div class="panel">
+  <h2>Owner trading performance (gross)</h2>
+  <p class="help">Realized P&amp;L replayed from the owner's own Book.PLATFORM ledger entries. Gross only -- see each row's own unknown-fee count before treating this as a net figure.</p>
+  <p><strong>Total realized P&amp;L: {{ performance.realized_pnl }}</strong></p>
+  {% if performance.per_instrument %}
+  <table>
+    <thead>
+      <tr>
+        <th>Instrument</th>
+        <th>Realized P&amp;L</th>
+        <th>Open quantity</th>
+        <th>Average cost</th>
+        <th>Last fill price</th>
+        <th>Closing fills</th>
+        <th>Entries with unknown fee</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for ip in performance.per_instrument.values() %}
+      <tr>
+        <td>{{ ip.instrument }}</td>
+        <td class="num">{{ ip.realized_pnl }}</td>
+        <td class="num">{{ ip.open_quantity }}</td>
+        <td class="num">{{ ip.average_cost if ip.average_cost is not none else "-" }}</td>
+        <td class="num">{{ ip.last_fill_price if ip.last_fill_price is not none else "-" }}</td>
+        <td class="num">{{ ip.closing_fills }}</td>
+        <td class="num">
+          {% if ip.unknown_fee_entry_count > 0 %}
+          <span class="badge badge-unknown">{{ ip.unknown_fee_entry_count }}</span>
+          {% else %}
+          0
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="empty-state">
+    <p>No Book.PLATFORM ledger entries exist for this tenant yet.</p>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

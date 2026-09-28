@@ -3,6 +3,10 @@
 {% block content %}
 <h1>Commercial operations overview</h1>
 
+{% if can_view_trading_performance %}
+<p><a href="/ops/trading">Trading &amp; integration status &rarr;</a></p>
+{% endif %}
+
 {% if not overview.eligible_products and not overview.blocked_products and overview.active_subscriptions_count == 0 %}
 <div class="empty-state">
   <p>No commercial products or subscriptions exist yet.</p>

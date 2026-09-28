@@ -158,7 +158,7 @@ from app.services.eligibility import (
     get_eligibility_assessment,
     save_eligibility_facts,
 )
-from app.services.permissions import PermissionDenied, require_permission
+from app.services.permissions import PermissionDenied, is_allowed, require_permission
 from app.services.staff_access import (
     GRANTABLE_ROLES,
     CannotRevokeOwnerError,
@@ -327,7 +327,10 @@ def operations_overview_page(
 
     set_tenant_scope(session, scope.tenant_id)
     overview = get_operations_overview(session, tenant_id=scope.tenant_id)
-    return templates.TemplateResponse(request, "ad01_overview.html", {"overview": overview})
+    return templates.TemplateResponse(
+        request, "ad01_overview.html",
+        {"overview": overview, "can_view_trading_performance": is_allowed(scope.role, "view_integration_status")},
+    )
 
 
 @router.get("/api/v1/ops/integration-status")
@@ -403,6 +406,33 @@ def platform_performance_endpoint(
             for ip in report.per_instrument.values()
         ],
     }
+
+
+@router.get("/ops/trading")
+def trading_performance_page(
+    request: Request,
+    scope: TenantScope = Depends(get_current_scope),
+    session: Session = Depends(get_db_session),
+):
+    """The rendered owner workspace page for the two private-telemetry
+    reports app/services/integration_status.py and
+    app/services/platform_performance.py already compute -- closes
+    INTEGRATION_DECISION.md S12 step 4's own "...and the actual owner
+    navigation" (until now, both were JSON-only APIs with no
+    discoverable link from the rendered dashboard). Linked from AD-01's
+    own overview page for OWNER/RESEARCHER only."""
+    try:
+        require_permission(scope.role, "view_integration_status")
+    except PermissionDenied as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+    set_tenant_scope(session, scope.tenant_id)
+    integration_status = get_integration_status(session, tenant_id=scope.tenant_id)
+    performance = compute_platform_performance(session, tenant_id=scope.tenant_id)
+    return templates.TemplateResponse(
+        request, "ad_trading_performance.html",
+        {"integration_status": integration_status, "performance": performance},
+    )
 
 
 @router.get("/ops/products")
