@@ -1,0 +1,52 @@
+{% extends "_base.html" %}
+{% block title %}Pause copying and position handoff{% endblock %}
+{% block content %}
+<p><a href="/app/copy/new">&larr; Copy setup and mandate wizard</a></p>
+<h1>Pause copying and position handoff</h1>
+
+{% if error %}<div class="conflict">{{ error }}</div>{% endif %}
+
+<div class="panel">
+  <h2>Current mandate</h2>
+  <table>
+    <tbody>
+      <tr><th>Mandate id</th><td>{{ mandate.mandate_id }}</td></tr>
+      <tr><th>State</th><td>{{ mandate.state.value }}</td></tr>
+      <tr><th>Allocation</th><td>{{ mandate.allocation_amount }} {{ mandate.allocation_currency }}</td></tr>
+      <tr><th>Start mode</th><td>{{ mandate.start_mode.value }}</td></tr>
+    </tbody>
+  </table>
+</div>
+
+{% if mandate.state.value != "draft" %}
+<div class="panel">
+  <h2>Owned/open episodes</h2>
+  <div class="empty-state">
+    <p>No active copy mandate is available to manage.</p>
+  </div>
+</div>
+{% else %}
+<div class="panel">
+  <h2>Owned/open episodes</h2>
+  <p><span class="badge badge-unknown">UNSUPPORTED</span> -- this mandate has never been activated (no real activation pipeline exists in this build), so there is no owned episode to list.</p>
+</div>
+
+<div class="panel">
+  <h2>Available safety operations</h2>
+  <p><span class="badge badge-unknown">UNSUPPORTED</span> -- Pause new entries and Review owned-position wind-down both require a real activation pipeline this build does not have.</p>
+</div>
+
+<div class="panel">
+  <h2>Scope preview / Confirmation</h2>
+  <form method="post" action="/app/copy/{{ mandate.mandate_id }}/cancel">
+    <p>Cancelling this draft revokes it -- it can never be activated afterward.</p>
+    <p><button type="submit">Request handoff (cancel draft mandate)</button></p>
+  </form>
+</div>
+{% endif %}
+
+<div class="panel">
+  <h2>Progress</h2>
+  <p><span class="badge badge-unknown">UNSUPPORTED</span> -- no real operation-status tracking exists for activation in this build.</p>
+</div>
+{% endblock %}

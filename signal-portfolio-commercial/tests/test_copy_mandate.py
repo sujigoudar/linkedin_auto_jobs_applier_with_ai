@@ -1,10 +1,18 @@
-"""CU-09 "Copy setup and mandate wizard" -- app/services/copy_mandate.py's
-own tests. Real Postgres, real tenant-scoped session."""
+"""CU-09 "Copy setup and mandate wizard" / CU-10 "Pause copying and
+position handoff" -- app/services/copy_mandate.py's own tests. Real
+Postgres, real tenant-scoped session."""
 import pytest
 
 from app.models.product import Product, ProductLifecycleState
 from app.models.tenancy import Membership, MembershipRole, Tenant, UserIdentity
-from app.services.copy_mandate import InvalidCopyMandateError, create_copy_mandate_draft, list_own_copy_mandates
+from app.services.copy_mandate import (
+    InvalidCopyMandateError,
+    MandateNotEligibleForCancellationError,
+    cancel_copy_mandate,
+    create_copy_mandate_draft,
+    get_own_copy_mandate,
+    list_own_copy_mandates,
+)
 from app.services.platform_connection import create_platform_connection
 from app.services.portfolio_selection import create_portfolio_selection
 
@@ -176,6 +184,78 @@ def test_create_then_reload_persists_the_real_mandate_draft(db_session):
     assert len(mandates) == 1
     assert mandates[0].state.value == "draft"
     assert mandates[0].allocation_currency == "USD"
+
+
+def test_get_own_copy_mandate_is_none_for_a_cross_tenant_mandate(db_session):
+    _seed_membership(db_session, tenant_id="tenant-a", user_id="user-a")
+    _seed_membership(db_session, tenant_id="tenant-b", user_id="user-b")
+    selection, connection = _eligible_selection_and_connection(db_session)
+    mandate = create_copy_mandate_draft(
+        db_session,
+        tenant_id="tenant-a",
+        user_id="user-a",
+        selection_id=selection.selection_id,
+        connection_id=connection.connection_id,
+        allocation_amount="100",
+        allocation_currency="USD",
+        max_trade_risk=None,
+        max_loss=None,
+        start_mode="new_entries_only",
+        policy_version_id="policy-1",
+        consent_version="consent-1",
+    )
+    db_session.commit()
+
+    assert get_own_copy_mandate(db_session, mandate.mandate_id, tenant_id="tenant-b", user_id="user-b") is None
+
+
+def test_cancel_copy_mandate_sets_cancelled_state(db_session):
+    _seed_membership(db_session)
+    selection, connection = _eligible_selection_and_connection(db_session)
+    mandate = create_copy_mandate_draft(
+        db_session,
+        tenant_id="tenant-a",
+        user_id="user-a",
+        selection_id=selection.selection_id,
+        connection_id=connection.connection_id,
+        allocation_amount="100",
+        allocation_currency="USD",
+        max_trade_risk=None,
+        max_loss=None,
+        start_mode="new_entries_only",
+        policy_version_id="policy-1",
+        consent_version="consent-1",
+    )
+    db_session.commit()
+
+    cancel_copy_mandate(db_session, mandate)
+    db_session.commit()
+    assert mandate.state.value == "cancelled"
+
+
+def test_cancel_copy_mandate_refuses_a_non_draft_mandate(db_session):
+    _seed_membership(db_session)
+    selection, connection = _eligible_selection_and_connection(db_session)
+    mandate = create_copy_mandate_draft(
+        db_session,
+        tenant_id="tenant-a",
+        user_id="user-a",
+        selection_id=selection.selection_id,
+        connection_id=connection.connection_id,
+        allocation_amount="100",
+        allocation_currency="USD",
+        max_trade_risk=None,
+        max_loss=None,
+        start_mode="new_entries_only",
+        policy_version_id="policy-1",
+        consent_version="consent-1",
+    )
+    db_session.commit()
+    cancel_copy_mandate(db_session, mandate)
+    db_session.commit()
+
+    with pytest.raises(MandateNotEligibleForCancellationError):
+        cancel_copy_mandate(db_session, mandate)
 
 
 def test_create_copy_mandate_draft_rejects_a_cross_tenant_selection(db_session):

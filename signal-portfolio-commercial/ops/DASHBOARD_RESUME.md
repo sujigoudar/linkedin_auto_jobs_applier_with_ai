@@ -253,8 +253,16 @@ Seven slices are DONE:
   execution pipeline this build does not have. Preview activation,
   Confirm authorized activation, Agreements/step-up, and Operation
   status are all explicit UNSUPPORTED.
+- CU-10 Pause copying and position handoff: `GET /app/copy/
+  {mandate_id}/manage` + `POST /app/copy/{mandate_id}/cancel`
+  (CUSTOMER only) -- extends CU-09's own CopyMandate service, no new
+  model needed. Pause new entries/Review wind-down/Request handoff (in
+  the real sense) are all explicit UNSUPPORTED since no activation
+  pipeline exists; cancelling a never-activated draft is the one real
+  action honestly buildable, and it refuses to re-cancel an
+  already-cancelled mandate.
 
-Full suite is 572 tests, ruff and mypy both green (**use `python3 -m
+Full suite is 579 tests, ruff and mypy both green (**use `python3 -m
 ruff`/`python3 -m mypy`/`python3 -m pytest` explicitly** -- this sandbox
 has a stray `uv tool`-installed `ruff`/`mypy` shadowing the project's
 real declared versions on bare `PATH`, which produced a false-negative
@@ -279,13 +287,13 @@ See `dashboard_state.json`'s `current_slice`/`second_slice`/
 `twentyfifth_slice`/`twentysixth_slice`/`twentyseventh_slice`/
 `twentyeighth_slice`/`twentyninth_slice`/`thirtieth_slice`/
 `thirtyfirst_slice`/`thirtysecond_slice`/`thirtythird_slice`/
-`thirtyfourth_slice` for the exact file lists and what was
-deliberately left unbuilt in each. 30 of 66 screens (AD-01, AD-02,
-AD-03, AD-04, AD-05, AD-08, AD-10, PU-03, PU-05, ID-04, AD-16, CU-14,
-AD-09, CU-16, AD-12, AD-11, AD-17, AD-13, AD-19, AD-14, AD-18, AD-20,
-CU-02, CU-12, CU-13, AD-15, PU-04, PU-07, AD-22, CU-07, CU-08, CU-09
-partially done) remain -- pick the next one following the steps
-below. **If you add a
+`thirtyfourth_slice`/`thirtyfifth_slice` for the exact file lists and
+what was deliberately left unbuilt in each. 29 of 66 screens (AD-01,
+AD-02, AD-03, AD-04, AD-05, AD-08, AD-10, PU-03, PU-05, ID-04, AD-16,
+CU-14, AD-09, CU-16, AD-12, AD-11, AD-17, AD-13, AD-19, AD-14, AD-18,
+AD-20, CU-02, CU-12, CU-13, AD-15, PU-04, PU-07, AD-22, CU-07, CU-08,
+CU-09, CU-10 partially done) remain -- pick the next one following
+the steps below. **If you add a
 new table to
 `_TENANT_SCOPED_TABLES` in app/db.py, pin any EARLIER migration that
 already calls `_apply_row_level_security` with no explicit `tables`

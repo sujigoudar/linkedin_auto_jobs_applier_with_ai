@@ -2179,3 +2179,127 @@ def test_create_copy_mandate_draft_over_real_http(db_session):
     final_response = client.get("/app/copy/new", headers=headers)
     assert "draft" in final_response.text
     assert "500.00" in final_response.text
+
+
+def test_manage_copy_mandate_page_requires_customer_role(db_session):
+    client = _client(db_session)
+    response = client.get("/app/copy/nonexistent-mandate/manage", headers=_auth_headers(role=MembershipRole.OWNER))
+    assert response.status_code == 403
+
+
+def test_manage_copy_mandate_page_is_a_scoped_not_found_for_an_unknown_mandate(db_session):
+    client = _client(db_session)
+    response = client.get(
+        "/app/copy/nonexistent-mandate/manage", headers=_auth_headers(role=MembershipRole.CUSTOMER)
+    )
+    assert response.status_code == 404
+
+
+def test_create_then_cancel_copy_mandate_over_real_http(db_session):
+    from app.models.product import Product, ProductLifecycleState
+
+    _seed_customer_membership(db_session)
+    product = Product(
+        tenant_id="tenant-a", product_name="Manage Mandate Product", slug="manage-mandate-product",
+        lifecycle_state=ProductLifecycleState.PUBLISHED,
+    )
+    db_session.add(product)
+    db_session.commit()
+
+    client = _client(db_session)
+    headers = _auth_headers(role=MembershipRole.CUSTOMER)
+    client.post("/app/portfolios", data={"product_id": product.product_id}, headers=headers)
+    client.post(
+        "/app/connections/new",
+        data={"platform": "collective2", "environment": "local_simulation", "masked_account_label": "Test ****1234"},
+        headers=headers,
+    )
+
+    from app.services.platform_connection import list_own_platform_connections
+    from app.services.portfolio_selection import list_own_portfolio_selections
+
+    selection_id = list_own_portfolio_selections(db_session, tenant_id="tenant-a", user_id="user-a")[0].selection_id
+    connection_id = list_own_platform_connections(db_session, tenant_id="tenant-a", user_id="user-a")[0].connection_id
+
+    client.post(
+        "/app/copy/new",
+        data={
+            "selection_id": selection_id,
+            "connection_id": connection_id,
+            "allocation_amount": "500.00",
+            "allocation_currency": "USD",
+            "start_mode": "new_entries_only",
+            "policy_version_id": "policy-1",
+            "consent_version": "consent-1",
+        },
+        headers=headers,
+    )
+
+    from app.services.copy_mandate import list_own_copy_mandates
+
+    mandate_id = list_own_copy_mandates(db_session, tenant_id="tenant-a", user_id="user-a")[0].mandate_id
+
+    manage_response = client.get(f"/app/copy/{mandate_id}/manage", headers=headers)
+    assert manage_response.status_code == 200
+    assert "draft" in manage_response.text
+
+    cancel_response = client.post(f"/app/copy/{mandate_id}/cancel", headers=headers)
+    assert cancel_response.status_code == 303
+
+    final_response = client.get(f"/app/copy/{mandate_id}/manage", headers=headers)
+    assert "cancelled" in final_response.text
+    assert "No active copy mandate is available to manage." in final_response.text
+
+
+def test_cancel_copy_mandate_is_a_scoped_not_found_for_another_customer(db_session):
+    from app.models.product import Product, ProductLifecycleState
+    from app.models.tenancy import Membership, MembershipRole as Role, UserIdentity
+
+    _seed_customer_membership(db_session, user_id="user-a")
+    product = Product(
+        tenant_id="tenant-a", product_name="Cross Mandate Product", slug="cross-mandate-product",
+        lifecycle_state=ProductLifecycleState.PUBLISHED,
+    )
+    db_session.add(product)
+    db_session.commit()
+
+    client = _client(db_session)
+    owner_headers = _auth_headers(user_id="user-a", role=MembershipRole.CUSTOMER)
+    client.post("/app/portfolios", data={"product_id": product.product_id}, headers=owner_headers)
+    client.post(
+        "/app/connections/new",
+        data={"platform": "collective2", "environment": "local_simulation", "masked_account_label": "Test ****1234"},
+        headers=owner_headers,
+    )
+
+    from app.services.platform_connection import list_own_platform_connections
+    from app.services.portfolio_selection import list_own_portfolio_selections
+
+    selection_id = list_own_portfolio_selections(db_session, tenant_id="tenant-a", user_id="user-a")[0].selection_id
+    connection_id = list_own_platform_connections(db_session, tenant_id="tenant-a", user_id="user-a")[0].connection_id
+    client.post(
+        "/app/copy/new",
+        data={
+            "selection_id": selection_id,
+            "connection_id": connection_id,
+            "allocation_amount": "500.00",
+            "allocation_currency": "USD",
+            "start_mode": "new_entries_only",
+            "policy_version_id": "policy-1",
+            "consent_version": "consent-1",
+        },
+        headers=owner_headers,
+    )
+
+    from app.services.copy_mandate import list_own_copy_mandates
+
+    mandate_id = list_own_copy_mandates(db_session, tenant_id="tenant-a", user_id="user-a")[0].mandate_id
+
+    db_session.add(UserIdentity(user_id="user-other-mandate", email="user-other-mandate@example.com"))
+    db_session.flush()
+    db_session.add(Membership(tenant_id="tenant-a", user_id="user-other-mandate", role=Role.CUSTOMER))
+    db_session.commit()
+
+    other_customer_headers = _auth_headers(user_id="user-other-mandate", role=MembershipRole.CUSTOMER)
+    response = client.post(f"/app/copy/{mandate_id}/cancel", headers=other_customer_headers)
+    assert response.status_code == 404

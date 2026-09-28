@@ -1,6 +1,7 @@
-"""CU-09 "Copy setup and mandate wizard" -- the real draft/list service
-backing F-MANDATE. See app/models/copy_mandate.py for the full screen
-contract this implements a bounded slice of.
+"""CU-09 "Copy setup and mandate wizard" / CU-10 "Pause copying and
+position handoff" -- the real draft/list/cancel service backing
+F-MANDATE and F-WINDDOWN. See app/models/copy_mandate.py for the full
+screen contract this implements a bounded slice of.
 
 `create_copy_mandate_draft` implements F-MANDATE's own "Save: Persist
 mandate draft without effect" literally: it never activates anything,
@@ -8,15 +9,24 @@ never touches a broker, and refuses a `selection_id`/`connection_id`
 that isn't both real AND currently eligible (an ACTIVE portfolio
 selection, a DECLARED platform connection) -- reusing CU-02's/CU-07's
 own ownership-and-state checks rather than a duplicate technique.
+
+CU-10's own real actions (Pause new entries, Review owned-position
+wind-down, Request handoff) all require a mandate that has reached
+ACTIVE -- a state this model doesn't have at all, since real
+activation needs a scoped publisher/execution pipeline this build does
+not have. `cancel_copy_mandate` is the one CU-10 action honestly
+buildable regardless: "revoking authority" over a mandate that never
+activated is exactly cancelling its draft.
 """
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models.copy_mandate import CopyMandate, CopyMandateStartMode
+from app.models.copy_mandate import CopyMandate, CopyMandateState, CopyMandateStartMode
 from app.models.platform_connection import PlatformConnectionState
 from app.models.portfolio_selection import PortfolioSelectionState
 from app.services.platform_connection import get_own_platform_connection
@@ -24,6 +34,10 @@ from app.services.portfolio_selection import get_own_portfolio_selection
 
 
 class InvalidCopyMandateError(Exception):
+    pass
+
+
+class MandateNotEligibleForCancellationError(Exception):
     pass
 
 
@@ -35,6 +49,25 @@ def list_own_copy_mandates(session: Session, *, tenant_id: str, user_id: str) ->
             .order_by(CopyMandate.created_at.desc())
         ).all()
     )
+
+
+def get_own_copy_mandate(session: Session, mandate_id: str, *, tenant_id: str, user_id: str) -> CopyMandate | None:
+    """Returns None both when the id never existed AND when it belongs
+    to another tenant or another user under the same tenant -- a scoped
+    not-found, never a 403 that would leak existence."""
+    mandate = session.get(CopyMandate, mandate_id)
+    if mandate is None or mandate.tenant_id != tenant_id or mandate.user_id != user_id:
+        return None
+    return mandate
+
+
+def cancel_copy_mandate(session: Session, mandate: CopyMandate) -> CopyMandate:
+    if mandate.state != CopyMandateState.DRAFT:
+        raise MandateNotEligibleForCancellationError(f"mandate is {mandate.state.value}, not draft")
+    mandate.state = CopyMandateState.CANCELLED
+    mandate.updated_at = datetime.now(timezone.utc)
+    session.flush()
+    return mandate
 
 
 def create_copy_mandate_draft(
