@@ -170,6 +170,21 @@ _ALLOWED: dict[str, frozenset[Role]] = {
     #: PUBLISHER_OPERATOR/BILLING_OPERATOR/SUPPORT_READONLY have no
     #: legitimate reason to see it.
     "view_integration_status": frozenset({Role.OWNER, Role.RESEARCHER}),
+    #: AD-06 "Candidate comparison and shadow report" -- exactly this
+    #: screen's own access list (owner, researcher, reviewer). Same trio
+    #: as "manage_product_draft"/"manage_sleeve_draft": a research/
+    #: release decision, not billing/publication/support/customer.
+    "compare_research_candidates": frozenset({Role.OWNER, Role.RESEARCHER, Role.REVIEWER}),
+    #: AD-21 "Commercial incidents and obligations" -- exactly this
+    #: screen's own access list (owner, publisher_operator,
+    #: support_readonly) for READING the priority queue/detail.
+    "view_incident_register": frozenset({Role.OWNER, Role.PUBLISHER_OPERATOR, Role.SUPPORT_READONLY}),
+    #: AD-21's own F-INCIDENT actions (acknowledge/assign/reconcile/
+    #: propose_resolution) -- deliberately narrower than
+    #: "view_incident_register": SUPPORT_READONLY's own name says it is
+    #: read-only, matching "support cannot view broker credentials"'s
+    #: precedent of a role that reads but does not act.
+    "manage_incidents": frozenset({Role.OWNER, Role.PUBLISHER_OPERATOR}),
 }
 
 

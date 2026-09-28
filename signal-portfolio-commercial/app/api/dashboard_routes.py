@@ -287,6 +287,22 @@ from app.services.public_site import (
     get_published_portfolio_detail,
     get_service_status,
 )
+from app.services.candidate_comparison import (
+    CandidateNotFoundError,
+    InvalidCandidateDraftError,
+    compare_candidates,
+    create_portfolio_version_draft_from_candidate,
+    list_comparable_research_runs,
+)
+from app.services.incident import (
+    InvalidIncidentOperationError,
+    acknowledge_incident,
+    assign_incident,
+    get_incident,
+    list_incidents,
+    propose_resolution,
+    reconcile_incident,
+)
 from app.services.research_run import (
     InvalidResearchRunError,
     compute_research_run_preview,
@@ -333,8 +349,12 @@ def operations_overview_page(
     session: Session = Depends(get_db_session),
 ):
     """AD-01 "Commercial operations overview" -- see this route module's
-    own docstring above for what's deliberately not built (Open
-    incidents has no backing model, so it's rendered as unsupported)."""
+    own docstring above for what's deliberately not built. "Open
+    incidents" now has a real backing model (app/models/incident.py,
+    AD-21) with its own real register at /ops/incidents; this overview
+    still does not compute a decorative headline count from it -- AD-21's
+    own spec: "No numeric headline required. Do not add a decorative
+    performance KPI.\""""
     try:
         require_permission(scope.role, "view_operations_overview")
     except PermissionDenied as exc:
@@ -348,6 +368,7 @@ def operations_overview_page(
             "overview": overview,
             "can_view_trading_performance": is_allowed(scope.role, "view_integration_status"),
             "can_view_portfolio_lab": is_allowed(scope.role, "run_research_job"),
+            "can_view_incidents": is_allowed(scope.role, "view_incident_register"),
         },
     )
 
@@ -889,6 +910,128 @@ def research_run_full_results_page(
         raise HTTPException(status_code=404, detail="not found")
     preview = compute_research_run_preview(session, run, tenant_id=scope.tenant_id)
     return templates.TemplateResponse(request, "ad05_research_run_results.html", {"run": run, "preview": preview})
+
+
+def _require_candidate_comparison(scope: TenantScope) -> None:
+    try:
+        require_permission(scope.role, "compare_research_candidates")
+    except PermissionDenied as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+
+@router.get("/ops/research/compare")
+def candidate_comparison_page(
+    request: Request,
+    research_run_id: str | None = Query(None),
+    candidate_a: int | None = Query(None),
+    candidate_b: int | None = Query(None),
+    created_portfolio_version_id: str | None = Query(None),
+    scope: TenantScope = Depends(get_current_scope),
+    session: Session = Depends(get_db_session),
+):
+    """AD-06 "Candidate comparison and shadow report" -- see
+    app/services/candidate_comparison.py's own docstring for exactly
+    what is and is not real here: real declared-candidate composition/
+    allocation comparison and draft creation, never fabricated
+    performance metrics."""
+    _require_candidate_comparison(scope)
+    set_tenant_scope(session, scope.tenant_id)
+    comparable_runs = list_comparable_research_runs(session, tenant_id=scope.tenant_id)
+
+    run = None
+    comparison = None
+    error = None
+    if research_run_id:
+        run = get_research_run(session, research_run_id, tenant_id=scope.tenant_id)
+        if run is None:
+            raise HTTPException(status_code=404, detail="not found")
+        if candidate_a is not None and candidate_b is not None:
+            try:
+                comparison = compare_candidates(session, run, candidate_a, candidate_b, tenant_id=scope.tenant_id)
+            except CandidateNotFoundError as exc:
+                error = str(exc)
+
+    return templates.TemplateResponse(
+        request,
+        "ad06_candidate_comparison.html",
+        {
+            "comparable_runs": comparable_runs,
+            "run": run,
+            "candidate_a": candidate_a,
+            "candidate_b": candidate_b,
+            "comparison": comparison,
+            "error": error,
+            "created_portfolio_version_id": created_portfolio_version_id,
+        },
+    )
+
+
+@router.post("/ops/research/compare/draft")
+def create_candidate_draft_route(
+    request: Request,
+    research_run_id: str = Form(...),
+    candidate_index: int = Form(...),
+    portfolio_id: str = Form(...),
+    consent_disclosure_version: str = Form("v1"),
+    max_subscriber_capacity: int = Form(100),
+    scope: TenantScope = Depends(get_current_scope),
+    session: Session = Depends(get_db_session),
+):
+    """AD-06-A01 "Choose candidate for draft" -- see
+    app/services/candidate_comparison.py's own
+    `create_portfolio_version_draft_from_candidate` docstring for why
+    this structurally can never publish or activate anything."""
+    _require_candidate_comparison(scope)
+    set_tenant_scope(session, scope.tenant_id)
+    run = get_research_run(session, research_run_id, tenant_id=scope.tenant_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="not found")
+    try:
+        version = create_portfolio_version_draft_from_candidate(
+            session,
+            tenant_id=scope.tenant_id,
+            research_run=run,
+            candidate_index=candidate_index,
+            portfolio_id=portfolio_id,
+            consent_disclosure_version=consent_disclosure_version,
+            max_subscriber_capacity=max_subscriber_capacity,
+        )
+        append_audit_event(
+            session, tenant_id=scope.tenant_id, actor_user_id=scope.user_id,
+            object_type="portfolio_version", object_id=version.portfolio_version_id,
+            action="create_portfolio_version_draft_from_candidate",
+        )
+        session.commit()
+    except (InvalidCandidateDraftError, CandidateNotFoundError) as exc:
+        session.rollback()
+        set_tenant_scope(session, scope.tenant_id)
+        comparable_runs = list_comparable_research_runs(session, tenant_id=scope.tenant_id)
+        comparison = None
+        try:
+            comparison = compare_candidates(session, run, candidate_index, candidate_index, tenant_id=scope.tenant_id)
+        except CandidateNotFoundError:
+            comparison = None
+        return templates.TemplateResponse(
+            request,
+            "ad06_candidate_comparison.html",
+            {
+                "comparable_runs": comparable_runs,
+                "run": run,
+                "candidate_a": candidate_index,
+                "candidate_b": candidate_index,
+                "comparison": comparison,
+                "error": str(exc),
+                "created_portfolio_version_id": None,
+            },
+            status_code=400,
+        )
+    return RedirectResponse(
+        url=(
+            f"/ops/research/compare?research_run_id={research_run_id}"
+            f"&created_portfolio_version_id={version.portfolio_version_id}"
+        ),
+        status_code=303,
+    )
 
 
 @router.get("/ops/rights")
@@ -2860,3 +3003,129 @@ def logout_submit(request: Request, session: Session = Depends(get_db_session)):
     response = RedirectResponse(url="/auth", status_code=303)
     response.delete_cookie(SESSION_COOKIE_NAME, path="/")
     return response
+
+
+def _require_incident_register(scope: TenantScope) -> None:
+    try:
+        require_permission(scope.role, "view_incident_register")
+    except PermissionDenied as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+
+def _require_incident_management(scope: TenantScope) -> None:
+    try:
+        require_permission(scope.role, "manage_incidents")
+    except PermissionDenied as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+
+@router.get("/ops/incidents")
+def incident_register_page(
+    request: Request,
+    service: str | None = Query(None),
+    severity: str | None = Query(None),
+    state: str | None = Query(None),
+    scope: TenantScope = Depends(get_current_scope),
+    session: Session = Depends(get_db_session),
+):
+    """AD-21 "Commercial incidents and obligations" -- see
+    app/services/incident.py's own docstring for what's real here.
+    No automated pipeline creates a row, so the real, honest state for
+    a tenant with no incidents is a genuinely empty queue -- never a
+    fabricated placeholder incident."""
+    _require_incident_register(scope)
+    set_tenant_scope(session, scope.tenant_id)
+    incidents = list_incidents(session, tenant_id=scope.tenant_id, service=service, severity=severity, state=state)
+    return templates.TemplateResponse(
+        request,
+        "ad21_incidents.html",
+        {
+            "incidents": incidents,
+            "service": service,
+            "severity": severity,
+            "state": state,
+            "can_manage": is_allowed(scope.role, "manage_incidents"),
+        },
+    )
+
+
+@router.get("/ops/incidents/{incident_id}")
+def incident_detail_page(
+    incident_id: str,
+    request: Request,
+    scope: TenantScope = Depends(get_current_scope),
+    session: Session = Depends(get_db_session),
+):
+    _require_incident_register(scope)
+    set_tenant_scope(session, scope.tenant_id)
+    incident = get_incident(session, incident_id, tenant_id=scope.tenant_id)
+    if incident is None:
+        raise HTTPException(status_code=404, detail="not found")
+    timeline = get_object_timeline(session, tenant_id=scope.tenant_id, object_id=incident_id)
+    return templates.TemplateResponse(
+        request,
+        "ad21_incident_detail.html",
+        {
+            "incident": incident,
+            "timeline": timeline,
+            "can_manage": is_allowed(scope.role, "manage_incidents"),
+            "error": None,
+        },
+    )
+
+
+@router.post("/ops/incidents/{incident_id}/action")
+def incident_action_route(
+    incident_id: str,
+    request: Request,
+    operation: str = Form(...),
+    note: str = Form(...),
+    assignee_id: str = Form(""),
+    evidence_ids: str = Form(""),
+    scope: TenantScope = Depends(get_current_scope),
+    session: Session = Depends(get_db_session),
+):
+    """F-INCIDENT: "save/validate/preview/confirm are distinct bound
+    operations. Do not bypass earlier validation with a
+    confirm-labelled button." -- `operation` names exactly which of the
+    four real state transitions (app/services/incident.py) this submit
+    performs; an unrecognized operation is a real 400, never a silent
+    no-op."""
+    _require_incident_management(scope)
+    set_tenant_scope(session, scope.tenant_id)
+    incident = get_incident(session, incident_id, tenant_id=scope.tenant_id)
+    if incident is None:
+        raise HTTPException(status_code=404, detail="not found")
+
+    try:
+        if operation == "acknowledge":
+            acknowledge_incident(session, incident, actor_user_id=scope.user_id, note=note)
+        elif operation == "assign":
+            if not assignee_id:
+                raise InvalidIncidentOperationError("assignee_id is required to assign")
+            assign_incident(session, incident, actor_user_id=scope.user_id, assignee_id=assignee_id, note=note)
+        elif operation == "reconcile":
+            reconcile_incident(session, incident, actor_user_id=scope.user_id, note=note)
+        elif operation == "propose_resolution":
+            ids = [e.strip() for e in evidence_ids.split(",") if e.strip()]
+            propose_resolution(session, incident, actor_user_id=scope.user_id, note=note, evidence_ids=ids)
+        else:
+            raise InvalidIncidentOperationError(f"unknown operation: {operation!r}")
+        session.commit()
+    except InvalidIncidentOperationError as exc:
+        session.rollback()
+        set_tenant_scope(session, scope.tenant_id)
+        incident = get_incident(session, incident_id, tenant_id=scope.tenant_id)
+        timeline = get_object_timeline(session, tenant_id=scope.tenant_id, object_id=incident_id)
+        return templates.TemplateResponse(
+            request,
+            "ad21_incident_detail.html",
+            {
+                "incident": incident,
+                "timeline": timeline,
+                "can_manage": is_allowed(scope.role, "manage_incidents"),
+                "error": str(exc),
+            },
+            status_code=400,
+        )
+    return RedirectResponse(url=f"/ops/incidents/{incident_id}", status_code=303)

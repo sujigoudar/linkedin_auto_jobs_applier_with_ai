@@ -11,6 +11,10 @@
 <p><a href="/ops/research/new">Portfolio Lab: research runs &rarr;</a></p>
 {% endif %}
 
+{% if can_view_incidents %}
+<p><a href="/ops/incidents">Commercial incidents and obligations &rarr;</a></p>
+{% endif %}
+
 {% if not overview.eligible_products and not overview.blocked_products and overview.active_subscriptions_count == 0 %}
 <div class="empty-state">
   <p>No commercial products or subscriptions exist yet.</p>
@@ -50,7 +54,12 @@
       <tr><th>Unknown-state publications</th><td>{{ overview.unknown_publications_count }}</td></tr>
       <tr>
         <th>Open incidents</th>
-        <td><span class="badge badge-unknown">UNSUPPORTED</span> &mdash; no incident-tracking model exists yet</td>
+        <td>
+          <span class="badge badge-unknown">UNSUPPORTED</span> &mdash; no headline count is computed here
+          {% if can_view_incidents %}
+          ; see the real register: <a href="/ops/incidents">Commercial incidents and obligations &rarr;</a>
+          {% endif %}
+        </td>
       </tr>
     </tbody>
   </table>

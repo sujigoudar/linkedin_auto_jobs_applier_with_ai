@@ -38,7 +38,7 @@ _TENANT_SCOPED_TABLES: tuple[str, ...] = (
     "api_keys", "integration_configurations", "price_versions", "managed_programs",
     "audit_events", "workspace_settings", "portfolio_selections", "notification_preferences",
     "customer_display_preferences", "platform_connections", "copy_mandates",
-    "export_stream_registrations", "inbox_events",
+    "export_stream_registrations", "inbox_events", "incidents",
 )
 
 #: Tables that must never be UPDATEd or DELETEd from, only appended to (see

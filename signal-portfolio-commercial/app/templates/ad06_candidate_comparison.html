@@ -1,0 +1,146 @@
+{% extends "_base.html" %}
+{% block title %}Candidate comparison and shadow report{% endblock %}
+{% block content %}
+<h1>Candidate comparison and shadow report</h1>
+<p><a href="/ops/research/new">&larr; Portfolio Lab builder</a></p>
+
+{% if error %}
+<div class="conflict">{{ error }}</div>
+{% endif %}
+
+{% if created_portfolio_version_id %}
+<div class="panel" style="border-color:#10b981;">
+  <p><span class="badge badge-draft">DRAFT CREATED</span> Portfolio version <code>{{ created_portfolio_version_id }}</code> created. It is an unreleased draft -- nothing published or activated it. A product must separately reference it and clear its own review/admission chain (AD-07 &rarr; AD-08) before it can ever reach a customer.</p>
+</div>
+{% endif %}
+
+<div class="panel">
+  <h2>Comparable research runs</h2>
+  {% if comparable_runs %}
+  <table>
+    <thead><tr><th>Run</th><th>Declared candidates</th><th>Recipes</th></tr></thead>
+    <tbody>
+      {% for entry in comparable_runs %}
+      <tr>
+        <td><a href="/ops/research/compare?research_run_id={{ entry.run.research_run_id }}">{{ entry.run.research_run_id[:8] }}&hellip;</a></td>
+        <td>{{ entry.preview.declared_candidates_count }}</td>
+        <td>{{ entry.run.recipes | join(", ") }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="empty-state">
+    <p>No comparable completed candidates selected.</p>
+    <p class="help">A run becomes comparable once it is saved blocker-free with at least two declared candidates.</p>
+    <p><a href="/ops/research/new">Research run and full results &rarr;</a></p>
+  </div>
+  {% endif %}
+</div>
+
+{% if run %}
+<div class="panel">
+  <h2>Select candidates to compare &mdash; run {{ run.research_run_id[:8] }}&hellip;</h2>
+  <form method="get" action="/ops/research/compare">
+    <input type="hidden" name="research_run_id" value="{{ run.research_run_id }}">
+    <label for="candidate_a">Candidate A (index)</label>
+    <input id="candidate_a" name="candidate_a" type="number" min="0" value="{{ candidate_a if candidate_a is not none else 0 }}" required>
+    <label for="candidate_b">Candidate B (index)</label>
+    <input id="candidate_b" name="candidate_b" type="number" min="0" value="{{ candidate_b if candidate_b is not none else 1 }}" required>
+    <button type="submit" style="margin-top:1rem;">Compare</button>
+  </form>
+</div>
+{% endif %}
+
+{% if comparison %}
+<div class="panel">
+  <h2>1. Common-period validation</h2>
+  <p class="help">No walk-forward job has ever run in this build (no job queue exists) -- there is no measured holdout/forward evidence to enumerate here. Not silently reported as passing.</p>
+  <p><span class="badge badge-unknown">UNSUPPORTED</span> common-period holdout evidence unavailable.</p>
+</div>
+
+<div class="panel">
+  <h2>2. Return/drawdown</h2>
+  <p class="help">Unavailable: no verified report snapshot exists for either candidate. No plot is shown for absent data.</p>
+</div>
+
+<div class="panel">
+  <h2>3. Correlations/co-loss</h2>
+  <p>Real, computed sleeve overlap between the two declared candidates (a composition fact, not a return correlation):</p>
+  <table>
+    <tbody>
+      <tr><th>Shared sleeves</th><td>{{ comparison.shared_sleeve_ids | length }}</td></tr>
+    </tbody>
+  </table>
+  <p class="help">Return/loss co-movement itself is unavailable -- no historical performance series exists for either candidate.</p>
+</div>
+
+<div class="panel">
+  <h2>4. Cost/capacity</h2>
+  <p class="help">Unavailable: no cost-scenario evaluation or capacity-stress computation has ever run for a declared candidate.</p>
+</div>
+
+<div class="panel">
+  <h2>5. Rejected results</h2>
+  <div class="empty-state">
+    <p>No shard has ever run, so there is no rejected-result record.</p>
+  </div>
+</div>
+
+<div class="panel">
+  <h2>6. Shadow qualification</h2>
+  <p><span class="badge badge-unknown">UNSUPPORTED</span> Shadow qualification requires the same measured holdout evidence as panel 1, which does not exist in this build.</p>
+</div>
+
+<div class="panel">
+  <h2>Candidate A (index {{ comparison.candidate_a.candidate_index }})</h2>
+  <table>
+    <tbody>
+      <tr><th>Sleeves</th><td>{{ comparison.candidate_a.sleeve_labels.values() | join(", ") }}</td></tr>
+      {% if comparison.candidate_a.allocation %}
+      {% for sleeve_id, weight in comparison.candidate_a.allocation.weights.items() %}
+      <tr><th>{{ comparison.candidate_a.sleeve_labels[sleeve_id] }} weight</th><td>{{ weight }}</td></tr>
+      {% endfor %}
+      <tr><th>Cash</th><td>{{ comparison.candidate_a.allocation.cash }}</td></tr>
+      {% else %}
+      <tr><th>Allocation</th><td><span class="badge badge-unknown">UNSUPPORTED</span> {{ comparison.candidate_a.allocation_unavailable_reason }}</td></tr>
+      {% endif %}
+    </tbody>
+  </table>
+</div>
+
+<div class="panel">
+  <h2>Candidate B (index {{ comparison.candidate_b.candidate_index }})</h2>
+  <table>
+    <tbody>
+      <tr><th>Sleeves</th><td>{{ comparison.candidate_b.sleeve_labels.values() | join(", ") }}</td></tr>
+      {% if comparison.candidate_b.allocation %}
+      {% for sleeve_id, weight in comparison.candidate_b.allocation.weights.items() %}
+      <tr><th>{{ comparison.candidate_b.sleeve_labels[sleeve_id] }} weight</th><td>{{ weight }}</td></tr>
+      {% endfor %}
+      <tr><th>Cash</th><td>{{ comparison.candidate_b.allocation.cash }}</td></tr>
+      {% else %}
+      <tr><th>Allocation</th><td><span class="badge badge-unknown">UNSUPPORTED</span> {{ comparison.candidate_b.allocation_unavailable_reason }}</td></tr>
+      {% endif %}
+    </tbody>
+  </table>
+</div>
+
+<div class="panel">
+  <h2>AD-06-A01: Choose candidate for draft</h2>
+  <form method="post" action="/ops/research/compare/draft">
+    <input type="hidden" name="research_run_id" value="{{ run.research_run_id }}">
+    <label for="candidate_index">Candidate to draft (index)</label>
+    <input id="candidate_index" name="candidate_index" type="number" min="0" value="{{ comparison.candidate_a.candidate_index }}" required>
+    <label for="portfolio_id">Portfolio identity</label>
+    <input id="portfolio_id" name="portfolio_id" type="text" required>
+    <label for="consent_disclosure_version">Consent/disclosure version</label>
+    <input id="consent_disclosure_version" name="consent_disclosure_version" type="text" value="v1" required>
+    <label for="max_subscriber_capacity">Max subscriber capacity</label>
+    <input id="max_subscriber_capacity" name="max_subscriber_capacity" type="number" value="100" min="1" required>
+    <button type="submit" style="margin-top:1rem;">Create unreleased portfolio version draft</button>
+    <p class="help">Creates an unreleased draft only -- never publishes or activates. Requires the run's implemented equal_capital recipe.</p>
+  </form>
+</div>
+{% endif %}
+{% endblock %}

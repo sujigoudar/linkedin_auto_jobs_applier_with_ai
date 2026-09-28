@@ -709,6 +709,219 @@ def test_research_run_detail_flags_an_unimplemented_recipe_over_http(db_session)
     assert "RECIPE_NOT_IMPLEMENTED:hrp" in response.text
 
 
+def test_candidate_comparison_page_requires_authentication(db_session):
+    client = _client(db_session)
+    response = client.get("/ops/research/compare")
+    assert response.status_code == 401
+
+
+def test_candidate_comparison_page_denies_a_role_without_permission(db_session):
+    client = _client(db_session)
+    response = client.get(
+        "/ops/research/compare", headers=_auth_headers(role=MembershipRole.SUPPORT_READONLY)
+    )
+    assert response.status_code == 403
+
+
+def test_candidate_comparison_page_shows_the_real_empty_state(db_session):
+    client = _client(db_session)
+    response = client.get("/ops/research/compare", headers=_auth_headers())
+    assert response.status_code == 200
+    assert "No comparable completed candidates selected." in response.text
+
+
+def _create_two_sleeve_run(client, headers, db_session):
+    fields_a = dict(_SLEEVE_FORM_FIELDS)
+    fields_a["provider"] = "compare-sleeve-a"
+    fields_b = dict(_SLEEVE_FORM_FIELDS)
+    fields_b["provider"] = "compare-sleeve-b"
+    client.post("/ops/research/universe", data=fields_a, headers=headers)
+    client.post("/ops/research/universe", data=fields_b, headers=headers)
+
+    from app.models.sleeve import Sleeve
+
+    sleeve_ids = [
+        row.sleeve_id
+        for row in db_session.query(Sleeve).filter(Sleeve.provider.in_(["compare-sleeve-a", "compare-sleeve-b"])).all()
+    ]
+    create_response = client.post(
+        "/ops/research/new",
+        data={
+            "sleeve_ids": sleeve_ids,
+            "recipes": ["equal_capital"],
+            "subset_min": "1",
+            "subset_max": "1",
+            "cash_bps": "1500",
+            "max_sleeve_bps": "3500",
+            "max_cluster_bps": "5000",
+            "train_sessions": "252",
+            "test_sessions": "63",
+            "holdout_fraction": "0.20",
+        },
+        headers=headers,
+    )
+    research_run_id = create_response.headers["location"].rsplit("/", 1)[-1]
+    return research_run_id
+
+
+def test_candidate_comparison_page_lists_a_real_comparable_run_and_compares_candidates(db_session):
+    client = _client(db_session)
+    headers = _auth_headers()
+    research_run_id = _create_two_sleeve_run(client, headers, db_session)
+
+    list_response = client.get("/ops/research/compare", headers=headers)
+    assert research_run_id[:8] in list_response.text
+
+    compare_response = client.get(
+        f"/ops/research/compare?research_run_id={research_run_id}&candidate_a=0&candidate_b=1",
+        headers=headers,
+    )
+    assert compare_response.status_code == 200
+    assert "Shared sleeves" in compare_response.text
+    assert "Candidate A (index 0)" in compare_response.text
+    assert "Candidate B (index 1)" in compare_response.text
+    # Two disjoint single-sleeve candidates never share a sleeve -- a
+    # real, computed fact, not a fabricated correlation number.
+    assert "<td>0</td>" in compare_response.text
+
+
+def test_candidate_comparison_page_is_a_scoped_not_found_for_an_unknown_run(db_session):
+    client = _client(db_session)
+    response = client.get(
+        "/ops/research/compare?research_run_id=nonexistent-run-id", headers=_auth_headers(role=MembershipRole.REVIEWER)
+    )
+    assert response.status_code == 404
+
+
+def test_create_candidate_draft_creates_an_unreleased_portfolio_version_never_a_published_one(db_session):
+    client = _client(db_session)
+    headers = _auth_headers()
+    research_run_id = _create_two_sleeve_run(client, headers, db_session)
+
+    draft_response = client.post(
+        "/ops/research/compare/draft",
+        data={
+            "research_run_id": research_run_id,
+            "candidate_index": "0",
+            "portfolio_id": "candidate-draft-http",
+            "consent_disclosure_version": "v1",
+            "max_subscriber_capacity": "100",
+        },
+        headers=headers,
+    )
+    assert draft_response.status_code == 303
+    assert "created_portfolio_version_id=" in draft_response.headers["location"]
+
+    from app.models.portfolio_version import PortfolioVersion
+
+    portfolio_version_id = draft_response.headers["location"].rsplit("created_portfolio_version_id=", 1)[-1]
+    version = db_session.get(PortfolioVersion, portfolio_version_id)
+    assert version is not None
+    assert version.portfolio_id == "candidate-draft-http"
+    assert version.version_number == 1
+
+    # No Product references this version, and no publication chain
+    # (AD-08/publication_admin/publication_admission) was ever touched
+    # -- this really is an unreleased draft, not merely a page that
+    # says so.
+    from app.models.product import Product
+
+    referencing_products = (
+        db_session.query(Product).filter(Product.portfolio_version_id == portfolio_version_id).all()
+    )
+    assert referencing_products == []
+
+    # A second draft for the same portfolio_id is a new, later version,
+    # never an edit of the first (portfolio_versions is append-only).
+    second_draft = client.post(
+        "/ops/research/compare/draft",
+        data={
+            "research_run_id": research_run_id,
+            "candidate_index": "1",
+            "portfolio_id": "candidate-draft-http",
+            "consent_disclosure_version": "v1",
+            "max_subscriber_capacity": "100",
+        },
+        headers=headers,
+    )
+    assert second_draft.status_code == 303
+    second_id = second_draft.headers["location"].rsplit("created_portfolio_version_id=", 1)[-1]
+    second_version = db_session.get(PortfolioVersion, second_id)
+    assert second_version.version_number == 2
+
+
+def test_create_candidate_draft_requires_permission(db_session):
+    client = _client(db_session)
+    owner_headers = _auth_headers()
+    research_run_id = _create_two_sleeve_run(client, owner_headers, db_session)
+
+    response = client.post(
+        "/ops/research/compare/draft",
+        data={
+            "research_run_id": research_run_id,
+            "candidate_index": "0",
+            "portfolio_id": "candidate-draft-denied-http",
+            "consent_disclosure_version": "v1",
+            "max_subscriber_capacity": "100",
+        },
+        headers=_auth_headers(role=MembershipRole.BILLING_OPERATOR),
+    )
+    assert response.status_code == 403
+
+
+def test_create_candidate_draft_rejects_an_unimplemented_recipe(db_session):
+    client = _client(db_session)
+    headers = _auth_headers()
+    fields_a = dict(_SLEEVE_FORM_FIELDS)
+    fields_a["provider"] = "no-recipe-sleeve-a"
+    fields_b = dict(_SLEEVE_FORM_FIELDS)
+    fields_b["provider"] = "no-recipe-sleeve-b"
+    client.post("/ops/research/universe", data=fields_a, headers=headers)
+    client.post("/ops/research/universe", data=fields_b, headers=headers)
+
+    from app.models.sleeve import Sleeve
+
+    sleeve_ids = [
+        row.sleeve_id
+        for row in db_session.query(Sleeve).filter(Sleeve.provider.in_(["no-recipe-sleeve-a", "no-recipe-sleeve-b"])).all()
+    ]
+    create_response = client.post(
+        "/ops/research/new",
+        data={
+            "sleeve_ids": sleeve_ids,
+            "recipes": ["hrp"],
+            "subset_min": "1",
+            "subset_max": "1",
+            "cash_bps": "1500",
+            "max_sleeve_bps": "3500",
+            "max_cluster_bps": "5000",
+            "train_sessions": "252",
+            "test_sessions": "63",
+            "holdout_fraction": "0.20",
+        },
+        headers=headers,
+    )
+    research_run_id = create_response.headers["location"].rsplit("/", 1)[-1]
+
+    response = client.post(
+        "/ops/research/compare/draft",
+        data={
+            "research_run_id": research_run_id,
+            "candidate_index": "0",
+            "portfolio_id": "no-recipe-draft-http",
+            "consent_disclosure_version": "v1",
+            "max_subscriber_capacity": "100",
+        },
+        headers=headers,
+    )
+    assert response.status_code == 400
+    assert "RECIPE_NOT_IMPLEMENTED" in response.text
+
+    from app.models.portfolio_version import PortfolioVersion
+
+    assert db_session.query(PortfolioVersion).filter_by(portfolio_id="no-recipe-draft-http").first() is None
+
+
 def test_public_home_is_anonymous_and_shows_the_real_empty_state(db_session):
     client = _client(db_session)
     response = client.get("/")
@@ -2604,3 +2817,281 @@ def test_selection_detail_page_is_a_scoped_not_found_across_tenants(db_session):
     other_tenant_headers = _auth_headers(tenant_id="tenant-b", user_id="user-b", role=MembershipRole.CUSTOMER)
     response = client.get(f"/app/portfolios/{selection_id}", headers=other_tenant_headers)
     assert response.status_code == 404
+
+
+def _seed_incident(
+    db_session,
+    *,
+    tenant_id="tenant-a",
+    service="rights",
+    severity="high",
+    state="OPEN",
+    title="Rights grant expired mid-cycle",
+):
+    from app.models.incident import Incident, IncidentService, IncidentSeverity, IncidentState
+
+    incident = Incident(
+        tenant_id=tenant_id,
+        service=IncidentService(service),
+        severity=IncidentSeverity(severity),
+        state=IncidentState(state),
+        title=title,
+        affected_object_type="subscription",
+        affected_object_id="sub-not-yet-real",
+    )
+    db_session.add(incident)
+    db_session.commit()
+    return incident
+
+
+def test_incident_register_page_requires_authentication(db_session):
+    client = _client(db_session)
+    response = client.get("/ops/incidents")
+    assert response.status_code == 401
+
+
+def test_incident_register_page_denies_a_customer_role(db_session):
+    client = _client(db_session)
+    response = client.get("/ops/incidents", headers=_auth_headers(role=MembershipRole.CUSTOMER))
+    assert response.status_code == 403
+
+
+def test_incident_register_page_shows_the_real_empty_state(db_session):
+    client = _client(db_session)
+    response = client.get("/ops/incidents", headers=_auth_headers())
+    assert response.status_code == 200
+    assert "No active commercial incidents." in response.text
+
+
+def test_incident_register_page_lists_a_real_incident_and_filters_by_service(db_session):
+    incident = _seed_incident(db_session, service="rights")
+    _seed_incident(db_session, service="payment", title="Chargeback wave")
+    client = _client(db_session)
+    headers = _auth_headers()
+
+    response = client.get("/ops/incidents", headers=headers)
+    assert incident.title in response.text
+    assert "Chargeback wave" in response.text
+
+    filtered = client.get("/ops/incidents?service=rights", headers=headers)
+    assert incident.title in filtered.text
+    assert "Chargeback wave" not in filtered.text
+
+
+def test_incident_register_page_support_readonly_can_read_but_not_manage(db_session):
+    _seed_incident(db_session)
+    client = _client(db_session)
+    response = client.get("/ops/incidents", headers=_auth_headers(role=MembershipRole.SUPPORT_READONLY))
+    assert response.status_code == 200
+    assert "cannot acknowledge, assign, reconcile or propose a resolution" in response.text
+
+
+def test_incident_detail_page_is_a_scoped_not_found_for_an_unknown_incident(db_session):
+    client = _client(db_session)
+    response = client.get("/ops/incidents/nonexistent-incident-id", headers=_auth_headers())
+    assert response.status_code == 404
+
+
+def test_incident_detail_page_is_a_scoped_not_found_across_tenants(db_session):
+    incident = _seed_incident(db_session, tenant_id="tenant-a")
+    client = _client(db_session)
+    response = client.get(
+        f"/ops/incidents/{incident.incident_id}", headers=_auth_headers(tenant_id="tenant-b", user_id="user-b")
+    )
+    assert response.status_code == 404
+
+
+def test_acknowledge_incident_transitions_state_and_appends_a_real_audit_event(db_session):
+    incident = _seed_incident(db_session, state="OPEN")
+    client = _client(db_session)
+    headers = _auth_headers()
+
+    response = client.post(
+        f"/ops/incidents/{incident.incident_id}/action",
+        data={"operation": "acknowledge", "note": "Confirmed with rights registry."},
+        headers=headers,
+    )
+    assert response.status_code == 303
+
+    from app.models.incident import Incident, IncidentState
+
+    reloaded = db_session.get(Incident, incident.incident_id)
+    assert reloaded.state == IncidentState.ACKNOWLEDGED
+
+    from app.services.audit_log import get_object_timeline
+
+    timeline = get_object_timeline(db_session, tenant_id="tenant-a", object_id=incident.incident_id)
+    assert len(timeline) == 1
+    assert timeline[0].action.startswith("acknowledge_incident:")
+    assert timeline[0].actor_user_id == "user-a"
+
+
+def test_acknowledge_incident_never_marks_it_resolved(db_session):
+    """"Acknowledge never marks resolved" -- AD-21's own acceptance
+    text, asserted against the real persisted row, not only page text."""
+    incident = _seed_incident(db_session, state="OPEN")
+    client = _client(db_session)
+    headers = _auth_headers()
+
+    client.post(
+        f"/ops/incidents/{incident.incident_id}/action",
+        data={"operation": "acknowledge", "note": "Ack."},
+        headers=headers,
+    )
+
+    from app.models.incident import Incident, IncidentState
+
+    reloaded = db_session.get(Incident, incident.incident_id)
+    assert reloaded.state != IncidentState.RESOLVED
+    assert reloaded.state == IncidentState.ACKNOWLEDGED
+
+
+def test_acknowledge_incident_refuses_a_double_acknowledge(db_session):
+    incident = _seed_incident(db_session, state="ACKNOWLEDGED")
+    client = _client(db_session)
+    response = client.post(
+        f"/ops/incidents/{incident.incident_id}/action",
+        data={"operation": "acknowledge", "note": "Ack again."},
+        headers=_auth_headers(),
+    )
+    assert response.status_code == 400
+    assert "not OPEN" in response.text
+
+
+def test_incident_action_requires_manage_permission_support_readonly_denied(db_session):
+    incident = _seed_incident(db_session, state="OPEN")
+    client = _client(db_session)
+    response = client.post(
+        f"/ops/incidents/{incident.incident_id}/action",
+        data={"operation": "acknowledge", "note": "Ack."},
+        headers=_auth_headers(role=MembershipRole.SUPPORT_READONLY),
+    )
+    assert response.status_code == 403
+
+    from app.models.incident import Incident, IncidentState
+
+    reloaded = db_session.get(Incident, incident.incident_id)
+    assert reloaded.state == IncidentState.OPEN
+
+
+def _seed_membership(db_session, *, tenant_id, user_id, role):
+    from app.models.tenancy import Membership, Tenant, UserIdentity
+
+    if db_session.get(Tenant, tenant_id) is None:
+        db_session.add(Tenant(tenant_id=tenant_id, display_name="Tenant", environment="LOCAL_SIM"))
+    if db_session.get(UserIdentity, user_id) is None:
+        db_session.add(UserIdentity(user_id=user_id, email=f"{user_id}@example.com"))
+    db_session.flush()
+    db_session.add(Membership(tenant_id=tenant_id, user_id=user_id, role=role))
+    db_session.commit()
+
+
+def test_assign_incident_to_a_real_tenant_member(db_session):
+    incident = _seed_incident(db_session, state="OPEN")
+    _seed_membership(db_session, tenant_id="tenant-a", user_id="researcher-1", role=MembershipRole.RESEARCHER)
+    client = _client(db_session)
+
+    response = client.post(
+        f"/ops/incidents/{incident.incident_id}/action",
+        data={"operation": "assign", "assignee_id": "researcher-1", "note": "Please investigate."},
+        headers=_auth_headers(),
+    )
+    assert response.status_code == 303
+
+    from app.models.incident import Incident, IncidentState
+
+    reloaded = db_session.get(Incident, incident.incident_id)
+    assert reloaded.state == IncidentState.ASSIGNED
+    assert reloaded.assignee_user_id == "researcher-1"
+
+
+def test_assign_incident_rejects_an_unknown_assignee(db_session):
+    incident = _seed_incident(db_session, state="OPEN")
+    client = _client(db_session)
+    response = client.post(
+        f"/ops/incidents/{incident.incident_id}/action",
+        data={"operation": "assign", "assignee_id": "nobody-here", "note": "Please investigate."},
+        headers=_auth_headers(),
+    )
+    assert response.status_code == 400
+    assert "does not reference a member of this tenant" in response.text
+
+
+def test_assign_incident_cannot_grant_financial_authority(db_session):
+    incident = _seed_incident(db_session, state="OPEN")
+    _seed_membership(db_session, tenant_id="tenant-a", user_id="billing-1", role=MembershipRole.BILLING_OPERATOR)
+    client = _client(db_session)
+    response = client.post(
+        f"/ops/incidents/{incident.incident_id}/action",
+        data={"operation": "assign", "assignee_id": "billing-1", "note": "Please investigate."},
+        headers=_auth_headers(),
+    )
+    assert response.status_code == 400
+    assert "is not incident-eligible" in response.text
+
+
+def test_reconcile_incident_is_read_only_and_never_changes_state(db_session):
+    incident = _seed_incident(db_session, state="ACKNOWLEDGED")
+    client = _client(db_session)
+    response = client.post(
+        f"/ops/incidents/{incident.incident_id}/action",
+        data={"operation": "reconcile", "note": "Broker ledger matches; no corrective command run."},
+        headers=_auth_headers(),
+    )
+    assert response.status_code == 303
+
+    from app.models.incident import Incident, IncidentState
+
+    reloaded = db_session.get(Incident, incident.incident_id)
+    assert reloaded.state == IncidentState.ACKNOWLEDGED
+
+    from app.services.audit_log import get_object_timeline
+
+    timeline = get_object_timeline(db_session, tenant_id="tenant-a", object_id=incident.incident_id)
+    assert timeline[0].action.startswith("reconcile_incident:")
+
+
+def test_propose_resolution_requires_evidence_ids(db_session):
+    incident = _seed_incident(db_session, state="ASSIGNED")
+    client = _client(db_session)
+    response = client.post(
+        f"/ops/incidents/{incident.incident_id}/action",
+        data={"operation": "propose_resolution", "note": "Ready to resolve."},
+        headers=_auth_headers(),
+    )
+    assert response.status_code == 400
+    assert "evidence_ids is required" in response.text
+
+
+def test_propose_resolution_resolves_with_evidence(db_session):
+    incident = _seed_incident(db_session, state="ASSIGNED")
+    client = _client(db_session)
+    response = client.post(
+        f"/ops/incidents/{incident.incident_id}/action",
+        data={
+            "operation": "propose_resolution",
+            "note": "Rights renewed; incident closed.",
+            "evidence_ids": "ev-1, ev-2",
+        },
+        headers=_auth_headers(),
+    )
+    assert response.status_code == 303
+
+    from app.models.incident import Incident, IncidentState
+
+    reloaded = db_session.get(Incident, incident.incident_id)
+    assert reloaded.state == IncidentState.RESOLVED
+    assert reloaded.resolution_note == "Rights renewed; incident closed."
+    assert reloaded.evidence_ids == ["ev-1", "ev-2"]
+
+
+def test_incident_action_rejects_an_unknown_operation(db_session):
+    incident = _seed_incident(db_session, state="OPEN")
+    client = _client(db_session)
+    response = client.post(
+        f"/ops/incidents/{incident.incident_id}/action",
+        data={"operation": "delete_everything", "note": "n/a"},
+        headers=_auth_headers(),
+    )
+    assert response.status_code == 400
+    assert "unknown operation" in response.text

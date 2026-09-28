@@ -1,0 +1,91 @@
+{% extends "_base.html" %}
+{% block title %}Incident {{ incident.incident_id[:8] }}{% endblock %}
+{% block content %}
+<p><a href="/ops/incidents">&larr; Commercial incidents and obligations</a></p>
+<h1>{{ incident.title }}</h1>
+<p><span class="badge badge-queued">{{ incident.state.value }}</span> {{ incident.service.value }} / {{ incident.severity.value }}</p>
+
+{% if error %}
+<div class="conflict">{{ error }}</div>
+{% endif %}
+
+<div class="panel">
+  <h2>2. Affected obligations</h2>
+  <table>
+    <tbody>
+      <tr><th>Affected object type</th><td>{{ incident.affected_object_type or "not recorded" }}</td></tr>
+      <tr><th>Affected object id</th><td>{{ incident.affected_object_id or "not recorded" }}</td></tr>
+      <tr><th>Assigned to</th><td>{{ incident.assignee_user_id or "unassigned" }}</td></tr>
+    </tbody>
+  </table>
+  <p class="help">One incident can affect billing without revoking permitted safety management.</p>
+</div>
+
+<div class="panel">
+  <h2>3. Timeline</h2>
+  {% if timeline %}
+  <table>
+    <thead><tr><th>Time</th><th>Actor</th><th>Action</th></tr></thead>
+    <tbody>
+      {% for event in timeline %}
+      <tr><td>{{ event.event_time }}</td><td>{{ event.actor_user_id }}</td><td>{{ event.action }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="empty-state"><p>No recorded events yet.</p></div>
+  {% endif %}
+</div>
+
+<div class="panel">
+  <h2>4. Containment and notices</h2>
+  <p class="help">No customer-facing notice-template/publication system exists in this build -- "Preview approved notice" therefore shows only the incident's own scope below, never fabricated notice copy.</p>
+  <table>
+    <tbody>
+      <tr><th>Scope</th><td>{{ incident.service.value }} / {{ incident.severity.value }}</td></tr>
+      <tr><th>Proposed operation</th><td>whichever operation is submitted in the form below</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<div class="panel">
+  <h2>5. Resolution evidence</h2>
+  {% if incident.resolution_note %}
+  <table>
+    <tbody>
+      <tr><th>Resolution note</th><td>{{ incident.resolution_note }}</td></tr>
+      <tr><th>Evidence</th><td>{{ incident.evidence_ids | join(", ") }}</td></tr>
+    </tbody>
+  </table>
+  {% else %}
+  <div class="empty-state"><p>Not yet resolved.</p></div>
+  {% endif %}
+</div>
+
+{% if can_manage %}
+<div class="panel">
+  <h2>F-INCIDENT: Incident management</h2>
+  <form method="post" action="/ops/incidents/{{ incident.incident_id }}/action">
+    <label for="operation">Operation</label>
+    <select id="operation" name="operation">
+      <option value="acknowledge">acknowledge</option>
+      <option value="assign">assign</option>
+      <option value="reconcile">reconcile</option>
+      <option value="propose_resolution">propose_resolution</option>
+    </select>
+    <p class="help">Acknowledge never marks resolved. Reconcile is a read-only broker action -- no corrective command runs from it in this build.</p>
+
+    <label for="assignee_id">Assignee (for assign)</label>
+    <input id="assignee_id" name="assignee_id" type="text">
+
+    <label for="evidence_ids">Evidence ids, comma separated (required for propose_resolution)</label>
+    <input id="evidence_ids" name="evidence_ids" type="text">
+
+    <label for="note">Note</label>
+    <input id="note" name="note" type="text" maxlength="2000" required>
+
+    <button type="submit" style="margin-top:1rem;">Confirm</button>
+  </form>
+</div>
+{% endif %}
+{% endblock %}

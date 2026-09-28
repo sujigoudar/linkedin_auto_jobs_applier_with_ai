@@ -1,0 +1,62 @@
+{% extends "_base.html" %}
+{% block title %}Commercial incidents and obligations{% endblock %}
+{% block content %}
+<h1>Commercial incidents and obligations</h1>
+<p><a href="/ops">&larr; Back to operations overview</a></p>
+
+<div class="panel">
+  <h2>Filters</h2>
+  <form method="get" action="/ops/incidents">
+    <label for="service">Service</label>
+    <select id="service" name="service">
+      <option value="">Any</option>
+      {% for value in ["rights", "payment", "publication", "customer_exposure"] %}
+      <option value="{{ value }}" {% if service == value %}selected{% endif %}>{{ value }}</option>
+      {% endfor %}
+    </select>
+    <label for="severity">Severity</label>
+    <select id="severity" name="severity">
+      <option value="">Any</option>
+      {% for value in ["low", "medium", "high", "critical"] %}
+      <option value="{{ value }}" {% if severity == value %}selected{% endif %}>{{ value }}</option>
+      {% endfor %}
+    </select>
+    <label for="state">State</label>
+    <select id="state" name="state">
+      <option value="">Any</option>
+      {% for value in ["OPEN", "ACKNOWLEDGED", "ASSIGNED", "RESOLVED"] %}
+      <option value="{{ value }}" {% if state == value %}selected{% endif %}>{{ value }}</option>
+      {% endfor %}
+    </select>
+    <button type="submit" style="margin-top:1rem;">Apply filters</button>
+  </form>
+</div>
+
+<div class="panel">
+  <h2>1. Priority queue</h2>
+  {% if incidents %}
+  <table>
+    <thead><tr><th>Incident</th><th>Service</th><th>Severity</th><th>Assigned</th><th>State</th></tr></thead>
+    <tbody>
+      {% for incident in incidents %}
+      <tr>
+        <td><a href="/ops/incidents/{{ incident.incident_id }}">{{ incident.title }}</a></td>
+        <td>{{ incident.service.value }}</td>
+        <td>{{ incident.severity.value }}</td>
+        <td>{{ incident.assignee_user_id or "unassigned" }}</td>
+        <td><span class="badge badge-{{ 'published' if incident.state.value == 'RESOLVED' else 'queued' }}">{{ incident.state.value }}</span></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="empty-state">
+    <p>No active commercial incidents.</p>
+    <p><a href="/ops">Commercial operations overview &rarr;</a></p>
+  </div>
+  {% endif %}
+</div>
+{% if not can_manage %}
+<p class="help">Your role can read this register but cannot acknowledge, assign, reconcile or propose a resolution.</p>
+{% endif %}
+{% endblock %}
