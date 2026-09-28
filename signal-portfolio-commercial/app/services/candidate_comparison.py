@@ -150,6 +150,53 @@ def compare_candidates(
     return CandidateComparison(candidate_a=candidate_a, candidate_b=candidate_b, shared_sleeve_ids=shared)
 
 
+#: Bounds how many of a run's declared candidates the overlap scatter
+#: below ever renders. An exhaustive run's full candidate denominator
+#: can reach ~1,573 subsets at this module's default 2..5/12-sleeve
+#: bounds (app/services/portfolio_research.py's own combinatorics) --
+#: this caps the scatter payload instead of silently rendering an
+#: unbounded page. It never changes `declared_candidates_count`
+#: reported elsewhere, only how many points this one chart plots.
+MAX_OVERLAP_SCATTER_POINTS = 500
+
+
+@dataclass(frozen=True)
+class CandidateOverlapPoint:
+    candidate_index: int
+    sleeve_count: int
+    overlap_with_baseline: int
+
+
+def list_candidate_overlap_against_baseline(
+    session: Session,
+    run: ResearchRun,
+    baseline_index: int,
+    *,
+    tenant_id: str,
+    limit: int = MAX_OVERLAP_SCATTER_POINTS,
+) -> list[CandidateOverlapPoint]:
+    """Real, computed composition facts across every declared candidate
+    in `run`, each compared to one baseline candidate (`baseline_index`,
+    normally the selected Candidate A) -- sleeve count and real sleeve
+    overlap (frozenset intersection, the same operation
+    `compare_candidates` above already uses for one pair) with that
+    baseline. This is deliberately NOT a risk/return/Sharpe/drawdown
+    scatter: no real historical return series exists anywhere in this
+    build (this module's own docstring) to compute those from. Sleeve
+    count and overlap count are real and multi-dimensional across the
+    whole candidate family without needing any performance data at all.
+    """
+    baseline_sleeve_ids = frozenset(_get_candidate(run, baseline_index))
+    candidates = _candidates_for_run(run)
+    points: list[CandidateOverlapPoint] = []
+    for idx, sleeve_ids in enumerate(candidates[:limit]):
+        overlap = len(frozenset(sleeve_ids) & baseline_sleeve_ids)
+        points.append(
+            CandidateOverlapPoint(candidate_index=idx, sleeve_count=len(sleeve_ids), overlap_with_baseline=overlap)
+        )
+    return points
+
+
 def create_portfolio_version_draft_from_candidate(
     session: Session,
     *,

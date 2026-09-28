@@ -785,6 +785,79 @@ def test_candidate_comparison_page_lists_a_real_comparable_run_and_compares_cand
     assert "<td>0</td>" in compare_response.text
 
 
+def _create_three_sleeve_run(client, headers, db_session):
+    """Three sleeves, subset size fixed at 2 -- gives exactly three
+    2-sleeve candidates ((s0,s1), (s0,s2), (s1,s2), sorted sleeve-id
+    order) with real, exactly-predictable composition/allocation and
+    overlap facts, used to load-bear-test the composition and overlap
+    scatter charts below."""
+    for suffix in ("a", "b", "c"):
+        fields = dict(_SLEEVE_FORM_FIELDS)
+        fields["provider"] = f"compare-sleeve-three-{suffix}"
+        client.post("/ops/research/universe", data=fields, headers=headers)
+
+    from app.models.sleeve import Sleeve
+
+    sleeve_ids = sorted(
+        row.sleeve_id
+        for row in db_session.query(Sleeve)
+        .filter(Sleeve.provider.in_(["compare-sleeve-three-a", "compare-sleeve-three-b", "compare-sleeve-three-c"]))
+        .all()
+    )
+    create_response = client.post(
+        "/ops/research/new",
+        data={
+            "sleeve_ids": sleeve_ids,
+            "recipes": ["equal_capital"],
+            "subset_min": "2",
+            "subset_max": "2",
+            "cash_bps": "1500",
+            "max_sleeve_bps": "3500",
+            "max_cluster_bps": "5000",
+            "train_sessions": "252",
+            "test_sessions": "63",
+            "holdout_fraction": "0.20",
+        },
+        headers=headers,
+    )
+    research_run_id = create_response.headers["location"].rsplit("/", 1)[-1]
+    return research_run_id
+
+
+def test_candidate_comparison_page_renders_real_composition_and_overlap_scatter_charts(db_session):
+    client = _client(db_session)
+    headers = _auth_headers()
+    research_run_id = _create_three_sleeve_run(client, headers, db_session)
+
+    compare_response = client.get(
+        f"/ops/research/compare?research_run_id={research_run_id}&candidate_a=0&candidate_b=1",
+        headers=headers,
+    )
+    assert compare_response.status_code == 200
+    body = compare_response.text
+
+    # Composition chart: two-sleeve candidate at these run bounds is
+    # capped at the implemented recipe's 0.35 max-sleeve-weight, leaving
+    # 1 - 2*0.35 = 0.30 cash -- exactly matching equal_weight_recipe.
+    assert '"values": [0.35, 0.35, 0.3]' in body
+    assert body.count('id="candidate-a-composition-data"') == 1
+    assert body.count('id="candidate-b-composition-data"') == 1
+    assert '<canvas id="candidate-a-composition-chart">' in body
+    assert '<canvas id="candidate-b-composition-chart">' in body
+
+    # Overlap scatter: candidate 0 is the baseline (overlap 2 with
+    # itself); candidates 1 and 2 each share exactly one sleeve with it
+    # (real frozenset intersection over the run's three 2-sleeve
+    # candidates), never a fabricated risk/return dimension.
+    assert (
+        '[{"candidate_index": 0, "overlap_with_baseline": 2, "sleeve_count": 2}, '
+        '{"candidate_index": 1, "overlap_with_baseline": 1, "sleeve_count": 2}, '
+        '{"candidate_index": 2, "overlap_with_baseline": 1, "sleeve_count": 2}]'
+    ) in body
+    assert '<canvas id="overlap-scatter-chart">' in body
+    assert "/static/vendor/chart.umd.min.js" in body
+
+
 def test_candidate_comparison_page_is_a_scoped_not_found_for_an_unknown_run(db_session):
     client = _client(db_session)
     response = client.get(

@@ -1,6 +1,9 @@
 {% extends "_base.html" %}
 {% block title %}Candidate comparison and shadow report{% endblock %}
 {% block content %}
+<style>
+  .chart-container { position: relative; height: 260px; margin: 1rem 0; }
+</style>
 <h1>Candidate comparison and shadow report</h1>
 <p><a href="/ops/research/new">&larr; Portfolio Lab builder</a></p>
 
@@ -75,6 +78,15 @@
   <p class="help">Return/loss co-movement itself is unavailable -- no historical performance series exists for either candidate.</p>
 </div>
 
+{% if overlap_scatter_points %}
+<div class="panel">
+  <h2>Candidate-family overlap scatter (real)</h2>
+  <p>Real, computed composition facts across every declared candidate in this run: sleeve count vs. sleeve overlap with Candidate A (index {{ comparison.candidate_a.candidate_index }}), the same frozenset-intersection computation as "Shared sleeves" above, generalized across the whole candidate family. This is deliberately NOT a risk/return/Sharpe/drawdown scatter -- no real historical return series exists in this build to compute those from.</p>
+  <div class="chart-container"><canvas id="overlap-scatter-chart"></canvas></div>
+  <script type="application/json" id="overlap-scatter-data">{{ overlap_scatter_chart_data | tojson }}</script>
+</div>
+{% endif %}
+
 <div class="panel">
   <h2>4. Cost/capacity</h2>
   <p class="help">Unavailable: no cost-scenario evaluation or capacity-stress computation has ever run for a declared candidate.</p>
@@ -107,6 +119,11 @@
       {% endif %}
     </tbody>
   </table>
+  {% if candidate_a_composition_chart %}
+  <p class="help">Real sleeve capital-weight breakdown -- the exact figures in the table above, plotted (equal_capital recipe).</p>
+  <div class="chart-container"><canvas id="candidate-a-composition-chart"></canvas></div>
+  <script type="application/json" id="candidate-a-composition-data">{{ candidate_a_composition_chart | tojson }}</script>
+  {% endif %}
 </div>
 
 <div class="panel">
@@ -124,6 +141,11 @@
       {% endif %}
     </tbody>
   </table>
+  {% if candidate_b_composition_chart %}
+  <p class="help">Real sleeve capital-weight breakdown -- the exact figures in the table above, plotted (equal_capital recipe).</p>
+  <div class="chart-container"><canvas id="candidate-b-composition-chart"></canvas></div>
+  <script type="application/json" id="candidate-b-composition-data">{{ candidate_b_composition_chart | tojson }}</script>
+  {% endif %}
 </div>
 
 <div class="panel">
@@ -142,5 +164,63 @@
     <p class="help">Creates an unreleased draft only -- never publishes or activates. Requires the run's implemented equal_capital recipe.</p>
   </form>
 </div>
+
+{% if candidate_a_composition_chart or candidate_b_composition_chart or overlap_scatter_points %}
+<script src="/static/vendor/chart.umd.min.js"></script>
+<script>
+  (function () {
+    function renderCompositionChart(canvasId, dataElementId) {
+      var el = document.getElementById(dataElementId);
+      if (!el) { return; }
+      var data = JSON.parse(el.textContent);
+      new Chart(document.getElementById(canvasId).getContext("2d"), {
+        type: "bar",
+        data: {
+          labels: data.labels,
+          datasets: [{
+            label: "Sleeve capital weight",
+            data: data.values,
+            backgroundColor: "#2563eb",
+          }],
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: { legend: { display: false } },
+          scales: {
+            y: { title: { display: true, text: "Weight (fraction of capital)" } },
+          },
+        },
+      });
+    }
+    renderCompositionChart("candidate-a-composition-chart", "candidate-a-composition-data");
+    renderCompositionChart("candidate-b-composition-chart", "candidate-b-composition-data");
+
+    var scatterEl = document.getElementById("overlap-scatter-data");
+    if (scatterEl) {
+      var points = JSON.parse(scatterEl.textContent);
+      new Chart(document.getElementById("overlap-scatter-chart").getContext("2d"), {
+        type: "scatter",
+        data: {
+          datasets: [{
+            label: "Declared candidates (this run)",
+            data: points.map(function (p) { return { x: p.sleeve_count, y: p.overlap_with_baseline }; }),
+            backgroundColor: "#2563eb",
+          }],
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: { legend: { display: true } },
+          scales: {
+            x: { title: { display: true, text: "Sleeve count" } },
+            y: { title: { display: true, text: "Overlap with Candidate A (shared sleeves)" } },
+          },
+        },
+      });
+    }
+  })();
+</script>
+{% endif %}
 {% endif %}
 {% endblock %}

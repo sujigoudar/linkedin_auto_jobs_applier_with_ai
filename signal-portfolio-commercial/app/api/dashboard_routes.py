@@ -345,6 +345,7 @@ from app.services.candidate_comparison import (
     InvalidCandidateDraftError,
     compare_candidates,
     create_portfolio_version_draft_from_candidate,
+    list_candidate_overlap_against_baseline,
     list_comparable_research_runs,
 )
 from app.services.incident import (
@@ -972,6 +973,30 @@ def _require_candidate_comparison(scope: TenantScope) -> None:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
 
 
+def _composition_chart_data(candidate_view) -> dict | None:
+    """JSON-serializable sleeve-weight breakdown for one candidate's real
+    equal-weight allocation (Chart.js labels/values), or None when no
+    allocation exists (RECIPE_NOT_IMPLEMENTED) -- never a fabricated
+    breakdown for an unavailable allocation."""
+    if candidate_view.allocation is None:
+        return None
+    labels = [candidate_view.sleeve_labels[sid] for sid in candidate_view.sleeve_ids] + ["Cash"]
+    values = [float(candidate_view.allocation.weights[sid]) for sid in candidate_view.sleeve_ids]
+    values.append(float(candidate_view.allocation.cash))
+    return {"labels": labels, "values": values}
+
+
+def _overlap_scatter_chart_data(points: list) -> list[dict]:
+    return [
+        {
+            "candidate_index": p.candidate_index,
+            "sleeve_count": p.sleeve_count,
+            "overlap_with_baseline": p.overlap_with_baseline,
+        }
+        for p in points
+    ]
+
+
 @router.get("/ops/research/compare")
 def candidate_comparison_page(
     request: Request,
@@ -994,6 +1019,7 @@ def candidate_comparison_page(
     run = None
     comparison = None
     error = None
+    overlap_scatter_points: list = []
     if research_run_id:
         run = get_research_run(session, research_run_id, tenant_id=scope.tenant_id)
         if run is None:
@@ -1001,6 +1027,9 @@ def candidate_comparison_page(
         if candidate_a is not None and candidate_b is not None:
             try:
                 comparison = compare_candidates(session, run, candidate_a, candidate_b, tenant_id=scope.tenant_id)
+                overlap_scatter_points = list_candidate_overlap_against_baseline(
+                    session, run, candidate_a, tenant_id=scope.tenant_id
+                )
             except CandidateNotFoundError as exc:
                 error = str(exc)
 
@@ -1013,6 +1042,10 @@ def candidate_comparison_page(
             "candidate_a": candidate_a,
             "candidate_b": candidate_b,
             "comparison": comparison,
+            "overlap_scatter_points": overlap_scatter_points,
+            "overlap_scatter_chart_data": _overlap_scatter_chart_data(overlap_scatter_points),
+            "candidate_a_composition_chart": _composition_chart_data(comparison.candidate_a) if comparison else None,
+            "candidate_b_composition_chart": _composition_chart_data(comparison.candidate_b) if comparison else None,
             "error": error,
             "created_portfolio_version_id": created_portfolio_version_id,
         },
@@ -1060,8 +1093,12 @@ def create_candidate_draft_route(
         set_tenant_scope(session, scope.tenant_id)
         comparable_runs = list_comparable_research_runs(session, tenant_id=scope.tenant_id)
         comparison = None
+        overlap_scatter_points: list = []
         try:
             comparison = compare_candidates(session, run, candidate_index, candidate_index, tenant_id=scope.tenant_id)
+            overlap_scatter_points = list_candidate_overlap_against_baseline(
+                session, run, candidate_index, tenant_id=scope.tenant_id
+            )
         except CandidateNotFoundError:
             comparison = None
         return templates.TemplateResponse(
@@ -1073,6 +1110,10 @@ def create_candidate_draft_route(
                 "candidate_a": candidate_index,
                 "candidate_b": candidate_index,
                 "comparison": comparison,
+                "overlap_scatter_points": overlap_scatter_points,
+                "overlap_scatter_chart_data": _overlap_scatter_chart_data(overlap_scatter_points),
+                "candidate_a_composition_chart": _composition_chart_data(comparison.candidate_a) if comparison else None,
+                "candidate_b_composition_chart": _composition_chart_data(comparison.candidate_b) if comparison else None,
                 "error": str(exc),
                 "created_portfolio_version_id": None,
             },
