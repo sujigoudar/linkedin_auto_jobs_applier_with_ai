@@ -282,8 +282,18 @@ Seven slices are DONE:
   real; Actual versus model, Alerts/trades, and all three metrics
   (Observed net P&L, Open episodes, Delivery lag) are explicit
   UNSUPPORTED -- no execution/NAV ledger exists in this build.
+- PU-06 Methodology, risk and legal documents: `GET /methodology`
+  (anonymous), closing AD-19's own missing admission decision. A new
+  `publish_content_document` (the ONLY function anywhere that ever sets
+  ContentDocument to PUBLISHED) only accepts a SUBMITTED_FOR_REVIEW
+  document. `content_documents` got its own bespoke
+  `content_document_visibility` RLS policy (tenant match OR
+  state='PUBLISHED'), the same shape as `products`' own
+  `product_visibility` -- verified end-to-end against a live disposable
+  Postgres cluster: an unscoped `app_role` session genuinely sees only
+  a PUBLISHED row, never a DRAFT one, at the database layer.
 
-Full suite is 597 tests, ruff and mypy both green (**use `python3 -m
+Full suite is 609 tests, ruff and mypy both green (**use `python3 -m
 ruff`/`python3 -m mypy`/`python3 -m pytest` explicitly** -- this sandbox
 has a stray `uv tool`-installed `ruff`/`mypy` shadowing the project's
 real declared versions on bare `PATH`, which produced a false-negative
@@ -309,15 +319,18 @@ See `dashboard_state.json`'s `current_slice`/`second_slice`/
 `twentyeighth_slice`/`twentyninth_slice`/`thirtieth_slice`/
 `thirtyfirst_slice`/`thirtysecond_slice`/`thirtythird_slice`/
 `thirtyfourth_slice`/`thirtyfifth_slice`/`thirtysixth_slice`/
-`thirtyseventh_slice` for the exact file lists and what was
-deliberately left unbuilt in each. 27 of 66 screens remain. Several of
-those are genuinely infrastructure-
+`thirtyseventh_slice`/`thirtyeighth_slice` for the exact file lists and
+what was deliberately left unbuilt in each. 26 of 66 screens remain.
+Several of those are genuinely infrastructure-
 blocked and NOT to be force-built without fabricating a capability:
 CU-04 (no customer-to-alert linkage), CU-05/CU-06/CU-15 (need a real
 NAV/execution ledger), CU-11 (needs Stripe hosted checkout +
 Subscription-to-customer linkage), AD-06 (needs completed research
-candidates), AD-21 (needs a real incident model), ID-01/ID-02/ID-03
-(real password/email/MFA auth explicitly deferred to Supabase Auth per
+candidates), AD-21 (needs a real incident model -- unlike PU-06's own
+already-real ContentDocument, no other module anywhere in this build
+raises a real incident, so there is no natural, non-fabricated trigger
+to build a create action around), ID-01/ID-02/ID-03 (real
+password/email/MFA auth explicitly deferred to Supabase Auth per
 `app/services/auth.py`'s own docstring), and TR-01 through TR-16
 (belong to the separate private signal-copier system, which must stay
 untouched). Pick the next honestly-buildable one following the steps

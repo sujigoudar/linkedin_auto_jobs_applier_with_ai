@@ -1384,6 +1384,87 @@ def test_save_then_submit_content_draft_for_review_over_real_http(db_session):
 
     list_response = client.get("/ops/content", headers=headers)
     assert "Help page HTTP" in list_response.text
+
+
+def test_publish_content_document_refuses_a_draft_document_over_real_http(db_session):
+    client = _client(db_session)
+    headers = _auth_headers()
+    client.post(
+        "/ops/content",
+        data={
+            "document_type": "help",
+            "locale": "en-US",
+            "title": "Draft Publish HTTP",
+            "body": "Contact support.",
+            "audience_policy_id": "audience-1",
+            "source_evidence_ids": "",
+        },
+        headers=headers,
+    )
+
+    from app.services.content_document import list_content_documents
+
+    document_id = list_content_documents(db_session, tenant_id="tenant-a")[0].document_id
+    response = client.post(f"/ops/content/{document_id}/publish", headers=headers)
+    assert response.status_code == 400
+    assert "not SUBMITTED_FOR_REVIEW" in response.text
+
+
+def test_save_submit_and_publish_content_document_appears_on_the_public_methodology_page(db_session):
+    client = _client(db_session)
+    headers = _auth_headers()
+    client.post(
+        "/ops/content",
+        data={
+            "document_type": "help",
+            "locale": "en-US",
+            "title": "Publish Flow HTTP",
+            "body": "Contact support for questions.",
+            "audience_policy_id": "audience-1",
+            "source_evidence_ids": "",
+        },
+        headers=headers,
+    )
+
+    from app.services.content_document import list_content_documents
+
+    document_id = list_content_documents(db_session, tenant_id="tenant-a")[0].document_id
+
+    before_publish = client.get("/methodology")
+    assert "Publish Flow HTTP" not in before_publish.text
+
+    client.post(f"/ops/content/{document_id}/request-review", headers=headers)
+    publish_response = client.post(f"/ops/content/{document_id}/publish", headers=headers)
+    assert publish_response.status_code == 303
+
+    after_publish = client.get("/methodology")
+    assert after_publish.status_code == 200
+    assert "Publish Flow HTTP" in after_publish.text
+
+
+def test_public_methodology_page_shows_the_real_empty_state(db_session):
+    client = _client(db_session)
+    response = client.get("/methodology")
+    assert response.status_code == 200
+    assert "No approved document is available for this selection." in response.text
+
+
+def test_submit_content_draft_for_review_shows_submitted_state_over_real_http(db_session):
+    client = _client(db_session)
+    headers = _auth_headers()
+    client.post(
+        "/ops/content",
+        data={
+            "document_type": "help",
+            "locale": "en-US",
+            "title": "Submit Review HTTP",
+            "body": "Contact support.",
+            "audience_policy_id": "audience-1",
+            "source_evidence_ids": "",
+        },
+        headers=headers,
+    )
+    list_response = client.get("/ops/content", headers=headers)
     assert "DRAFT" in list_response.text
 
     import re

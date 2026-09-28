@@ -178,10 +178,13 @@ from app.services.api_key import (
 )
 from app.services.business_economics import get_business_economics
 from app.services.content_document import (
+    ContentNotEligibleForPublicationError,
     ContentNotEligibleForReviewError,
     InvalidContentDraftError,
     get_content_document,
     list_content_documents,
+    list_public_content_documents,
+    publish_content_document,
     request_content_review,
     save_content_draft,
 )
@@ -1619,6 +1622,56 @@ def request_content_review_page(
         )
     session.commit()
     return RedirectResponse(url="/ops/content", status_code=303)
+
+
+@router.post("/ops/content/{document_id}/publish")
+def publish_content_document_page(
+    document_id: str,
+    request: Request,
+    scope: TenantScope = Depends(get_current_scope),
+    session: Session = Depends(get_db_session),
+):
+    """PU-06's own missing admission decision, wired up from AD-19's own
+    document detail -- see app/services/content_document.py's own
+    publish_content_document docstring for what is and is not
+    enforced. Reuses the same 'manage_content_documents' permission
+    request-review already uses (OWNER, REVIEWER) -- exactly this
+    screen's own access list."""
+    _require_content_documents(scope)
+    set_tenant_scope(session, scope.tenant_id)
+    document = get_content_document(session, document_id, tenant_id=scope.tenant_id)
+    if document is None:
+        raise HTTPException(status_code=404, detail="not found")
+    try:
+        publish_content_document(session, document)
+    except ContentNotEligibleForPublicationError as exc:
+        session.rollback()
+        documents = list_content_documents(session, tenant_id=scope.tenant_id)
+        return templates.TemplateResponse(
+            request,
+            "ad19_content.html",
+            {"documents": documents, "all_document_types": _ALL_CONTENT_DOCUMENT_TYPES, "error": str(exc)},
+            status_code=400,
+        )
+    session.commit()
+    return RedirectResponse(url="/ops/content", status_code=303)
+
+
+@router.get("/methodology")
+def public_methodology_page(
+    request: Request,
+    session: Session = Depends(get_db_session),
+    document_type: str | None = None,
+):
+    """PU-06 "Methodology, risk and legal documents" -- anonymous, no
+    tenant scope. See app/services/content_document.py's own
+    list_public_content_documents docstring for how cross-tenant
+    visibility is enforced (the real content_document_visibility RLS
+    policy, not an application-level filter)."""
+    documents = list_public_content_documents(session, document_type=document_type)
+    return templates.TemplateResponse(
+        request, "pu06_methodology.html", {"documents": documents, "all_document_types": _ALL_CONTENT_DOCUMENT_TYPES}
+    )
 
 
 _ALL_MANAGED_PROGRAM_MODES = ["pamm", "mam"]

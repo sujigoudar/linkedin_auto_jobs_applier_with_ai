@@ -22,6 +22,10 @@
           <form method="post" action="/ops/content/{{ d.document_id }}/request-review" style="display:inline;">
             <button type="submit">Submit content review</button>
           </form>
+          {% elif d.state.value == "SUBMITTED_FOR_REVIEW" %}
+          <form method="post" action="/ops/content/{{ d.document_id }}/publish" style="display:inline;">
+            <button type="submit">Publish</button>
+          </form>
           {% endif %}
         </td>
       </tr>
@@ -69,7 +73,7 @@
 
 <div class="panel">
   <h2>Review</h2>
-  <p>Submitting for review moves a draft to SUBMITTED_FOR_REVIEW only. Publishing is a separate, not-yet-built approved command this screen has no authority over.</p>
+  <p>Submitting for review moves a draft to SUBMITTED_FOR_REVIEW only. Publishing is a separate, distinct approved command -- it moves a SUBMITTED_FOR_REVIEW document to PUBLISHED, at which point it appears on the public <a href="/methodology">methodology page (PU-06)</a>.</p>
 </div>
 
 <div class="panel">

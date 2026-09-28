@@ -28,6 +28,7 @@ from sqlalchemy import text
 
 from app.db import (
     Base,
+    enable_content_document_visibility_policy,
     enable_product_visibility_policy,
     enable_row_level_security,
     enforce_append_only,
@@ -192,6 +193,7 @@ def db_session(postgres_cluster):
         conn.execute(text("GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO app_role"))
     enable_row_level_security(engine)
     enable_product_visibility_policy(engine)
+    enable_content_document_visibility_policy(engine)
     enforce_append_only(engine)
     session_factory = make_session_factory(engine)
     session = session_factory()

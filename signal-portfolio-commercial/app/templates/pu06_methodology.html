@@ -1,0 +1,32 @@
+{% extends "_base.html" %}
+{% block title %}Methodology, risk and legal documents{% endblock %}
+{% block content %}
+<h1>Methodology, risk and legal documents</h1>
+
+<div class="panel">
+  <h2>Document navigation</h2>
+  <form method="get" action="/methodology">
+    <label for="document_type">Document type</label>
+    <select id="document_type" name="document_type" onchange="this.form.submit()">
+      <option value="">All</option>
+      {% for t in all_document_types %}<option value="{{ t }}">{{ t }}</option>{% endfor %}
+    </select>
+  </form>
+</div>
+
+{% if documents %}
+{% for d in documents %}
+<div class="panel">
+  <h2>{{ d.title }}</h2>
+  <p>Type: {{ d.document_type.value }} &middot; Language: {{ d.locale }}</p>
+  <p>{{ d.body }}</p>
+  <p class="help">Document version: {{ d.document_id }} &middot; Effective: {{ d.updated_at }}</p>
+</div>
+{% endfor %}
+{% else %}
+<div class="empty-state">
+  <p>No approved document is available for this selection.</p>
+  <p><a href="/help">Help and compatibility guide (PU-08)</a></p>
+</div>
+{% endif %}
+{% endblock %}

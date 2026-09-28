@@ -35,7 +35,7 @@ def make_session_factory(engine) -> sessionmaker:
 _TENANT_SCOPED_TABLES: tuple[str, ...] = (
     "memberships", "customer_profiles", "ledger_entries", "sleeves", "subscriptions", "portfolio_versions",
     "release_reviews", "research_runs", "eligibility_assessments", "support_cases", "publisher_destinations",
-    "api_keys", "integration_configurations", "price_versions", "content_documents", "managed_programs",
+    "api_keys", "integration_configurations", "price_versions", "managed_programs",
     "audit_events", "workspace_settings", "portfolio_selections", "notification_preferences",
     "customer_display_preferences", "platform_connections", "copy_mandates",
 )
@@ -164,6 +164,41 @@ def enable_product_visibility_policy(engine) -> None:
     """
     with engine.begin() as conn:
         _apply_product_visibility_policy(conn)
+
+
+def _apply_content_document_visibility_policy(conn) -> None:
+    conn.execute(text("ALTER TABLE content_documents ENABLE ROW LEVEL SECURITY"))
+    conn.execute(text("ALTER TABLE content_documents FORCE ROW LEVEL SECURITY"))
+    conn.execute(text("DROP POLICY IF EXISTS tenant_isolation ON content_documents"))
+    conn.execute(text("DROP POLICY IF EXISTS content_document_visibility ON content_documents"))
+    conn.execute(
+        text(
+            "CREATE POLICY content_document_visibility ON content_documents "
+            "USING (tenant_id = current_setting('app.tenant_id', true) "
+            "OR state = 'PUBLISHED')"
+        )
+    )
+
+
+def enable_content_document_visibility_policy(engine) -> None:
+    """Bespoke RLS for `content_documents`, deliberately NOT part of
+    `_TENANT_SCOPED_TABLES`/`_apply_row_level_security` -- same reasoning
+    as `enable_product_visibility_policy`: PU-06 (the public methodology/
+    risk/legal document page) must let an anonymous, no-tenant-scope
+    session see every tenant's PUBLISHED documents, while AD-19's own
+    admin session must still see its own tenant's rows in any state.
+    An unscoped session (no `app.tenant_id` set) can only ever match the
+    `state = 'PUBLISHED'` clause, so it sees published rows only -- never
+    another tenant's draft or submitted-for-review content.
+
+    Idempotent, same connection-vs-engine split as
+    `enable_product_visibility_policy` -- call
+    `_apply_content_document_visibility_policy(connection)` directly from
+    within an already-open transaction (e.g. an Alembic migration), this
+    wrapper otherwise.
+    """
+    with engine.begin() as conn:
+        _apply_content_document_visibility_policy(conn)
 
 
 def set_tenant_scope(session: Session, tenant_id: str) -> None:

@@ -38,6 +38,10 @@ class ContentNotEligibleForReviewError(Exception):
     pass
 
 
+class ContentNotEligibleForPublicationError(Exception):
+    pass
+
+
 def list_content_documents(session: Session, *, tenant_id: str) -> list[ContentDocument]:
     return list(
         session.scalars(
@@ -107,3 +111,43 @@ def request_content_review(session: Session, document: ContentDocument) -> Conte
     document.updated_at = datetime.now(timezone.utc)
     session.flush()
     return document
+
+
+def publish_content_document(session: Session, document: ContentDocument) -> ContentDocument:
+    """PU-06's own missing admission decision -- this is the ONLY
+    function anywhere in this build that ever sets PUBLISHED. Only a
+    document already SUBMITTED_FOR_REVIEW is eligible; a DRAFT (never
+    reviewed) or an already-PUBLISHED document both refuse, so this can
+    never be used to skip the review step or double-publish."""
+    if document.state != ContentDocumentState.SUBMITTED_FOR_REVIEW:
+        raise ContentNotEligibleForPublicationError(f"document is {document.state.value}, not SUBMITTED_FOR_REVIEW")
+    document.state = ContentDocumentState.PUBLISHED
+    document.updated_at = datetime.now(timezone.utc)
+    session.flush()
+    return document
+
+
+def list_public_content_documents(
+    session: Session, *, document_type: str | None = None, locale: str | None = None
+) -> list[ContentDocument]:
+    """PU-06 "Methodology, risk and legal documents" -- anonymous, no
+    tenant scope. Deliberately identical in shape to product_admin's own
+    list_published_products: an explicit `state == PUBLISHED` filter is
+    the one code path that decides what counts as published, so this is
+    correct even where RLS is bypassed (e.g. the admin database
+    connection this build's own tests use). The real
+    `content_document_visibility` RLS policy (app/db.py) is defense in
+    depth beyond this, not the only protection -- the same relationship
+    AD-01's own slice already documented between an explicit tenant_id
+    filter and RLS."""
+    query = select(ContentDocument).where(ContentDocument.state == ContentDocumentState.PUBLISHED).order_by(
+        ContentDocument.document_type, ContentDocument.locale
+    )
+    if document_type is not None:
+        try:
+            query = query.where(ContentDocument.document_type == ContentDocumentType(document_type))
+        except ValueError:
+            return []
+    if locale is not None:
+        query = query.where(ContentDocument.locale == locale)
+    return list(session.scalars(query).all())
