@@ -18,6 +18,7 @@
         <th>Unapplied</th>
         <th>Last received</th>
         <th>Last applied</th>
+        <th>Schema compatibility</th>
       </tr>
     </thead>
     <tbody>
@@ -31,6 +32,17 @@
         <td class="num">{{ stream.unapplied_count }}</td>
         <td>{{ stream.latest_received_at or "never" }}</td>
         <td>{{ stream.latest_applied_at or "never" }}</td>
+        <td>
+          {% if stream.schema_incompatible_count > 0 %}
+          <span class="badge badge-unknown">
+            {{ stream.schema_incompatible_count }} event(s) parked -- unsupported schema version from
+            export_sequence {{ stream.earliest_schema_incompatible_sequence }} onward. History on this
+            stream is incomplete from that point; nothing after it has been economically applied.
+          </span>
+          {% else %}
+          compatible
+          {% endif %}
+        </td>
       </tr>
       {% endfor %}
     </tbody>

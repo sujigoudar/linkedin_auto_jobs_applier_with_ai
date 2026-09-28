@@ -36,6 +36,7 @@ from sqlalchemy.orm import Session
 
 from app.models.integration_inbox import ExportStreamRegistration, InboxEvent
 from app.models.ledger import Book, LedgerEntry
+from app.services.integration_inbox import PARKED_REASON_UNSUPPORTED_SCHEMA_VERSION
 
 
 @dataclass(frozen=True)
@@ -47,16 +48,27 @@ class StreamStatus:
     applied_count: int
     latest_received_at: datetime | None
     latest_applied_at: datetime | None
+    #: INT-007 "Unsupported schema version": how many received-but-
+    #: unapplied rows on this stream carry a `parked_reason` (never
+    #: `None`, unlike a row merely parked behind an ordering gap -- see
+    #: app/services/integration_inbox.py's own `_apply_projection`).
+    #: > 0 means real economic history exists that this build could not
+    #: honestly apply, never silently dropped or coerced.
+    schema_incompatible_count: int
+    #: The lowest `export_sequence` on this stream ever parked for an
+    #: unsupported schema version -- INT-007's own "affected cutoff":
+    #: every later event on this stream is also permanently parked
+    #: behind it (see `_next_expected_sequence`'s own docstring), so
+    #: this is the exact point a caller should say "history is
+    #: incomplete from here" rather than showing a false complete-data
+    #: state.
+    earliest_schema_incompatible_sequence: int | None
 
     @property
     def unapplied_count(self) -> int:
-        """Received but not yet applied -- always 0 in this build today
-        (app/services/integration_inbox.py's own ingest_export_event
-        applies synchronously, in the same call that receives), but
-        computed for real rather than hardcoded, so a future async
-        projection worker (this module's own docstring: "a later slice")
-        shows a genuine backlog here instead of silently reporting 0
-        forever."""
+        """Received but not yet applied -- either parked behind a
+        genuine ordering gap, or parked because this build could not
+        honestly interpret it (see `schema_incompatible_count`)."""
         return self.received_count - self.applied_count
 
 
@@ -107,6 +119,25 @@ def get_integration_status(session: Session, *, tenant_id: str) -> IntegrationSt
                 InboxEvent.tenant_id == tenant_id, InboxEvent.source_stream == registration.source_stream
             )
         )
+        schema_incompatible_count = (
+            session.scalar(
+                select(func.count())
+                .select_from(InboxEvent)
+                .where(
+                    InboxEvent.tenant_id == tenant_id,
+                    InboxEvent.source_stream == registration.source_stream,
+                    InboxEvent.parked_reason.like(f"{PARKED_REASON_UNSUPPORTED_SCHEMA_VERSION}:%"),
+                )
+            )
+            or 0
+        )
+        earliest_schema_incompatible_sequence = session.scalar(
+            select(func.min(InboxEvent.export_sequence)).where(
+                InboxEvent.tenant_id == tenant_id,
+                InboxEvent.source_stream == registration.source_stream,
+                InboxEvent.parked_reason.like(f"{PARKED_REASON_UNSUPPORTED_SCHEMA_VERSION}:%"),
+            )
+        )
         streams.append(
             StreamStatus(
                 source_stream=registration.source_stream,
@@ -116,6 +147,8 @@ def get_integration_status(session: Session, *, tenant_id: str) -> IntegrationSt
                 applied_count=applied_count,
                 latest_received_at=latest_received_at,
                 latest_applied_at=latest_applied_at,
+                schema_incompatible_count=schema_incompatible_count,
+                earliest_schema_incompatible_sequence=earliest_schema_incompatible_sequence,
             )
         )
 

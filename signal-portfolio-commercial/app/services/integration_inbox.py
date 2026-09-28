@@ -52,7 +52,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
-from signal_platform_contracts import EventEnvelope, EventType, ExecutionAppliedPayload
+from signal_platform_contracts import CONTRACT_SCHEMA_VERSION, EventEnvelope, EventType, ExecutionAppliedPayload
 
 from app.db import set_tenant_scope
 from app.models.integration_inbox import ExportStreamRegistration, InboxEvent
@@ -60,6 +60,19 @@ from app.models.ledger import Book, Side
 from app.services.ledger import append_entry
 
 _SIDE_BY_PAYLOAD_VALUE = {"buy": Side.BUY, "sell": Side.SELL}
+
+#: Every `schema_version` this build can honestly interpret. Exact-match
+#: only, deliberately -- no semver "compatible minor bump" guessing,
+#: since INT-007's own prohibited outcome is "best-effort financial
+#: coercion" of a payload shape this build was never verified against.
+#: A future version-negotiation slice (this case's own failure_remedy)
+#: can widen this once it has a real migration path to test against.
+_SUPPORTED_SCHEMA_VERSIONS = frozenset({CONTRACT_SCHEMA_VERSION})
+
+#: Prefixes `InboxEvent.parked_reason` is ever set to -- see that
+#: column's own docstring.
+PARKED_REASON_UNSUPPORTED_SCHEMA_VERSION = "unsupported_schema_version"
+PARKED_REASON_UNIMPLEMENTED_EVENT_TYPE = "unimplemented_event_type"
 
 
 class StreamAlreadyRegisteredToAnotherTenantError(Exception):
@@ -124,7 +137,19 @@ def _next_expected_sequence(session: Session, *, tenant_id: str, source_stream: 
 def _apply_projection(session: Session, inbox_event: InboxEvent, envelope: EventEnvelope, *, tenant_id: str) -> None:
     """Mutates `inbox_event` in place: applies its real projection (if
     any) and sets `applied_at`. Never called for an event whose sequence
-    isn't next in line -- see `_next_expected_sequence`."""
+    isn't next in line -- see `_next_expected_sequence`.
+
+    Checked BEFORE dispatching on `event_type`: an envelope whose
+    `schema_version` this build has never been verified against is
+    parked exactly like an unimplemented event type (row received and
+    durably stored, `applied_at` left NULL, `parked_reason` set) --
+    INT-007's own "Unknown event is parked without economic
+    application", never "best-effort financial coercion" by assuming an
+    unfamiliar version parses the same as one this build actually knows."""
+    if envelope.schema_version not in _SUPPORTED_SCHEMA_VERSIONS:
+        inbox_event.parked_reason = f"{PARKED_REASON_UNSUPPORTED_SCHEMA_VERSION}:{envelope.schema_version}"
+        return
+
     if envelope.event_type == EventType.EXECUTION_APPLIED:
         payload = ExecutionAppliedPayload.model_validate(envelope.payload)
         entry = append_entry(
@@ -149,15 +174,18 @@ def _apply_projection(session: Session, inbox_event: InboxEvent, envelope: Event
         # execution" -- no ledger projection. Applied immediately since
         # there is nothing further this event type could apply.
         inbox_event.applied_at = datetime.now(timezone.utc)
-    # Every other EventType has no implemented payload yet (see
-    # signal_platform_contracts's own IMPLEMENTED_EVENT_TYPES) -- the row
-    # is stored (received) honestly, but stays un-applied rather than
-    # fabricating a projection for a payload shape this build doesn't
-    # understand yet. Note this means such an event can never advance
-    # `_next_expected_sequence` either -- an unimplemented event type
-    # permanently parks every later sequence on its own stream until a
-    # future build adds real support for it, which is the honest
-    # consequence of "keep separate received/applied cursors", not a bug.
+    else:
+        # Every other EventType has no implemented payload yet (see
+        # signal_platform_contracts's own IMPLEMENTED_EVENT_TYPES) -- the
+        # row is stored (received) honestly, but stays un-applied rather
+        # than fabricating a projection for a payload shape this build
+        # doesn't understand yet. Note this means such an event can
+        # never advance `_next_expected_sequence` either -- an
+        # unimplemented event type permanently parks every later
+        # sequence on its own stream until a future build adds real
+        # support for it, which is the honest consequence of "keep
+        # separate received/applied cursors", not a bug.
+        inbox_event.parked_reason = f"{PARKED_REASON_UNIMPLEMENTED_EVENT_TYPE}:{envelope.event_type.value}"
 
 
 def _apply_and_cascade(
@@ -168,9 +196,20 @@ def _apply_and_cascade(
     new expected sequence was already received earlier (parked behind
     this one), apply it too, and repeat -- so redelivering the ONE
     missing sequence number unblocks every later event already sitting
-    in the table, without needing any of them redelivered again."""
+    in the table, without needing any of them redelivered again.
+
+    `_apply_projection` does not always actually apply: a schema-
+    incompatible or unimplemented-event-type row stays `applied_at IS
+    NULL` on purpose (see that function's own docstring). Since
+    `_next_expected_sequence` is keyed off `applied_at`, such a row would
+    keep matching itself as "the next parked event" forever if the loop
+    didn't stop -- checked explicitly after every `_apply_projection`
+    call, first-event-in-this-call included, never assumed from a
+    changed `expected`."""
     _apply_projection(session, inbox_event, envelope, tenant_id=tenant_id)
     session.flush()
+    if inbox_event.applied_at is None:
+        return
 
     while True:
         expected = _next_expected_sequence(session, tenant_id=tenant_id, source_stream=envelope.source_stream)
@@ -187,6 +226,8 @@ def _apply_and_cascade(
         next_envelope = EventEnvelope.model_validate_json(next_parked.envelope_json)
         _apply_projection(session, next_parked, next_envelope, tenant_id=tenant_id)
         session.flush()
+        if next_parked.applied_at is None:
+            return
 
 
 def ingest_export_event(session: Session, envelope_json: str) -> InboxEvent:

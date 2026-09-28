@@ -41,14 +41,14 @@ def _instrument():
     )
 
 
-def _execution_envelope(*, event_id, export_sequence=0, source_stream="signal-copier:acct1"):
+def _execution_envelope(*, event_id, export_sequence=0, source_stream="signal-copier:acct1", schema_version=None):
     payload = ExecutionAppliedPayload(
         account=PrivateAccountIdentity(account_id="acct1"), instrument=_instrument(), side="buy",
         filled_quantity="10", filled_price="150.00", fee=None, broker="paper", broker_order_id=f"paper-{event_id}",
     )
     payload_dict = payload.model_dump(mode="json")
     now = datetime.now(timezone.utc)
-    return EventEnvelope(
+    kwargs = dict(
         event_type=EventType.EXECUTION_APPLIED, event_id=event_id, producer_id="signal-copier-instance-1",
         source_stream=source_stream, export_sequence=export_sequence,
         subject=build_subject(account=PrivateAccountIdentity(account_id="acct1"), instrument=_instrument()),
@@ -56,6 +56,9 @@ def _execution_envelope(*, event_id, export_sequence=0, source_stream="signal-co
         environment=Environment.LOCAL_SIM, evidence_class=EvidenceClass.INTERNAL_PAPER,
         payload_hash=compute_payload_hash(payload_dict), payload=payload_dict,
     )
+    if schema_version is not None:
+        kwargs["schema_version"] = schema_version
+    return EventEnvelope(**kwargs)
 
 
 def test_a_tenant_with_no_registered_streams_reports_an_empty_report(db_session):
@@ -97,6 +100,30 @@ def test_ingested_events_are_reflected_in_real_counts_and_watermarks(db_session)
     assert stream.latest_received_at is not None
     assert stream.latest_applied_at is not None
     assert report.platform_ledger_entries_count == 3
+
+
+def test_a_schema_incompatible_event_is_reported_as_visible_incompatibility_not_a_silent_gap(db_session):
+    """INT-007 "Unsupported schema version": the status report must
+    surface the incompatibility and its cutoff sequence, never just an
+    unexplained unapplied count that looks like an ordinary ordering
+    gap."""
+    _seed_tenant(db_session)
+    register_export_stream(db_session, tenant_id="tenant-a", source_stream="signal-copier:acct1", environment="LOCAL_SIM")
+    db_session.commit()
+
+    ingest_export_event(
+        db_session,
+        _execution_envelope(event_id="evt-0", export_sequence=0, schema_version="99.0.0").model_dump_json(),
+    )
+    db_session.commit()
+
+    report = get_integration_status(db_session, tenant_id="tenant-a")
+    stream = report.streams[0]
+    assert stream.received_count == 1
+    assert stream.applied_count == 0
+    assert stream.unapplied_count == 1
+    assert stream.schema_incompatible_count == 1
+    assert stream.earliest_schema_incompatible_sequence == 0
 
 
 def test_a_different_tenants_streams_and_ledger_entries_never_leak_in(db_session):

@@ -85,5 +85,21 @@ class InboxEvent(Base):
     #: its exact resulting LedgerEntry, never re-derived by matching on
     #: loose fields.
     ledger_entry_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    #: NULL for every normally-applied or normally-parked-on-a-gap row.
+    #: Set (and `applied_at` left NULL, permanently, for THIS row and
+    #: every later `export_sequence` on the same stream -- see
+    #: app/services/integration_inbox.py's own `_next_expected_sequence`
+    #: docstring) when this row could be received and durably stored but
+    #: NOT understood well enough to apply honestly: an unsupported
+    #: `schema_version` (INTEGRATION_ACCEPTANCE_CASES.json INT-007,
+    #: "Unsupported schema version": "Unknown event is parked without
+    #: economic application... Schema incompatibility and affected
+    #: cutoff are visible", never "best-effort financial coercion") or
+    #: an `EventType` with no implemented payload model yet. A short,
+    #: machine-parseable prefix (`unsupported_schema_version:`,
+    #: `unimplemented_event_type:`) so a caller (e.g.
+    #: app/services/integration_status.py) can group and surface these
+    #: without re-parsing `envelope_json`.
+    parked_reason: Mapped[str | None] = mapped_column(String, nullable=True)
 
     __table_args__ = (UniqueConstraint("source_stream", "export_sequence", name="uq_inbox_events_stream_sequence"),)

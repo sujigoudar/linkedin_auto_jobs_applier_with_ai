@@ -45,7 +45,13 @@ def _instrument():
 
 
 def _execution_envelope(
-    *, event_id="evt-1", export_sequence=0, source_stream="signal-copier:acct1", fee=None, filled_price="150.00"
+    *,
+    event_id="evt-1",
+    export_sequence=0,
+    source_stream="signal-copier:acct1",
+    fee=None,
+    filled_price="150.00",
+    schema_version=None,
 ):
     payload = ExecutionAppliedPayload(
         account=PrivateAccountIdentity(account_id="acct1"),
@@ -59,7 +65,7 @@ def _execution_envelope(
     )
     payload_dict = payload.model_dump(mode="json")
     now = datetime.now(timezone.utc)
-    return EventEnvelope(
+    kwargs = dict(
         event_type=EventType.EXECUTION_APPLIED,
         event_id=event_id,
         producer_id="signal-copier-instance-1",
@@ -75,6 +81,9 @@ def _execution_envelope(
         payload_hash=compute_payload_hash(payload_dict),
         payload=payload_dict,
     )
+    if schema_version is not None:
+        kwargs["schema_version"] = schema_version
+    return EventEnvelope(**kwargs)
 
 
 def _source_receipt_envelope(*, event_id="evt-src-1", export_sequence=0, source_stream="signal-copier:acct1"):
@@ -241,3 +250,47 @@ def test_two_tenants_streams_never_leak_ledger_entries_across_tenants(db_session
 
     tenant_b_entries = db_session.scalars(select(LedgerEntry).where(LedgerEntry.tenant_id == "tenant-b")).all()
     assert tenant_b_entries == []
+
+
+def test_an_event_with_an_unsupported_schema_version_is_parked_not_coerced(db_session):
+    """INTEGRATION_ACCEPTANCE_CASES.json INT-007 "Unsupported schema
+    version": "Unknown event is parked without economic application...
+    Schema incompatibility and affected cutoff are visible." Never
+    "best-effort financial coercion" -- an envelope this build has
+    never been verified against must not silently produce a ledger
+    entry as if it were understood."""
+    _seed_tenant(db_session)
+    register_export_stream(db_session, tenant_id="tenant-a", source_stream="signal-copier:acct1", environment="LOCAL_SIM")
+    db_session.commit()
+
+    envelope = _execution_envelope(schema_version="99.0.0")
+    inbox_event = ingest_export_event(db_session, envelope.model_dump_json())
+    db_session.commit()
+
+    assert inbox_event.applied_at is None
+    assert inbox_event.ledger_entry_id is None
+    assert inbox_event.parked_reason == "unsupported_schema_version:99.0.0"
+    assert db_session.scalars(select(LedgerEntry).where(LedgerEntry.tenant_id == "tenant-a")).all() == []
+
+
+def test_a_schema_incompatible_event_permanently_parks_every_later_sequence_on_its_stream(db_session):
+    """The same "keep separate received/applied cursors" consequence as
+    an unimplemented event type: a schema-incompatible event never
+    advances `_next_expected_sequence`, so a perfectly valid successor
+    stays parked behind it until a real version-negotiation slice adds
+    support -- never silently skipped ahead of the incompatible one."""
+    _seed_tenant(db_session)
+    register_export_stream(db_session, tenant_id="tenant-a", source_stream="signal-copier:acct1", environment="LOCAL_SIM")
+    db_session.commit()
+
+    incompatible = _execution_envelope(event_id="evt-0", export_sequence=0, schema_version="99.0.0")
+    ingest_export_event(db_session, incompatible.model_dump_json())
+    db_session.commit()
+
+    follow_up = _execution_envelope(event_id="evt-1", export_sequence=1)
+    follow_up_event = ingest_export_event(db_session, follow_up.model_dump_json())
+    db_session.commit()
+
+    assert follow_up_event.applied_at is None
+    assert follow_up_event.parked_reason is None  # received, just waiting behind the gap -- not itself incompatible
+    assert db_session.scalars(select(LedgerEntry).where(LedgerEntry.tenant_id == "tenant-a")).all() == []
