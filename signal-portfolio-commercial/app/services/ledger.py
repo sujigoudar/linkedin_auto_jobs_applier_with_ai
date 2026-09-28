@@ -31,6 +31,7 @@ def append_entry(
     multiplier: Decimal = Decimal(1),
     fee: Decimal | None = None,
     follower_connection_id: str | None = None,
+    originating_analyst_id: str | None = None,
 ) -> LedgerEntry:
     """`evidence_class` is a required argument, not a default, per
     Signal Platform Integration Correction Pack's own INTEGRATION_DECISION.md
@@ -60,6 +61,7 @@ def append_entry(
         source_authority=source_authority,
         evidence_class=evidence_class,
         follower_connection_id=follower_connection_id,
+        originating_analyst_id=originating_analyst_id,
     )
     session.add(entry)
     session.flush()
@@ -101,6 +103,7 @@ def append_correction(
         fee=original.fee if fee is None else fee,
         evidence_class=original.evidence_class,
         follower_connection_id=original.follower_connection_id,
+        originating_analyst_id=original.originating_analyst_id,
         event_time=event_time,
         source_authority=source_authority,
         reconciliation_state=ReconciliationState.UNRECONCILED,

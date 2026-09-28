@@ -30,6 +30,7 @@ from app.services.integration_inbox import (
     ingest_export_event,
     register_export_stream,
 )
+from app.services.analyst_attribution import compute_analyst_attribution
 from app.services.platform_performance import compute_platform_performance
 
 
@@ -57,6 +58,7 @@ def _execution_envelope(
     side="buy",
     filled_quantity="10",
     broker_order_id="paper-1",
+    originating_analyst_id=None,
 ):
     payload = ExecutionAppliedPayload(
         account=PrivateAccountIdentity(account_id="acct1"),
@@ -67,6 +69,7 @@ def _execution_envelope(
         fee=fee,
         broker="paper",
         broker_order_id=broker_order_id,
+        originating_analyst_id=originating_analyst_id,
     )
     payload_dict = payload.model_dump(mode="json")
     now = datetime.now(timezone.utc)
@@ -366,6 +369,52 @@ def test_late_fee_corrections_revise_net_pnl_and_a_duplicate_never_double_counts
     assert retried_report.net_pnl == Decimal(98)  # never 96
     ledger_entries_after_retry = db_session.scalars(select(LedgerEntry).where(LedgerEntry.tenant_id == "tenant-a")).all()
     assert len(ledger_entries_after_retry) == 4  # no new rows from the retry
+
+
+def test_interleaved_analyst_fills_ingested_through_the_relay_attribute_correctly(db_session):
+    """INTEGRATION_ACCEPTANCE_CASES.json INT-026 "Analyst allocation
+    survives shared symbol", exercised through the real relay/inbox
+    path: alice and bob's fills for the SAME instrument/account,
+    interleaved, ingested as real EXECUTION_APPLIED envelopes carrying
+    originating_analyst_id. Alice's own first exit must realize against
+    her own lot (FIFO, oldest first), never bob's, and never joined by
+    symbol/account alone; once the whole position is closed, the sum
+    of both analysts' own totals reconciles exactly to the aggregate
+    platform_performance replay (a fully-closed position's total
+    realized P&L is accounting-method-independent -- FIFO-lot and
+    blended-average-cost necessarily agree once nothing is left open)."""
+    _seed_tenant(db_session)
+    register_export_stream(db_session, tenant_id="tenant-a", source_stream="signal-copier:acct1", environment="LOCAL_SIM")
+    db_session.commit()
+
+    alice_buy = _execution_envelope(
+        event_id="evt-alice-buy", export_sequence=0, side="buy", filled_price="100.00",
+        broker_order_id="order-alice-buy", originating_analyst_id="alice",
+    )
+    bob_buy = _execution_envelope(
+        event_id="evt-bob-buy", export_sequence=1, side="buy", filled_price="121.00", filled_quantity="5",
+        broker_order_id="order-bob-buy", originating_analyst_id="bob",
+    )
+    alice_sell = _execution_envelope(
+        event_id="evt-alice-sell", export_sequence=2, side="sell", filled_price="130.00",
+        broker_order_id="order-alice-sell", originating_analyst_id="alice",
+    )
+    bob_sell = _execution_envelope(
+        event_id="evt-bob-sell", export_sequence=3, side="sell", filled_price="140.00", filled_quantity="5",
+        broker_order_id="order-bob-sell", originating_analyst_id="bob",
+    )
+    for envelope in (alice_buy, bob_buy, alice_sell, bob_sell):
+        ingest_export_event(db_session, envelope.model_dump_json())
+    db_session.commit()
+
+    report = compute_analyst_attribution(db_session, tenant_id="tenant-a")
+    alice = report.per_instrument_analyst[("AAPL", "alice")]
+    bob = report.per_instrument_analyst[("AAPL", "bob")]
+    assert alice.realized_pnl == Decimal(300)  # (130-100) * 10 -- alice's own lot, closed first (FIFO)
+    assert bob.realized_pnl == Decimal(95)  # (140-121) * 5 -- bob's own lot, closed by his own exit
+
+    aggregate = compute_platform_performance(db_session, tenant_id="tenant-a")
+    assert report.account_total_realized_pnl == aggregate.realized_pnl == Decimal(395)
 
 
 def test_a_fee_for_an_execution_not_yet_applied_is_parked_not_discarded_or_misattributed(db_session):

@@ -133,6 +133,16 @@ class LedgerEntry(Base):
     #: (INTEGRATION_DECISION.md S12 step 6) to populate for real later.
     follower_connection_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
 
+    #: `signal_platform_contracts.ExecutionAppliedPayload.originating_
+    #: analyst_id`, carried straight through by app/services/
+    #: integration_inbox.py's own `_apply_projection`. NULL means "not
+    #: attributed to a specific analyst" (INTEGRATION_ACCEPTANCE_
+    #: CASES.json INT-026's own "analyst=None ... never folded into some
+    #: other analyst's numbers" -- see app/services/analyst_attribution.py's
+    #: own docstring), never assumed to be some other analyst or the
+    #: whole account.
+    originating_analyst_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+
     #: Points at the entry this one corrects -- NULL for an original entry.
     #: The original row is never updated or deleted; this is how a mistake
     #: is fixed instead.

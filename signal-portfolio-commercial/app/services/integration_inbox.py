@@ -180,6 +180,7 @@ def _apply_projection(session: Session, inbox_event: InboxEvent, envelope: Event
             event_time=envelope.event_time,
             source_authority=f"signal-copier-relay:{envelope.producer_id}",
             evidence_class=envelope.evidence_class,
+            originating_analyst_id=payload.originating_analyst_id,
         )
         inbox_event.ledger_entry_id = entry.entry_id
         inbox_event.execution_correlation_key = _execution_correlation_key(

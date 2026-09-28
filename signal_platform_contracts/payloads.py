@@ -91,5 +91,16 @@ class ExecutionAppliedPayload(BaseModel):
     #: Links back to the SourceReceiptPayload's own source_event_id that
     #: caused this fill, when that provenance is known.
     originating_source_event_id: str | None = None
+    #: The `SourceIdentity.analyst_id` that originated this fill, when
+    #: known -- carried directly on the fill itself (not re-derived by
+    #: joining `originating_source_event_id` back to a separate
+    #: SOURCE_RECEIPT event, which may not even be exported on the same
+    #: stream or may arrive out of order) so a receiver can attribute
+    #: P&L per analyst without depending on that join succeeding.
+    #: `None` means "not attributed to a specific analyst" -- grouped as
+    #: its own bucket by a receiver (INTEGRATION_ACCEPTANCE_CASES.json
+    #: INT-026 "Analyst allocation survives shared symbol"), never
+    #: folded into some other analyst's numbers.
+    originating_analyst_id: str | None = None
 
     _validate_side = field_validator("side")(_known_side)
