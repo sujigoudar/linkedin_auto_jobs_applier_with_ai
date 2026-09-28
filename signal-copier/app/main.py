@@ -96,8 +96,8 @@ brokers = {
 # credentials up front); only register them if available so the paper-only
 # quickstart doesn't need every dependency.
 _optional_brokers: list[tuple[str, Callable[[], BrokerAdapter]]] = [
-    ("ccxt", CCXTBroker),
-    ("ibkr", IBKRBroker),
+    ("ccxt", lambda: CCXTBroker(config.CCXT_EXCHANGE_ID, config.CCXT_SANDBOX)),
+    ("ibkr", lambda: IBKRBroker(config.IBKR_HOST, config.IBKR_PORT, config.IBKR_CLIENT_ID)),
     ("mt4_mt5", MT5Broker),
     ("mt4_mt5_metaapi", MetaApiBroker),
 ]

@@ -140,6 +140,33 @@ class _Settings(BaseSettings):
     RITHMIC_GATEWAY_URL: str = ""
     RITHMIC_SOURCE_ACCOUNT_ID: str = ""  # optional filter
 
+    # app/brokers/ibkr.py's own IBKRBroker(host, port, client_id) -- these
+    # were hardcoded at every call site (app/main.py's broker registry
+    # constructed it with no arguments at all, so a real deployment could
+    # never point it at anything but a local TWS/Gateway on the default
+    # paper port). IB Gateway's default ports: 7497 paper / 7496 live for
+    # TWS, 4002 paper / 4001 live for IB Gateway -- see ibkr.py's own
+    # module docstring for the real distinction.
+    IBKR_HOST: str = "127.0.0.1"
+    IBKR_PORT: int = 7497
+    IBKR_CLIENT_ID: int = 1
+
+    # app/brokers/ccxt_broker.py's own CCXTBroker(exchange_id) -- the
+    # constructor already took this as a parameter, but app/main.py's
+    # broker registry constructed it with no arguments at all, silently
+    # defaulting every real deployment to Binance regardless of which
+    # exchange the operator's own CCXT_<ACCOUNT_ID>_API_KEY credentials
+    # actually belong to. Any ccxt exchange id (e.g. "binance", "bybit",
+    # "kraken", "okx") is valid here.
+    CCXT_EXCHANGE_ID: str = "binance"
+    # ccxt's own unified `set_sandbox_mode(True)` toggle, wired in by
+    # CCXTBroker._exchange_for -- there was previously no way at all to
+    # point this broker at an exchange's sandbox/testnet, only ever the
+    # real live venue. Off (real trading) by default; a real deployment
+    # verifying this integration before risking real funds should set
+    # this true against whichever exchange's own sandbox ccxt supports.
+    CCXT_SANDBOX: bool = False
+
     # How often app/reconciliation.py re-checks PENDING orders on brokers that
     # support get_order_status() (currently Alpaca and IBKR).
     RECONCILE_INTERVAL_SECONDS: float = 30.0
@@ -259,6 +286,13 @@ NINJATRADER_WEBHOOK_SECRET = _settings.NINJATRADER_WEBHOOK_SECRET
 
 MT4_MT5_METAAPI_TOKEN = _settings.MT4_MT5_METAAPI_TOKEN
 MT4_MT5_METAAPI_SOURCE_ACCOUNT_ID = _settings.MT4_MT5_METAAPI_SOURCE_ACCOUNT_ID
+
+IBKR_HOST = _settings.IBKR_HOST
+IBKR_PORT = _settings.IBKR_PORT
+IBKR_CLIENT_ID = _settings.IBKR_CLIENT_ID
+
+CCXT_EXCHANGE_ID = _settings.CCXT_EXCHANGE_ID
+CCXT_SANDBOX = _settings.CCXT_SANDBOX
 
 RITHMIC_USER = _settings.RITHMIC_USER
 RITHMIC_PASSWORD = _settings.RITHMIC_PASSWORD

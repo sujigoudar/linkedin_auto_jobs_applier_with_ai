@@ -75,7 +75,7 @@ class CCXTBroker(BrokerAdapter):
     # See BrokerAdapter.supported_asset_classes.
     supported_asset_classes = frozenset({AssetClass.CRYPTO})
 
-    def __init__(self, exchange_id: str = "binance"):
+    def __init__(self, exchange_id: str = "binance", sandbox: bool = False):
         try:
             import ccxt.async_support as ccxt  # imported lazily: optional dependency
         except ImportError as exc:  # pragma: no cover
@@ -85,6 +85,15 @@ class CCXTBroker(BrokerAdapter):
 
         self._ccxt = ccxt
         self.exchange_id = exchange_id
+        # There was previously no way at all to point this broker at an
+        # exchange's sandbox/testnet -- only ever its real live venue.
+        # ccxt's own unified `set_sandbox_mode(True)` (applied per exchange
+        # instance, below in `_exchange_for`) raises `ccxt.NotSupported`
+        # for an exchange with no declared sandbox URL (confirmed against
+        # ccxt's own source: `Exchange.set_sandbox_mode`) -- a genuinely
+        # unsupported exchange fails loudly here rather than silently
+        # falling back to trading its real venue.
+        self.sandbox = sandbox
         self._exchanges: dict[str, "ccxt.Exchange"] = {}
         # ADP-03: many exchanges' cancel_order REQUIRES a symbol (ccxt's own
         # signature is cancel_order(id, symbol=None, params={}) precisely
@@ -113,6 +122,8 @@ class CCXTBroker(BrokerAdapter):
 
         exchange_class = getattr(self._ccxt, self.exchange_id)
         exchange = exchange_class({"apiKey": api_key, "secret": api_secret, "enableRateLimit": True})
+        if self.sandbox:
+            exchange.set_sandbox_mode(True)
         self._exchanges[account.account_id] = exchange
         return exchange
 

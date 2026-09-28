@@ -91,3 +91,32 @@ async def test_close_side_is_rejected(broker):
     )
 
     assert result.status == OrderStatus.REJECTED
+
+
+@pytest.mark.asyncio
+async def test_sandbox_true_points_exchange_at_its_test_urls(monkeypatch):
+    """Previously there was no way at all to point this broker at an
+    exchange's sandbox/testnet -- only ever its real live venue. A real
+    (not faked) ccxt Binance instance is used here so this actually
+    exercises ccxt's own `set_sandbox_mode`, not a mock of it."""
+    monkeypatch.setenv("CCXT_ACCT1_API_KEY", "key123")
+    monkeypatch.setenv("CCXT_ACCT1_API_SECRET", "secret456")
+    broker = CCXTBroker("binance", sandbox=True)
+    account = DestinationAccount(account_id="acct1", broker="ccxt")
+
+    exchange = broker._exchange_for(account)
+
+    assert exchange.isSandboxModeEnabled is True
+    assert exchange.urls["api"] == exchange.urls["test"]
+
+
+@pytest.mark.asyncio
+async def test_sandbox_false_leaves_exchange_on_its_real_urls(monkeypatch):
+    monkeypatch.setenv("CCXT_ACCT1_API_KEY", "key123")
+    monkeypatch.setenv("CCXT_ACCT1_API_SECRET", "secret456")
+    broker = CCXTBroker("binance", sandbox=False)
+    account = DestinationAccount(account_id="acct1", broker="ccxt")
+
+    exchange = broker._exchange_for(account)
+
+    assert not getattr(exchange, "isSandboxModeEnabled", False)
