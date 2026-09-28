@@ -2303,3 +2303,63 @@ def test_cancel_copy_mandate_is_a_scoped_not_found_for_another_customer(db_sessi
     other_customer_headers = _auth_headers(user_id="user-other-mandate", role=MembershipRole.CUSTOMER)
     response = client.post(f"/app/copy/{mandate_id}/cancel", headers=other_customer_headers)
     assert response.status_code == 404
+
+
+def test_customer_overview_page_requires_customer_role(db_session):
+    client = _client(db_session)
+    response = client.get("/app", headers=_auth_headers(role=MembershipRole.OWNER))
+    assert response.status_code == 403
+
+
+def test_customer_overview_page_shows_the_real_empty_state(db_session):
+    _seed_customer_membership(db_session)
+    client = _client(db_session)
+    response = client.get("/app", headers=_auth_headers(role=MembershipRole.CUSTOMER))
+    assert response.status_code == 200
+    assert "You have not selected a portfolio." in response.text
+    assert "UNSUPPORTED" in response.text
+
+
+def test_customer_overview_page_shows_the_real_row_after_a_full_selection_connection_mandate_chain(db_session):
+    _seed_customer_membership(db_session)
+    product = _seed_published_product(db_session)
+    client = _client(db_session)
+    headers = _auth_headers(role=MembershipRole.CUSTOMER)
+
+    client.post("/app/portfolios", data={"product_id": product.product_id}, headers=headers)
+    client.post(
+        "/app/connections/new",
+        data={
+            "platform": "collective2",
+            "environment": "local_simulation",
+            "masked_account_label": "Test ****1234",
+        },
+        headers=headers,
+    )
+
+    from app.services.copy_mandate import list_own_copy_mandates
+    from app.services.platform_connection import list_own_platform_connections
+    from app.services.portfolio_selection import list_own_portfolio_selections
+
+    selection_id = list_own_portfolio_selections(db_session, tenant_id="tenant-a", user_id="user-a")[0].selection_id
+    connection_id = list_own_platform_connections(db_session, tenant_id="tenant-a", user_id="user-a")[0].connection_id
+
+    client.post(
+        "/app/copy/new",
+        data={
+            "selection_id": selection_id,
+            "connection_id": connection_id,
+            "allocation_amount": "100",
+            "allocation_currency": "USD",
+            "start_mode": "new_entries_only",
+            "policy_version_id": "policy-1",
+            "consent_version": "consent-1",
+        },
+        headers=headers,
+    )
+    assert list_own_copy_mandates(db_session, tenant_id="tenant-a", user_id="user-a")
+
+    response = client.get("/app", headers=headers)
+    assert response.status_code == 200
+    assert product.product_name in response.text
+    assert "No action required" in response.text

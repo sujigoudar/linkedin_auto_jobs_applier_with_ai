@@ -230,6 +230,7 @@ from app.services.customer_display_preferences import (
     get_display_preferences,
     save_display_preferences,
 )
+from app.services.customer_overview import get_customer_overview
 from app.services.notification_preferences import (
     InvalidNotificationPreferencesError,
     get_notification_preferences,
@@ -1857,6 +1858,27 @@ def publication_intent_detail_page(
     if detail is None:
         raise HTTPException(status_code=404, detail="not found")
     return templates.TemplateResponse(request, "ad10_publication_detail.html", {"detail": detail})
+
+
+def _require_own_customer_overview(scope: TenantScope) -> None:
+    try:
+        require_permission(scope.role, "view_own_customer_overview")
+    except PermissionDenied as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+
+@router.get("/app")
+def customer_overview_page(
+    request: Request,
+    scope: TenantScope = Depends(get_current_scope),
+    session: Session = Depends(get_db_session),
+):
+    """CU-01 "Customer overview" -- see app/services/customer_overview.py's
+    own docstring for what is and is not implemented."""
+    _require_own_customer_overview(scope)
+    set_tenant_scope(session, scope.tenant_id)
+    overview = get_customer_overview(session, tenant_id=scope.tenant_id, user_id=scope.user_id)
+    return templates.TemplateResponse(request, "cu01_overview.html", {"overview": overview})
 
 
 def _require_portfolio_selections(scope: TenantScope) -> None:

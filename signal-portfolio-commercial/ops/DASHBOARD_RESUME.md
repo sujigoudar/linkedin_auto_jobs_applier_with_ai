@@ -261,8 +261,19 @@ Seven slices are DONE:
   pipeline exists; cancelling a never-activated draft is the one real
   action honestly buildable, and it refuses to re-cancel an
   already-cancelled mandate.
+- CU-01 Customer overview: `GET /app` (CUSTOMER only, the customer's
+  own landing page) -- no new model or migration at all, purely a
+  read-only join over CU-02's/CU-07's/CU-09's own already-real queries
+  plus `product_admin.get_product`. `required_action` is derived from
+  each row's own real mandate/connection state (never a fabricated
+  aggregate), and a connection only counts as present while it is still
+  DECLARED, so a mandate whose connection was later disconnected
+  correctly shows "Reconnect platform..." instead of "No action
+  required". Actual performance card, Observed open episodes, and
+  Alerts are all explicit UNSUPPORTED -- no execution/NAV ledger or
+  alert-delivery-to-customer link exists in this build.
 
-Full suite is 579 tests, ruff and mypy both green (**use `python3 -m
+Full suite is 588 tests, ruff and mypy both green (**use `python3 -m
 ruff`/`python3 -m mypy`/`python3 -m pytest` explicitly** -- this sandbox
 has a stray `uv tool`-installed `ruff`/`mypy` shadowing the project's
 real declared versions on bare `PATH`, which produced a false-negative
@@ -287,13 +298,19 @@ See `dashboard_state.json`'s `current_slice`/`second_slice`/
 `twentyfifth_slice`/`twentysixth_slice`/`twentyseventh_slice`/
 `twentyeighth_slice`/`twentyninth_slice`/`thirtieth_slice`/
 `thirtyfirst_slice`/`thirtysecond_slice`/`thirtythird_slice`/
-`thirtyfourth_slice`/`thirtyfifth_slice` for the exact file lists and
-what was deliberately left unbuilt in each. 29 of 66 screens (AD-01,
-AD-02, AD-03, AD-04, AD-05, AD-08, AD-10, PU-03, PU-05, ID-04, AD-16,
-CU-14, AD-09, CU-16, AD-12, AD-11, AD-17, AD-13, AD-19, AD-14, AD-18,
-AD-20, CU-02, CU-12, CU-13, AD-15, PU-04, PU-07, AD-22, CU-07, CU-08,
-CU-09, CU-10 partially done) remain -- pick the next one following
-the steps below. **If you add a
+`thirtyfourth_slice`/`thirtyfifth_slice`/`thirtysixth_slice` for the
+exact file lists and what was deliberately left unbuilt in each. 28 of
+66 screens remain. Several of those are genuinely infrastructure-
+blocked and NOT to be force-built without fabricating a capability:
+CU-04 (no customer-to-alert linkage), CU-05/CU-06/CU-15 (need a real
+NAV/execution ledger), CU-11 (needs Stripe hosted checkout +
+Subscription-to-customer linkage), AD-06 (needs completed research
+candidates), AD-21 (needs a real incident model), ID-01/ID-02/ID-03
+(real password/email/MFA auth explicitly deferred to Supabase Auth per
+`app/services/auth.py`'s own docstring), and TR-01 through TR-16
+(belong to the separate private signal-copier system, which must stay
+untouched). Pick the next honestly-buildable one following the steps
+below. **If you add a
 new table to
 `_TENANT_SCOPED_TABLES` in app/db.py, pin any EARLIER migration that
 already calls `_apply_row_level_security` with no explicit `tables`

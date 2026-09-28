@@ -153,6 +153,10 @@ _ALLOWED: dict[str, frozenset[Role]] = {
     #: mandate drafts, same shape as "manage_own_platform_connections"
     #: and its siblings.
     "manage_own_copy_mandates": frozenset({Role.CUSTOMER}),
+    #: CU-01 "Customer overview" -- a customer's own landing-page
+    #: summary, same shape as "manage_own_copy_mandates" and its
+    #: siblings.
+    "view_own_customer_overview": frozenset({Role.CUSTOMER}),
 }
 
 

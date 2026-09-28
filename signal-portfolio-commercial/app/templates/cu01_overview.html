@@ -1,0 +1,60 @@
+{% extends "_base.html" %}
+{% block title %}My overview{% endblock %}
+{% block content %}
+<h1>My overview</h1>
+
+<div class="panel">
+  <h2>Subscribed portfolios ({{ overview.selected_portfolios_count }})</h2>
+  {% if overview.rows %}
+  <table>
+    <thead>
+      <tr>
+        <th>Portfolio</th>
+        <th>Selection state</th>
+        <th>Mandate</th>
+        <th>Platform connection</th>
+        <th>Required action</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in overview.rows %}
+      <tr>
+        <td>{% if row.product_slug %}<a href="/portfolios/{{ row.product_slug }}">{{ row.product_name }}</a>{% else %}{{ row.product_name or row.selection.product_id }}{% endif %}</td>
+        <td>{{ row.selection.state.value }}</td>
+        <td>{% if row.mandate %}{{ row.mandate.state.value }}{% else %}none{% endif %}</td>
+        <td>{% if row.connection %}{{ row.connection.state.value }}{% else %}none{% endif %}</td>
+        <td>{{ row.required_action }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="empty-state">
+    <p>You have not selected a portfolio. <a href="/app/portfolios">Browse portfolios</a> to get started.</p>
+  </div>
+  {% endif %}
+</div>
+
+<div class="panel">
+  <h2>Actual performance</h2>
+  <p><span class="badge badge-unknown">UNSUPPORTED</span> -- no execution/NAV ledger exists in this build, so no real actual-performance figure can be shown here. This is never a zero or a guessed figure.</p>
+</div>
+
+<div class="panel">
+  <h2>Observed open episodes</h2>
+  <p><span class="badge badge-unknown">UNSUPPORTED</span> -- same gap as actual performance: no execution ledger to observe open episodes from.</p>
+</div>
+
+<div class="panel">
+  <h2>Alerts</h2>
+  <p><span class="badge badge-unknown">UNSUPPORTED</span> -- no alert-delivery-to-customer link exists in this build.</p>
+</div>
+
+<div class="panel">
+  <h2>Action center</h2>
+  <ul>
+    <li><a href="/app/portfolios">Browse portfolios</a></li>
+    <li><a href="/app/connections">Review platform connections</a></li>
+  </ul>
+</div>
+{% endblock %}
