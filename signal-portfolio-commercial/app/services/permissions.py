@@ -142,6 +142,9 @@ _ALLOWED: dict[str, frozenset[Role]] = {
     #: read this operations view without being able to configure a new
     #: program, matching AD-02's own view/write split precedent.
     "view_managed_operations": frozenset({Role.OWNER, Role.PUBLISHER_OPERATOR, Role.REVIEWER}),
+    #: AD-22 "Commercial deployments and recovery" -- exactly this
+    #: screen's own access list.
+    "view_deployment_status": frozenset({Role.OWNER, Role.PUBLISHER_OPERATOR}),
 }
 
 

@@ -2098,3 +2098,26 @@ def managed_operations_page(
     set_tenant_scope(session, scope.tenant_id)
     programs = list_managed_programs(session, tenant_id=scope.tenant_id)
     return templates.TemplateResponse(request, "ad15_managed_operations.html", {"programs": programs})
+
+
+def _require_deployment_status(scope: TenantScope) -> None:
+    try:
+        require_permission(scope.role, "view_deployment_status")
+    except PermissionDenied as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+
+@router.get("/ops/system")
+def deployment_status_page(
+    request: Request,
+    scope: TenantScope = Depends(get_current_scope),
+):
+    """AD-22 "Commercial deployments and recovery" -- shares PU-01/
+    PU-07's own get_service_status rather than a duplicate computed
+    status. No worker/queue/backup-generation/fencing-evidence model
+    exists anywhere in this build, so every deployment/recovery panel
+    is an explicit UNSUPPORTED, never a fabricated "qualified" or
+    "healthy" status with no real input behind it."""
+    _require_deployment_status(scope)
+    service_status = get_service_status()
+    return templates.TemplateResponse(request, "ad22_system.html", {"service_status": service_status})

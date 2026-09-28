@@ -2015,3 +2015,18 @@ def test_status_page_never_fabricates_a_zero_incident_count(db_session):
     assert "no incident-tracking model exists in this build" in response.text
     assert "0 active incidents" not in response.text
     assert "No published service incidents." not in response.text
+
+
+def test_deployment_status_page_requires_owner_or_publisher_operator(db_session):
+    client = _client(db_session)
+    response = client.get("/ops/system", headers=_auth_headers(role=MembershipRole.REVIEWER))
+    assert response.status_code == 403
+
+
+def test_deployment_status_page_shows_real_service_status_and_no_fabricated_qualification(db_session):
+    client = _client(db_session)
+    response = client.get("/ops/system", headers=_auth_headers(role=MembershipRole.OWNER))
+    assert response.status_code == 200
+    assert "NOT_CONFIGURED" in response.text
+    assert "No deployment has been qualified for this service." in response.text
+    assert "UNSUPPORTED" in response.text

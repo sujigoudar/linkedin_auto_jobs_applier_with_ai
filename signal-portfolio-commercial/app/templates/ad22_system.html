@@ -1,0 +1,47 @@
+{% extends "_base.html" %}
+{% block title %}Commercial deployments and recovery{% endblock %}
+{% block content %}
+<h1>Commercial deployments and recovery</h1>
+
+<div class="panel">
+  <h2>Role/site/artifact</h2>
+  <table>
+    <tbody>
+      {% for item in service_status %}
+      <tr>
+        <th>{{ item.name }}</th>
+        <td><span class="badge badge-{{ item.status.lower() }}">{{ item.status }}</span></td>
+        <td>{{ item.reason }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="panel">
+  <h2>Workers and queues</h2>
+  <p><span class="badge badge-unknown">UNSUPPORTED</span> -- no worker/queue tracking model exists in this build (the same gap AD-05's own "no job queue" finding already documented).</p>
+</div>
+
+<div class="panel">
+  <h2>Backup generations</h2>
+  <p><span class="badge badge-unknown">UNSUPPORTED</span> -- no backup-generation record exists in this build.</p>
+</div>
+
+<div class="panel">
+  <h2>Fencing evidence</h2>
+  <p><span class="badge badge-unknown">UNSUPPORTED</span> -- no old-writer-fencing evidence model exists in this build.</p>
+</div>
+
+<div class="panel">
+  <h2>Qualification</h2>
+  <div class="empty-state">
+    <p>No deployment has been qualified for this service.</p>
+  </div>
+</div>
+
+<div class="panel">
+  <h2>Owner action cards</h2>
+  <p><span class="badge badge-unknown">UNSUPPORTED</span> -- Run isolated restore check and Prepare release card both require the same real deployment/backup infrastructure this build does not have.</p>
+</div>
+{% endblock %}
