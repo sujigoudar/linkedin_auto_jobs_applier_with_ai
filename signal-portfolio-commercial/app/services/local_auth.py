@@ -17,6 +17,16 @@ revocable session (here, the `web_sessions` table) carried as an
 httponly cookie, plus a separate CSRF token returned once in the
 login/verify response body.
 
+## Session audit -- a real writer into AD-18's audit store
+
+`create_web_session`/`delete_web_session` each append a real AuditEvent
+(app/services/audit_log.py, object_type="session", action "login"/
+"logout") -- the same append-only store AD-16's own invite/revoke
+already writes into. This resolves AD-16's own "Session audit is NOT
+implemented" gap and AD-11's own "no ... audit-log model exists" gap
+for a customer's own login/logout history; both were previously
+documented as unsupported before this store existed.
+
 ## Email delivery is NOT wired -- disclosed, not hidden
 
 `create_account`/`request_password_reset` generate a real, single-use,
@@ -43,6 +53,7 @@ from sqlalchemy.orm import Session
 
 from app.models.local_auth import AuthToken, AuthTokenType, WebSession
 from app.models.tenancy import Membership, MembershipRole, Tenant, UserIdentity
+from app.services.audit_log import append_audit_event
 
 _password_hasher = PasswordHash.recommended()
 
@@ -147,7 +158,9 @@ def create_web_session(session: Session, *, user_id: str, tenant_id: str, role: 
     """Returns (session_id, csrf_token) -- session_id goes in the
     cookie, csrf_token is returned once in the response body. Same
     two-value contract as signal-copier's own app/auth.py
-    `create_session`."""
+    `create_session`. Also appends a real "login" AuditEvent
+    (object_type="session", object_id=user_id) -- see this module's own
+    docstring's "Session audit" section."""
     session_id = secrets.token_urlsafe(32)
     csrf_token = secrets.token_urlsafe(32)
     now = datetime.now(timezone.utc)
@@ -161,6 +174,14 @@ def create_web_session(session: Session, *, user_id: str, tenant_id: str, role: 
             created_at=now,
             expires_at=now + _SESSION_TTL,
         )
+    )
+    append_audit_event(
+        session,
+        tenant_id=tenant_id,
+        actor_user_id=user_id,
+        object_type="session",
+        object_id=user_id,
+        action="login",
     )
     session.commit()
     return session_id, csrf_token
@@ -184,8 +205,20 @@ def get_web_session(session: Session, *, session_id: str | None) -> WebSession |
 
 
 def delete_web_session(session: Session, *, session_id: str) -> None:
+    """Also appends a real "logout" AuditEvent for the session being
+    revoked -- see this module's own docstring's "Session audit"
+    section. A session_id that doesn't exist (already expired/revoked)
+    writes nothing, same as the delete itself being a no-op."""
     row = session.get(WebSession, session_id)
     if row is not None:
+        append_audit_event(
+            session,
+            tenant_id=row.tenant_id,
+            actor_user_id=row.user_id,
+            object_type="session",
+            object_id=row.user_id,
+            action="logout",
+        )
         session.delete(row)
         session.commit()
 

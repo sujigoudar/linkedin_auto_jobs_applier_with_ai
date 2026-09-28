@@ -73,6 +73,22 @@
 
 <div class="panel">
   <h2>Audit</h2>
-  <p><span class="badge badge-unknown">UNSUPPORTED</span> -- no audit-log store exists in this build.</p>
+  {% if record.audit_events %}
+  <table>
+    <thead><tr><th>Time</th><th>Action</th><th>Object type</th><th>Outcome</th></tr></thead>
+    <tbody>
+      {% for e in record.audit_events %}
+      <tr>
+        <td>{{ e.event_time }}</td>
+        <td>{{ e.action }}</td>
+        <td>{{ e.object_type }}</td>
+        <td>{{ e.outcome.value }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p>No audit events for this customer yet.</p>
+  {% endif %}
 </div>
 {% endblock %}

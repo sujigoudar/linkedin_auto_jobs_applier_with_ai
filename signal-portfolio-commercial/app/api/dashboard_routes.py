@@ -25,8 +25,12 @@ what is and is not implemented yet.
   historical data this environment doesn't have.
 - AD-01 "Commercial operations overview": a real cross-subsystem
   summary (release blockers per product, active subscriptions,
-  unknown-state publications). "Open incidents" has no backing model
-  at all yet, so it's shown as unsupported, never a fabricated zero.
+  unknown-state publications). "Open incidents" now has a real backing
+  model (app/models/incident.py, AD-21) with its own real register
+  linked from this overview at /ops/incidents; this overview itself
+  still does not compute a decorative headline count from it -- AD-21's
+  own spec: "No numeric headline required. Do not add a decorative
+  performance KPI."
 - AD-08 "Release and change approvals": a real release-review queue.
   Requesting review (from AD-07) is refused unless the product's
   publication blockers are genuinely empty; deciding enforces a real
@@ -69,8 +73,13 @@ what is and is not implemented yet.
   colleague's operator role (reuses the existing `Membership` model --
   no new table). OWNER can never be granted through this form nor
   revoked through it, and a caller can never revoke their own
-  membership. Session audit is NOT implemented -- there is no session/
-  audit-log store in this build.
+  membership. Session audit is now real too: ID-01's own
+  create_web_session/delete_web_session (app/services/local_auth.py)
+  append a real "login"/"logout" AuditEvent (app/services/audit_log.py)
+  for every real session, and this page's own Session audit panel
+  lists them, tenant-scoped. An already-issued Bearer-token JWT (the
+  non-cookie auth path) still remains cryptographically valid until it
+  expires -- only cookie-based web sessions can be explicitly revoked.
 - CU-14 "Support and incident case": a customer's own real support
   cases. `related_object_id` is validated against a real Subscription in
   the caller's own tenant -- never a cross-tenant id, even one that
@@ -100,8 +109,11 @@ what is and is not implemented yet.
   view over a tenant's own customer memberships, built entirely from
   data ID-04/CU-14 already made real (eligibility decisions, support
   cases). A cross-tenant/non-customer user_id returns a scoped 404.
-  Subscription/Mandates/Audit panels are NOT implemented -- no
-  per-customer subscription, copy-mandate or audit-log model exists.
+  Mandates (CU-09's own CopyMandate) and Audit (app/services/
+  audit_log.py's real login/logout AuditEvents) are both real now,
+  tenant- AND customer-scoped. Subscription remains NOT implemented --
+  no per-customer subscription model exists in this schema
+  (Subscription is tenant-scoped, not customer-scoped).
 - AD-17 "Integrations, data rights and quotas": a real "save inactive
   config" gated by a reviewed provider allowlist (only the adapter
   modules this codebase actually has -- Stripe for billing, Collective2/
@@ -130,11 +142,15 @@ what is and is not implemented yet.
   percentage table alone". agreement_evidence_ids must be nonempty --
   no automated signing without evidence.
 - AD-18 "Audit log and release evidence": a real, append-only audit
-  store (app/services/audit_log.py). AD-16's invite/revoke actions are
-  its first real writer. The database itself refuses any UPDATE/DELETE
-  against audit_events, matching ledger_entries' own append-only
-  precedent. Evidence manifest and Export queue are NOT implemented --
-  no evidence-bundling or export-job infrastructure exists.
+  store (app/services/audit_log.py). AD-16's invite/revoke actions were
+  its first real writer; ID-01's own create_web_session/
+  delete_web_session (login/logout, object_type="session") are now a
+  second, feeding AD-16's own Session audit panel and AD-11's own
+  per-customer Audit panel. The database itself refuses any
+  UPDATE/DELETE against audit_events, matching ledger_entries' own
+  append-only precedent. Evidence manifest and Export queue are NOT
+  implemented -- no evidence-bundling or export-job infrastructure
+  exists.
 - CU-04 "Alerts and delivery history" / CU-05 "Alert, trade and
   order-family detail": a customer's own real, entitled publication-
   intent timeline (scoped through PortfolioVersion -> Product -> the
@@ -1339,16 +1355,28 @@ def staff_access_page(
     error: str | None = None,
 ):
     """AD-16 "Staff roles and access reviews" -- owner-only. Session
-    audit has no backing model (no session/audit-log store exists), so
-    it's rendered as an explicit unsupported note, never a fabricated
-    empty table."""
+    audit now has a real backing store (app/services/audit_log.py):
+    ID-01's own create_web_session/delete_web_session append a real
+    "login"/"logout" AuditEvent for every real session, tenant-scoped
+    the same way this whole page already is. Filtered here to
+    object_type="session" so this panel shows login/logout activity,
+    never the membership-grant events AD-18's own full audit log
+    already covers."""
     _require_staff_access(scope)
     set_tenant_scope(session, scope.tenant_id)
     memberships = list_staff_memberships(session, tenant_id=scope.tenant_id)
+    session_events = [
+        e for e in list_audit_events(session, tenant_id=scope.tenant_id) if e.object_type == "session"
+    ]
     return templates.TemplateResponse(
         request,
         "ad16_access.html",
-        {"memberships": memberships, "all_grantable_roles": _GRANTABLE_ROLE_VALUES, "error": error},
+        {
+            "memberships": memberships,
+            "all_grantable_roles": _GRANTABLE_ROLE_VALUES,
+            "error": error,
+            "session_events": session_events,
+        },
     )
 
 
@@ -1370,10 +1398,18 @@ def invite_staff_page(
     except (ValueError, InvalidStaffGrantError) as exc:
         session.rollback()
         memberships = list_staff_memberships(session, tenant_id=scope.tenant_id)
+        session_events = [
+            e for e in list_audit_events(session, tenant_id=scope.tenant_id) if e.object_type == "session"
+        ]
         return templates.TemplateResponse(
             request,
             "ad16_access.html",
-            {"memberships": memberships, "all_grantable_roles": _GRANTABLE_ROLE_VALUES, "error": str(exc)},
+            {
+                "memberships": memberships,
+                "all_grantable_roles": _GRANTABLE_ROLE_VALUES,
+                "error": str(exc),
+                "session_events": session_events,
+            },
             status_code=400,
         )
     session.commit()
@@ -1394,10 +1430,18 @@ def revoke_staff_page(
     except (MembershipNotFoundError, CannotRevokeOwnerError, CannotRevokeSelfError) as exc:
         session.rollback()
         memberships = list_staff_memberships(session, tenant_id=scope.tenant_id)
+        session_events = [
+            e for e in list_audit_events(session, tenant_id=scope.tenant_id) if e.object_type == "session"
+        ]
         return templates.TemplateResponse(
             request,
             "ad16_access.html",
-            {"memberships": memberships, "all_grantable_roles": _GRANTABLE_ROLE_VALUES, "error": str(exc)},
+            {
+                "memberships": memberships,
+                "all_grantable_roles": _GRANTABLE_ROLE_VALUES,
+                "error": str(exc),
+                "session_events": session_events,
+            },
             status_code=400,
         )
     session.commit()
