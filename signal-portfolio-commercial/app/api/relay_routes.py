@@ -25,6 +25,7 @@ from app import config
 from app.api.dependencies import get_relay_db_session
 from app.services.integration_inbox import (
     EventIntegrityError,
+    SequenceSlotAlreadyConsumedError,
     UnregisteredStreamError,
     ingest_export_event,
 )
@@ -77,6 +78,10 @@ async def ingest_batch(
         except EventIntegrityError as exc:
             session.rollback()
             results.append({"status": "integrity_error", "detail": str(exc)})
+            continue
+        except SequenceSlotAlreadyConsumedError as exc:
+            session.rollback()
+            results.append({"status": "sequence_slot_already_consumed", "detail": str(exc)})
             continue
         #: Read before `commit()`, not after: `set_tenant_scope` uses
         #: `set_config(..., is_local=true)` (app/db.py's own docstring on

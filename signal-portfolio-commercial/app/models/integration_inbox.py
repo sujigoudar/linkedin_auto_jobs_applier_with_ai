@@ -68,6 +68,17 @@ class InboxEvent(Base):
     tenant_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
     event_type: Mapped[str] = mapped_column(String, nullable=False)
     source_stream: Mapped[str] = mapped_column(String, nullable=False)
+    #: `signal_platform_contracts.EventEnvelope.producer_generation` --
+    #: "Bumped when a stream is re-bootstrapped from a fresh snapshot...
+    #: lets a receiver detect and isolate a new generation rather than
+    #: interleaving it with the old one's sequence" (envelope.py's own
+    #: docstring). `export_sequence` is only ever monotonic WITHIN
+    #: (source_stream, producer_generation) -- see this table's own
+    #: `__table_args__` uniqueness scope below, and
+    #: app/services/integration_inbox.py's own `_established_generation`
+    #: docstring (INTEGRATION_ACCEPTANCE_CASES.json INT-010 "Producer
+    #: restored to older database").
+    producer_generation: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     export_sequence: Mapped[int] = mapped_column(Integer, nullable=False)
     envelope_json: Mapped[str] = mapped_column(String, nullable=False)
     payload_hash: Mapped[str] = mapped_column(String, nullable=False)
@@ -103,11 +114,29 @@ class InboxEvent(Base):
     #: "Unsupported schema version": "Unknown event is parked without
     #: economic application... Schema incompatibility and affected
     #: cutoff are visible", never "best-effort financial coercion") or
-    #: an `EventType` with no implemented payload model yet. A short,
-    #: machine-parseable prefix (`unsupported_schema_version:`,
-    #: `unimplemented_event_type:`) so a caller (e.g.
+    #: an `EventType` with no implemented payload model yet, or a
+    #: `producer_generation` mismatch against this stream's own
+    #: established generation (INT-010 "Producer restored to older
+    #: database" -- app/services/integration_inbox.py's own
+    #: `_established_generation` docstring: an OLDER generation than
+    #: already established is a detected rollback, a NEWER one requires
+    #: a reconciled bootstrap this build does not have; neither is ever
+    #: silently applied). A short, machine-parseable prefix
+    #: (`unsupported_schema_version:`, `unimplemented_event_type:`,
+    #: `generation_rollback_detected:`,
+    #: `new_generation_requires_bootstrap:`) so a caller (e.g.
     #: app/services/integration_status.py) can group and surface these
     #: without re-parsing `envelope_json`.
     parked_reason: Mapped[str | None] = mapped_column(String, nullable=True)
 
-    __table_args__ = (UniqueConstraint("source_stream", "export_sequence", name="uq_inbox_events_stream_sequence"),)
+    __table_args__ = (
+        #: Scoped to (source_stream, producer_generation, export_sequence)
+        #: -- NOT (source_stream, export_sequence) alone -- because
+        #: export_sequence is only ever monotonic WITHIN one generation
+        #: of a stream (envelope.py's own docstring); a legitimate new
+        #: generation restarting its own sequence at 0 must never
+        #: collide with the previous generation's own sequence 0.
+        UniqueConstraint(
+            "source_stream", "producer_generation", "export_sequence", name="uq_inbox_events_stream_generation_sequence",
+        ),
+    )

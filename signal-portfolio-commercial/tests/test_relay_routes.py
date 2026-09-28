@@ -49,7 +49,7 @@ def client(db_session, relay_session_factory):
         relay_session.close()
 
 
-def _execution_envelope(*, event_id, source_stream="signal-copier:acct1"):
+def _execution_envelope(*, event_id, source_stream="signal-copier:acct1", export_sequence=0, broker_order_id="paper-1"):
     instrument = InstrumentIdentity(
         instrument_id="AAPL", venue="NASDAQ", market_type="equity", currency="USD",
         multiplier="1", quantity_convention="shares",
@@ -62,7 +62,7 @@ def _execution_envelope(*, event_id, source_stream="signal-copier:acct1"):
         filled_price="150.00",
         fee=None,
         broker="paper",
-        broker_order_id="paper-1",
+        broker_order_id=broker_order_id,
     )
     payload_dict = payload.model_dump(mode="json")
     now = datetime.now(timezone.utc)
@@ -71,7 +71,7 @@ def _execution_envelope(*, event_id, source_stream="signal-copier:acct1"):
         event_id=event_id,
         producer_id="signal-copier-instance-1",
         source_stream=source_stream,
-        export_sequence=0,
+        export_sequence=export_sequence,
         subject=build_subject(account=PrivateAccountIdentity(account_id="acct1"), instrument=instrument),
         event_time=now,
         effective_time=now,
@@ -150,3 +150,38 @@ def test_ingest_batch_rejects_more_than_the_max_batch_size(client):
     events = [json.dumps(envelope.model_dump_json())] * 101
     response = _post_batch(client, events)
     assert response.status_code == 422
+
+
+def test_ingest_batch_reports_a_reused_sequence_slot_without_500ing_and_preserves_the_rest_of_the_batch(client, db_session):
+    """INT-010 "Producer restored to older database": a fresh event_id
+    reusing an already-consumed (source_stream, producer_generation,
+    export_sequence) slot must surface as a clean per-event result, not
+    a 500 that aborts the whole batch -- the OTHER event in the same
+    batch (a different, unrelated stream) must still apply normally."""
+    import json
+
+    db_session.add(Tenant(tenant_id="tenant-a", display_name="A", environment="LOCAL_SIM"))
+    db_session.commit()
+    register_export_stream(db_session, tenant_id="tenant-a", source_stream="signal-copier:acct1", environment="LOCAL_SIM")
+    register_export_stream(db_session, tenant_id="tenant-a", source_stream="signal-copier:acct2", environment="LOCAL_SIM")
+    db_session.commit()
+
+    first = _execution_envelope(event_id="evt-http-slot-1", broker_order_id="paper-slot-1")
+    events = [json.dumps(first.model_dump_json())]
+    response = _post_batch(client, events)
+    assert response.json()["results"] == [{"status": "applied", "event_id": "evt-http-slot-1"}]
+
+    reused_slot = _execution_envelope(event_id="evt-http-slot-1-reused", broker_order_id="paper-slot-1-reused")
+    other_stream = _execution_envelope(
+        event_id="evt-http-slot-other", source_stream="signal-copier:acct2", broker_order_id="paper-slot-other",
+    )
+    events = [json.dumps(reused_slot.model_dump_json()), json.dumps(other_stream.model_dump_json())]
+    response = _post_batch(client, events)
+
+    assert response.status_code == 200
+    results = response.json()["results"]
+    assert results[0]["status"] == "sequence_slot_already_consumed"
+    assert results[1] == {"status": "applied", "event_id": "evt-http-slot-other"}
+
+    entries = db_session.scalars(select(LedgerEntry).where(LedgerEntry.tenant_id == "tenant-a")).all()
+    assert len(entries) == 2  # the original acct1 entry + acct2's own -- never the reused-slot duplicate

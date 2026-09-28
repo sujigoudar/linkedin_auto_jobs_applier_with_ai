@@ -51,6 +51,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from signal_platform_contracts import (
     CONTRACT_SCHEMA_VERSION,
@@ -82,6 +83,8 @@ _SUPPORTED_SCHEMA_VERSIONS = frozenset({CONTRACT_SCHEMA_VERSION})
 PARKED_REASON_UNSUPPORTED_SCHEMA_VERSION = "unsupported_schema_version"
 PARKED_REASON_UNIMPLEMENTED_EVENT_TYPE = "unimplemented_event_type"
 PARKED_REASON_FEE_TARGET_NOT_FOUND = "fee_target_not_found"
+PARKED_REASON_GENERATION_ROLLBACK_DETECTED = "generation_rollback_detected"
+PARKED_REASON_NEW_GENERATION_REQUIRES_BOOTSTRAP = "new_generation_requires_bootstrap"
 
 
 def _execution_correlation_key(*, broker: str, broker_order_id: str) -> str:
@@ -100,6 +103,10 @@ class UnregisteredStreamError(Exception):
 
 
 class EventIntegrityError(Exception):
+    pass
+
+
+class SequenceSlotAlreadyConsumedError(Exception):
     pass
 
 
@@ -134,20 +141,61 @@ def _registered_tenant_id(session: Session, source_stream: str) -> str | None:
     return registration.tenant_id if registration is not None else None
 
 
-def _next_expected_sequence(session: Session, *, tenant_id: str, source_stream: str) -> int:
+def _next_expected_sequence(session: Session, *, tenant_id: str, source_stream: str, producer_generation: int) -> int:
     """One past the highest already-APPLIED export_sequence for this
-    stream -- 0 if nothing has been applied yet. Deliberately keyed off
-    `applied_at IS NOT NULL`, never off what's merely been received:
-    a received-but-parked event must never advance this boundary, or a
-    real gap would be invisible."""
+    stream WITHIN `producer_generation` -- 0 if nothing has been applied
+    yet for that generation. Deliberately keyed off `applied_at IS NOT
+    NULL`, never off what's merely been received: a received-but-parked
+    event must never advance this boundary, or a real gap would be
+    invisible. Scoped to `producer_generation` because `export_sequence`
+    is only ever monotonic WITHIN one generation of a stream
+    (`signal_platform_contracts.EventEnvelope.producer_generation`'s own
+    docstring) -- a new generation's own sequence 0 is not "behind" the
+    previous generation's sequence 100, it is a different numbering
+    entirely."""
     highest_applied = session.scalar(
         select(func.max(InboxEvent.export_sequence)).where(
             InboxEvent.tenant_id == tenant_id,
             InboxEvent.source_stream == source_stream,
+            InboxEvent.producer_generation == producer_generation,
             InboxEvent.applied_at.is_not(None),
         )
     )
     return 0 if highest_applied is None else highest_applied + 1
+
+
+def _established_generation(session: Session, *, tenant_id: str, source_stream: str) -> int | None:
+    """The `producer_generation` of this stream's own already-APPLIED
+    history -- `None` if nothing has ever been applied yet, in which
+    case ANY generation is acceptable as the first one, establishing the
+    baseline. Once established, every APPLIED row on this stream shares
+    the identical generation by construction (a mismatched generation is
+    always parked, never applied -- see `ingest_export_event`), so any
+    one of them answers this.
+
+    INTEGRATION_ACCEPTANCE_CASES.json INT-010 "Producer restored to
+    older database": a producer whose own storage was restored to an
+    older backup and resumes emitting is, per the contract's own
+    `producer_generation` docstring ("Bumped when a stream is
+    re-bootstrapped from a fresh snapshot"), expected to bump its own
+    generation on any such discontinuity. This function is how a
+    receiver enforces that a stream's own established generation, once
+    set, cannot silently drift: an envelope claiming an OLDER generation
+    than what's already established is a detected rollback ("Old
+    economic IDs do not apply again" -- INT-010's own expected outcome);
+    a NEWER one is a legitimate-looking but unverified re-bootstrap that
+    "requires reconciled bootstrap" (INT-010's own words) this build
+    does not have (INT-008/INT-009, explicitly out of scope) -- neither
+    is ever silently applied; both park with a distinct, honest reason."""
+    return session.scalar(
+        select(InboxEvent.producer_generation)
+        .where(
+            InboxEvent.tenant_id == tenant_id,
+            InboxEvent.source_stream == source_stream,
+            InboxEvent.applied_at.is_not(None),
+        )
+        .limit(1)
+    )
 
 
 def _apply_projection(session: Session, inbox_event: InboxEvent, envelope: EventEnvelope, *, tenant_id: str) -> None:
@@ -298,11 +346,15 @@ def _apply_and_cascade(
         return
 
     while True:
-        expected = _next_expected_sequence(session, tenant_id=tenant_id, source_stream=envelope.source_stream)
+        expected = _next_expected_sequence(
+            session, tenant_id=tenant_id, source_stream=envelope.source_stream,
+            producer_generation=envelope.producer_generation,
+        )
         next_parked = session.scalars(
             select(InboxEvent).where(
                 InboxEvent.tenant_id == tenant_id,
                 InboxEvent.source_stream == envelope.source_stream,
+                InboxEvent.producer_generation == envelope.producer_generation,
                 InboxEvent.export_sequence == expected,
                 InboxEvent.applied_at.is_(None),
             )
@@ -357,14 +409,49 @@ def ingest_export_event(session: Session, envelope_json: str) -> InboxEvent:
         tenant_id=tenant_id,
         event_type=envelope.event_type.value,
         source_stream=envelope.source_stream,
+        producer_generation=envelope.producer_generation,
         export_sequence=envelope.export_sequence,
         envelope_json=envelope_json,
         payload_hash=envelope.payload_hash,
     )
     session.add(inbox_event)
-    session.flush()
+    try:
+        session.flush()
+    except IntegrityError as exc:
+        # INT-010 "Producer restored to older database": a producer that
+        # reuses an export_sequence WITHIN the same producer_generation
+        # it already used it in (a fresh event_id claiming a sequence
+        # slot the unique constraint below already has a row for) is
+        # never silently applied as a new financial fact -- this is
+        # exactly "Reset sequence accepted as new financial history",
+        # the case's own prohibited outcome, surfaced as a clear,
+        # dedicated error instead of a raw DB constraint violation.
+        # Never rolled back HERE -- same contract as
+        # UnregisteredStreamError/EventIntegrityError above: the caller
+        # (e.g. app/api/relay_routes.py's own per-event try/except)
+        # decides when to roll back, since it may be mid-batch.
+        raise SequenceSlotAlreadyConsumedError(
+            f"source_stream {envelope.source_stream!r} generation {envelope.producer_generation} "
+            f"export_sequence {envelope.export_sequence} is already occupied by a different event_id "
+            "-- this producer_generation/export_sequence pair was already consumed, never reusable"
+        ) from exc
 
-    expected = _next_expected_sequence(session, tenant_id=tenant_id, source_stream=envelope.source_stream)
+    established_generation = _established_generation(session, tenant_id=tenant_id, source_stream=envelope.source_stream)
+    if established_generation is not None and envelope.producer_generation != established_generation:
+        if envelope.producer_generation < established_generation:
+            inbox_event.parked_reason = (
+                f"{PARKED_REASON_GENERATION_ROLLBACK_DETECTED}:{envelope.producer_generation}"
+            )
+        else:
+            inbox_event.parked_reason = (
+                f"{PARKED_REASON_NEW_GENERATION_REQUIRES_BOOTSTRAP}:{envelope.producer_generation}"
+            )
+        return inbox_event
+
+    expected = _next_expected_sequence(
+        session, tenant_id=tenant_id, source_stream=envelope.source_stream,
+        producer_generation=envelope.producer_generation,
+    )
     if envelope.export_sequence <= expected:
         # Next in line (or, rarer, an anomalously low sequence a correct
         # producer would never send -- applying it directly can't create
