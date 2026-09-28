@@ -70,6 +70,8 @@ from app.protection_auditor import ProtectionAuditor
 from app.reconciliation import OrderReconciler
 from app.relay_scheduler import RelayScheduler
 from app.routing import load_routing_config_from_store
+from app.signal_commands import CanonicalCommand
+from app.signal_episode import EpisodeCorrelator
 from app.sources.text_parser import classify_batch
 from app.sources.discord import DiscordSource
 from app.sources.mt4_mt5 import MetaApiSource
@@ -216,8 +218,55 @@ relay_scheduler = RelayScheduler(store=store, interval_seconds=config.RELAY_POLL
 # Pull-based sources only start if fully configured via env vars.
 _background_sources: list[SourceAdapter] = []
 if config.TELEGRAM_BOT_TOKEN and config.TELEGRAM_CHAT_ID:
+    # SignalEpisode correlation (app/signal_episode.py) for telegram's
+    # revision commands ("close half", "move sl to breakeven", "cancel"):
+    # a bare revision message names no symbol of its own, so
+    # `TelegramSource.symbol_for_command` resolves it from the analyst's
+    # own open episode history -- exactly one open episode for
+    # (provider="telegram", analyst) is unambiguous; zero or several is not
+    # (see EpisodeCorrelator's own AMBIGUOUS posture), and this never
+    # guesses in that case.
+    telegram_episode_correlator = EpisodeCorrelator(sqlite_store=store)
+
+    def _telegram_symbol_for_command(analyst: str | None) -> str | None:
+        if not analyst:
+            return None
+        candidates = telegram_episode_correlator.store.open_episodes_for("telegram", analyst)
+        if len(candidates) != 1:
+            return None
+        return candidates[0].instrument
+
+    async def _telegram_on_command(command: CanonicalCommand) -> None:
+        # Applied to every managed_lifecycle destination account telegram
+        # is actually routed to (app/routing.py's RoutingConfig) -- the
+        # same fan-out a normal telegram Signal already gets via
+        # engine.handle_signal, never a single hardcoded account.
+        rule_accounts = [
+            account_id for rule in routing_config.rules if rule.source == "telegram" for account_id in rule.destinations
+        ]
+        for account_id in rule_accounts:
+            account = routing_config.accounts.get(account_id)
+            if account is None or not account.enabled or not account.managed_lifecycle:
+                continue
+            result = await engine.apply_canonical_command(command, account)
+            logger.info(
+                "telegram canonical command %s for account=%s symbol=%s -> status=%s message=%s",
+                command.command_type.value,
+                account_id,
+                command.symbol,
+                result.status.value,
+                result.message,
+            )
+
     _background_sources.append(
-        TelegramSource(engine.handle_signal, config.TELEGRAM_BOT_TOKEN, config.TELEGRAM_CHAT_ID)
+        TelegramSource(
+            engine.handle_signal,
+            config.TELEGRAM_BOT_TOKEN,
+            config.TELEGRAM_CHAT_ID,
+            on_command=_telegram_on_command,
+            symbol_for_command=_telegram_symbol_for_command,
+            episode_correlator=telegram_episode_correlator,
+        )
     )
 if config.DISCORD_BOT_TOKEN and config.DISCORD_CHANNEL_ID:
     _background_sources.append(

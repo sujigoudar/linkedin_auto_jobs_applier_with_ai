@@ -86,6 +86,7 @@ from app.models import AssetClass, DestinationAccount, OrderResult, OrderStatus,
 from app.providers import ProviderRegistry, SettingsOverride
 from app.risk import size_for_account, symbol_for_account
 from app.routing import RoutingConfig
+from app.signal_commands import CanonicalCommand, CommandType
 
 logger = logging.getLogger(__name__)
 structured_logger = structlog.get_logger(__name__)
@@ -599,6 +600,7 @@ class SignalCopierEngine:
             asset_class=signal.asset_class,
             broker=account.broker,
             initial_stop=signal.stop_loss,
+            entry_price=signal.price,
             targets=targets,
         )
 
@@ -782,6 +784,90 @@ class SignalCopierEngine:
         # tracked position flat/wrong forever, since nothing ever corrected
         # this optimistic write).
         return await self.lifecycle_manager.request_exit(account, symbol, available, source=source)
+
+    async def apply_canonical_command(self, command: CanonicalCommand, account: DestinationAccount) -> OrderResult:
+        """The one dispatcher for `app/signal_commands.py`'s `CanonicalCommand`
+        vocabulary -- called by a source adapter (see
+        `app/sources/telegram.py`'s `on_command`) once it has classified a
+        revision message. Only ever a managed-lifecycle operation: every
+        backed command type here is a `PositionLifecycleManager` call, the
+        SAME machinery `_handle_managed_close`/`_handle_managed_entry` above
+        use, never a second execution path. See `app/signal_commands.py`'s
+        module docstring for exactly which command types are backed and
+        which are classification-only.
+
+        An unbacked command type (`ADD_TARGET`/`REMOVE_TARGET`/`ADD_ENTRY`)
+        is never silently dropped and never approximated as some other
+        action -- it is returned as an explicit REJECTED result naming
+        itself and stating plainly that no backing capability exists yet.
+        The caller (a source adapter / app/main.py route) is expected to
+        persist that result (e.g. onto the command's `SignalEpisode`,
+        already recorded there by `EpisodeCorrelator`) rather than treat a
+        REJECTED here as "nothing happened, move on.\""""
+        if not account.managed_lifecycle:
+            return OrderResult(
+                account_id=account.account_id,
+                status=OrderStatus.REJECTED,
+                signal_id=command.id,
+                message=f"{command.command_type.value}: account '{account.account_id}' is not managed_lifecycle -- no backing capability",
+            )
+
+        if command.command_type is CommandType.CLOSE_PERCENT:
+            if command.fraction is None or not (0 < command.fraction <= 1):
+                return OrderResult(
+                    account_id=account.account_id,
+                    status=OrderStatus.REJECTED,
+                    signal_id=command.id,
+                    message=f"close_percent: invalid fraction {command.fraction!r}",
+                )
+            lifecycle = self.lifecycle_manager.get_lifecycle(account.account_id, command.symbol)
+            if lifecycle is None or lifecycle.closed:
+                return OrderResult(
+                    account_id=account.account_id, status=OrderStatus.REJECTED, signal_id=command.id, message="no open position to close"
+                )
+            requested = command.fraction * lifecycle.confirmed_owned_quantity
+            return await self.lifecycle_manager.request_exit(
+                account, command.symbol, requested, source="canonical_command", reason=f"close_percent({command.fraction})"
+            )
+
+        if command.command_type is CommandType.CLOSE_REMAINDER:
+            return await self._handle_managed_close(
+                Signal(source=command.source, symbol=command.symbol, side=Side.CLOSE, analyst=command.analyst, id=command.id),
+                account,
+                command.symbol,
+                source="canonical_command",
+            )
+
+        if command.command_type is CommandType.MOVE_STOP:
+            if command.stop_target == "breakeven":
+                return await self.lifecycle_manager.move_stop_to_breakeven(account, command.symbol)
+            if isinstance(command.stop_target, (int, float)) and not isinstance(command.stop_target, bool):
+                return await self.lifecycle_manager.move_stop(account, command.symbol, float(command.stop_target))
+            return OrderResult(
+                account_id=account.account_id,
+                status=OrderStatus.REJECTED,
+                signal_id=command.id,
+                message=f"move_stop: invalid stop_target {command.stop_target!r}",
+            )
+
+        if command.command_type is CommandType.CANCEL_ENTRY:
+            return await self.lifecycle_manager.cancel_entry(account, command.symbol)
+
+        # ADD_TARGET / REMOVE_TARGET / ADD_ENTRY: classification-only, no
+        # backing capability -- see this method's and app/signal_commands.py's
+        # docstrings. Recorded via this explicit, descriptive REJECTED
+        # result, never silently dropped and never executed as an
+        # approximation of something else (e.g. ADD_TARGET must NEVER
+        # become a real order).
+        return OrderResult(
+            account_id=account.account_id,
+            status=OrderStatus.REJECTED,
+            signal_id=command.id,
+            message=(
+                f"{command.command_type.value}: classified but not yet actionable -- no backing execution "
+                "capability in the current lifecycle manager (recorded, not executed)"
+            ),
+        )
 
     async def close_position(
         self, account: DestinationAccount, symbol: str, reason: str = "manual_exit"

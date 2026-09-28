@@ -79,6 +79,18 @@ class PositionPlan:
     #: DestinationAccount to read it from otherwise.
     broker: str = ""
     initial_stop: float | None = None
+    #: The initiating signal's stated entry price (`Signal.price`), carried
+    #: forward so a later MOVE_STOP(breakeven) command
+    #: (`app/signal_commands.py`) has something real to resolve "breakeven"
+    #: against. This is the PROVIDER'S stated price at signal time, not
+    #: necessarily the broker's true average fill price -- this lifecycle
+    #: model doesn't track a confirmed average fill price at all (see
+    #: app/lifecycle/manager.py's module docstring's "still a documented
+    #: gap" section). `None` when the initiating signal carried no price,
+    #: in which case breakeven cannot be resolved and MOVE_STOP(breakeven)
+    #: is refused rather than guessed at (see
+    #: PositionLifecycleManager.move_stop_to_breakeven).
+    entry_price: float | None = None
     targets: list[Target] = field(default_factory=list)
     trailing: TrailingPolicy | None = None
     time_exit: datetime | None = None

@@ -16,6 +16,7 @@ from alembic import command  # type: ignore[attr-defined]  # real, working impor
 from alembic.config import Config as AlembicConfig
 
 from app.models import OrderResult, Side, Signal
+from app.signal_episode import EpisodeLifecycleState, SignalEpisode
 from signal_platform_contracts import EventEnvelope
 
 _ALEMBIC_DIR = Path(__file__).resolve().parent.parent / "alembic"
@@ -269,11 +270,37 @@ CREATE TABLE IF NOT EXISTS export_events (
     UNIQUE (source_stream, export_sequence)
 );
 
+-- app/signal_episode.py's SignalEpisode: one row per correlated trade idea
+-- (provider + analyst + instrument), holding its full revision history as
+-- JSON. `lifecycle_state` is 'open' | 'closed' | 'cancelled' -- only 'open'
+-- episodes are ever loaded back for correlation (see
+-- EpisodeCorrelator.__init__ / load_open_episodes below); closed/cancelled
+-- rows stay for audit/history but are never candidates for a future
+-- revision to correlate against. Written on every create/apply_revision --
+-- same "persist on every transition" posture as lifecycle_state above.
+CREATE TABLE IF NOT EXISTS signal_episodes (
+    episode_id TEXT PRIMARY KEY,
+    provider TEXT NOT NULL,
+    analyst TEXT,
+    instrument TEXT NOT NULL,
+    direction TEXT NOT NULL,
+    opened_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    revision INTEGER NOT NULL DEFAULT 0,
+    lifecycle_state TEXT NOT NULL DEFAULT 'open',
+    source_message_ids TEXT NOT NULL,
+    current_intent TEXT NOT NULL,
+    entry_plan TEXT NOT NULL,
+    stop_plan REAL,
+    targets TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_orders_executed_at ON orders (executed_at);
 CREATE INDEX IF NOT EXISTS idx_orders_account_id ON orders (account_id);
 CREATE INDEX IF NOT EXISTS idx_signals_received_at ON signals (received_at);
 CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions (expires_at);
 CREATE INDEX IF NOT EXISTS idx_export_events_undelivered ON export_events (source_stream, export_sequence) WHERE delivered_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_signal_episodes_identity ON signal_episodes (provider, analyst, instrument, lifecycle_state);
 """
 
 
@@ -779,6 +806,74 @@ class SignalStore:
             conn.execute(
                 "DELETE FROM lifecycle_state WHERE account_id = ? AND symbol = ?", (account_id, symbol)
             )
+
+    def save_episode(self, episode: SignalEpisode) -> None:
+        """Persist one `app/signal_episode.py` `SignalEpisode`, full state
+        each time (same posture as `save_lifecycle_state`) -- the caller
+        always writes the complete current object, never a delta."""
+        with self._connect() as conn:
+            conn.execute(
+                """INSERT INTO signal_episodes
+                   (episode_id, provider, analyst, instrument, direction, opened_at, updated_at,
+                    revision, lifecycle_state, source_message_ids, current_intent, entry_plan,
+                    stop_plan, targets)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT (episode_id) DO UPDATE SET
+                       analyst = excluded.analyst,
+                       instrument = excluded.instrument,
+                       direction = excluded.direction,
+                       updated_at = excluded.updated_at,
+                       revision = excluded.revision,
+                       lifecycle_state = excluded.lifecycle_state,
+                       source_message_ids = excluded.source_message_ids,
+                       current_intent = excluded.current_intent,
+                       entry_plan = excluded.entry_plan,
+                       stop_plan = excluded.stop_plan,
+                       targets = excluded.targets""",
+                (
+                    episode.episode_id,
+                    episode.provider,
+                    episode.analyst,
+                    episode.instrument,
+                    episode.direction.value,
+                    episode.opened_at.isoformat(),
+                    episode.updated_at.isoformat(),
+                    episode.revision,
+                    episode.lifecycle_state.value,
+                    json.dumps(episode.source_message_ids),
+                    json.dumps(episode.current_intent),
+                    json.dumps(episode.entry_plan),
+                    episode.stop_plan,
+                    json.dumps(episode.targets),
+                ),
+            )
+
+    def get_episode(self, episode_id: str) -> SignalEpisode | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                """SELECT episode_id, provider, analyst, instrument, direction, opened_at, updated_at,
+                          revision, lifecycle_state, source_message_ids, current_intent, entry_plan,
+                          stop_plan, targets
+                   FROM signal_episodes WHERE episode_id = ?""",
+                (episode_id,),
+            ).fetchone()
+        return _row_to_episode(row) if row is not None else None
+
+    def load_open_episodes(self) -> list[SignalEpisode]:
+        """Every `lifecycle_state = 'open'` episode -- what
+        `app/signal_episode.py`'s `EpisodeCorrelator` loads at startup so
+        correlation has the same candidates a previous process left open.
+        Closed/cancelled episodes are deliberately never loaded back (see
+        this table's own schema comment) -- they're history, never a future
+        revision's target."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT episode_id, provider, analyst, instrument, direction, opened_at, updated_at,
+                          revision, lifecycle_state, source_message_ids, current_intent, entry_plan,
+                          stop_plan, targets
+                   FROM signal_episodes WHERE lifecycle_state = 'open'"""
+            ).fetchall()
+        return [_row_to_episode(row) for row in rows]
 
     def claim_close(self, account_id: str, symbol: str, *, stale_after_seconds: float = 60.0) -> bool:
         """Atomically claim the exclusive right to resolve-and-submit a
@@ -1461,3 +1556,38 @@ class SignalStore:
                    VALUES (?, ?, ?, ?)""",
                 (idempotency_key, json.dumps(response), datetime.now(timezone.utc).isoformat(), fingerprint),
             )
+
+
+def _row_to_episode(row: tuple) -> SignalEpisode:
+    (
+        episode_id,
+        provider,
+        analyst,
+        instrument,
+        direction,
+        opened_at,
+        updated_at,
+        revision,
+        lifecycle_state,
+        source_message_ids,
+        current_intent,
+        entry_plan,
+        stop_plan,
+        targets,
+    ) = row
+    return SignalEpisode(
+        episode_id=episode_id,
+        provider=provider,
+        analyst=analyst,
+        instrument=instrument,
+        direction=Side(direction),
+        opened_at=datetime.fromisoformat(opened_at),
+        updated_at=datetime.fromisoformat(updated_at),
+        revision=revision,
+        lifecycle_state=EpisodeLifecycleState(lifecycle_state),
+        source_message_ids=json.loads(source_message_ids),
+        current_intent=json.loads(current_intent),
+        entry_plan=json.loads(entry_plan),
+        stop_plan=stop_plan,
+        targets=json.loads(targets),
+    )
