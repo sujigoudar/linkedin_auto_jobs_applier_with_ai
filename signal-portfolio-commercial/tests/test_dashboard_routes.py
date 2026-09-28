@@ -1999,3 +1999,19 @@ def test_compare_page_rejects_more_than_the_max_slugs(db_session):
     response = client.get("/compare", params=params)
     assert response.status_code == 400
     assert "cannot compare more than" in response.text
+
+
+def test_status_page_is_anonymous_and_shows_real_service_status(db_session):
+    client = _client(db_session)
+    response = client.get("/status")
+    assert response.status_code == 200
+    assert "NOT_CONFIGURED" in response.text
+    assert "UNSUPPORTED" in response.text
+
+
+def test_status_page_never_fabricates_a_zero_incident_count(db_session):
+    client = _client(db_session)
+    response = client.get("/status")
+    assert "no incident-tracking model exists in this build" in response.text
+    assert "0 active incidents" not in response.text
+    assert "No published service incidents." not in response.text

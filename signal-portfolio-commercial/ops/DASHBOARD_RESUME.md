@@ -220,8 +220,14 @@ Seven slices are DONE:
   slug is reported by name, never silently dropped. Normalized return
   and co-drawdown panels are explicit UNSUPPORTED -- no NAV/marks-
   history model exists (the same gap PU-03's own slice documented).
+- PU-07 Public service status: `GET /status` (anonymous, no database
+  query) -- shares PU-01's own `get_service_status`. Active incidents/
+  maintenance/history are explicit UNSUPPORTED, deliberately NOT the
+  spec's own literal "No published service incidents." zero-count
+  text, since there is no completed incident query behind it (the same
+  "never fabricate a zero" discipline AD-01's own slice established).
 
-Full suite is 544 tests, ruff and mypy both green (**use `python3 -m
+Full suite is 546 tests, ruff and mypy both green (**use `python3 -m
 ruff`/`python3 -m mypy`/`python3 -m pytest` explicitly** -- this sandbox
 has a stray `uv tool`-installed `ruff`/`mypy` shadowing the project's
 real declared versions on bare `PATH`, which produced a false-negative
@@ -244,13 +250,13 @@ See `dashboard_state.json`'s `current_slice`/`second_slice`/
 `nineteenth_slice`/`twentieth_slice`/`twentyfirst_slice`/
 `twentysecond_slice`/`twentythird_slice`/`twentyfourth_slice`/
 `twentyfifth_slice`/`twentysixth_slice`/`twentyseventh_slice`/
-`twentyeighth_slice`/`twentyninth_slice`/`thirtieth_slice` for the
-exact file lists and what was deliberately left unbuilt in each. 35 of
-66 screens (AD-01, AD-02, AD-03, AD-04, AD-05, AD-08, AD-10, PU-03,
-PU-05, ID-04, AD-16, CU-14, AD-09, CU-16, AD-12, AD-11, AD-17, AD-13,
-AD-19, AD-14, AD-18, AD-20, CU-02, CU-12, CU-13, AD-15, PU-04
-partially done) remain -- pick the next one following the steps
-below. **If you add a
+`twentyeighth_slice`/`twentyninth_slice`/`thirtieth_slice`/
+`thirtyfirst_slice` for the exact file lists and what was deliberately
+left unbuilt in each. 34 of 66 screens (AD-01, AD-02, AD-03, AD-04,
+AD-05, AD-08, AD-10, PU-03, PU-05, ID-04, AD-16, CU-14, AD-09, CU-16,
+AD-12, AD-11, AD-17, AD-13, AD-19, AD-14, AD-18, AD-20, CU-02, CU-12,
+CU-13, AD-15, PU-04, PU-07 partially done) remain -- pick the next one
+following the steps below. **If you add a
 new table to
 `_TENANT_SCOPED_TABLES` in app/db.py, pin any EARLIER migration that
 already calls `_apply_row_level_security` with no explicit `tables`

@@ -1,0 +1,36 @@
+{% extends "_base.html" %}
+{% block title %}Public service status{% endblock %}
+{% block content %}
+<h1>Public service status</h1>
+
+<div class="panel">
+  <h2>Public availability summary</h2>
+  <table>
+    <tbody>
+      {% for item in service_status %}
+      <tr>
+        <th>{{ item.name }}</th>
+        <td><span class="badge badge-{{ item.status.lower() }}">{{ item.status }}</span></td>
+        <td>{{ item.reason }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <p class="help">Public reachability is not brokerage readiness or proof that customer stops exist.</p>
+</div>
+
+<div class="panel">
+  <h2>Active incidents</h2>
+  <p><span class="badge badge-unknown">UNSUPPORTED</span> -- no incident-tracking model exists in this build (the same gap AD-01/AD-21's own slices already documented). This is deliberately not shown as a fabricated "no incidents" zero.</p>
+</div>
+
+<div class="panel">
+  <h2>Maintenance</h2>
+  <p><span class="badge badge-unknown">UNSUPPORTED</span> -- no maintenance-window record exists in this build.</p>
+</div>
+
+<div class="panel">
+  <h2>History</h2>
+  <p><span class="badge badge-unknown">UNSUPPORTED</span> -- no incident history exists to list.</p>
+</div>
+{% endblock %}

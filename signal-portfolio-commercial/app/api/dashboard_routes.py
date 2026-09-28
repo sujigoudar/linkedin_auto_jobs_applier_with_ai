@@ -816,6 +816,20 @@ def public_help_page(request: Request):
     return templates.TemplateResponse(request, "pu08_help.html", {"channels": channels})
 
 
+@router.get("/status")
+def public_service_status_page(request: Request):
+    """PU-07 "Public service status" -- anonymous, no database query.
+    Shares PU-01's own `get_service_status` rather than a duplicate
+    computed status. No incident-tracking model exists anywhere in this
+    build (the same gap AD-01/AD-21's own slices already documented),
+    so active incidents/maintenance/history are each rendered as an
+    explicit UNSUPPORTED by the template -- never the spec's own literal
+    "No published service incidents." zero-count text, since there is
+    no completed incident query behind it to make that zero honest."""
+    service_status = get_service_status()
+    return templates.TemplateResponse(request, "pu07_status.html", {"service_status": service_status})
+
+
 @router.get("/portfolios/{slug}")
 def public_portfolio_detail_page(slug: str, request: Request, session: Session = Depends(get_db_session)):
     """PU-03 "Portfolio detail" -- anonymous, no tenant scope. A slug
