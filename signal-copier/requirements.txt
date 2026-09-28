@@ -1,3 +1,5 @@
+-e ../signal_platform_contracts  # pure cross-service contract package (event envelope + identity) --
+                                  # no DB/broker/secret imports; see its own __init__.py docstring
 fastapi>=0.111
 uvicorn[standard]>=0.30
 pyyaml>=6.0

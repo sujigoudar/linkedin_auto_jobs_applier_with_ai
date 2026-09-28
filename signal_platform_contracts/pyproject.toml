@@ -1,0 +1,39 @@
+[project]
+name = "signal-platform-contracts"
+version = "1.0.0"
+description = "Pure, versioned cross-service contract between signal-copier and signal-portfolio-commercial. No database, broker-client or secret imports -- see this package's own __init__.py docstring."
+requires-python = ">=3.11"
+dependencies = [
+    "pydantic>=2,<3",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+# This pyproject.toml sits INSIDE the package directory it describes (the
+# package's own __init__.py is a sibling of this file, not nested one
+# level down in a "src/signal_platform_contracts/" layout) -- so
+# setuptools needs an explicit package_dir mapping to "." rather than the
+# usual packages.find, which would otherwise look for
+# signal_platform_contracts/signal_platform_contracts/.
+[tool.setuptools]
+packages = ["signal_platform_contracts"]
+package-dir = {"signal_platform_contracts" = "."}
+
+[tool.ruff]
+line-length = 120
+
+# Matches signal-copier/pyproject.toml's and signal-portfolio-commercial/
+# pyproject.toml's own identical, deliberately narrow choice: F (pyflakes)
+# and B (bugbear) are real-bug detectors, not the opinionated style
+# families (E/W, I, C4, UP, TRY, DTZ, ...) that ruff's own broader
+# defaults pull in and that would flag real, intentional choices here
+# (e.g. `ValueError` -- not `TypeError` -- is what a pydantic validator
+# must raise) as errors.
+[tool.ruff.lint]
+select = ["F", "B"]
+
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true
