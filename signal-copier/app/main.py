@@ -41,6 +41,7 @@ from app.brokers.ninjatrader import NinjaTraderBroker
 from app.brokers.paper import PaperBroker
 from app.brokers.rithmic import RithmicBroker
 from app.brokers.signalstack import SignalStackBroker
+from app.brokers.tradovate import TradovateBroker
 from app.config_admin import seed_from_yaml_if_empty
 from app.context import fred as fred_context
 from app.context import fx as fx_context
@@ -91,6 +92,7 @@ brokers = {
     "signalstack": SignalStackBroker(),
     "alpaca": AlpacaBroker(),
     "ninjatrader": NinjaTraderBroker(),
+    "tradovate": TradovateBroker(),
 }
 # These brokers need optional packages installed (and, for Rithmic, connection
 # credentials up front); only register them if available so the paper-only
