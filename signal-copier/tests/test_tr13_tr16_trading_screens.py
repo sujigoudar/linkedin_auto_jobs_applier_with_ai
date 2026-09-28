@@ -308,7 +308,14 @@ async def test_all_four_new_trading_screens_render_real_content(live_server, tmp
     csv_path.write_text("timestamp,open,high,low,close\n2030-06-02T00:00:00+00:00,101,111,100,110\n")
     tv_signal = client.post(
         "/webhook/tradingview",
-        json={"symbol": "AAPL", "side": "buy", "quantity": 1.0, "stop_loss": 95.0, "take_profit": 110.0},
+        json={
+            "symbol": "AAPL",
+            "side": "buy",
+            "quantity": 1.0,
+            "price": 100.0,
+            "stop_loss": 95.0,
+            "take_profit": 110.0,
+        },
         headers=webhook_headers,
     )
     assert tv_signal.status_code == 200
@@ -358,6 +365,12 @@ async def test_all_four_new_trading_screens_render_real_content(live_server, tmp
             await page.fill("#tr15-symbol", "AAPL")
             await page.fill("#tr15-start", "2020-01-01T00:00")
             await page.fill("#tr15-end", "2031-01-01T00:00")
+            # The CSV bar above is deliberately far in the future (so it
+            # always postdates whenever this test actually runs); max_hold
+            # must be widened past the default 30 days to actually reach it,
+            # or the replay would report NO_PRICE_DATA instead of a real
+            # resolved trade -- there is no honest chart to draw from that.
+            await page.fill("#tr15-max-hold", "4000")
             await page.fill('[data-csv-row="1"] .tr15-csv-symbol', "AAPL")
             await page.fill('[data-csv-row="1"] .tr15-csv-path', str(csv_path))
             await page.click("#tr15-confirm")
@@ -370,6 +383,26 @@ async def test_all_four_new_trading_screens_render_real_content(live_server, tmp
             assert "AAPL" in reports_text
             coverage_text = await page.inner_text("#tr15-p02")
             assert "Resolved trades" in coverage_text
+
+            # LOAD-BEARING: the additive equity-curve chart's own Chart.js
+            # dataset must exactly match the real, already-rendered trades
+            # table's own pnl figure -- a chart showing the wrong number is
+            # worse than no chart at all (see this batch's task brief).
+            await page.wait_for_selector("#tr15-equity-chart", timeout=5000)
+            table_pnl_text = await page.inner_text("#tr15-p05 table")
+            chart_points = await page.evaluate(
+                "() => { const c = Chart.getChart(document.getElementById('tr15-equity-chart')); "
+                "return c.data.datasets[0].data; }"
+            )
+            assert len(chart_points) == 1
+            # The real TradingView webhook signal above bought at price 100
+            # with stop 95 / target 110; the CSV bar (101/111/100/110) fills
+            # the take_profit target, so the resolved trade's real pnl is
+            # (110 - 100) * 1.0 quantity = 10.0 -- the SAME number the trades
+            # table (already asserted against the real POST /backtest
+            # response above) must also show.
+            assert chart_points[0] == 10.0
+            assert "10" in table_pnl_text
 
             # TR-16: Private settings, site role and recovery.
             await page.click('a[href="#/trade/system"]')

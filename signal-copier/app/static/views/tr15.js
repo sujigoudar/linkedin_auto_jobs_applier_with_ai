@@ -55,6 +55,66 @@
   // the server itself never storing it.
   const runHistory = [];
 
+  // Additive Chart.js visualization of the same real data the trades table
+  // already shows -- a client-side running sum of each RESOLVED trade's own
+  // real exit_time/pnl (POST /backtest's own response, unmodified), sorted
+  // chronologically. Never a fabricated series: a run with zero resolved
+  // trades renders a real empty state instead of a flat line. Reuses the
+  // exact same one-persistent-instance, destroy-and-recreate Chart.js
+  // pattern dashboard.html's own "economics-chart" (C12) already
+  // established, rather than inventing a second charting convention.
+  let equityChart = null;
+
+  function computeEquityCurve(trades) {
+    return trades
+      .filter((t) => t.exit_time && t.pnl !== null && t.pnl !== undefined)
+      .slice()
+      .sort((a, b) => new Date(a.exit_time) - new Date(b.exit_time))
+      .reduce((acc, t) => {
+        const prev = acc.length ? acc[acc.length - 1].y : 0;
+        acc.push({ x: t.exit_time, y: prev + t.pnl });
+        return acc;
+      }, []);
+  }
+
+  function renderEquityChart(container, trades) {
+    if (equityChart) {
+      equityChart.destroy();
+      equityChart = null;
+    }
+    const wrap = container.querySelector("#tr15-equity-chart-wrap");
+    if (!wrap) return;
+    const curve = computeEquityCurve(trades);
+    if (!curve.length) {
+      wrap.innerHTML = `<div class="empty">No resolved trade has both an exit time and a P&amp;L in this run -- no real equity curve to chart yet (never shown as a fabricated flat line).</div>`;
+      return;
+    }
+    wrap.innerHTML = `<div class="chart-container"><canvas id="tr15-equity-chart"></canvas></div>`;
+    equityChart = new Chart(wrap.querySelector("#tr15-equity-chart").getContext("2d"), {
+      type: "line",
+      data: {
+        labels: curve.map((p) => p.x),
+        datasets: [
+          {
+            label: "Cumulative P&L (resolved trades, by real exit_time)",
+            data: curve.map((p) => p.y),
+            borderColor: "#3ddc84",
+            backgroundColor: "rgba(61, 220, 132, 0.15)",
+            fill: true,
+            tension: 0,
+            pointRadius: 2,
+          },
+        ],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: { legend: { display: false } },
+        scales: { y: { beginAtZero: false } },
+      },
+    });
+  }
+
   async function load(ctx) {
     const els = {
       history: ctx.container.querySelector("#tr15-p01 .tr-panel-body"),
@@ -311,11 +371,14 @@
             <div><strong>Profit factor</strong><br>${s.profit_factor !== null ? fmtNum(s.profit_factor) : "—"} <span class="section-note">${escapeHtml(s.profit_factor_note || "")}</span></div>
           </div>
           ${stressedNote}
+          <h3 class="section-note" style="margin-top:12px;">Cumulative P&amp;L over time (real, client-side running sum of each resolved trade's own exit_time/pnl -- additive to the table below, not a replacement)</h3>
+          <div id="tr15-equity-chart-wrap"></div>
           ${table(["Signal ID", "Symbol", "Side", "Outcome", "P&L", "Entry time", "Exit time"], tradeRows, "No trades.")}
           ${unsupportedNote("TR-15-A02 (Resume job): no backing -- there is no job/shard concept to resume (POST /backtest either completes synchronously or the request failed outright).")}
           ${runHistory.length > 1 ? compareControlHtml() : ""}
         `,
       });
+      renderEquityChart(els.reports, run.report.trades);
       if (runHistory.length > 1) wireCompareControl();
     }
     function compareControlHtml() {

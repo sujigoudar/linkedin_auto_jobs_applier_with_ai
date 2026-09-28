@@ -65,6 +65,49 @@
     URL.revokeObjectURL(url);
   }
 
+  // Additive Chart.js visualization of the same real per-symbol latency
+  // data the table below already shows (E05, app/execution_quality.py's
+  // mean_seconds per account/symbol) -- reuses the exact same one-
+  // persistent-instance, destroy-and-recreate Chart.js pattern
+  // dashboard.html's own "economics-chart" (C12) already established.
+  let latencyChart = null;
+
+  function renderLatencyChart(container, rows) {
+    if (latencyChart) {
+      latencyChart.destroy();
+      latencyChart = null;
+    }
+    const wrap = container.querySelector("#tr14-latency-chart-wrap");
+    if (!wrap) return;
+    if (!rows.length) {
+      wrap.innerHTML = `<div class="empty">No latency samples yet -- no real per-symbol latency to chart.</div>`;
+      return;
+    }
+    const labels = rows.map((r) => `${r.account}/${r.symbol}`);
+    const values = rows.map((r) => r.mean_seconds);
+    wrap.innerHTML = `<div class="chart-container"><canvas id="tr14-latency-chart"></canvas></div>`;
+    latencyChart = new Chart(wrap.querySelector("#tr14-latency-chart").getContext("2d"), {
+      type: "bar",
+      data: {
+        labels,
+        datasets: [
+          {
+            label: "Mean signal-to-fill latency (seconds)",
+            data: values,
+            backgroundColor: "#3ddc84",
+            maxBarThickness: 60,
+          },
+        ],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: { legend: { display: false } },
+        scales: { y: { beginAtZero: true } },
+      },
+    });
+  }
+
   function shell() {
     return `
       <section class="tr-panel" id="tr14-p01"><h2>Account/analyst book</h2><div class="tr-panel-body"></div></section>
@@ -174,10 +217,12 @@
     StateMatrix.render(els.metrics, { state: "ready", html: metricsHtml });
 
     // --- Latency/slippage ---
+    const latencySamples = [];
     const latencyRows = [];
     for (const { account, data } of quality) {
       if (!data) continue;
       for (const [symbol, s] of Object.entries(data.per_symbol || {})) {
+        latencySamples.push({ account: account.account_id, symbol, mean_seconds: s.mean_seconds });
         latencyRows.push([
           `<span class="mono">${escapeHtml(account.account_id)}</span>`,
           escapeHtml(symbol),
@@ -191,12 +236,16 @@
     StateMatrix.render(els.latency, {
       state: latencyRows.length ? "ready" : "empty",
       emptyMessage: "No filled order has a matching signal timestamp to measure latency from yet.",
-      html: `<p class="section-note">Real signal-received-to-fill latency (E05, app/execution_quality.py) -- mixes this process's own handling time with real network/broker latency; there is no separately tracked decision/submission/acknowledgement timestamp to split it further.</p>${table(
+      html: `<p class="section-note">Real signal-received-to-fill latency (E05, app/execution_quality.py) -- mixes this process's own handling time with real network/broker latency; there is no separately tracked decision/submission/acknowledgement timestamp to split it further.</p>
+        <h3 class="section-note" style="margin-top:12px;">Mean latency by account/symbol (additive to the table below, not a replacement)</h3>
+        <div id="tr14-latency-chart-wrap"></div>
+        ${table(
         ["Account", "Symbol", "Samples", "Mean", "Median", "Max"],
         latencyRows,
         "No latency samples."
       )}${unsupportedNote('"Protection delay" (signal→confirmed protective stop) and "Fill slippage" (fill price vs. a reference/expected price) are not tracked anywhere in this build -- no reference price is stored to diff a fill against, and no protection-confirmation timestamp is kept separately from the stop\'s own current status.')}`,
     });
+    renderLatencyChart(els.latency, latencySamples);
 
     // --- Costs: fees not tracked at all ---
     StateMatrix.render(els.costs, {
