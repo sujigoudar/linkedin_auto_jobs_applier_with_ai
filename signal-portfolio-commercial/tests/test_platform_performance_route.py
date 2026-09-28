@@ -49,7 +49,7 @@ def test_platform_performance_endpoint_returns_an_empty_report_with_no_data(db_s
     headers = _auth_headers(role=MembershipRole.OWNER)
     response = client.get("/api/v1/ops/platform-performance", headers=headers)
     assert response.status_code == 200
-    assert response.json() == {"realized_pnl": "0", "per_instrument": []}
+    assert response.json() == {"realized_pnl": "0", "net_pnl": "0", "per_instrument": []}
 
 
 def test_platform_performance_endpoint_returns_real_computed_pnl(db_session):

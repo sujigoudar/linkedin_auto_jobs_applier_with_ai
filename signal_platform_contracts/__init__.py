@@ -10,12 +10,13 @@ their tests) to depend on without coupling their runtimes together.
 
 Slice 1 of the integration sequence (INTEGRATION_DECISION.md S12): the
 event envelope (S6) and identity contract (S5). `EventType` enumerates
-every event category S6 names, but only `SOURCE_RECEIPT` and
-`EXECUTION_APPLIED` have an implemented payload model so far -- exactly
-enough for S12's own "first complete proof" (one simulated source
-instruction -> one paper execution -> one exported event -> one staff
-view). Every other `EventType` member is a real, intentional placeholder
-for a later slice, not a promise this slice already carries that data.
+every event category S6 names; `SOURCE_RECEIPT` and `EXECUTION_APPLIED`
+have an implemented payload model for S12's own "first complete proof"
+(one simulated source instruction -> one paper execution -> one exported
+event -> one staff view), and `FEE` (slice 16, INT-012 "Late fee revises
+net report") for the out-of-band fee confirmation that follows a fill.
+Every other `EventType` member is a real, intentional placeholder for a
+later slice, not a promise this slice already carries that data.
 """
 from __future__ import annotations
 
@@ -39,6 +40,7 @@ from signal_platform_contracts.identity import (
 from signal_platform_contracts.money import Money
 from signal_platform_contracts.payloads import (
     ExecutionAppliedPayload,
+    FeePayload,
     SourceReceiptPayload,
 )
 
@@ -50,6 +52,7 @@ __all__ = [
     "EventType",
     "EvidenceClass",
     "ExecutionAppliedPayload",
+    "FeePayload",
     "InstrumentIdentity",
     "Money",
     "PortfolioIdentity",

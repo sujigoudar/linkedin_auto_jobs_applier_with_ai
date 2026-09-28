@@ -85,6 +85,14 @@ class InboxEvent(Base):
     #: its exact resulting LedgerEntry, never re-derived by matching on
     #: loose fields.
     ledger_entry_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    #: Set ONLY for an applied `EXECUTION_APPLIED` row, to
+    #: f"{broker}|{broker_order_id}" from that event's own payload --
+    #: the one identity a later, separately-delivered `FEE` event for the
+    #: SAME execution can correlate against (INT-012 "Late fee revises
+    #: net report"). Neither payload carries the other's `event_id` or
+    #: this app's own `ledger_entry_id`, so this column is the only
+    #: shared key between the two. NULL for every other row.
+    execution_correlation_key: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     #: NULL for every normally-applied or normally-parked-on-a-gap row.
     #: Set (and `applied_at` left NULL, permanently, for THIS row and
     #: every later `export_sequence` on the same stream -- see

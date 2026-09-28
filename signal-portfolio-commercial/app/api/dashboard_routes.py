@@ -393,10 +393,12 @@ def platform_performance_endpoint(
     report = compute_platform_performance(session, tenant_id=scope.tenant_id)
     return {
         "realized_pnl": str(report.realized_pnl),
+        "net_pnl": str(report.net_pnl) if report.net_pnl is not None else None,
         "per_instrument": [
             {
                 "instrument": ip.instrument,
                 "realized_pnl": str(ip.realized_pnl),
+                "net_pnl": str(ip.net_pnl) if ip.net_pnl is not None else None,
                 "open_quantity": str(ip.open_quantity),
                 "average_cost": str(ip.average_cost) if ip.average_cost is not None else None,
                 "last_fill_price": str(ip.last_fill_price) if ip.last_fill_price is not None else None,

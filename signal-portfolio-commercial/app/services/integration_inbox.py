@@ -52,12 +52,18 @@ from datetime import datetime, timezone
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
-from signal_platform_contracts import CONTRACT_SCHEMA_VERSION, EventEnvelope, EventType, ExecutionAppliedPayload
+from signal_platform_contracts import (
+    CONTRACT_SCHEMA_VERSION,
+    EventEnvelope,
+    EventType,
+    ExecutionAppliedPayload,
+    FeePayload,
+)
 
 from app.db import set_tenant_scope
 from app.models.integration_inbox import ExportStreamRegistration, InboxEvent
-from app.models.ledger import Book, Side
-from app.services.ledger import append_entry
+from app.models.ledger import Book, LedgerEntry, Side
+from app.services.ledger import append_correction, append_entry
 
 _SIDE_BY_PAYLOAD_VALUE = {"buy": Side.BUY, "sell": Side.SELL}
 
@@ -73,6 +79,14 @@ _SUPPORTED_SCHEMA_VERSIONS = frozenset({CONTRACT_SCHEMA_VERSION})
 #: column's own docstring.
 PARKED_REASON_UNSUPPORTED_SCHEMA_VERSION = "unsupported_schema_version"
 PARKED_REASON_UNIMPLEMENTED_EVENT_TYPE = "unimplemented_event_type"
+PARKED_REASON_FEE_TARGET_NOT_FOUND = "fee_target_not_found"
+
+
+def _execution_correlation_key(*, broker: str, broker_order_id: str) -> str:
+    """The one identity `ExecutionAppliedPayload` and `FeePayload` both
+    carry -- see `InboxEvent.execution_correlation_key`'s own
+    docstring."""
+    return f"{broker}|{broker_order_id}"
 
 
 class StreamAlreadyRegisteredToAnotherTenantError(Exception):
@@ -168,11 +182,46 @@ def _apply_projection(session: Session, inbox_event: InboxEvent, envelope: Event
             evidence_class=envelope.evidence_class,
         )
         inbox_event.ledger_entry_id = entry.entry_id
+        inbox_event.execution_correlation_key = _execution_correlation_key(
+            broker=payload.broker, broker_order_id=payload.broker_order_id,
+        )
         inbox_event.applied_at = datetime.now(timezone.utc)
     elif envelope.event_type == EventType.SOURCE_RECEIPT:
         # S7: "SOURCE records what was recommended; it does not claim an
         # execution" -- no ledger projection. Applied immediately since
         # there is nothing further this event type could apply.
+        inbox_event.applied_at = datetime.now(timezone.utc)
+    elif envelope.event_type == EventType.FEE:
+        payload = FeePayload.model_validate(envelope.payload)
+        correlation_key = _execution_correlation_key(broker=payload.broker, broker_order_id=payload.broker_order_id)
+        execution_inbox_event = session.scalars(
+            select(InboxEvent).where(
+                InboxEvent.tenant_id == tenant_id,
+                InboxEvent.execution_correlation_key == correlation_key,
+                InboxEvent.ledger_entry_id.is_not(None),
+            )
+        ).first()
+        if execution_inbox_event is None or execution_inbox_event.ledger_entry_id is None:
+            # INT-012's own "not yet applicable" case: a fee arrived for
+            # an execution this stream hasn't (yet, or ever) applied.
+            # Parked, not coerced onto some other entry and not raised
+            # as an integrity error -- the execution may simply not have
+            # arrived yet (ordinary redelivery/backfill timing), which is
+            # a real, honest "waiting", not a fault.
+            inbox_event.parked_reason = f"{PARKED_REASON_FEE_TARGET_NOT_FOUND}:{correlation_key}"
+            return
+        original = session.get(LedgerEntry, execution_inbox_event.ledger_entry_id)
+        assert original is not None  # ledger_entry_id only ever points at a real, still-existing row
+        correction = append_correction(
+            session,
+            original_entry_id=original.entry_id,
+            quantity=original.quantity,
+            price=original.price,
+            event_time=envelope.event_time,
+            source_authority=f"signal-copier-relay:{envelope.producer_id}",
+            fee=payload.fee,
+        )
+        inbox_event.ledger_entry_id = correction.entry_id
         inbox_event.applied_at = datetime.now(timezone.utc)
     else:
         # Every other EventType has no implemented payload yet (see

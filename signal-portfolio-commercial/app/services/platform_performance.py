@@ -28,14 +28,34 @@ in floating point"), a `multiplier` column signal-copier's own ledger
 has no equivalent of, and no `Side.CLOSE` (every commercial LedgerEntry
 is already a resolved BUY/SELL).
 
-Deliberately GROSS only, same as signal-copier's own module: `fee` is
-frequently `None` on an ingested entry (S7: "Importing a zero default
-is not proof of a verified fee"), so a NET figure would either silently
-treat unknown fees as zero or need per-entry fee tracking this replay
-doesn't attempt. `unknown_fee_entry_count` reports how many entries in
-each instrument's own history had no fee recorded, so a caller can
-render "Net: unavailable (N fills with unknown fee)" honestly instead
-of a net number quietly computed from a gross assumption.
+Realized P&L itself is GROSS, same as signal-copier's own module: fee
+data arrives per entry and, per S7 ("Importing a zero default is not
+proof of a verified fee"), `fee: None` means "not yet known", never
+zero -- summing an unknown fee into a running total would silently
+treat it as zero. `unknown_fee_entry_count` reports how many entries in
+each instrument's own history still have no fee recorded; `net_pnl` is
+computed (`realized_pnl` minus every CLOSING entry's own effective fee)
+only when that count is 0 for the instrument, and stays `None`
+otherwise -- INTEGRATION_ACCEPTANCE_CASES.json INT-012 "Late fee
+revises net report": "Gross P&L100; net initially unavailable... After
+confirmed fees, net98", never a net figure quietly computed from a
+gross assumption, and never "Net100" before every fee is confirmed.
+
+Fee corrections (INT-012, `app/services/ledger.py`'s own
+`append_correction`, applied by `app/services/integration_inbox.py`'s
+own `EventType.FEE` handling): a correction row is never itself
+replayed as a second, separate trade -- this module first builds a
+`correction_of -> latest correction` map, replays only the root entries
+(`correction_of IS NULL`), and uses each root's OWN effective fee (its
+correction's fee, if one exists, else its own) for the fee math above.
+A root entry's `quantity`/`price`/`side` never change via a fee
+correction (`append_correction`'s own contract), so only which `fee`
+value counts changes -- the realized-P&L replay itself (quantity,
+average cost, closing/opening logic) is entirely unaffected by whether
+a fee correction exists. Re-ingesting the identical `FEE` event twice
+is a no-op at the inbox layer (the same `event_id`/`payload_hash`
+redelivery-dedup every event type gets), so a duplicate fee correction
+never appends a second correction row and never lowers `net_pnl` twice.
 
 Does NOT compute win rates or episode counts (signal-copier's own
 `SymbolEconomics` does) -- out of scope for this bounded slice; a
@@ -62,17 +82,40 @@ class InstrumentPerformance:
     last_fill_price: Decimal | None = None
     closing_fills: int = 0
     #: How many entries contributing to THIS instrument's history (opening
-    #: or closing) had `fee is None` -- 0 means every entry's fee was
-    #: genuinely known (even if some were verified-zero), so
-    #: `realized_pnl` here is also, incidentally, the net figure; > 0
-    #: means a net figure cannot be honestly derived from this replay.
+    #: or closing) had no CONFIRMED fee (no fee correction and the root
+    #: entry's own `fee is None`) -- 0 means every entry's fee is
+    #: genuinely known (even if some were verified-zero), which is
+    #: exactly the condition under which `net_pnl` below is populated.
     unknown_fee_entry_count: int = 0
+    #: Sum of every contributing entry's own effective (corrected, if a
+    #: correction exists) fee -- accumulated regardless of
+    #: `unknown_fee_entry_count`, but only meaningful (used to compute
+    #: `net_pnl`) once that count reaches 0.
+    total_fees: Decimal = Decimal(0)
+    #: `realized_pnl - total_fees`, but ONLY once every contributing
+    #: entry's fee is confirmed (`unknown_fee_entry_count == 0`) --
+    #: `None` otherwise. INT-012: never a net figure silently computed
+    #: from an unconfirmed-zero assumption.
+    net_pnl: Decimal | None = None
 
 
 @dataclass
 class PlatformPerformanceReport:
     realized_pnl: Decimal = Decimal(0)
     per_instrument: dict[str, InstrumentPerformance] = field(default_factory=dict)
+
+    @property
+    def net_pnl(self) -> Decimal | None:
+        """Sum of every instrument's own `net_pnl` -- `None` (not a
+        partial sum) if ANY instrument's own net is still unavailable,
+        for the same reason a per-instrument net is `None` until every
+        contributing fee is confirmed."""
+        total = Decimal(0)
+        for ip in self.per_instrument.values():
+            if ip.net_pnl is None:
+                return None
+            total += ip.net_pnl
+        return total
 
 
 def compute_platform_performance(session: Session, *, tenant_id: str) -> PlatformPerformanceReport:
@@ -84,7 +127,7 @@ def compute_platform_performance(session: Session, *, tenant_id: str) -> Platfor
 
 
 def compute_book_performance(session: Session, *, tenant_id: str, book: Book) -> PlatformPerformanceReport:
-    entries = list(
+    all_entries = list(
         session.scalars(
             select(LedgerEntry)
             .where(LedgerEntry.tenant_id == tenant_id, LedgerEntry.book == book)
@@ -92,14 +135,38 @@ def compute_book_performance(session: Session, *, tenant_id: str, book: Book) ->
         ).all()
     )
 
+    # Fold fee corrections into their root entry rather than replaying
+    # them as a second, separate trade: a correction never changes
+    # quantity/price/side (`append_correction`'s own contract), so all
+    # it can honestly contribute here is a more-confirmed `fee`. If more
+    # than one correction ever exists for the same root (not produced by
+    # any caller in this build today), the most recently created one
+    # wins -- never summed, which would double-count a fee amount that
+    # was itself being corrected.
+    latest_correction_by_original: dict[str, LedgerEntry] = {}
+    for entry in all_entries:
+        if entry.correction_of is None:
+            continue
+        existing = latest_correction_by_original.get(entry.correction_of)
+        if existing is None or entry.created_at > existing.created_at:
+            latest_correction_by_original[entry.correction_of] = entry
+    entries = [entry for entry in all_entries if entry.correction_of is None]
+
     report = PlatformPerformanceReport()
     per_instrument = report.per_instrument
 
     for entry in entries:
+        effective_fee = entry.fee
+        correction = latest_correction_by_original.get(entry.entry_id)
+        if correction is not None:
+            effective_fee = correction.fee
+
         signed_qty = entry.quantity if entry.side == Side.BUY else -entry.quantity
         ip = per_instrument.setdefault(entry.instrument, InstrumentPerformance(instrument=entry.instrument))
-        if entry.fee is None:
+        if effective_fee is None:
             ip.unknown_fee_entry_count += 1
+        else:
+            ip.total_fees += effective_fee
         ip.last_fill_price = entry.price
 
         if ip.open_quantity == 0 or (ip.open_quantity > 0) == (signed_qty > 0):
@@ -132,5 +199,9 @@ def compute_book_performance(session: Session, *, tenant_id: str, book: Book) ->
             ip.open_quantity = remainder if signed_qty > 0 else -remainder
         elif ip.open_quantity == 0:
             ip.average_cost = None
+
+    for ip in per_instrument.values():
+        if ip.unknown_fee_entry_count == 0:
+            ip.net_pnl = ip.realized_pnl - ip.total_fees
 
     return report

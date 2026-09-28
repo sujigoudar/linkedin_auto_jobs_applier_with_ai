@@ -56,15 +56,17 @@
 </div>
 
 <div class="panel">
-  <h2>Owner trading performance (gross)</h2>
-  <p class="help">Realized P&amp;L replayed from the owner's own Book.PLATFORM ledger entries. Gross only -- see each row's own unknown-fee count before treating this as a net figure.</p>
-  <p><strong>Total realized P&amp;L: {{ performance.realized_pnl }}</strong></p>
+  <h2>Owner trading performance</h2>
+  <p class="help">Realized P&amp;L replayed from the owner's own Book.PLATFORM ledger entries. Net is shown only once every contributing fee is confirmed -- see each row's own unknown-fee count otherwise.</p>
+  <p><strong>Total realized P&amp;L (gross): {{ performance.realized_pnl }}</strong></p>
+  <p><strong>Total realized P&amp;L (net): {{ performance.net_pnl if performance.net_pnl is not none else "unavailable -- one or more instruments have an unconfirmed fee" }}</strong></p>
   {% if performance.per_instrument %}
   <table>
     <thead>
       <tr>
         <th>Instrument</th>
-        <th>Realized P&amp;L</th>
+        <th>Realized P&amp;L (gross)</th>
+        <th>Realized P&amp;L (net)</th>
         <th>Open quantity</th>
         <th>Average cost</th>
         <th>Last fill price</th>
@@ -77,6 +79,7 @@
       <tr>
         <td>{{ ip.instrument }}</td>
         <td class="num">{{ ip.realized_pnl }}</td>
+        <td class="num">{{ ip.net_pnl if ip.net_pnl is not none else "unavailable" }}</td>
         <td class="num">{{ ip.open_quantity }}</td>
         <td class="num">{{ ip.average_cost if ip.average_cost is not none else "-" }}</td>
         <td class="num">{{ ip.last_fill_price if ip.last_fill_price is not none else "-" }}</td>

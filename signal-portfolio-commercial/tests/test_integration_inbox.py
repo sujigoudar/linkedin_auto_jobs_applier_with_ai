@@ -12,6 +12,7 @@ from signal_platform_contracts import (
     EventType,
     EvidenceClass,
     ExecutionAppliedPayload,
+    FeePayload,
     InstrumentIdentity,
     PrivateAccountIdentity,
     SourceIdentity,
@@ -29,6 +30,7 @@ from app.services.integration_inbox import (
     ingest_export_event,
     register_export_stream,
 )
+from app.services.platform_performance import compute_platform_performance
 
 
 def _seed_tenant(db_session, tenant_id="tenant-a"):
@@ -52,16 +54,19 @@ def _execution_envelope(
     fee=None,
     filled_price="150.00",
     schema_version=None,
+    side="buy",
+    filled_quantity="10",
+    broker_order_id="paper-1",
 ):
     payload = ExecutionAppliedPayload(
         account=PrivateAccountIdentity(account_id="acct1"),
         instrument=_instrument(),
-        side="buy",
-        filled_quantity="10",
+        side=side,
+        filled_quantity=filled_quantity,
         filled_price=filled_price,
         fee=fee,
         broker="paper",
-        broker_order_id="paper-1",
+        broker_order_id=broker_order_id,
     )
     payload_dict = payload.model_dump(mode="json")
     now = datetime.now(timezone.utc)
@@ -84,6 +89,34 @@ def _execution_envelope(
     if schema_version is not None:
         kwargs["schema_version"] = schema_version
     return EventEnvelope(**kwargs)
+
+
+def _fee_envelope(*, event_id, export_sequence, broker_order_id, fee, source_stream="signal-copier:acct1"):
+    payload = FeePayload(
+        account=PrivateAccountIdentity(account_id="acct1"),
+        instrument=_instrument(),
+        broker="paper",
+        broker_order_id=broker_order_id,
+        fee=fee,
+    )
+    payload_dict = payload.model_dump(mode="json")
+    now = datetime.now(timezone.utc)
+    return EventEnvelope(
+        event_type=EventType.FEE,
+        event_id=event_id,
+        producer_id="signal-copier-instance-1",
+        source_stream=source_stream,
+        export_sequence=export_sequence,
+        subject=build_subject(account=PrivateAccountIdentity(account_id="acct1"), instrument=_instrument()),
+        event_time=now,
+        effective_time=now,
+        availability_time=now,
+        receipt_time=now,
+        environment=Environment.LOCAL_SIM,
+        evidence_class=EvidenceClass.INTERNAL_PAPER,
+        payload_hash=compute_payload_hash(payload_dict),
+        payload=payload_dict,
+    )
 
 
 def _source_receipt_envelope(*, event_id="evt-src-1", export_sequence=0, source_stream="signal-copier:acct1"):
@@ -270,6 +303,86 @@ def test_an_event_with_an_unsupported_schema_version_is_parked_not_coerced(db_se
     assert inbox_event.applied_at is None
     assert inbox_event.ledger_entry_id is None
     assert inbox_event.parked_reason == "unsupported_schema_version:99.0.0"
+    assert db_session.scalars(select(LedgerEntry).where(LedgerEntry.tenant_id == "tenant-a")).all() == []
+
+
+def test_late_fee_corrections_revise_net_pnl_and_a_duplicate_never_double_counts(db_session):
+    """INTEGRATION_ACCEPTANCE_CASES.json INT-012 "Late fee revises net
+    report", exercised through the real relay/inbox/ledger-correction
+    path -- not a hand-built ledger fixture. Buy10@100 and sell10@110
+    (both fee=None) are ingested first: gross P&L is 100, net is
+    unavailable (never coerced to 100). An entry-fill FEE (1.00) and an
+    exit-fill FEE (1.00) are ingested next, each correlating to its own
+    execution by (broker, broker_order_id) -- never by a shared
+    event_id, which the two payload shapes don't have. Net becomes 98.
+    Both FEE events are then retried (identical event_id and bytes):
+    the existing redelivery-dedup at the inbox layer makes this a
+    harmless no-op, so net must stay 98, never drop to 96."""
+    _seed_tenant(db_session)
+    register_export_stream(db_session, tenant_id="tenant-a", source_stream="signal-copier:acct1", environment="LOCAL_SIM")
+    db_session.commit()
+
+    entry_fill = _execution_envelope(
+        event_id="evt-entry", export_sequence=0, side="buy", filled_price="100.00", broker_order_id="order-entry",
+    )
+    exit_fill = _execution_envelope(
+        event_id="evt-exit", export_sequence=1, side="sell", filled_price="110.00", broker_order_id="order-exit",
+    )
+    ingest_export_event(db_session, entry_fill.model_dump_json())
+    ingest_export_event(db_session, exit_fill.model_dump_json())
+    db_session.commit()
+
+    gross_only_report = compute_platform_performance(db_session, tenant_id="tenant-a")
+    assert gross_only_report.realized_pnl == Decimal(100)
+    assert gross_only_report.net_pnl is None
+    assert gross_only_report.per_instrument["AAPL"].net_pnl is None
+    assert gross_only_report.per_instrument["AAPL"].unknown_fee_entry_count == 2
+
+    entry_fee = _fee_envelope(event_id="evt-entry-fee", export_sequence=2, broker_order_id="order-entry", fee="1.00")
+    exit_fee = _fee_envelope(event_id="evt-exit-fee", export_sequence=3, broker_order_id="order-exit", fee="1.00")
+    entry_fee_inbox_event = ingest_export_event(db_session, entry_fee.model_dump_json())
+    exit_fee_inbox_event = ingest_export_event(db_session, exit_fee.model_dump_json())
+    db_session.commit()
+
+    assert entry_fee_inbox_event.applied_at is not None
+    assert entry_fee_inbox_event.ledger_entry_id is not None
+    assert exit_fee_inbox_event.applied_at is not None
+
+    corrected_report = compute_platform_performance(db_session, tenant_id="tenant-a")
+    assert corrected_report.realized_pnl == Decimal(100)  # gross is unaffected by a fee correction
+    assert corrected_report.net_pnl == Decimal(98)
+    assert corrected_report.per_instrument["AAPL"].net_pnl == Decimal(98)
+    assert corrected_report.per_instrument["AAPL"].unknown_fee_entry_count == 0
+
+    ledger_entries = db_session.scalars(select(LedgerEntry).where(LedgerEntry.tenant_id == "tenant-a")).all()
+    assert len(ledger_entries) == 4  # 2 original fills + 2 fee corrections -- never replayed as 4 trades
+
+    # Retry both fee observations (identical bytes) -- idempotent no-op.
+    ingest_export_event(db_session, entry_fee.model_dump_json())
+    ingest_export_event(db_session, exit_fee.model_dump_json())
+    db_session.commit()
+
+    retried_report = compute_platform_performance(db_session, tenant_id="tenant-a")
+    assert retried_report.net_pnl == Decimal(98)  # never 96
+    ledger_entries_after_retry = db_session.scalars(select(LedgerEntry).where(LedgerEntry.tenant_id == "tenant-a")).all()
+    assert len(ledger_entries_after_retry) == 4  # no new rows from the retry
+
+
+def test_a_fee_for_an_execution_not_yet_applied_is_parked_not_discarded_or_misattributed(db_session):
+    """A FEE event can genuinely arrive before its own execution has been
+    applied (ordinary redelivery/backfill timing) -- it must be parked,
+    honestly and visibly, never silently dropped and never attached to
+    some other entry that happens to exist."""
+    _seed_tenant(db_session)
+    register_export_stream(db_session, tenant_id="tenant-a", source_stream="signal-copier:acct1", environment="LOCAL_SIM")
+    db_session.commit()
+
+    orphan_fee = _fee_envelope(event_id="evt-orphan-fee", export_sequence=0, broker_order_id="order-nonexistent", fee="1.00")
+    inbox_event = ingest_export_event(db_session, orphan_fee.model_dump_json())
+    db_session.commit()
+
+    assert inbox_event.applied_at is None
+    assert inbox_event.parked_reason == "fee_target_not_found:paper|order-nonexistent"
     assert db_session.scalars(select(LedgerEntry).where(LedgerEntry.tenant_id == "tenant-a")).all() == []
 
 

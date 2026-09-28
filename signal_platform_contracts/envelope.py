@@ -90,7 +90,7 @@ class EventType(str, enum.Enum):
 #: Event types with a real payload model (signal_platform_contracts.payloads)
 #: and an intended producer in this slice. Anything else in EventType is a
 #: named placeholder only -- see this module's own docstring.
-IMPLEMENTED_EVENT_TYPES = frozenset({EventType.SOURCE_RECEIPT, EventType.EXECUTION_APPLIED})
+IMPLEMENTED_EVENT_TYPES = frozenset({EventType.SOURCE_RECEIPT, EventType.EXECUTION_APPLIED, EventType.FEE})
 
 
 def compute_payload_hash(payload: dict[str, Any]) -> str:

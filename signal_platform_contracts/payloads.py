@@ -51,6 +51,27 @@ class SourceReceiptPayload(BaseModel):
     _validate_side = field_validator("side")(_known_side)
 
 
+class FeePayload(BaseModel):
+    """`EventType.FEE` -- a confirmed fee for a specific already-applied
+    execution, arriving separately from the fill itself
+    (INTEGRATION_DECISION.md S7: fees are frequently not known at fill
+    time). Correlates to that execution by the SAME (account, instrument,
+    broker, broker_order_id) identity its own `ExecutionAppliedPayload`
+    carried -- there is no other shared key between the two payloads.
+    `fee` is required here (never `None`): this event exists specifically
+    to move a fee from "not yet known" to "confirmed", so an unset value
+    would defeat its own purpose; a genuinely zero fee is expressed as
+    `Money("0")`, not by omitting the event."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    account: PrivateAccountIdentity
+    instrument: InstrumentIdentity
+    broker: str
+    broker_order_id: str
+    fee: Money
+
+
 class ExecutionAppliedPayload(BaseModel):
     """`EventType.EXECUTION_APPLIED` -- a fill the private engine's own
     broker adapter actually confirmed. `fee: None` means "not yet known",
