@@ -277,6 +277,26 @@ class _Settings(BaseSettings):
     #: safest-default reasoning as RELAY_EVIDENCE_CLASS above.
     RELAY_ENVIRONMENT: str = "LOCAL_SIM"
 
+    #: A SEPARATE shared secret from RELAY_SIGNING_SECRET above, for a
+    #: SEPARATE trust boundary: signal-portfolio-commercial's own public
+    #: catalog (an anonymous prospect evaluating a PUBLISHED provider
+    #: before subscribing) calls this service's own
+    #: `POST /catalog/providers/{source}/fit-simulation` -- never
+    #: `POST /providers/{source}/fit-simulation` (the owner-gated one,
+    #: still cookie/CSRF-only) -- signing its request with this secret.
+    #: Deliberately NOT the relay secret, same "a stolen credential must
+    #: not become a different credential" reasoning
+    #: INTEGRATION_DECISION.md S11 already applies to
+    #: RELAY_SIGNING_SECRET vs the billing webhook secret on the
+    #: commercial side: a leaked catalog fit-sim secret must never be
+    #: usable to forge a relay export-event batch, and vice versa. See
+    #: app/services/catalog_fit_sim_auth.py's own module docstring for
+    #: the exact audience-bound signing scheme. A placeholder default
+    #: only; a real deployment sets this via a secrets manager and keeps
+    #: it in sync with signal-portfolio-commercial's own
+    #: CATALOG_FIT_SIM_SIGNING_SECRET.
+    CATALOG_FIT_SIM_SIGNING_SECRET: str = "LOCAL_SIM-not-a-real-catalog-fit-sim-secret-change-if-ever-deployed"
+
 
 _settings = _Settings()
 
@@ -356,3 +376,5 @@ RELAY_BATCH_SIZE = _settings.RELAY_BATCH_SIZE
 RELAY_PRODUCER_ID = _settings.RELAY_PRODUCER_ID
 RELAY_EVIDENCE_CLASS = _settings.RELAY_EVIDENCE_CLASS
 RELAY_ENVIRONMENT = _settings.RELAY_ENVIRONMENT
+
+CATALOG_FIT_SIM_SIGNING_SECRET = _settings.CATALOG_FIT_SIM_SIGNING_SECRET

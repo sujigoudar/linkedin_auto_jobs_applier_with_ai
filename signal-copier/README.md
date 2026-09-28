@@ -931,17 +931,41 @@ curl -X POST http://localhost:8000/providers/alerts_guy/fit-simulation \
       }'
 ```
 
-Owner-gated for now, same as `/backtest` — this service has no
-customer-facing auth model of its own. A real prospect-facing "browse
-providers" catalog page (e.g. in signal-portfolio-commercial's public
-site) would need its own separate, appropriately-scoped route calling
-into this one with a service credential; that cross-service wiring
-doesn't exist yet and isn't guessed at here — this endpoint is the
-backend piece a catalog UI would call, not the UI itself.
+This route is owner-gated (cookie/CSRF session), same as `/backtest`
+above — for the owner's own ad hoc use.
+
+```
+POST /catalog/providers/{source}/fit-simulation
+```
+
+The real prospect-facing path: the same computation, the same request/
+response shape, but authenticated by a signed, audience-bound, expiring
+service token (`X-Catalog-Fit-Sim-Signature`, verified against
+`CATALOG_FIT_SIM_SIGNING_SECRET` — see
+`app/services/catalog_fit_sim_auth.py`'s own module docstring for the
+exact scheme) instead of an owner session, and rate-limited separately
+(`CATALOG_FIT_SIM_RATE_LIMIT`, `app/rate_limit.py`) since it's reachable
+by signal-portfolio-commercial's own backend on behalf of an anonymous
+public-catalog visitor. It is a genuinely separate route/dependency, not
+`/providers/{source}/fit-simulation` with `require_owner` relaxed — a
+valid catalog-fit-sim signature authenticates to this ONE route and
+nothing else in this service; it can never satisfy `require_owner`. See
+`app/main.py`'s own docstring on `run_catalog_fit_simulation` for why,
+and `tests/test_catalog_fit_sim_auth.py` / `tests/test_catalog_fit_sim_endpoint.py`
+for the auth and boundary coverage. signal-portfolio-commercial's own
+PU-03 "Portfolio detail" page is the real, built caller — see that
+repo's `app/services/fit_simulation_client.py`. As of this writing, no
+real historical price CSVs are configured anywhere in that repo for any
+published product's underlying instrument, so that page's own fit
+simulator honestly renders as unavailable pending real historical market
+data, rather than fabricating a result — the wiring above is real and
+tested end to end (with the cross-service HTTP call mocked at the
+boundary, the same way the relay ingest is tested), but no real number
+has ever actually been shown to a real visitor from it yet.
 
 See `tests/test_fit_simulator.py` and `tests/test_backtest_api.py`'s
 `test_fit_simulation_endpoint_*` tests for the rescaling-correctness and
-end-to-end proofs.
+end-to-end proofs of the underlying computation (shared by both routes).
 
 ## Dashboard
 
