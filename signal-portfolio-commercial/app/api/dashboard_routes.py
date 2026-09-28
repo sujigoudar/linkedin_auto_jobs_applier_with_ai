@@ -231,6 +231,7 @@ from app.services.customer_display_preferences import (
     save_display_preferences,
 )
 from app.services.customer_overview import get_customer_overview
+from app.services.customer_selection_detail import get_own_selection_detail
 from app.services.notification_preferences import (
     InvalidNotificationPreferencesError,
     get_notification_preferences,
@@ -1879,6 +1880,31 @@ def customer_overview_page(
     set_tenant_scope(session, scope.tenant_id)
     overview = get_customer_overview(session, tenant_id=scope.tenant_id, user_id=scope.user_id)
     return templates.TemplateResponse(request, "cu01_overview.html", {"overview": overview})
+
+
+def _require_own_selection_detail(scope: TenantScope) -> None:
+    try:
+        require_permission(scope.role, "view_own_selection_detail")
+    except PermissionDenied as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+
+@router.get("/app/portfolios/{selection_id}")
+def customer_selection_detail_page(
+    selection_id: str,
+    request: Request,
+    scope: TenantScope = Depends(get_current_scope),
+    session: Session = Depends(get_db_session),
+):
+    """CU-03 "Selected portfolio detail" -- see
+    app/services/customer_selection_detail.py's own docstring for what
+    is and is not implemented."""
+    _require_own_selection_detail(scope)
+    set_tenant_scope(session, scope.tenant_id)
+    detail = get_own_selection_detail(session, selection_id, tenant_id=scope.tenant_id, user_id=scope.user_id)
+    if detail is None:
+        raise HTTPException(status_code=404, detail="not found")
+    return templates.TemplateResponse(request, "cu03_selection_detail.html", {"detail": detail})
 
 
 def _require_portfolio_selections(scope: TenantScope) -> None:

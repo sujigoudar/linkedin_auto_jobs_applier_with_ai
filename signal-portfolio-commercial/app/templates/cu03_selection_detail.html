@@ -1,0 +1,57 @@
+{% extends "_base.html" %}
+{% block title %}Selected portfolio detail{% endblock %}
+{% block content %}
+<h1>Selected portfolio detail</h1>
+
+<div class="panel">
+  <h2>Identity/version</h2>
+  {% if detail.portfolio %}
+  <p><strong>{{ detail.portfolio.product_name }}</strong> ({{ detail.portfolio.slug }})</p>
+  <p>Selection state: {{ detail.selection.state.value }}</p>
+  <p>Portfolio version: {{ detail.portfolio.portfolio_version_number if detail.portfolio.portfolio_version_number is not none else "unavailable" }}</p>
+  <p>Sleeve count: {{ detail.portfolio.sleeve_count if detail.portfolio.sleeve_count is not none else "unavailable" }}</p>
+  <p>As of: {{ detail.portfolio.as_of }}</p>
+  {% else %}
+  <p><span class="badge badge-unknown">UNSUPPORTED</span> -- this selection's product is no longer published, so its current version facts are unavailable here.</p>
+  {% endif %}
+</div>
+
+<div class="panel">
+  <h2>Actual versus model</h2>
+  <p><span class="badge badge-unknown">UNSUPPORTED</span> -- no execution/NAV ledger exists in this build, so no real actual-versus-model comparison can be shown here. This is never a zero or a guessed figure.</p>
+</div>
+
+<div class="panel">
+  <h2>Alerts/trades</h2>
+  <p><span class="badge badge-unknown">UNSUPPORTED</span> -- no execution ledger or alert-delivery-to-customer link exists in this build.</p>
+</div>
+
+<div class="panel">
+  <h2>Effective settings</h2>
+  {% if detail.mandate %}
+  <p>Mandate state: {{ detail.mandate.state.value }}</p>
+  <p>Allocation: {{ detail.mandate.allocation_amount }} {{ detail.mandate.allocation_currency }}</p>
+  <p>Start mode: {{ detail.mandate.start_mode.value }}</p>
+  {% if detail.connection %}
+  <p>Connected platform: {{ detail.connection.platform }} ({{ detail.connection.state.value }})</p>
+  {% else %}
+  <p><span class="badge badge-unknown">UNSUPPORTED</span> -- this mandate's connected account is missing or disconnected.</p>
+  {% endif %}
+  {% else %}
+  <p>No copy mandate exists for this selection yet.</p>
+  {% endif %}
+</div>
+
+<div class="panel">
+  <h2>Changes and safety actions</h2>
+  <ul>
+    <li><a href="/app/connections">Open connection (CU-07)</a></li>
+    <li><a href="/app/portfolios">Change future selection (CU-02)</a></li>
+    {% if detail.mandate %}
+    <li><a href="/app/copy/{{ detail.mandate.mandate_id }}/manage">Pause new copying (CU-10)</a></li>
+    {% else %}
+    <li><span class="badge badge-unknown">UNSUPPORTED</span> -- no copy mandate exists for this selection yet, so there is nothing to pause.</li>
+    {% endif %}
+  </ul>
+</div>
+{% endblock %}

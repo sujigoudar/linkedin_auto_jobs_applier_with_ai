@@ -272,8 +272,18 @@ Seven slices are DONE:
   required". Actual performance card, Observed open episodes, and
   Alerts are all explicit UNSUPPORTED -- no execution/NAV ledger or
   alert-delivery-to-customer link exists in this build.
+- CU-03 Selected portfolio detail: `GET /app/portfolios/{selection_id}`
+  (CUSTOMER only) -- no new model or migration needed, joins CU-02's
+  own `get_own_portfolio_selection` (scoped not-found), PU-03's own
+  `get_published_portfolio_detail`, and CU-01's own
+  `list_own_copy_mandates_by_selection` + a DECLARED-only connection
+  filter (the same pattern CU-01 already established). Identity/
+  version, Effective settings and Changes/safety-action links are
+  real; Actual versus model, Alerts/trades, and all three metrics
+  (Observed net P&L, Open episodes, Delivery lag) are explicit
+  UNSUPPORTED -- no execution/NAV ledger exists in this build.
 
-Full suite is 588 tests, ruff and mypy both green (**use `python3 -m
+Full suite is 597 tests, ruff and mypy both green (**use `python3 -m
 ruff`/`python3 -m mypy`/`python3 -m pytest` explicitly** -- this sandbox
 has a stray `uv tool`-installed `ruff`/`mypy` shadowing the project's
 real declared versions on bare `PATH`, which produced a false-negative
@@ -298,9 +308,10 @@ See `dashboard_state.json`'s `current_slice`/`second_slice`/
 `twentyfifth_slice`/`twentysixth_slice`/`twentyseventh_slice`/
 `twentyeighth_slice`/`twentyninth_slice`/`thirtieth_slice`/
 `thirtyfirst_slice`/`thirtysecond_slice`/`thirtythird_slice`/
-`thirtyfourth_slice`/`thirtyfifth_slice`/`thirtysixth_slice` for the
-exact file lists and what was deliberately left unbuilt in each. 28 of
-66 screens remain. Several of those are genuinely infrastructure-
+`thirtyfourth_slice`/`thirtyfifth_slice`/`thirtysixth_slice`/
+`thirtyseventh_slice` for the exact file lists and what was
+deliberately left unbuilt in each. 27 of 66 screens remain. Several of
+those are genuinely infrastructure-
 blocked and NOT to be force-built without fabricating a capability:
 CU-04 (no customer-to-alert linkage), CU-05/CU-06/CU-15 (need a real
 NAV/execution ledger), CU-11 (needs Stripe hosted checkout +

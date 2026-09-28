@@ -2363,3 +2363,53 @@ def test_customer_overview_page_shows_the_real_row_after_a_full_selection_connec
     assert response.status_code == 200
     assert product.product_name in response.text
     assert "No action required" in response.text
+
+
+def test_selection_detail_page_requires_customer_role(db_session):
+    client = _client(db_session)
+    response = client.get("/app/portfolios/nonexistent-selection", headers=_auth_headers(role=MembershipRole.OWNER))
+    assert response.status_code == 403
+
+
+def test_selection_detail_page_is_a_scoped_not_found_for_an_unknown_selection(db_session):
+    _seed_customer_membership(db_session)
+    client = _client(db_session)
+    response = client.get(
+        "/app/portfolios/nonexistent-selection", headers=_auth_headers(role=MembershipRole.CUSTOMER)
+    )
+    assert response.status_code == 404
+
+
+def test_selection_detail_page_shows_the_real_selection_and_unsupported_panels(db_session):
+    _seed_customer_membership(db_session)
+    product = _seed_published_product(db_session)
+    client = _client(db_session)
+    headers = _auth_headers(role=MembershipRole.CUSTOMER)
+
+    client.post("/app/portfolios", data={"product_id": product.product_id}, headers=headers)
+
+    from app.services.portfolio_selection import list_own_portfolio_selections
+
+    selection_id = list_own_portfolio_selections(db_session, tenant_id="tenant-a", user_id="user-a")[0].selection_id
+
+    response = client.get(f"/app/portfolios/{selection_id}", headers=headers)
+    assert response.status_code == 200
+    assert product.product_name in response.text
+    assert "UNSUPPORTED" in response.text
+
+
+def test_selection_detail_page_is_a_scoped_not_found_across_tenants(db_session):
+    _seed_customer_membership(db_session, tenant_id="tenant-a", user_id="user-a")
+    _seed_customer_membership(db_session, tenant_id="tenant-b", user_id="user-b")
+    product = _seed_published_product(db_session, tenant_id="tenant-a")
+    client = _client(db_session)
+    owner_headers = _auth_headers(user_id="user-a", role=MembershipRole.CUSTOMER)
+    client.post("/app/portfolios", data={"product_id": product.product_id}, headers=owner_headers)
+
+    from app.services.portfolio_selection import list_own_portfolio_selections
+
+    selection_id = list_own_portfolio_selections(db_session, tenant_id="tenant-a", user_id="user-a")[0].selection_id
+
+    other_tenant_headers = _auth_headers(tenant_id="tenant-b", user_id="user-b", role=MembershipRole.CUSTOMER)
+    response = client.get(f"/app/portfolios/{selection_id}", headers=other_tenant_headers)
+    assert response.status_code == 404

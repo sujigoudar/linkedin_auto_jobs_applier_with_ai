@@ -157,6 +157,9 @@ _ALLOWED: dict[str, frozenset[Role]] = {
     #: summary, same shape as "manage_own_copy_mandates" and its
     #: siblings.
     "view_own_customer_overview": frozenset({Role.CUSTOMER}),
+    #: CU-03 "Selected portfolio detail" -- a customer's own selection
+    #: detail, same shape as "view_own_customer_overview".
+    "view_own_selection_detail": frozenset({Role.CUSTOMER}),
 }
 
 
