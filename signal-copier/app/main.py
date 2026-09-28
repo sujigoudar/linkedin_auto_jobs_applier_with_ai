@@ -39,6 +39,7 @@ from app.brokers.ibkr import IBKRBroker
 from app.brokers.mt4_mt5 import MetaApiBroker, MT5Broker
 from app.brokers.ninjatrader import NinjaTraderBroker
 from app.brokers.oanda import OANDABroker
+from app.brokers.schwab import SchwabBroker
 from app.brokers.paper import PaperBroker
 from app.brokers.rithmic import RithmicBroker
 from app.brokers.signalstack import SignalStackBroker
@@ -134,6 +135,18 @@ if config.RITHMIC_USER:
                 config.RITHMIC_USER, config.RITHMIC_PASSWORD, config.RITHMIC_SYSTEM_NAME, config.RITHMIC_GATEWAY_URL
             ),
         )
+    )
+# See app/brokers/schwab.py's own module docstring and config.py's own
+# SCHWAB_ACKNOWLEDGE_NO_SANDBOX docstring: Schwab has no sandbox/paper
+# environment at all, unlike every other broker in this registry -- this
+# one is deliberately gated behind an explicit acknowledgement on top of
+# having its credentials set, not just credentials alone.
+if config.SCHWAB_ACKNOWLEDGE_NO_SANDBOX:
+    _optional_brokers.append(("schwab", SchwabBroker))
+else:
+    logger.info(
+        "schwab broker not registered: SCHWAB_ACKNOWLEDGE_NO_SANDBOX is not set "
+        "(Schwab has no sandbox -- see app/brokers/schwab.py's own module docstring)"
     )
 for broker_name, broker_factory in _optional_brokers:
     try:

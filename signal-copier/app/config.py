@@ -182,6 +182,17 @@ class _Settings(BaseSettings):
     # single-exchange case.
     CCXT_EXCHANGES: str = ""
 
+    # app/brokers/schwab.py's own SchwabBroker -- Schwab has NO sandbox/
+    # paper environment at all (confirmed by reading every request-issuing
+    # method in the community wrapper schwab-py's own client modules: only
+    # one base URL exists anywhere in that codebase). Unlike every other
+    # optional broker in this registry (gated only by having its
+    # credentials set), this one is ALSO gated behind this explicit
+    # acknowledgement -- set it to true only once you understand every
+    # order this broker places, including your first test of it, is real
+    # and uses real money.
+    SCHWAB_ACKNOWLEDGE_NO_SANDBOX: bool = False
+
     # How often app/reconciliation.py re-checks PENDING orders on brokers that
     # support get_order_status() (currently Alpaca and IBKR).
     RECONCILE_INTERVAL_SECONDS: float = 30.0
@@ -309,6 +320,7 @@ IBKR_CLIENT_ID = _settings.IBKR_CLIENT_ID
 CCXT_EXCHANGE_ID = _settings.CCXT_EXCHANGE_ID
 CCXT_SANDBOX = _settings.CCXT_SANDBOX
 CCXT_EXCHANGES = [e.strip() for e in _settings.CCXT_EXCHANGES.split(",") if e.strip()]
+SCHWAB_ACKNOWLEDGE_NO_SANDBOX = _settings.SCHWAB_ACKNOWLEDGE_NO_SANDBOX
 
 RITHMIC_USER = _settings.RITHMIC_USER
 RITHMIC_PASSWORD = _settings.RITHMIC_PASSWORD
