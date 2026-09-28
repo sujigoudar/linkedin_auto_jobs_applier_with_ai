@@ -128,3 +128,68 @@ No case above is marked PASS without a cited, currently-passing automated
 test or a stated structural reason with no counter-example code path. Where
 a case is genuinely unaddressed, it says so rather than being silently
 omitted from this table.
+
+## Post-acceptance production-readiness audit
+
+After the acceptance pack above reached PASS/PARTIAL/BLOCKED status, a
+separate audit asked a different question: "what would surface once real
+broker/vendor credentials are actually supplied" — not "does the pack's own
+40 cases pass," but "would a real operator's real Alpaca/IBKR/ccxt
+credentials actually work against this build." That audit found and this
+session fixed, with real tests and load-bearing verification for each:
+
+- **B5 (real fills from Alpaca/IBKR never reached the commercial
+  platform).** `EXECUTION_APPLIED` was only ever exported synchronously at
+  order-placement time for a result that was ALREADY `FILLED` — but Alpaca
+  and IBKR (the two brokers a real deployment is most likely to actually
+  use) report `PENDING` at placement time and only confirm a fill later,
+  via `signal-copier/app/reconciliation.py`'s polling loop, which had no
+  export call at all. Fixed: `list_pending_orders` now joins each order to
+  its originating signal so the reconciler has what
+  `build_execution_applied_envelope` needs, and `_correct_position` exports
+  on its `FILLED` branch using the same builder/config path
+  `app/engine.py` already uses for the synchronous case. See
+  `tests/test_reconciliation.py::test_reconciled_fill_exports_execution_applied_event`.
+- **B1 (IBKR host/port/client_id hardcoded).** `IBKRBroker` was always
+  constructed with no arguments in `app/main.py`'s broker registry,
+  hardcoding `127.0.0.1:7497` with no way to point it at IB Gateway, a
+  different port, or a remote host. Fixed via
+  `IBKR_HOST`/`IBKR_PORT`/`IBKR_CLIENT_ID` env vars.
+- **B3 (ccxt hardcoded to Binance, no sandbox toggle).** `CCXTBroker` was
+  always constructed bare, silently defaulting every deployment to Binance
+  regardless of which exchange the operator's own credentials belong to,
+  with no way to test against a sandbox/testnet before risking real funds.
+  Fixed via `CCXT_EXCHANGE_ID`/`CCXT_SANDBOX` env vars (`CCXT_SANDBOX`
+  uses ccxt's own `set_sandbox_mode`, verified for real against a genuine
+  ccxt Binance instance, not a mock).
+- **Root `docker-compose.yml` gaps.** The `signal-copier` service had no
+  `env_file` directive at all (a real `.env` with real broker credentials
+  next to the compose file would never reach the container) and never set
+  `SESSION_SECRET` (every owner-authenticated route — dashboard,
+  `/orders`, `/positions`, close/flatten — fails closed without it, even
+  with a real `OWNER_PASSWORD` set). Both fixed.
+- **`signal-portfolio-commercial/.env.example` gaps.** Documented
+  `COMMERCIAL_MIGRATOR_DATABASE_URL`, `COMMERCIAL_RUNTIME_ROLE_PASSWORD`,
+  `RELAY_ROLE_PASSWORD` — real, required env vars this session's own
+  `docker-compose.yml`/`ops/bootstrap.py` already need that were missing
+  from that file entirely.
+
+### Items the audit flagged that genuinely cannot be closed without either
+real vendor access/documentation or net-new feature engineering (not
+"just credentials"):
+
+- Collective2/eToro/CopyFactory publisher adapters: exist as real code
+  against each vendor's documented API contract, but have never been
+  exercised against a live vendor account (no such account exists in this
+  environment) — supplying real credentials for these is a genuine "first
+  real run," not a config change.
+- Real Stripe billing: `app/services/stripe_webhook.py` verifies inbound
+  webhook signatures for real, but there is no real Stripe SDK integration
+  for the outbound side (creating customers/subscriptions/charges) — this
+  is net-new feature work, not a wiring gap.
+- Real customer/owner login: this build's own design docs name Supabase
+  Auth as the intended real-deployment identity provider; no such
+  integration exists anywhere in this codebase (`signal-portfolio-
+  commercial/.env.example`'s own `LOCAL_JWT_SECRET` entry says so
+  explicitly) — an operator mints sessions via `ops/bootstrap.py` until
+  this is built for real.
