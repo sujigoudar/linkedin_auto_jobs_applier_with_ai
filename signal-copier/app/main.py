@@ -301,6 +301,20 @@ app.add_middleware(SlowAPIMiddleware)
 # HTML/JS itself.
 app.mount("/static/vendor", StaticFiles(directory=STATIC_DIR / "vendor"), name="vendor")
 
+# TR-01..TR-04 (and every later TR-0x batch's) hash-routed views: the
+# shared router/state-matrix helpers and each screen's own view module
+# (app/static/router.js, app/static/state-matrix.js, app/static/views/*.js)
+# -- same trust level as the vendor files above (public, static JS the
+# dashboard itself already ships unauthenticated) and same "no build
+# step" convention (see dashboard.html's own module docstring in
+# app/main.py's `dashboard()`). Registered AFTER the narrower
+# `/static/vendor` mount above so a `/static/vendor/...` request keeps
+# matching that mount first; this broader one only catches everything
+# else under `/static/` (including `/static/dashboard.html` itself,
+# harmlessly served twice alongside `GET /`, since it's the same public,
+# no-secrets page either way).
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
 
 #: Session-only routes -- creating/destroying a browser session, never a
 #: financial effect. A standby must still let its owner log in to inspect

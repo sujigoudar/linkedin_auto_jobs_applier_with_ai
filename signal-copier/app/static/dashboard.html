@@ -148,6 +148,64 @@
   .ok-text { color: var(--ok); }
   .bad-text { color: var(--bad); }
   .chart-container { position: relative; height: 260px; }
+
+  /* --- TR-0x routed views (app/static/router.js, state-matrix.js, views/*) --- */
+  .tr-nav { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 14px; }
+  .tr-nav a {
+    color: var(--accent);
+    text-decoration: none;
+    font-size: 0.82rem;
+    padding: 4px 10px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+  }
+  .tr-nav a:hover { text-decoration: underline; }
+  .route-chrome { margin-bottom: 16px; }
+  .route-breadcrumb { color: var(--muted); font-size: 0.78rem; margin-bottom: 2px; }
+  .route-title { font-size: 1.15rem; margin: 0 0 6px; }
+  .route-badges { display: flex; gap: 10px; flex-wrap: wrap; font-size: 0.76rem; color: var(--muted); }
+  .route-badges span:empty { display: none; }
+  .tr-grid {
+    display: grid;
+    grid-template-columns: repeat(12, 1fr);
+    gap: 16px;
+  }
+  .tr-panel {
+    grid-column: span 12;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 14px 16px;
+    overflow-x: auto;
+  }
+  .tr-panel h2 { font-size: 0.95rem; margin: 0 0 10px; }
+  @media (min-width: 900px) {
+    .tr-panel:first-of-type { grid-column: span 8; }
+  }
+  .sm-state { padding: 6px 0; }
+  .sm-skeleton { display: flex; flex-direction: column; gap: 8px; }
+  .sm-skeleton-row {
+    height: 16px;
+    border-radius: 4px;
+    background: linear-gradient(90deg, rgba(255,255,255,0.03), rgba(255,255,255,0.08), rgba(255,255,255,0.03));
+    background-size: 200% 100%;
+    animation: sm-shimmer 1.4s ease-in-out infinite;
+  }
+  @keyframes sm-shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+  .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0,0,0,0); }
+  .sm-empty-message, .sm-denied-message, .sm-error-message, .sm-unsupported-message,
+  .sm-timeout-message, .sm-conflict-message, .sm-session-expired-message, .sm-maintenance-message {
+    color: var(--muted);
+    font-size: 0.85rem;
+  }
+  .sm-error-message { color: var(--bad); }
+  .sm-stale-banner, .sm-partial-banner { color: var(--warn); font-size: 0.78rem; margin-bottom: 8px; }
+  .sm-op-id, .sm-correlation-id { color: var(--muted); font-size: 0.72rem; font-family: ui-monospace, monospace; }
+  .sm-conflict-diff { display: flex; gap: 16px; margin: 8px 0; font-size: 0.82rem; }
+  .sm-next-link { display: inline-block; margin-top: 6px; color: var(--accent); font-size: 0.82rem; }
+  .tr-not-tracked, .tr-not-exposed, .tr-basis-note { color: var(--muted); font-style: italic; font-size: 0.76rem; }
+  .tr-controls-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
+  .tr-controls-unsupported { margin-top: 10px; }
 </style>
 <link rel="stylesheet" href="/static/vendor/tabulator.min.css">
 </head>
@@ -174,7 +232,28 @@
     <button class="ghost" onclick="logout()">Sign out</button>
   </div>
 
-  <div class="grid">
+  <nav class="tr-nav" aria-label="Trading screens">
+    <a href="#/trade">Trading command center</a>
+    <a href="#/trade/positions">Positions and allocations</a>
+    <a href="#/trade/signals">Incoming signal stream</a>
+    <a href="#" id="legacy-nav-link">Legacy dashboard (all panels)</a>
+  </nav>
+
+  <div id="route-view" hidden>
+    <div class="route-chrome">
+      <div class="route-breadcrumb" id="route-breadcrumb"></div>
+      <h1 class="route-title" id="route-title"></h1>
+      <div class="route-badges">
+        <span id="route-scope"></span>
+        <span id="route-origin"></span>
+        <span id="route-mode"></span>
+        <span id="route-asof" class="last-updated"></span>
+      </div>
+    </div>
+    <div id="route-panels" class="tr-grid"></div>
+  </div>
+
+  <div id="legacy-content" class="grid">
     <section class="panel full">
       <h2>Broker capabilities <span class="count" id="brokers-count"></span></h2>
       <div id="brokers-table"><div class="empty">Loading…</div></div>
@@ -322,10 +401,13 @@
       <div id="orders-table"></div>
     </section>
   </div>
+  </div><!-- #legacy-content -->
   </main><!-- #app -->
 
 <script src="/static/vendor/chart.umd.min.js"></script>
 <script src="/static/vendor/tabulator.min.js"></script>
+<script src="/static/state-matrix.js"></script>
+<script src="/static/router.js"></script>
 <script>
 const $ = (id) => document.getElementById(id);
 
@@ -352,6 +434,7 @@ function showApp() {
   $("app").hidden = false;
   refreshAll();
   if (!pollTimer) pollTimer = setInterval(refreshAll, 10000);
+  if (window.Router) Router.resolve(); // render whatever TR-0x route (if any) the URL already carries
 }
 
 async function attemptLogin(password) {
@@ -440,6 +523,22 @@ async function fetchJSON(path) {
   if (res.status === 401) { showLogin("Your session expired -- please sign in again."); throw new Error("not authenticated"); }
   if (!res.ok) throw new Error(`${path} -> HTTP ${res.status}`);
   return res.json();
+}
+
+// Non-throwing counterpart used by the TR-0x routed views (app/static/
+// router.js / views/*): those views render their own panel-level denied/
+// error states via StateMatrix rather than an alert/throw, so they need
+// the response status back even on a 403/404 -- fetchJSON() above throws
+// on any non-2xx, which would collapse "denied" and "error" into the same
+// catch block. A 401 still goes through the SAME session-expired path
+// (showLogin) as every other call on this page -- there is only one
+// session, legacy and routed views share it.
+async function routeFetchJSON(path) {
+  const res = await fetch(path);
+  if (res.status === 401) { showLogin("Your session expired -- please sign in again."); return { status: 401, ok: false, data: null }; }
+  let data = null;
+  try { data = await res.json(); } catch (e) { /* no/invalid JSON body */ }
+  return { status: res.status, ok: res.ok, data };
 }
 
 async function loadHealth() {
@@ -1142,7 +1241,32 @@ async function refreshAll() {
   $("last-updated").textContent = `last updated ${new Date().toLocaleTimeString()}`;
 }
 
+$("legacy-nav-link").addEventListener("click", (e) => {
+  e.preventDefault();
+  location.hash = "";
+  if (window.Router) Router.resolve();
+});
+
+Router.init({
+  mountEl: $("route-view"),
+  legacyEl: $("legacy-content"),
+  chromeEls: {
+    breadcrumb: $("route-breadcrumb"),
+    title: $("route-title"),
+    scope: $("route-scope"),
+    origin: $("route-origin"),
+    mode: $("route-mode"),
+    asOf: $("route-asof"),
+  },
+  fetchJSON: routeFetchJSON,
+  onSessionExpired: () => showLogin("Your session expired -- please sign in again."),
+});
+
 checkSession();
 </script>
+<script src="/static/views/tr01.js"></script>
+<script src="/static/views/tr02.js"></script>
+<script src="/static/views/tr03.js"></script>
+<script src="/static/views/tr04.js"></script>
 </body>
 </html>

@@ -695,7 +695,7 @@ class SignalStore:
     def list_recent_signals(self, limit: int = 50) -> list[dict]:
         with self._connect() as conn:
             rows = conn.execute(
-                """SELECT id, source, symbol, side, asset_class, quantity, price, received_at
+                """SELECT id, source, symbol, side, asset_class, quantity, price, received_at, analyst
                    FROM signals ORDER BY received_at DESC LIMIT ?""",
                 (limit,),
             ).fetchall()
@@ -709,6 +709,13 @@ class SignalStore:
                 "quantity": r[5],
                 "price": r[6],
                 "received_at": r[7],
+                # TR-04 (incoming signal stream): already-stored per-signal
+                # attribution (see app/db.py's `_COLUMN_MIGRATIONS` --
+                # `signals.analyst` predates this projection; it just wasn't
+                # previously selected here) -- '' for "no analyst on the
+                # signal" (same convention `save_signal` already writes),
+                # never fabricated.
+                "analyst": r[8] or None,
             }
             for r in rows
         ]
