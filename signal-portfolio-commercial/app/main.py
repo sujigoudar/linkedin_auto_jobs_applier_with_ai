@@ -31,6 +31,7 @@ from sqlalchemy.orm import Session
 from app import config
 from app.api.dashboard_routes import router as dashboard_router
 from app.api.dependencies import get_current_scope, get_db_session
+from app.api.relay_routes import router as relay_router
 from app.db import make_engine, make_session_factory, set_tenant_scope
 from app.services.auth import TenantScope
 from app.services.stripe_webhook import (
@@ -42,11 +43,18 @@ from app.services.stripe_webhook import (
 )
 
 
-def create_app(database_url: str | None = None) -> FastAPI:
+def create_app(database_url: str | None = None, relay_database_url: str | None = None) -> FastAPI:
     app = FastAPI(title="signal-portfolio-commercial")
     engine = make_engine(database_url)
     app.state.session_factory = make_session_factory(engine)
+    #: A SEPARATE engine, bound to the restricted `relay_role` connection
+    #: (app/db.py's `_apply_relay_role_access`) -- app/api/relay_routes.py
+    #: is the only route that uses it, via `get_relay_db_session`. Never
+    #: reuses `app.state.session_factory` (the admin/app connection).
+    relay_engine = make_engine(relay_database_url or config.RELAY_DATABASE_URL)
+    app.state.relay_session_factory = make_session_factory(relay_engine)
     app.include_router(dashboard_router)
+    app.include_router(relay_router)
 
     @app.get("/healthz")
     def healthz() -> dict:

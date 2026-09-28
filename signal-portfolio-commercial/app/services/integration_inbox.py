@@ -3,28 +3,29 @@ S4.4/S6: the commercial inbox's own ingest path. See
 app/models/integration_inbox.py's own docstring for the two tables this
 reads/writes.
 
-`ingest_export_event` is written to be safely callable by a restricted
-relay worker (a later slice) or, for now, directly in tests -- it takes
-the envelope's raw JSON exactly as the private export outbox stored it
+`ingest_export_event` is written to be safely callable by the
+restricted relay worker (app/api/relay_routes.py, backed by
+`relay_role` -- see app/db.py's `_apply_relay_role_access`) or directly
+in tests against the RLS-bypassing `db_session` fixture -- it takes the
+envelope's raw JSON exactly as the private export outbox stored it
 (never a re-derived/rebuilt one), and is idempotent: calling it twice
 with the identical bytes is a harmless no-op, calling it twice with the
 SAME event_id but DIFFERENT bytes is a real, loud integrity error.
 
-Known, explicitly deferred gap (not solved in this slice): every other
-tenant-scoped table in this app relies on the generic per-tenant RLS
-policy (`app/db.py`'s `tenant_isolation`), which only ever permits a
-session already scoped (via `set_tenant_scope`) to ITS OWN tenant_id --
-correct for a browser request, which always knows its tenant before
-touching the database. `_registered_tenant_id` below has the opposite
-shape: it looks up `export_stream_registrations` BY `source_stream`
-specifically to DISCOVER the tenant, before any scope can be set. Under
-the real app_role connection (not this module's own tests, which use
-the RLS-bypassing superuser `db_session` fixture like most of this
-codebase's own unit tests), that lookup would need either its own
-bespoke RLS policy (S8: "Restrict the receiver database role and row-
-level policies") or a distinct, restricted DB role for the relay itself
--- a real decision the relay worker slice (S4.3) needs to make
-deliberately, not something to default into silently here.
+RLS chicken-and-egg resolution: every other tenant-scoped table in this
+app relies on the generic per-tenant RLS policy (`app/db.py`'s
+`tenant_isolation`), which only ever permits a session already scoped
+(via `set_tenant_scope`) to ITS OWN tenant_id -- correct for a browser
+request, which always knows its tenant before touching the database.
+`_registered_tenant_id` below has the opposite shape: it looks up
+`export_stream_registrations` BY `source_stream` specifically to
+DISCOVER the tenant, before any scope can be set. `relay_role` gets
+exactly one extra, bespoke permissive policy granting it unscoped SELECT
+on that one table alone (`relay_stream_lookup`); `ingest_export_event`
+resolves the tenant through it FIRST and calls `set_tenant_scope`
+immediately after, before touching `inbox_events` or `ledger_entries`
+-- both of which stay protected by the same, unmodified `tenant_isolation`
+policy every other table uses.
 """
 from __future__ import annotations
 
@@ -34,6 +35,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 from signal_platform_contracts import EventEnvelope, EventType, ExecutionAppliedPayload
 
+from app.db import set_tenant_scope
 from app.models.integration_inbox import ExportStreamRegistration, InboxEvent
 from app.models.ledger import Book, Side
 from app.services.ledger import append_entry
@@ -89,8 +91,27 @@ def ingest_export_event(session: Session, envelope_json: str) -> InboxEvent:
     trusts a tenant_id from the payload -- the ONLY source of tenant
     binding is `register_export_stream`'s own table, keyed by
     `source_stream`, per S6's own "server-controlled registration"
-    requirement."""
+    requirement.
+
+    Resolves the tenant BEFORE doing anything else and calls
+    `set_tenant_scope` immediately after -- this is the real fix for the
+    RLS chicken-and-egg gap this module's own docstring used to defer:
+    under a real `relay_role` connection (app/db.py's
+    `_apply_relay_role_access`), `export_stream_registrations` is the
+    ONE table that role can read without any scope set yet (its own
+    bespoke `relay_stream_lookup` policy); every other read/write in
+    this function -- including the redelivery dedup lookup by
+    `event_id` -- happens only AFTER scope is set, so it is protected by
+    the same generic `tenant_isolation` policy as every other
+    tenant-scoped table in this app."""
     envelope = EventEnvelope.model_validate_json(envelope_json)
+
+    tenant_id = _registered_tenant_id(session, envelope.source_stream)
+    if tenant_id is None:
+        raise UnregisteredStreamError(
+            f"source_stream {envelope.source_stream!r} has no registered tenant -- refusing to guess one"
+        )
+    set_tenant_scope(session, tenant_id)
 
     existing = session.get(InboxEvent, envelope.event_id)
     if existing is not None:
@@ -100,12 +121,6 @@ def ingest_export_event(session: Session, envelope_json: str) -> InboxEvent:
                 "-- this is an integrity incident, never resolved by last-write-wins"
             )
         return existing
-
-    tenant_id = _registered_tenant_id(session, envelope.source_stream)
-    if tenant_id is None:
-        raise UnregisteredStreamError(
-            f"source_stream {envelope.source_stream!r} has no registered tenant -- refusing to guess one"
-        )
 
     inbox_event = InboxEvent(
         event_id=envelope.event_id,

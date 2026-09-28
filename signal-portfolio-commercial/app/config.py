@@ -42,6 +42,25 @@ class _Settings(BaseSettings):
     #: dashboard before this endpoint is ever pointed at a real account.
     STRIPE_WEBHOOK_SECRET: str = "whsec_LOCAL_SIM_not_a_real_stripe_secret"
 
+    #: Postgres DSN for the restricted `relay_role` connection
+    #: app/api/relay_routes.py uses to ingest signal-copier's own export
+    #: outbox -- deliberately NOT `COMMERCIAL_DATABASE_URL` (that one
+    #: connects as the unrestricted admin/app role). See
+    #: app/db.py's `_apply_relay_role_access` for exactly what this role
+    #: can and cannot do.
+    RELAY_DATABASE_URL: str = "postgresql+psycopg://relay_role@localhost:5432/commercial"
+
+    #: The shared signing secret both sides of the restricted relay
+    #: (signal-copier's own relay worker and this service's
+    #: app/api/relay_routes.py ingress) already have -- per
+    #: INTEGRATION_DECISION.md S4: "Use ... an audience-bound
+    #: signed-service-token implementation, with expiry ... and replay
+    #: protection." This is a placeholder for local/test use only; a real
+    #: deployment issues and stores this via a secrets manager, never a
+    #: repo default, and rotates it independently of any customer- or
+    #: broker-facing credential.
+    RELAY_SIGNING_SECRET: str = "LOCAL_SIM-not-a-real-relay-secret-change-if-ever-deployed"
+
 
 _settings = _Settings()
 
@@ -49,3 +68,5 @@ COMMERCIAL_DATABASE_URL = _settings.COMMERCIAL_DATABASE_URL
 ENVIRONMENT = _settings.ENVIRONMENT
 LOCAL_JWT_SECRET = _settings.LOCAL_JWT_SECRET
 STRIPE_WEBHOOK_SECRET = _settings.STRIPE_WEBHOOK_SECRET
+RELAY_DATABASE_URL = _settings.RELAY_DATABASE_URL
+RELAY_SIGNING_SECRET = _settings.RELAY_SIGNING_SECRET

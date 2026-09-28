@@ -202,6 +202,61 @@ def enable_content_document_visibility_policy(engine) -> None:
         _apply_content_document_visibility_policy(conn)
 
 
+def _apply_relay_role_access(conn) -> None:
+    """The Signal Platform Integration Correction Pack's own
+    INTEGRATION_DECISION.md S6/S8: the restricted relay worker's own
+    ingress needs to look up `export_stream_registrations` BY
+    `source_stream` to DISCOVER a tenant, before any `app.tenant_id`
+    scope can be set -- the generic `tenant_isolation` policy (which
+    only ever permits a session already scoped to its own tenant)
+    cannot serve that lookup. `relay_role` is a distinct, restricted,
+    non-superuser, non-BYPASSRLS login role (never `app_role`, never
+    the browser-facing connection) that gets exactly one extra,
+    permissive policy: unrestricted SELECT on `export_stream_
+    registrations` alone. Postgres combines multiple PERMISSIVE
+    policies on the same table with OR, so this does not weaken
+    `tenant_isolation` for `app_role` or any other role -- it only
+    grants `relay_role` a second way to satisfy this ONE table's
+    SELECT. Every other tenant-scoped table `relay_role` touches
+    (`inbox_events`, `ledger_entries`) is reached only through the
+    ordinary `tenant_isolation` policy, exercised for real only after
+    `set_tenant_scope` is called with the tenant the lookup found --
+    resolving the gap `app/services/integration_inbox.py` explicitly
+    deferred when this table was first added."""
+    conn.execute(
+        text(
+            "DO $$ BEGIN "
+            "IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = 'relay_role') THEN "
+            "CREATE ROLE relay_role LOGIN NOSUPERUSER NOBYPASSRLS; "
+            "END IF; END $$"
+        )
+    )
+    conn.execute(text("GRANT SELECT ON export_stream_registrations TO relay_role"))
+    #: UPDATE is needed too, not just SELECT/INSERT: `ingest_export_event`
+    #: inserts the InboxEvent row first, then updates its own
+    #: `applied_at`/`ledger_entry_id` columns once the ledger projection
+    #: (if any) is applied -- never touching any OTHER row, but still a
+    #: real UPDATE statement against this table.
+    conn.execute(text("GRANT SELECT, INSERT, UPDATE ON inbox_events TO relay_role"))
+    conn.execute(text("GRANT INSERT ON ledger_entries TO relay_role"))
+    conn.execute(text("DROP POLICY IF EXISTS relay_stream_lookup ON export_stream_registrations"))
+    conn.execute(
+        text(
+            "CREATE POLICY relay_stream_lookup ON export_stream_registrations "
+            "AS PERMISSIVE FOR SELECT TO relay_role USING (true)"
+        )
+    )
+
+
+def enable_relay_role_access(engine) -> None:
+    """Idempotent, same connection-vs-engine split as
+    `enable_row_level_security` -- call `_apply_relay_role_access(
+    connection)` directly from within an already-open transaction (e.g.
+    an Alembic migration), this wrapper otherwise."""
+    with engine.begin() as conn:
+        _apply_relay_role_access(conn)
+
+
 def set_tenant_scope(session: Session, tenant_id: str) -> None:
     """Set the Postgres session variable the RLS policies above key off of.
     Must be called (with a real, authenticated tenant_id) at the start of

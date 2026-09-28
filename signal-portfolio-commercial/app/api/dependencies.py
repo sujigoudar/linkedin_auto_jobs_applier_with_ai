@@ -24,6 +24,18 @@ def get_db_session(request: Request) -> Iterator[Session]:
         session.close()
 
 
+def get_relay_db_session(request: Request) -> Iterator[Session]:
+    """A session bound to the restricted `relay_role` connection
+    (app/db.py's `_apply_relay_role_access`), never the admin/app
+    connection `get_db_session` uses -- app/api/relay_routes.py is the
+    only route that depends on this."""
+    session = request.app.state.relay_session_factory()
+    try:
+        yield session
+    finally:
+        session.close()
+
+
 def get_current_scope(request: Request) -> TenantScope:
     auth_header = request.headers.get("Authorization", "")
     if not auth_header.startswith("Bearer "):

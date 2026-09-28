@@ -178,6 +178,23 @@ class _Settings(BaseSettings):
     # /context/fred endpoint 501s if this is blank.
     FRED_API_KEY: str = Field(default="")
 
+    # Signal Platform Integration Correction Pack's own
+    # INTEGRATION_DECISION.md S4.3: the restricted relay worker
+    # (app/relay_worker.py) posts export_events batches to exactly this
+    # one allowlisted URL -- never a generic proxy, never discovered or
+    # overridden at request time. Blank means the relay worker refuses to
+    # run (see relay_worker.py's own RelayNotConfiguredError) rather than
+    # silently posting nowhere or guessing a default.
+    RELAY_INGRESS_URL: str = ""
+    # Shared secret with signal-portfolio-commercial's own
+    # RELAY_SIGNING_SECRET (app/services/relay_auth.py there) -- signs
+    # every batch this worker sends. A placeholder default only; both
+    # sides must be configured with the SAME real secret before this
+    # worker is ever pointed at a real commercial deployment.
+    RELAY_SIGNING_SECRET: str = "LOCAL_SIM-not-a-real-relay-secret-change-if-ever-deployed"
+    RELAY_POLL_INTERVAL_SECONDS: float = 1.0
+    RELAY_BATCH_SIZE: int = 100
+
 
 _settings = _Settings()
 
@@ -239,3 +256,8 @@ PROVIDER_VALUE_PROFIT_FACTOR_THRESHOLD = _settings.PROVIDER_VALUE_PROFIT_FACTOR_
 
 SEC_EDGAR_USER_AGENT = _settings.SEC_EDGAR_USER_AGENT
 FRED_API_KEY = _settings.FRED_API_KEY
+
+RELAY_INGRESS_URL = _settings.RELAY_INGRESS_URL
+RELAY_SIGNING_SECRET = _settings.RELAY_SIGNING_SECRET
+RELAY_POLL_INTERVAL_SECONDS = _settings.RELAY_POLL_INTERVAL_SECONDS
+RELAY_BATCH_SIZE = _settings.RELAY_BATCH_SIZE

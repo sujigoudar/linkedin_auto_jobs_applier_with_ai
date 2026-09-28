@@ -30,6 +30,7 @@ from app.db import (
     Base,
     enable_content_document_visibility_policy,
     enable_product_visibility_policy,
+    enable_relay_role_access,
     enable_row_level_security,
     enforce_append_only,
     make_engine,
@@ -159,9 +160,23 @@ def postgres_cluster(tmp_path_factory):
                 "-c", "CREATE ROLE app_role LOGIN NOSUPERUSER NOBYPASSRLS",
             ]
         )
+        #: `enable_relay_role_access` (called per-test from `db_session`,
+        #: since it grants privileges on tables that fixture just
+        #: recreated) also creates `relay_role` itself if missing -- this
+        #: is only a belt-and-suspenders early creation so `relay_role_url`
+        #: below is always connectable even before the first `db_session`
+        #: use in a given test.
+        _run_as_postgres(
+            [
+                str(_PG_BIN / "psql"),
+                "-h", "127.0.0.1", "-p", str(port), "-U", "postgres", "-d", "commercial",
+                "-c", "CREATE ROLE relay_role LOGIN NOSUPERUSER NOBYPASSRLS",
+            ]
+        )
         yield {
             "admin_url": f"postgresql+psycopg://postgres@127.0.0.1:{port}/commercial",
             "app_role_url": f"postgresql+psycopg://app_role@127.0.0.1:{port}/commercial",
+            "relay_role_url": f"postgresql+psycopg://relay_role@127.0.0.1:{port}/commercial",
         }
     finally:
         _run_as_postgres([str(_PG_BIN / "pg_ctl"), "-D", str(data_dir), "-m", "fast", "stop"])
@@ -194,6 +209,7 @@ def db_session(postgres_cluster):
     enable_row_level_security(engine)
     enable_product_visibility_policy(engine)
     enable_content_document_visibility_policy(engine)
+    enable_relay_role_access(engine)
     enforce_append_only(engine)
     session_factory = make_session_factory(engine)
     session = session_factory()
@@ -212,6 +228,20 @@ def tenant_session_factory(postgres_cluster, db_session):
     fixtures' engines point at the same already-created database, `app_role`
     just sees it through RLS instead of as the unrestricted owner."""
     engine = make_engine(postgres_cluster["app_role_url"])
+    try:
+        yield make_session_factory(engine)
+    finally:
+        engine.dispose()
+
+
+@pytest.fixture
+def relay_session_factory(postgres_cluster, db_session):
+    """A session factory bound to the plain `relay_role` login -- the
+    restricted role app/api/relay_routes.py actually uses. Same shape as
+    `tenant_session_factory`: depends on `db_session` so the schema/
+    grants/policies (including `relay_role`'s own bespoke lookup policy)
+    exist first."""
+    engine = make_engine(postgres_cluster["relay_role_url"])
     try:
         yield make_session_factory(engine)
     finally:
