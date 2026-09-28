@@ -28,7 +28,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
 
 from app import config
-from app.auth import SESSION_COOKIE_NAME, RequireOwner, create_session, verify_password
+from app.auth import SESSION_COOKIE_NAME, RequireOwner, auth_configured, create_session, verify_password
 from app.backtest.cost_stress import apply_cost_stress
 from app.backtest.fit_simulator import simulate_provider_fit
 from app.backtest.models import CsvPriceHistoryProvider
@@ -52,7 +52,7 @@ from app.config_admin import seed_from_yaml_if_empty
 from app.context import fred as fred_context
 from app.context import fx as fx_context
 from app.context import sec_edgar
-from app.db import SignalStore
+from app.db import SignalStore, alembic_code_head
 from app.economics import compute_account_economics
 from app.execution_quality import compute_execution_quality
 from app.engine import SignalCopierEngine
@@ -435,6 +435,52 @@ async def metrics(_owner: dict = Depends(require_owner_read)) -> Response:
         lifecycle_manager=lifecycle_manager,
     )
     return Response(content=body, media_type="text/plain; version=0.0.4; charset=utf-8")
+
+
+@app.get("/system/info")
+async def system_info(_owner: dict = Depends(require_owner_read)) -> dict:
+    """TR-16: private, owner-gated operational facts safe to surface in
+    the UI -- deliberately narrow. Every field here was checked one by
+    one against app/config.py's `_Settings` and is either a non-secret
+    operational fact (an interval, a feature flag, a non-credential
+    label) or a boolean ABOUT a secret (is one configured, which kind)
+    rather than the secret's own value. No API key, token, password,
+    password hash, webhook secret, or session secret is ever read here --
+    see this batch's report for the field-by-field check.
+
+    `schema_version`/`schema_head` are real, live evidence (E01 bounded):
+    `schema_version` is this exact database file's own stamped Alembic
+    revision (`SignalStore.schema_version`), `schema_head` is what the
+    currently-deployed code's own migration scripts expect
+    (`alembic_code_head`) -- equal means this database's schema is
+    reproducible from this exact release; unequal means a migration is
+    pending. This is the one real "deployment reproducibility" signal
+    this codebase has; it is NOT a data backup/snapshot record (see
+    deploy/litestream/litestream.yml and deploy/RUNBOOK.md for this
+    project's actual real backup mechanism -- Litestream replicating the
+    live SQLite WAL to off-site object storage -- which runs as a
+    separate process this API has no live status/API into, so no
+    last-replicated-at timestamp is fabricated here)."""
+    return {
+        "standby_mode": config.STANDBY_MODE,
+        "relay_environment": config.RELAY_ENVIRONMENT,
+        "relay_evidence_class": config.RELAY_EVIDENCE_CLASS,
+        "relay_producer_id": config.RELAY_PRODUCER_ID,
+        "relay_ingress_configured": bool(config.RELAY_INGRESS_URL),
+        "reconcile_interval_seconds": config.RECONCILE_INTERVAL_SECONDS,
+        "price_monitor_interval_seconds": config.PRICE_MONITOR_INTERVAL_SECONDS,
+        "provider_scout_interval_seconds": config.PROVIDER_SCOUT_INTERVAL_SECONDS,
+        "auth_configured": auth_configured(),
+        "owner_credential_kind": (
+            "hashed (OWNER_PASSWORD_HASH)"
+            if config.OWNER_PASSWORD_HASH
+            else ("plain (OWNER_PASSWORD)" if config.OWNER_PASSWORD else "none configured")
+        ),
+        "session_ttl_seconds": config.SESSION_TTL_SECONDS,
+        "force_secure_cookies": config.FORCE_SECURE_COOKIES,
+        "schema_version": store.schema_version(),
+        "schema_head": alembic_code_head(),
+    }
 
 
 class LoginRequest(BaseModel):

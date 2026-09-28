@@ -14,6 +14,7 @@ from typing import Iterator
 
 from alembic import command  # type: ignore[attr-defined]  # real, working import; alembic's __init__.py doesn't re-export it in a way mypy can see
 from alembic.config import Config as AlembicConfig
+from alembic.script import ScriptDirectory
 
 from app.models import OrderResult, Side, Signal
 from signal_platform_contracts import EventEnvelope
@@ -32,6 +33,19 @@ def _alembic_config(db_path: Path) -> AlembicConfig:
     cfg.set_main_option("script_location", str(_ALEMBIC_DIR))
     cfg.set_main_option("sqlalchemy.url", f"sqlite:///{db_path}")
     return cfg
+
+
+def alembic_code_head() -> str | None:
+    """TR-16: the migration revision this DEPLOYED CODE (alembic/versions/
+    on disk, not any particular database file) expects to be at head --
+    read straight from the same `alembic/` scripts `_alembic_config`
+    points every real `SignalStore` at. Compared against a live
+    `SignalStore.schema_version()` this is the real "is this database's
+    schema reproducible from this exact release" check E01 calls for --
+    never a hardcoded version string that could silently drift from the
+    real migration scripts."""
+    script_dir = ScriptDirectory(str(_ALEMBIC_DIR))
+    return script_dir.get_current_head()
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS signals (
@@ -328,6 +342,17 @@ class SignalStore:
         if already_tracked:
             return
         command.stamp(_alembic_config(self.db_path), "head")
+
+    def schema_version(self) -> str | None:
+        """TR-16 (E01 bounded, deployment-reproducibility slice): the
+        `alembic_version` row this exact database file is actually
+        stamped at right now -- real, live evidence read straight off
+        disk, not a cached/assumed value. `None` only for a database this
+        process hasn't opened/stamped yet (shouldn't happen once
+        `__init__` has run, but never guessed at)."""
+        with self._connect() as conn:
+            row = conn.execute("SELECT version_num FROM alembic_version").fetchone()
+        return row[0] if row else None
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
