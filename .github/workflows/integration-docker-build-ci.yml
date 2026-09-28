@@ -59,8 +59,15 @@ jobs:
             -H "Content-Type: application/json" \
             -H "x-webhook-secret: local-sim-webhook-secret" \
             -d '{"symbol":"BTCUSDT","side":"BUY","quantity":0.1,"price":65000,"asset_class":"crypto"}'
+          # Read the owner token ops/bootstrap.py's own --token-file wrote
+          # INSIDE the container, never scraped from `docker compose logs`
+          # -- confirmed for real in this session that GitHub Actions
+          # masks the printed token in its own log output (it matches
+          # that runner's own secret-detection heuristic), so a
+          # log-scraping reader gets the literal string `***`, not a
+          # real token, and every request 401s.
+          token=$(docker compose exec -T commercial cat /tmp/owner_token.txt)
           for i in $(seq 1 20); do
-            token=$(docker compose logs commercial 2>/dev/null | grep -A1 "Owner session token" | tail -1)
             count=$(curl -sf http://localhost:8001/api/v1/ops/source-coverage -H "Authorization: Bearer $token" | python3 -c "import json,sys; print(json.load(sys.stdin)['total_count'])" 2>/dev/null || echo 0)
             if [ "$count" -ge 1 ]; then
               echo "real signal reached the commercial ledger"

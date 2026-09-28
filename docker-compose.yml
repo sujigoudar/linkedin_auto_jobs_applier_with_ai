@@ -27,6 +27,9 @@
 #   # the commercial container's own logs print the owner session token
 #   # ops/bootstrap.py mints -- use it as: Authorization: Bearer <token>
 #   docker compose logs commercial | grep -A2 "Owner session token"
+#   # (a CI runner that masks secret-looking log output, e.g. GitHub
+#   # Actions, may hide the printed token -- read it directly instead:)
+#   docker compose exec commercial cat /tmp/owner_token.txt
 ########################################################################
 
 services:
@@ -89,7 +92,7 @@ services:
       # fixed) when only the account stream was registered: every
       # SOURCE_RECEIPT event stayed permanently parked as
       # unregistered_stream.
-      BOOTSTRAP_ARGS: "--account-id paper_main --source-name tradingview --source-name telegram"
+      BOOTSTRAP_ARGS: "--account-id paper_main --source-name tradingview --source-name telegram --token-file /tmp/owner_token.txt"
     ports:
       - "8001:8001"
     healthcheck:

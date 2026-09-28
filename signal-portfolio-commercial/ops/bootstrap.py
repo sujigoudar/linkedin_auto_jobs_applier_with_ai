@@ -166,6 +166,15 @@ def main() -> int:
         help="Postgres role name to create/grant -- matches COMMERCIAL_DATABASE_URL's own "
              "default role name unless overridden.",
     )
+    parser.add_argument(
+        "--token-file", default=None,
+        help="If set, the freshly-issued owner token is ALSO written here (mode 0600), for a "
+             "caller to read directly -- e.g. `docker compose exec commercial cat <path>` -- "
+             "rather than scraping container logs for it. Confirmed for real in this session: "
+             "GitHub Actions masks the printed token in its own log output (it matches that "
+             "runner's own secret-detection heuristic), so a log-scraping caller gets the literal "
+             "string `***` instead, not a real token.",
+    )
     args = parser.parse_args()
 
     if not args.account_id and not args.source_name:
@@ -212,6 +221,10 @@ def main() -> int:
         session.close()
 
     token = issue_token(args.tenant_id, args.user_id, MembershipRole.OWNER, ttl_seconds=86400)
+    if args.token_file is not None:
+        with open(args.token_file, "w") as f:
+            f.write(token)
+        os.chmod(args.token_file, 0o600)
     print("Bootstrap complete.")
     print(f"  tenant_id:      {args.tenant_id}")
     print(f"  owner user_id:  {args.user_id}")
