@@ -72,14 +72,17 @@ from dataclasses import replace
 from datetime import datetime, timezone
 
 import structlog
+from signal_platform_contracts import Environment, EventEnvelope, EvidenceClass
 
+from app import config
 from app.brokers.base import BrokerAdapter
 from app.capital_allocator import CapitalAllocator, confirmed_open_notional
 from app.db import SignalStore
+from app.export_events import build_execution_applied_envelope
 from app.lifecycle.manager import PositionLifecycleManager
 from app.lifecycle.models import PositionPlan, Target, TargetAction
 from app.logging_config import bind_signal_context
-from app.models import DestinationAccount, OrderResult, OrderStatus, Side, Signal
+from app.models import AssetClass, DestinationAccount, OrderResult, OrderStatus, Side, Signal
 from app.providers import ProviderRegistry, SettingsOverride
 from app.risk import size_for_account, symbol_for_account
 from app.routing import RoutingConfig
@@ -121,6 +124,40 @@ class SignalCopierEngine:
         # a managed entry's reservation once its outcome is confirmed
         # terminal. See PendingEntry's docstring for why.
         self.lifecycle_manager.capital_allocator = self.capital_allocator
+
+    def _build_export_envelope(
+        self,
+        result: OrderResult,
+        *,
+        account: DestinationAccount,
+        symbol: str,
+        side: Side,
+        asset_class: AssetClass,
+        originating_source_event_id: str | None = None,
+    ) -> EventEnvelope | None:
+        """Wraps app/export_events.py's builder with this deployment's own
+        config (producer id, evidence class, environment) and a real,
+        per-(account, source_stream) export_sequence from the outbox
+        itself -- the one thing a pure builder function can't supply on
+        its own. Returns `None` under the exact same conditions
+        `build_execution_applied_envelope` does (not a FILLED result, or
+        missing a field the payload actually requires); callers must
+        still pass `export_envelope=None` to `save_order_result` in that
+        case, which is exactly what omitting the keyword already does."""
+        source_stream = f"signal-copier:{account.account_id}"
+        return build_execution_applied_envelope(
+            result,
+            account=account,
+            symbol=symbol,
+            side=side,
+            asset_class=asset_class,
+            source_stream=source_stream,
+            export_sequence=self.store.next_export_sequence(source_stream),
+            producer_id=config.RELAY_PRODUCER_ID,
+            evidence_class=EvidenceClass[config.RELAY_EVIDENCE_CLASS],
+            environment=Environment[config.RELAY_ENVIRONMENT],
+            originating_source_event_id=originating_source_event_id,
+        )
 
     def _effective_settings(self, signal: Signal, account: DestinationAccount) -> SettingsOverride:
         account_defaults = SettingsOverride(
@@ -334,6 +371,14 @@ class SignalCopierEngine:
                 applied_quantity = quantity if result.filled_quantity is None else result.filled_quantity
                 self.store.record_fill(account.account_id, symbol, order_signal.side, applied_quantity)
 
+            export_envelope = self._build_export_envelope(
+                result,
+                account=account,
+                symbol=symbol,
+                side=order_signal.side,
+                asset_class=order_signal.asset_class,
+                originating_source_event_id=signal.id,
+            )
             self.store.save_order_result(
                 result,
                 broker=account.broker,
@@ -342,6 +387,7 @@ class SignalCopierEngine:
                 requested_quantity=quantity,
                 applied_quantity=applied_quantity,
                 reserved_notional=reserved_notional,
+                export_envelope=export_envelope,
             )
             results.append(result)
 

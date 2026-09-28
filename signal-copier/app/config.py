@@ -194,6 +194,25 @@ class _Settings(BaseSettings):
     RELAY_SIGNING_SECRET: str = "LOCAL_SIM-not-a-real-relay-secret-change-if-ever-deployed"
     RELAY_POLL_INTERVAL_SECONDS: float = 1.0
     RELAY_BATCH_SIZE: int = 100
+    #: This deployment's own `EventEnvelope.producer_id` -- identifies
+    #: WHICH signal-copier instance produced an exported event (S6's own
+    #: "producer identity, producer generation"). Two signal-copier
+    #: deployments sharing one commercial tenant must use distinct values
+    #: here, or their exports become indistinguishable at the inbox.
+    RELAY_PRODUCER_ID: str = "signal-copier-local"
+    #: `signal_platform_contracts.EvidenceClass` member NAME (e.g.
+    #: "INTERNAL_PAPER", "OBSERVED_OWNER_LIVE") every exported
+    #: EXECUTION_APPLIED envelope is labeled with -- app/export_events.py
+    #: never infers this from a broker's name (a "paper"-named broker
+    #: adapter reused against a real account would be a real, silent
+    #: mislabel). Defaults to INTERNAL_PAPER, the safest value: an
+    #: operator who genuinely wants OBSERVED_OWNER_LIVE evidence must
+    #: change this deliberately, matching this whole project's standing
+    #: "no live orders, everything stays paper-traded/simulated" default.
+    RELAY_EVIDENCE_CLASS: str = "INTERNAL_PAPER"
+    #: `signal_platform_contracts.Environment` member NAME. Same
+    #: safest-default reasoning as RELAY_EVIDENCE_CLASS above.
+    RELAY_ENVIRONMENT: str = "LOCAL_SIM"
 
 
 _settings = _Settings()
@@ -261,3 +280,6 @@ RELAY_INGRESS_URL = _settings.RELAY_INGRESS_URL
 RELAY_SIGNING_SECRET = _settings.RELAY_SIGNING_SECRET
 RELAY_POLL_INTERVAL_SECONDS = _settings.RELAY_POLL_INTERVAL_SECONDS
 RELAY_BATCH_SIZE = _settings.RELAY_BATCH_SIZE
+RELAY_PRODUCER_ID = _settings.RELAY_PRODUCER_ID
+RELAY_EVIDENCE_CLASS = _settings.RELAY_EVIDENCE_CLASS
+RELAY_ENVIRONMENT = _settings.RELAY_ENVIRONMENT
