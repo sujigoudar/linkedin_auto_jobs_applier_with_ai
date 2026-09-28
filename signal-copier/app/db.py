@@ -16,6 +16,7 @@ from alembic import command  # type: ignore[attr-defined]  # real, working impor
 from alembic.config import Config as AlembicConfig
 
 from app.models import OrderResult, Side, Signal
+from signal_platform_contracts import EventEnvelope
 
 _ALEMBIC_DIR = Path(__file__).resolve().parent.parent / "alembic"
 
@@ -242,10 +243,37 @@ CREATE TABLE IF NOT EXISTS seed_state (
     seeded_at TEXT NOT NULL
 );
 
+-- Signal Platform Integration Correction Pack's own INTEGRATION_DECISION.md
+-- S4.2/S6: the transactional private export outbox. A row here is
+-- written in the SAME sqlite3 transaction as the authoritative local
+-- state change it describes (see SignalStore.save_order_result's own
+-- `export_envelope` parameter) -- never a best-effort HTTP POST after
+-- commit as the only export mechanism. `event_id` is the producer's own
+-- idempotency key (UNIQUE, so a caller that accidentally re-appends the
+-- exact same event is a no-op, not a duplicate row) and
+-- `export_sequence` is this producer's own monotonic position within
+-- `source_stream` -- the relay (a later slice) delivers in that order
+-- and the commercial inbox's own high-water mark advances by it.
+-- `envelope_json` is the FULL signal_platform_contracts.EventEnvelope,
+-- serialized once at append time -- the relay never reconstructs or
+-- reinterprets it, only forwards these exact bytes.
+CREATE TABLE IF NOT EXISTS export_events (
+    event_id TEXT PRIMARY KEY,
+    event_type TEXT NOT NULL,
+    source_stream TEXT NOT NULL,
+    export_sequence INTEGER NOT NULL,
+    envelope_json TEXT NOT NULL,
+    payload_hash TEXT NOT NULL,
+    appended_at TEXT NOT NULL,
+    delivered_at TEXT,
+    UNIQUE (source_stream, export_sequence)
+);
+
 CREATE INDEX IF NOT EXISTS idx_orders_executed_at ON orders (executed_at);
 CREATE INDEX IF NOT EXISTS idx_orders_account_id ON orders (account_id);
 CREATE INDEX IF NOT EXISTS idx_signals_received_at ON signals (received_at);
 CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions (expires_at);
+CREATE INDEX IF NOT EXISTS idx_export_events_undelivered ON export_events (source_stream, export_sequence) WHERE delivered_at IS NULL;
 """
 
 
@@ -350,8 +378,19 @@ class SignalStore:
         requested_quantity: float | None = None,
         applied_quantity: float | None = None,
         reserved_notional: float | None = None,
+        export_envelope: EventEnvelope | None = None,
     ) -> int:
         """Persist an order result and return its row id.
+
+        `export_envelope` (Signal Platform Integration Correction Pack's
+        own INTEGRATION_DECISION.md S6 "Commit and delivery"): when given,
+        its outbox row is inserted in the SAME sqlite3 transaction as this
+        order -- both commit together, or (a write failure between the two
+        statements) neither does. Pass this whenever the caller has
+        already built a real EXECUTION_APPLIED envelope for this fill;
+        omit it for a result that isn't exportable yet (this parameter
+        doesn't build the envelope itself -- see app/engine.py's own
+        wiring, a later slice, for that).
 
         `reserved_notional` (E03, bounded): pass this order's
         app/capital_allocator.py reservation ONLY when `result.status` is
@@ -410,12 +449,89 @@ class SignalStore:
                     reserved_notional,
                 ),
             )
+            if export_envelope is not None:
+                self._insert_export_event(conn, export_envelope)
             # lastrowid is None only for a statement that isn't a rowid-table
             # INSERT -- never true for this one; asserted so this stays true
             # if the schema or query ever changes, rather than silently
             # returning None where every caller expects a real id.
             assert cursor.lastrowid is not None
             return cursor.lastrowid
+
+    def _insert_export_event(self, conn: sqlite3.Connection, envelope: EventEnvelope) -> None:
+        """The actual outbox INSERT, taking an ALREADY-OPEN connection so a
+        caller (like `save_order_result` above) can include it in its own
+        transaction. `INSERT OR IGNORE` on `event_id`: a caller that
+        builds and appends the identical envelope twice (e.g. a retried
+        in-process call, not a network redelivery -- that dedup happens at
+        the relay/inbox, a later slice) is a harmless no-op here, not a
+        duplicate outbox row."""
+        conn.execute(
+            """INSERT OR IGNORE INTO export_events
+               (event_id, event_type, source_stream, export_sequence, envelope_json, payload_hash, appended_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (
+                envelope.event_id,
+                envelope.event_type.value,
+                envelope.source_stream,
+                envelope.export_sequence,
+                envelope.model_dump_json(),
+                envelope.payload_hash,
+                datetime.now(timezone.utc).isoformat(),
+            ),
+        )
+
+    def append_export_event(self, envelope: EventEnvelope) -> None:
+        """Append a standalone outbox event in its own transaction -- for
+        an event with no accompanying `orders` row to commit alongside
+        (e.g. a SOURCE_RECEIPT, which records a recommendation, never an
+        execution). See `save_order_result`'s own `export_envelope`
+        parameter for the same-transaction case."""
+        with self._connect() as conn:
+            self._insert_export_event(conn, envelope)
+
+    def next_export_sequence(self, source_stream: str) -> int:
+        """The next `export_sequence` a producer should use for
+        `source_stream` -- 0 for a stream with no events yet, otherwise
+        one past the highest sequence already appended. Callers build
+        their envelope with this value BEFORE appending; it is not itself
+        transactional with the append (two concurrent producers on the
+        SAME stream could race), which is fine for this slice's own single-
+        process signal-copier engine -- see this method's own docstring in
+        a later slice if a second concurrent producer is ever introduced."""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT MAX(export_sequence) FROM export_events WHERE source_stream = ?", (source_stream,)
+            ).fetchone()
+        highest = row[0]
+        return 0 if highest is None else highest + 1
+
+    def list_undelivered_export_events(self, *, limit: int = 100) -> list[EventEnvelope]:
+        """Every export event not yet marked delivered, oldest first by
+        (source_stream, export_sequence) -- what a relay worker (a later
+        slice) would poll and forward. Reconstructs the exact
+        `EventEnvelope` that was appended (S6: "the relay never
+        reconstructs or reinterprets it, only forwards these exact
+        bytes"), never a freshly-built one from the row's own columns."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT envelope_json FROM export_events WHERE delivered_at IS NULL
+                   ORDER BY source_stream, export_sequence LIMIT ?""",
+                (limit,),
+            ).fetchall()
+        return [EventEnvelope.model_validate_json(row[0]) for row in rows]
+
+    def mark_export_events_delivered(self, event_ids: list[str]) -> None:
+        """Mark each of `event_ids` as delivered -- idempotent: an
+        already-delivered event_id (or one that doesn't exist) is simply
+        not matched by the UPDATE, never an error."""
+        if not event_ids:
+            return
+        with self._connect() as conn:
+            conn.executemany(
+                "UPDATE export_events SET delivered_at = ? WHERE event_id = ? AND delivered_at IS NULL",
+                [(datetime.now(timezone.utc).isoformat(), event_id) for event_id in event_ids],
+            )
 
     def list_pending_orders(self) -> list[dict]:
         """Orders still PENDING with a broker_order_id to re-check (see
