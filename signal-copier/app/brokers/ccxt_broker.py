@@ -292,3 +292,17 @@ class CCXTBroker(BrokerAdapter):
     async def close(self) -> None:
         for exchange in self._exchanges.values():
             await exchange.close()
+
+
+def build_ccxt_brokers(exchange_ids: list[str], sandbox: bool) -> dict[str, CCXTBroker]:
+    """One `CCXTBroker` per id in `exchange_ids`, keyed by `f"ccxt_{id}"` --
+    lets a deployment run accounts on several different exchanges at once
+    (e.g. `accounts.yaml` using `broker: ccxt_binance` for one account and
+    `broker: ccxt_kraken` for another). Previously CCXTBroker was only ever
+    constructed ONCE per deployment (app/main.py's own broker registry),
+    hardcoding it to a single exchange no matter how many the operator's
+    own CCXT_<ACCOUNT_ID>_API_KEY credentials actually covered. `exchange_ids`
+    empty returns an empty dict -- app/main.py's own caller falls back to
+    registering the single CCXT_EXCHANGE_ID-based "ccxt" broker in that
+    case, not this function's job to decide that fallback."""
+    return {f"ccxt_{exchange_id}": CCXTBroker(exchange_id, sandbox) for exchange_id in exchange_ids}

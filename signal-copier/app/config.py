@@ -167,6 +167,21 @@ class _Settings(BaseSettings):
     # this true against whichever exchange's own sandbox ccxt supports.
     CCXT_SANDBOX: bool = False
 
+    # Comma-separated ccxt exchange ids to register SIMULTANEOUSLY, each as
+    # its own broker (name f"ccxt_{exchange_id}", e.g. "ccxt_binance",
+    # "ccxt_kraken") -- e.g. "binance,kraken,coinbase". A real gap this
+    # covers: CCXT_EXCHANGE_ID above only ever configured ONE exchange for
+    # the whole deployment (the single broker named "ccxt"), so an operator
+    # who wants accounts on two different exchanges at once (common —
+    # ccxt itself bundles 100+ real exchange integrations, confirmed via
+    # this session's own `python3 -c "import ccxt; print(ccxt.exchanges)"`)
+    # had no way to do that in one deployment at all. Empty (the default)
+    # changes nothing: only the single CCXT_EXCHANGE_ID-based "ccxt" broker
+    # is registered, exactly as before this was added. CCXT_SANDBOX applies
+    # to every exchange listed here the same way it already applies to the
+    # single-exchange case.
+    CCXT_EXCHANGES: str = ""
+
     # How often app/reconciliation.py re-checks PENDING orders on brokers that
     # support get_order_status() (currently Alpaca and IBKR).
     RECONCILE_INTERVAL_SECONDS: float = 30.0
@@ -293,6 +308,7 @@ IBKR_CLIENT_ID = _settings.IBKR_CLIENT_ID
 
 CCXT_EXCHANGE_ID = _settings.CCXT_EXCHANGE_ID
 CCXT_SANDBOX = _settings.CCXT_SANDBOX
+CCXT_EXCHANGES = [e.strip() for e in _settings.CCXT_EXCHANGES.split(",") if e.strip()]
 
 RITHMIC_USER = _settings.RITHMIC_USER
 RITHMIC_PASSWORD = _settings.RITHMIC_PASSWORD

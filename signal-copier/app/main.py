@@ -34,7 +34,7 @@ from app.backtest.models import CsvPriceHistoryProvider
 from app.backtest.replay import BacktestEngine
 from app.brokers.alpaca import AlpacaBroker
 from app.brokers.base import BrokerAdapter
-from app.brokers.ccxt_broker import CCXTBroker
+from app.brokers.ccxt_broker import CCXTBroker, build_ccxt_brokers
 from app.brokers.ibkr import IBKRBroker
 from app.brokers.mt4_mt5 import MetaApiBroker, MT5Broker
 from app.brokers.ninjatrader import NinjaTraderBroker
@@ -96,11 +96,28 @@ brokers = {
 # credentials up front); only register them if available so the paper-only
 # quickstart doesn't need every dependency.
 _optional_brokers: list[tuple[str, Callable[[], BrokerAdapter]]] = [
-    ("ccxt", lambda: CCXTBroker(config.CCXT_EXCHANGE_ID, config.CCXT_SANDBOX)),
     ("ibkr", lambda: IBKRBroker(config.IBKR_HOST, config.IBKR_PORT, config.IBKR_CLIENT_ID)),
     ("mt4_mt5", MT5Broker),
     ("mt4_mt5_metaapi", MetaApiBroker),
 ]
+if config.CCXT_EXCHANGES:
+    # Multiple simultaneous exchanges (e.g. CCXT_EXCHANGES="binance,kraken"):
+    # one broker per exchange, named "ccxt_<exchange_id>" -- see
+    # build_ccxt_brokers's own docstring and config.py's CCXT_EXCHANGES
+    # docstring for why this exists alongside the single-exchange "ccxt"
+    # broker below. build_ccxt_brokers constructs every CCXTBroker
+    # eagerly (unlike every other entry in this list, which is a lazy
+    # factory) -- caught here, not inside the per-broker loop below,
+    # so a missing `ccxt` package skips the whole group the same way
+    # every other optional broker skips on its own missing dependency,
+    # rather than crashing this module's own import.
+    try:
+        for _name, _instance in build_ccxt_brokers(config.CCXT_EXCHANGES, config.CCXT_SANDBOX).items():
+            brokers[_name] = _instance
+    except RuntimeError as _exc:
+        logger.info("ccxt brokers not registered: %s", _exc)
+else:
+    _optional_brokers.append(("ccxt", lambda: CCXTBroker(config.CCXT_EXCHANGE_ID, config.CCXT_SANDBOX)))
 if config.RITHMIC_USER:
     _optional_brokers.append(
         (

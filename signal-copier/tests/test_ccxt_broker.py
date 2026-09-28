@@ -2,7 +2,7 @@ import pytest
 
 pytest.importorskip("ccxt")
 
-from app.brokers.ccxt_broker import CCXTBroker
+from app.brokers.ccxt_broker import CCXTBroker, build_ccxt_brokers
 from app.models import DestinationAccount, OrderStatus, Signal, Side
 
 
@@ -120,3 +120,29 @@ async def test_sandbox_false_leaves_exchange_on_its_real_urls(monkeypatch):
     exchange = broker._exchange_for(account)
 
     assert not getattr(exchange, "isSandboxModeEnabled", False)
+
+
+def test_build_ccxt_brokers_registers_one_per_exchange_id():
+    """Previously CCXTBroker was only ever constructed ONCE per deployment
+    (app/main.py's own broker registry), hardcoding it to a single
+    exchange -- a real gap for an operator who wants accounts on two
+    different exchanges at once. Each returned broker is a genuinely
+    separate CCXTBroker instance pointed at its own exchange_id, not
+    the same instance keyed under different names."""
+    brokers = build_ccxt_brokers(["binance", "kraken"], sandbox=False)
+
+    assert set(brokers) == {"ccxt_binance", "ccxt_kraken"}
+    assert brokers["ccxt_binance"].exchange_id == "binance"
+    assert brokers["ccxt_kraken"].exchange_id == "kraken"
+    assert brokers["ccxt_binance"] is not brokers["ccxt_kraken"]
+
+
+def test_build_ccxt_brokers_applies_sandbox_to_every_exchange():
+    brokers = build_ccxt_brokers(["binance", "kraken"], sandbox=True)
+
+    assert brokers["ccxt_binance"].sandbox is True
+    assert brokers["ccxt_kraken"].sandbox is True
+
+
+def test_build_ccxt_brokers_empty_list_returns_empty_dict():
+    assert build_ccxt_brokers([], sandbox=False) == {}
