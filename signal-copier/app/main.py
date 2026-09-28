@@ -38,6 +38,7 @@ from app.brokers.ccxt_broker import CCXTBroker, build_ccxt_brokers
 from app.brokers.ibkr import IBKRBroker
 from app.brokers.mt4_mt5 import MetaApiBroker, MT5Broker
 from app.brokers.ninjatrader import NinjaTraderBroker
+from app.brokers.oanda import OANDABroker
 from app.brokers.paper import PaperBroker
 from app.brokers.rithmic import RithmicBroker
 from app.brokers.signalstack import SignalStackBroker
@@ -93,6 +94,7 @@ brokers = {
     "alpaca": AlpacaBroker(),
     "ninjatrader": NinjaTraderBroker(),
     "tradovate": TradovateBroker(),
+    "oanda": OANDABroker(),
 }
 # These brokers need optional packages installed (and, for Rithmic, connection
 # credentials up front); only register them if available so the paper-only
