@@ -71,7 +71,7 @@ def run_once(
     ingress_url: str | None = None,
     signing_secret: str | None = None,
     batch_size: int | None = None,
-    http_post=httpx.post,
+    http_post=None,
 ) -> RelayIngestResult:
     """One poll-and-forward cycle. Raises `RelayNotConfiguredError` if no
     ingress URL is set -- refuses to run rather than silently doing
@@ -86,6 +86,12 @@ def run_once(
     url = ingress_url if ingress_url is not None else config.RELAY_INGRESS_URL
     secret = signing_secret if signing_secret is not None else config.RELAY_SIGNING_SECRET
     limit = batch_size if batch_size is not None else config.RELAY_BATCH_SIZE
+    #: Resolved here, not as a `http_post=httpx.post` default parameter
+    #: value -- a default is bound once at function-definition time, so
+    #: `monkeypatch.setattr("app.relay_worker.httpx.post", ...)` (the
+    #: normal way a test patches an already-imported module attribute)
+    #: would silently have no effect on it.
+    post = http_post if http_post is not None else httpx.post
     if not url:
         raise RelayNotConfiguredError("RELAY_INGRESS_URL is not set -- refusing to guess a destination")
 
@@ -97,7 +103,7 @@ def run_once(
     body = build_batch_body(envelope_jsons)
     signature = sign_relay_payload(body, secret)
 
-    response = http_post(
+    response = post(
         url,
         content=body,
         headers={"x-relay-signature": signature, "content-type": "application/json"},

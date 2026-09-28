@@ -60,6 +60,7 @@ from app.provider_scout import ProviderScout
 from app.provider_value import compute_provider_value_report
 from app.rate_limit import INGRESS_RATE_LIMIT, limiter
 from app.reconciliation import OrderReconciler
+from app.relay_scheduler import RelayScheduler
 from app.routing import load_routing_config_from_store
 from app.sources.text_parser import classify_batch
 from app.sources.discord import DiscordSource
@@ -147,6 +148,7 @@ provider_scout = ProviderScout(
     win_rate_threshold=config.PROVIDER_VALUE_WIN_RATE_THRESHOLD,
     profit_factor_threshold=config.PROVIDER_VALUE_PROFIT_FACTOR_THRESHOLD,
 )
+relay_scheduler = RelayScheduler(store=store, interval_seconds=config.RELAY_POLL_INTERVAL_SECONDS)
 
 # Pull-based sources only start if fully configured via env vars.
 _background_sources: list[SourceAdapter] = []
@@ -205,9 +207,19 @@ async def lifespan(app: FastAPI):
     await reconciler.start()
     await price_monitor.start()
     await provider_scout.start()
+    if config.RELAY_INGRESS_URL:
+        # Same "pull-based, only starts if fully configured" convention
+        # as TelegramSource/DiscordSource/etc. above -- a deployment with
+        # no commercial platform to export to gets no relay loop at all,
+        # not a loop that spins forever raising RelayNotConfiguredError.
+        await relay_scheduler.start()
+    else:
+        logger.info("RELAY_INGRESS_URL is not set -- relay scheduler not started")
 
     yield
 
+    if config.RELAY_INGRESS_URL:
+        await relay_scheduler.stop()
     await provider_scout.stop()
     await price_monitor.stop()
     await reconciler.stop()
@@ -318,6 +330,16 @@ async def health() -> dict:
     # day, so gating overall health on it would report "degraded" for
     # hours after every fresh install/restart despite nothing being wrong.
     provider_scout_ok = _fresh(provider_scout.last_success_at, config.PROVIDER_SCOUT_INTERVAL_SECONDS)
+    # Same "informational only" reasoning as provider_scout_ok above: a
+    # deployment with no RELAY_INGRESS_URL never starts this scheduler at
+    # all (see `lifespan`), so it would report perpetually "not fresh"
+    # and falsely degrade overall status for something that was never
+    # meant to run here.
+    relay_ok = (
+        _fresh(relay_scheduler.last_success_at, config.RELAY_POLL_INTERVAL_SECONDS)
+        if config.RELAY_INGRESS_URL
+        else None
+    )
     return {
         # OPS-01: `status` was hardcoded to "ok" regardless of the flags
         # right next to it -- a fresh startup (before either worker's
@@ -328,6 +350,7 @@ async def health() -> dict:
         "price_monitor_ok": price_monitor_ok,
         "reconciler_ok": reconciler_ok,
         "provider_scout_ok": provider_scout_ok,
+        "relay_ok": relay_ok,
     }
 
 
