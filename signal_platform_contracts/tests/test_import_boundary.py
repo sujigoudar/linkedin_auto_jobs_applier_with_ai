@@ -63,16 +63,21 @@ def test_no_source_file_imports_a_forbidden_module():
 
 
 def test_the_package_imports_cleanly_in_a_subprocess_with_db_broker_and_app_blocked():
-    """Real, not simulated: a subprocess whose sys.path contains ONLY
-    this package's own root (never signal-copier/ or
-    signal-portfolio-commercial/, so a bare `import app` cannot
-    accidentally resolve to either), and whose sys.modules is
-    pre-poisoned so `import sqlalchemy`/`psycopg`/`httpx`/`app` raise
-    ImportError instead of silently finding the real, installed
-    packages this test environment happens to have."""
+    """Real, not simulated: a fresh subprocess whose sys.path is set
+    EXPLICITLY (never relying on cwd-based implicit path insertion,
+    which only happens to work when this package is separately
+    pip-installed editable into the interpreter running the test --
+    true in some dev environments, false in a clean CI job, which is
+    exactly the gap that let a broken version of this test pass locally
+    and fail in CI) to contain only this package's own parent directory,
+    and whose sys.modules is pre-poisoned so
+    `import sqlalchemy`/`psycopg`/`httpx`/`app` raise ImportError
+    instead of silently finding the real, installed packages this test
+    environment happens to have."""
     script = textwrap.dedent(
         """
         import sys
+        sys.path.insert(0, __PARENT_DIR__)
 
         class _Blocked:
             def find_spec(self, name, path=None, target=None):
@@ -105,10 +110,10 @@ def test_the_package_imports_cleanly_in_a_subprocess_with_db_broker_and_app_bloc
         assert env.event_id == "evt-1"
         print("OK")
         """
-    )
+    ).replace("__PARENT_DIR__", repr(str(_PACKAGE_ROOT.parent)))
     result = subprocess.run(
         [sys.executable, "-c", script],
-        cwd=str(_PACKAGE_ROOT),
+        cwd=str(_PACKAGE_ROOT.parent),
         capture_output=True,
         text=True,
         timeout=30,
