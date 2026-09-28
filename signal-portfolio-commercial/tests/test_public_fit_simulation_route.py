@@ -6,6 +6,7 @@ same convention tests/test_relay_routes.py already uses for the relay
 worker's own outbound call.
 """
 import json
+import re
 
 import pytest
 from fastapi.testclient import TestClient
@@ -65,6 +66,18 @@ class _FakeResponse:
         return self._body
 
 
+def _extract_equity_curve_json(html: str) -> list:
+    """Pulls the real equity-curve payload out of the rendered page's own
+    `<script type="application/json" id="fit-sim-equity-curve-data">`
+    tag -- the actual data Chart.js is seeded with, not a re-derivation
+    of what the test expects to see."""
+    match = re.search(
+        r'<script type="application/json" id="fit-sim-equity-curve-data">(.*?)</script>', html, re.S
+    )
+    assert match is not None, "expected the fit-sim equity-curve data tag to be rendered"
+    return json.loads(match.group(1))
+
+
 _REPORT_BODY = {
     "summary": {
         "source": "alerts_guy",
@@ -76,7 +89,11 @@ _REPORT_BODY = {
         "worst_drawdown_at_your_size": 0.0,
         "total_signals": 1,
     },
-    "equity_curve": [{"time": "2024-01-02T00:00:00+00:00", "cumulative_pnl": 250.0}],
+    "equity_curve": [
+        {"time": "2024-01-02T00:00:00+00:00", "cumulative_pnl": 100.0},
+        {"time": "2024-01-05T00:00:00+00:00", "cumulative_pnl": 75.0},
+        {"time": "2024-01-09T00:00:00+00:00", "cumulative_pnl": 250.0},
+    ],
     "trades": [{"signal_id": "s1", "symbol": "AAPL", "fits": True}],
 }
 
@@ -159,6 +176,47 @@ def test_post_runs_a_real_simulation_end_to_end_once_configured_and_renders_the_
     # never a fabricated placeholder.
     assert "250.00" in response.text  # simulated_pnl_at_your_size
     assert "not available for this portfolio yet" not in response.text
+    # The rendered equity-curve chart's own seeded data (the <script
+    # type="application/json"> tag Chart.js reads from) must exactly
+    # match the real, mocked equity_curve -- never a placeholder or a
+    # re-derived value.
+    assert _extract_equity_curve_json(response.text) == _REPORT_BODY["equity_curve"]
+
+
+def test_zero_fitting_trades_shows_the_honest_empty_state_not_a_fake_chart(db_session, monkeypatch):
+    """An empty `equity_curve` (e.g. zero signals fit the visitor's
+    stated max-per-trade) must render the real empty state -- never a
+    chart with fabricated points."""
+    _publish(db_session)
+    monkeypatch.setattr(
+        config,
+        "FIT_SIM_CATALOG_CONFIG_JSON",
+        json.dumps({"detail-product": {"source": "alerts_guy", "csv_paths": {"AAPL": "/data/AAPL.csv"}}}),
+    )
+    empty_report = {
+        "summary": {
+            "source": "alerts_guy",
+            "account_size": 100.0,
+            "max_per_trade": 1.0,
+            "fit_count": 0,
+            "fit_percentage": 0.0,
+            "simulated_pnl_at_your_size": 0.0,
+            "worst_drawdown_at_your_size": 0.0,
+            "total_signals": 5,
+        },
+        "equity_curve": [],
+        "trades": [],
+    }
+    monkeypatch.setattr(client_module.httpx, "post", lambda *a, **k: _FakeResponse(200, empty_report))
+
+    client = _client(db_session)
+    response = client.post(
+        "/portfolios/detail-product/fit-simulation", data={"account_size": 100, "max_per_trade": 1}
+    )
+
+    assert response.status_code == 200
+    assert "fit-sim-equity-curve-data" not in response.text
+    assert "No fitting signals in this window produced a chartable equity curve" in response.text
 
 
 def test_invalid_account_size_is_rejected_with_no_call_made(db_session, monkeypatch):

@@ -24,8 +24,10 @@ without a real release decision.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.staticfiles import StaticFiles
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
@@ -47,6 +49,9 @@ from app.services.stripe_webhook import (
 )
 
 
+STATIC_DIR = Path(__file__).resolve().parent / "static"
+
+
 def create_app(database_url: str | None = None, relay_database_url: str | None = None) -> FastAPI:
     app = FastAPI(title="signal-portfolio-commercial")
     engine = make_engine(database_url)
@@ -66,6 +71,13 @@ def create_app(database_url: str | None = None, relay_database_url: str | None =
     app.state.limiter = limiter
     app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)  # type: ignore[arg-type]  # slowapi's handler is typed narrower (RateLimitExceeded, not the generic Exception Starlette expects) than the real, correct runtime behavior needs
     app.add_middleware(SlowAPIMiddleware)
+
+    #: Locally-pinned Chart.js vendor file (no CDN, no build step), same
+    #: convention as signal-copier's own `app/main.py` static mount --
+    #: used only by PU-03's "Try our fit simulator" equity-curve chart
+    #: (app/templates/pu03_portfolio_detail.html). Public, unauthenticated:
+    #: this is a static library file, not application data.
+    app.mount("/static/vendor", StaticFiles(directory=STATIC_DIR / "vendor"), name="vendor")
 
     @app.get("/healthz")
     def healthz() -> dict:
