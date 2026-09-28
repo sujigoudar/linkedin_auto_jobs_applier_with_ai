@@ -12,11 +12,18 @@ module only joins their outputs together into one row per selection.
 connection means actual performance unavailable, not model return"
 (CU-01's own acceptance text) holds by construction: `required_action`
 is derived from the real state of each row's own mandate/connection,
-never a fabricated aggregate. Actual performance card and Observed open
-episodes have no backing execution/NAV model anywhere in this build
-(the same gap PU-03/AD-05's own slices already documented) -- the
-template renders those as explicit UNSUPPORTED, never a guessed or
-zero-filled figure.
+never a fabricated aggregate.
+
+`performance_state` (Signal Platform Integration Correction Pack's own
+INTEGRATION_DECISION.md S11: "Replace blanket UNSUPPORTED with precise
+states") replaces the Actual performance card's old blanket
+UNSUPPORTED with one of NOT_CONNECTED/AWAITING_OBSERVATIONS/AVAILABLE
+-- see app/services/customer_performance_state.py's own module
+docstring for exactly what each means and why the other four S11
+states aren't computed here. Observed open episodes has NO backing
+model at all yet (the same gap PU-03/AD-05's own slices already
+documented) -- the template still renders that one as explicit
+UNSUPPORTED, never a guessed or zero-filled figure.
 """
 from __future__ import annotations
 
@@ -28,6 +35,7 @@ from app.models.copy_mandate import CopyMandate, CopyMandateState
 from app.models.platform_connection import PlatformConnection, PlatformConnectionState
 from app.models.portfolio_selection import PortfolioSelection, PortfolioSelectionState
 from app.services.copy_mandate import list_own_copy_mandates
+from app.services.customer_performance_state import PerformanceState, get_customer_performance_state
 from app.services.platform_connection import list_own_platform_connections
 from app.services.portfolio_selection import list_own_portfolio_selections
 from app.services.product_admin import get_product
@@ -40,6 +48,7 @@ class CustomerOverviewRow:
     product_slug: str | None
     mandate: CopyMandate | None
     connection: PlatformConnection | None
+    performance_state: PerformanceState
 
     @property
     def required_action(self) -> str:
@@ -84,6 +93,7 @@ def get_customer_overview(session: Session, *, tenant_id: str, user_id: str) -> 
                 product_slug=product.slug if product else None,
                 mandate=mandate,
                 connection=connection,
+                performance_state=get_customer_performance_state(session, tenant_id=tenant_id, connection=connection),
             )
         )
     return CustomerOverview(rows=rows)

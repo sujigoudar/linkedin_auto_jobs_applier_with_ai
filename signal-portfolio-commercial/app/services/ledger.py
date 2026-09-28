@@ -30,6 +30,7 @@ def append_entry(
     evidence_class: EvidenceClass,
     multiplier: Decimal = Decimal(1),
     fee: Decimal | None = None,
+    follower_connection_id: str | None = None,
 ) -> LedgerEntry:
     """`evidence_class` is a required argument, not a default, per
     Signal Platform Integration Correction Pack's own INTEGRATION_DECISION.md
@@ -37,7 +38,14 @@ def append_entry(
     `fee` defaults to `None` (unknown), never `Decimal(0)`: "Importing a
     zero default is not proof of a verified fee" (S7) -- a caller that
     genuinely knows the fee is zero (e.g. a commission-free venue) passes
-    `Decimal(0)` explicitly; a caller that doesn't know passes nothing."""
+    `Decimal(0)` explicitly; a caller that doesn't know passes nothing.
+
+    `follower_connection_id` (S7: "FOLLOWER requires an authorized
+    observation of that specific customer's account") is meaningful only
+    for `book == Book.FOLLOWER` -- passing it for any other book is not
+    rejected here (this function trusts its caller the same way it
+    already trusts `book` itself), but nothing in this codebase's own
+    callers does that today."""
     entry = LedgerEntry(
         tenant_id=tenant_id,
         book=book,
@@ -51,6 +59,7 @@ def append_entry(
         event_time=event_time,
         source_authority=source_authority,
         evidence_class=evidence_class,
+        follower_connection_id=follower_connection_id,
     )
     session.add(entry)
     session.flush()
@@ -91,6 +100,7 @@ def append_correction(
         currency=original.currency,
         fee=original.fee if fee is None else fee,
         evidence_class=original.evidence_class,
+        follower_connection_id=original.follower_connection_id,
         event_time=event_time,
         source_authority=source_authority,
         reconciliation_state=ReconciliationState.UNRECONCILED,

@@ -18,7 +18,13 @@
 
 <div class="panel">
   <h2>Actual versus model</h2>
-  <p><span class="badge badge-unknown">UNSUPPORTED</span> -- no execution/NAV ledger exists in this build, so no real actual-versus-model comparison can be shown here. This is never a zero or a guessed figure.</p>
+  {% if detail.performance_state.value == "available" %}
+  <p><span class="badge badge-published">AVAILABLE</span></p>
+  {% elif detail.performance_state.value == "awaiting_observations" %}
+  <p><span class="badge badge-unknown">AWAITING_OBSERVATIONS</span> -- connected, but no authorized execution observation has ever been recorded for this account yet. Never a zero or a guessed figure.</p>
+  {% else %}
+  <p><span class="badge badge-unknown">NOT_CONNECTED</span> -- no platform connection backs this selection yet.</p>
+  {% endif %}
 </div>
 
 <div class="panel">

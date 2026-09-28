@@ -2488,6 +2488,10 @@ def test_customer_overview_page_shows_the_real_row_after_a_full_selection_connec
     assert response.status_code == 200
     assert product.product_name in response.text
     assert "No action required" in response.text
+    # Connected + mandated, but no Book.FOLLOWER ledger entry exists for
+    # this connection anywhere in this build yet -- INTEGRATION_DECISION.md
+    # S11's own precise state, never the old blanket UNSUPPORTED.
+    assert "AWAITING_OBSERVATIONS" in response.text
 
 
 def test_selection_detail_page_requires_customer_role(db_session):
@@ -2521,6 +2525,10 @@ def test_selection_detail_page_shows_the_real_selection_and_unsupported_panels(d
     assert response.status_code == 200
     assert product.product_name in response.text
     assert "UNSUPPORTED" in response.text
+    # No mandate/connection at all here -- INTEGRATION_DECISION.md S11's
+    # own precise state for "Actual versus model", never the old blanket
+    # UNSUPPORTED.
+    assert "NOT_CONNECTED" in response.text
 
 
 def test_selection_detail_page_is_a_scoped_not_found_across_tenants(db_session):

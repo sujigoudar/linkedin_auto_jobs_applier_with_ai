@@ -8,12 +8,13 @@ PU-03's own get_published_portfolio_detail (identity/version facts),
 and CU-01's own list_own_copy_mandates_by_selection (the selection's
 most recent non-cancelled mandate) rather than a duplicate technique.
 
-CU-03's own three metrics (Observed net P&L, Open episodes, Delivery
-lag) and the Actual versus model tabs / Alerts/trades panels all need
-a real execution/NAV ledger that has no backing model anywhere in this
-build (the same gap CU-01/PU-03/AD-05's own slices already
-documented) -- the template renders those as explicit UNSUPPORTED,
-never a guessed or zero-filled figure.
+`performance_state` (same states/reasoning as
+app/services/customer_overview.py's own CustomerOverviewRow) replaces
+Observed net P&L's old blanket UNSUPPORTED. Open episodes, Delivery
+lag, and the Actual versus model tabs / Alerts/trades panels still
+have no backing model at all in this build (the same gap CU-01/PU-03/
+AD-05's own slices already documented) -- the template still renders
+those as explicit UNSUPPORTED, never a guessed or zero-filled figure.
 """
 from __future__ import annotations
 
@@ -25,6 +26,7 @@ from app.models.copy_mandate import CopyMandate
 from app.models.platform_connection import PlatformConnection, PlatformConnectionState
 from app.models.portfolio_selection import PortfolioSelection
 from app.services.customer_overview import list_own_copy_mandates_by_selection
+from app.services.customer_performance_state import PerformanceState, get_customer_performance_state
 from app.services.platform_connection import list_own_platform_connections
 from app.services.portfolio_selection import get_own_portfolio_selection
 from app.services.product_admin import get_product
@@ -37,6 +39,7 @@ class CustomerSelectionDetail:
     portfolio: PortfolioDetail | None
     mandate: CopyMandate | None
     connection: PlatformConnection | None
+    performance_state: PerformanceState
 
 
 def get_own_selection_detail(
@@ -64,4 +67,8 @@ def get_own_selection_detail(
         }
         connection = connections_by_id.get(mandate.connection_id)
 
-    return CustomerSelectionDetail(selection=selection, portfolio=portfolio, mandate=mandate, connection=connection)
+    performance_state = get_customer_performance_state(session, tenant_id=tenant_id, connection=connection)
+    return CustomerSelectionDetail(
+        selection=selection, portfolio=portfolio, mandate=mandate, connection=connection,
+        performance_state=performance_state,
+    )

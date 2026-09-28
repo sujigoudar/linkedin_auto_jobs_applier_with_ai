@@ -115,6 +115,24 @@ class LedgerEntry(Base):
         Enum(ReconciliationState, native_enum=False), nullable=False, default=ReconciliationState.UNRECONCILED
     )
 
+    #: Which specific customer's own PlatformConnection this entry is an
+    #: authorized observation OF -- meaningful only for `book ==
+    #: Book.FOLLOWER` entries (S7: "FOLLOWER requires an authorized
+    #: observation of that specific customer's account. A copied model
+    #: alert or subscription alone cannot populate this book."), NULL for
+    #: every other book. No FOREIGN KEY constraint to platform_connections
+    #: (a connection can be legitimately disconnected/removed later
+    #: without invalidating the historical fact that THIS entry was once
+    #: observed through it -- ledger history is append-only and must
+    #: survive that). Nothing in this build populates a FOLLOWER-book
+    #: entry yet (app/models/platform_connection.py's own docstring: a
+    #: connection here is only ever DECLARED, never a real authorized
+    #: observation channel) -- this column exists so
+    #: app/services/customer_performance_state.py's own query is real and
+    #: correct today, ready for the actual observation connector
+    #: (INTEGRATION_DECISION.md S12 step 6) to populate for real later.
+    follower_connection_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+
     #: Points at the entry this one corrects -- NULL for an original entry.
     #: The original row is never updated or deleted; this is how a mistake
     #: is fixed instead.
