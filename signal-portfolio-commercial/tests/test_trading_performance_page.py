@@ -53,6 +53,16 @@ def test_trading_page_shows_the_real_empty_state(db_session):
     assert "No Book.PLATFORM ledger entries exist" in response.text
 
 
+def test_trading_page_links_to_portfolio_lab_for_a_role_permitted_to_run_research(db_session):
+    """INT-019 "Permitted owner workspace switch": the Trading ->
+    Portfolio Lab -> Performance cycle is consistently navigable --
+    this is the Trading/Performance page's own half of that cycle."""
+    client = _client(db_session)
+    response = client.get("/ops/trading", headers=_auth_headers(role=MembershipRole.OWNER))
+    assert response.status_code == 200
+    assert '/ops/research/new' in response.text
+
+
 def test_trading_page_renders_real_stream_and_performance_data(db_session):
     register_export_stream(db_session, tenant_id="tenant-a", source_stream="signal-copier:acct1", environment="LOCAL_SIM")
     append_entry(

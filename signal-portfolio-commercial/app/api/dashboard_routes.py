@@ -294,6 +294,7 @@ from app.services.research_run import (
 )
 from app.services.rights_registry import list_rights_grants
 from app.services.sleeve_admin import InvalidSleeveDraftError, create_sleeve, list_sleeves
+from app.services.source_coverage import compute_source_coverage
 
 router = APIRouter()
 
@@ -329,7 +330,11 @@ def operations_overview_page(
     overview = get_operations_overview(session, tenant_id=scope.tenant_id)
     return templates.TemplateResponse(
         request, "ad01_overview.html",
-        {"overview": overview, "can_view_trading_performance": is_allowed(scope.role, "view_integration_status")},
+        {
+            "overview": overview,
+            "can_view_trading_performance": is_allowed(scope.role, "view_integration_status"),
+            "can_view_portfolio_lab": is_allowed(scope.role, "run_research_job"),
+        },
     )
 
 
@@ -410,6 +415,44 @@ def platform_performance_endpoint(
     }
 
 
+@router.get("/api/v1/ops/source-coverage")
+def source_coverage_endpoint(
+    scope: TenantScope = Depends(get_current_scope),
+    session: Session = Depends(get_db_session),
+) -> dict:
+    """INTEGRATION_ACCEPTANCE_CASES.json INT-027 "All permitted source
+    outcomes reach research" -- see app/services/source_coverage.py's
+    own module docstring for exactly what disposition/lineage this
+    computes and what it honestly does not yet distinguish (this
+    build's data model has no admitted/rejected/unfilled/canceled/loss/
+    commentary taxonomy). Same access scope as Integration Status: this
+    is private trading telemetry, not a general business metric."""
+    try:
+        require_permission(scope.role, "view_integration_status")
+    except PermissionDenied as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+    set_tenant_scope(session, scope.tenant_id)
+    report = compute_source_coverage(session, tenant_id=scope.tenant_id)
+    return {
+        "total_count": report.total_count,
+        "ledger_recorded_count": report.ledger_recorded_count,
+        "parked_count": report.parked_count,
+        "received_no_ledger_entry_count": report.received_no_ledger_entry_count,
+        "rows": [
+            {
+                "event_id": row.event_id,
+                "source_stream": row.source_stream,
+                "export_sequence": row.export_sequence,
+                "disposition": row.disposition,
+                "parked_reason": row.parked_reason,
+                "ledger_entry_id": row.ledger_entry_id,
+            }
+            for row in report.rows
+        ],
+    }
+
+
 @router.get("/ops/trading")
 def trading_performance_page(
     request: Request,
@@ -433,7 +476,11 @@ def trading_performance_page(
     performance = compute_platform_performance(session, tenant_id=scope.tenant_id)
     return templates.TemplateResponse(
         request, "ad_trading_performance.html",
-        {"integration_status": integration_status, "performance": performance},
+        {
+            "integration_status": integration_status,
+            "performance": performance,
+            "can_view_portfolio_lab": is_allowed(scope.role, "run_research_job"),
+        },
     )
 
 
@@ -711,7 +758,14 @@ def research_run_list_page(
     set_tenant_scope(session, scope.tenant_id)
     runs = list_research_runs(session, tenant_id=scope.tenant_id)
     sleeves = list_sleeves(session, tenant_id=scope.tenant_id)
-    return templates.TemplateResponse(request, "ad04_research_runs.html", {"runs": runs, "sleeves": sleeves})
+    return templates.TemplateResponse(
+        request, "ad04_research_runs.html",
+        {
+            "runs": runs,
+            "sleeves": sleeves,
+            "can_view_trading_performance": is_allowed(scope.role, "view_integration_status"),
+        },
+    )
 
 
 @router.post("/ops/research/new")

@@ -306,6 +306,24 @@ def test_operations_overview_shows_the_real_empty_state(db_session):
     assert "No commercial products or subscriptions exist yet" in response.text
 
 
+def test_operations_overview_links_to_portfolio_lab_for_a_role_permitted_to_run_research(db_session):
+    """INT-019 "Permitted owner workspace switch": Portfolio Lab (the
+    research-run pages under /ops/research) is reachable from the same
+    operations-overview nav as trading/integration status, for a role
+    actually permitted to run a research job."""
+    client = _client(db_session)
+    response = client.get("/ops", headers=_auth_headers(role=MembershipRole.OWNER))
+    assert response.status_code == 200
+    assert '/ops/research/new' in response.text
+
+
+def test_operations_overview_never_links_to_portfolio_lab_for_a_role_without_research_permission(db_session):
+    client = _client(db_session)
+    response = client.get("/ops", headers=_auth_headers(role=MembershipRole.SUPPORT_READONLY))
+    assert response.status_code == 200
+    assert '/ops/research/new' not in response.text
+
+
 def test_operations_overview_lists_a_real_products_blockers_and_marks_incidents_unsupported(db_session):
     client = _client(db_session)
     headers = _auth_headers()
@@ -579,6 +597,19 @@ def test_research_runs_page_shows_the_real_empty_state(db_session):
     response = client.get("/ops/research/new", headers=_auth_headers())
     assert response.status_code == 200
     assert "Select a rights-qualified universe" in response.text
+
+
+def test_research_runs_page_links_back_to_overview_and_forward_to_trading_performance(db_session):
+    """INT-019 "Permitted owner workspace switch": Portfolio Lab's own
+    half of the Trading -> Portfolio Lab -> Performance cycle -- a
+    consistent way back to the overview and onward to Trading &
+    integration status, for a role (OWNER, the default here) permitted
+    to view both."""
+    client = _client(db_session)
+    response = client.get("/ops/research/new", headers=_auth_headers())
+    assert response.status_code == 200
+    assert '/ops"' in response.text
+    assert '/ops/trading' in response.text
 
 
 def test_create_research_run_then_view_preview(db_session):

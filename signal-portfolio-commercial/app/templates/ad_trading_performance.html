@@ -3,6 +3,9 @@
 {% block content %}
 <h1>Trading &amp; integration status</h1>
 <p><a href="/ops">&larr; Back to operations overview</a></p>
+{% if can_view_portfolio_lab %}
+<p><a href="/ops/research/new">Portfolio Lab: research runs &rarr;</a></p>
+{% endif %}
 
 <div class="panel">
   <h2>Integration status</h2>

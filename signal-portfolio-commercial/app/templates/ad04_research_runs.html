@@ -2,6 +2,10 @@
 {% block title %}Portfolio Lab builder{% endblock %}
 {% block content %}
 <h1>Portfolio Lab builder</h1>
+<p><a href="/ops">&larr; Back to operations overview</a></p>
+{% if can_view_trading_performance %}
+<p><a href="/ops/trading">Trading &amp; integration status &rarr;</a></p>
+{% endif %}
 
 {% if error %}
 <div class="conflict">{{ error }}</div>
