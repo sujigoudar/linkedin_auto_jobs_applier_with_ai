@@ -28,6 +28,7 @@ from signal_platform_contracts import (
 )
 
 from app.db import set_tenant_scope
+from app.models.copy_mandate import CopyMandate, CopyMandateStartMode
 from app.models.integration_inbox import ExportStreamRegistration, InboxEvent
 from app.models.ledger import LedgerEntry
 from app.models.tenancy import Tenant
@@ -109,6 +110,47 @@ def test_relay_role_cannot_insert_an_inbox_event_for_a_tenant_it_has_not_scoped_
                 export_sequence=0,
                 envelope_json="{}",
                 payload_hash="deadbeef",
+            )
+        )
+        with pytest.raises(ProgrammingError):
+            relay_session.flush()
+    finally:
+        relay_session.rollback()
+        relay_session.close()
+
+
+def test_relay_role_has_no_write_access_to_any_command_authority_table(db_session, relay_session_factory):
+    """INTEGRATION_ACCEPTANCE_CASES.json INT-031 "Command authority
+    rechecked on execution", re-verified against this integration's own
+    new relay/inbox boundary: app/api/relay_routes.py's own docstring
+    already claims "this route ingests observations only -- it has no
+    code path that submits, cancels or modifies a broker order." This
+    proves that claim at the one place it actually matters -- real
+    Postgres GRANTs, under the genuine restricted `relay_role` login --
+    rather than trusting the docstring or the route's own code shape:
+    even a caller who fully compromised the relay's own credential
+    (S11's own "a stolen telemetry credential cannot become a trading
+    credential") could not use it to write to `copy_mandates`, the one
+    table in this codebase that records customer copy-trading authority
+    (CU-09 F-MANDATE) -- a permission-denied error, not merely an
+    application-level check this role could route around."""
+    _seed_tenant(db_session, "tenant-a")
+    db_session.commit()
+
+    relay_session = relay_session_factory()
+    try:
+        set_tenant_scope(relay_session, "tenant-a")
+        relay_session.add(
+            CopyMandate(
+                tenant_id="tenant-a",
+                user_id="user-a",
+                selection_id="selection-x",
+                connection_id="connection-x",
+                allocation_amount=Decimal("100"),
+                allocation_currency="USD",
+                start_mode=CopyMandateStartMode.NEW_ENTRIES_ONLY,
+                policy_version_id="v1",
+                consent_version="v1",
             )
         )
         with pytest.raises(ProgrammingError):
