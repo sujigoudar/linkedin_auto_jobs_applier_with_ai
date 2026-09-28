@@ -121,13 +121,33 @@ class InboxEvent(Base):
     #: `_established_generation` docstring: an OLDER generation than
     #: already established is a detected rollback, a NEWER one requires
     #: a reconciled bootstrap this build does not have; neither is ever
-    #: silently applied). A short, machine-parseable prefix
-    #: (`unsupported_schema_version:`, `unimplemented_event_type:`,
-    #: `generation_rollback_detected:`,
-    #: `new_generation_requires_bootstrap:`) so a caller (e.g.
+    #: silently applied), or a `POSITION_SNAPSHOT` page whose own
+    #: manifest is internally inconsistent (`manifest_metadata_mismatch:`
+    #: -- a later page disagreeing with an earlier one's own
+    #: cutoff_sequence/page_count) or spans more than one
+    #: producer_generation (`manifest_generation_mismatch:` -- INT-009's
+    #: own "Attempt to mix a page from another generation... rejected").
+    #: A short, machine-parseable prefix (`unsupported_schema_version:`,
+    #: `unimplemented_event_type:`, `generation_rollback_detected:`,
+    #: `new_generation_requires_bootstrap:`, `manifest_metadata_mismatch:`,
+    #: `manifest_generation_mismatch:`) so a caller (e.g.
     #: app/services/integration_status.py) can group and surface these
     #: without re-parsing `envelope_json`.
     parked_reason: Mapped[str | None] = mapped_column(String, nullable=True)
+
+    #: The four columns below are set ONLY for a `POSITION_SNAPSHOT` row
+    #: (S6 "Snapshot plus deltas", INTEGRATION_ACCEPTANCE_CASES.json
+    #: INT-008 "Snapshot and delta overlap" / INT-009 "Interrupted
+    #: bootstrap resumes") -- NULL for every other event type. Cached
+    #: straight from that row's own `PositionSnapshotPayload` so a
+    #: manifest's own completeness/consistency can be queried directly
+    #: against this table, never by re-parsing every page's
+    #: `envelope_json`. See app/services/integration_inbox.py's own
+    #: `_apply_position_snapshot_page` docstring for how these are used.
+    manifest_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    snapshot_page_index: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    snapshot_page_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    snapshot_cutoff_sequence: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     __table_args__ = (
         #: Scoped to (source_stream, producer_generation, export_sequence)

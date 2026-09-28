@@ -13,10 +13,13 @@ event envelope (S6) and identity contract (S5). `EventType` enumerates
 every event category S6 names; `SOURCE_RECEIPT` and `EXECUTION_APPLIED`
 have an implemented payload model for S12's own "first complete proof"
 (one simulated source instruction -> one paper execution -> one exported
-event -> one staff view), and `FEE` (slice 16, INT-012 "Late fee revises
-net report") for the out-of-band fee confirmation that follows a fill.
-Every other `EventType` member is a real, intentional placeholder for a
-later slice, not a promise this slice already carries that data.
+event -> one staff view), `FEE` (slice 16, INT-012 "Late fee revises
+net report") for the out-of-band fee confirmation that follows a fill,
+and `POSITION_SNAPSHOT` (slice 23, INT-008/INT-009 "Snapshot and delta
+overlap"/"Interrupted bootstrap resumes") for a manifest-bound bootstrap
+snapshot page. Every other `EventType` member is a real, intentional
+placeholder for a later slice, not a promise this slice already
+carries that data.
 """
 from __future__ import annotations
 
@@ -41,6 +44,8 @@ from signal_platform_contracts.money import Money
 from signal_platform_contracts.payloads import (
     ExecutionAppliedPayload,
     FeePayload,
+    PositionSnapshotEntry,
+    PositionSnapshotPayload,
     SourceReceiptPayload,
 )
 
@@ -56,6 +61,8 @@ __all__ = [
     "InstrumentIdentity",
     "Money",
     "PortfolioIdentity",
+    "PositionSnapshotEntry",
+    "PositionSnapshotPayload",
     "PrivateAccountIdentity",
     "PublicationIdentity",
     "SourceIdentity",

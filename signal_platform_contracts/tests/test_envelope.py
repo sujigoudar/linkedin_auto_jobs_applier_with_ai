@@ -87,12 +87,14 @@ def test_subject_must_not_be_empty():
         _valid_envelope(subject={})
 
 
-def test_only_three_event_types_are_actually_implemented_in_this_slice():
+def test_only_four_event_types_are_actually_implemented_in_this_slice():
     """Documents the honest scope boundary this package's own docstring
     claims -- if this test needs updating, a real payload model was added
     for a new EventType and the docstring/IMPLEMENTED_EVENT_TYPES set
     should be updated in the same change, not drift silently."""
-    assert IMPLEMENTED_EVENT_TYPES == {EventType.SOURCE_RECEIPT, EventType.EXECUTION_APPLIED, EventType.FEE}
+    assert IMPLEMENTED_EVENT_TYPES == {
+        EventType.SOURCE_RECEIPT, EventType.EXECUTION_APPLIED, EventType.FEE, EventType.POSITION_SNAPSHOT,
+    }
 
 
 def test_a_redelivery_with_the_same_event_id_and_payload_has_the_same_hash():

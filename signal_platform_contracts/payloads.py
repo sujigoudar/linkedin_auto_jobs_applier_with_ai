@@ -8,7 +8,7 @@ nothing.
 """
 from __future__ import annotations
 
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
 from signal_platform_contracts.identity import (
     InstrumentIdentity,
@@ -70,6 +70,73 @@ class FeePayload(BaseModel):
     broker: str
     broker_order_id: str
     fee: Money
+
+
+class PositionSnapshotEntry(BaseModel):
+    """One instrument's own net position AS OF a `PositionSnapshotPayload`'s
+    own `cutoff_sequence` -- the accumulated result of every fill up to
+    and including that sequence, not a fill itself. `side` is the
+    position's own direction (never a transaction side): `quantity` is
+    always positive, `average_cost` is the position's own volume-
+    weighted entry price at the cutoff."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    instrument: InstrumentIdentity
+    side: str
+    quantity: Money
+    average_cost: Money
+
+    _validate_side = field_validator("side")(_known_side)
+
+
+class PositionSnapshotPayload(BaseModel):
+    """`EventType.POSITION_SNAPSHOT` -- S6's own "Snapshot plus deltas":
+    one PAGE of a coherent bootstrap snapshot, S9/S6's own "Use snapshot
+    cutoff, immutable manifest and delta deduplication"
+    (INTEGRATION_ACCEPTANCE_CASES.json INT-008 "Snapshot and delta
+    overlap", INT-009 "Interrupted bootstrap resumes").
+
+    `manifest_id` is the SAME across every page of one snapshot attempt
+    -- a receiver groups pages by it, never by anything else (never
+    inferred from arrival order or timing). `cutoff_sequence` and
+    `page_count` MUST also be identical across every page sharing a
+    `manifest_id` -- a page claiming a different value for either is a
+    corrupted/conflicting manifest, never silently reconciled by
+    trusting the latest one. `page_index` is 0-based and every value in
+    `range(page_count)` must appear exactly once before the manifest is
+    complete -- a receiver never marks a manifest complete from a
+    partial set (INT-009's own "Partial snapshot labeled complete",
+    prohibited).
+
+    Each page is still its own real `EventEnvelope` with its own
+    `export_sequence` (sequential, within the SAME `producer_generation`
+    the deltas immediately following the snapshot also use) and its own
+    `event_id` -- so page redelivery is exactly as idempotent as every
+    other event type here, no separate dedup mechanism needed."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    manifest_id: str
+    cutoff_sequence: int
+    page_index: int
+    page_count: int
+    positions: list[PositionSnapshotEntry]
+
+    @field_validator("cutoff_sequence", "page_index", "page_count")
+    @classmethod
+    def _non_negative(cls, value: int) -> int:
+        if value < 0:
+            raise ValueError("must not be negative")
+        return value
+
+    @model_validator(mode="after")
+    def _page_index_within_page_count(self) -> PositionSnapshotPayload:
+        if self.page_count < 1:
+            raise ValueError("page_count must be at least 1")
+        if self.page_index >= self.page_count:
+            raise ValueError(f"page_index {self.page_index} is out of range for page_count {self.page_count}")
+        return self
 
 
 class ExecutionAppliedPayload(BaseModel):

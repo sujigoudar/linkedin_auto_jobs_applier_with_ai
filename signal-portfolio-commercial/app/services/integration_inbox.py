@@ -59,6 +59,7 @@ from signal_platform_contracts import (
     EventType,
     ExecutionAppliedPayload,
     FeePayload,
+    PositionSnapshotPayload,
     SourceReceiptPayload,
 )
 
@@ -85,6 +86,8 @@ PARKED_REASON_UNIMPLEMENTED_EVENT_TYPE = "unimplemented_event_type"
 PARKED_REASON_FEE_TARGET_NOT_FOUND = "fee_target_not_found"
 PARKED_REASON_GENERATION_ROLLBACK_DETECTED = "generation_rollback_detected"
 PARKED_REASON_NEW_GENERATION_REQUIRES_BOOTSTRAP = "new_generation_requires_bootstrap"
+PARKED_REASON_MANIFEST_METADATA_MISMATCH = "manifest_metadata_mismatch"
+PARKED_REASON_MANIFEST_GENERATION_MISMATCH = "manifest_generation_mismatch"
 
 
 def _execution_correlation_key(*, broker: str, broker_order_id: str) -> str:
@@ -152,7 +155,14 @@ def _next_expected_sequence(session: Session, *, tenant_id: str, source_stream: 
     (`signal_platform_contracts.EventEnvelope.producer_generation`'s own
     docstring) -- a new generation's own sequence 0 is not "behind" the
     previous generation's sequence 100, it is a different numbering
-    entirely."""
+    entirely.
+
+    Also floored at `_snapshot_floor(...) + 1` when an ACTIVATED bootstrap
+    snapshot exists for this (stream, generation) -- INT-008 "Snapshot
+    and delta overlap": once a snapshot with `cutoff_sequence=100` is
+    active, the next expected sequence is never behind 101, regardless
+    of which individual sequences <= 100 were or weren't ever applied
+    the ordinary, one-event-at-a-time way."""
     highest_applied = session.scalar(
         select(func.max(InboxEvent.export_sequence)).where(
             InboxEvent.tenant_id == tenant_id,
@@ -161,7 +171,11 @@ def _next_expected_sequence(session: Session, *, tenant_id: str, source_stream: 
             InboxEvent.applied_at.is_not(None),
         )
     )
-    return 0 if highest_applied is None else highest_applied + 1
+    next_from_applied = 0 if highest_applied is None else highest_applied + 1
+    floor = _snapshot_floor(
+        session, tenant_id=tenant_id, source_stream=source_stream, producer_generation=producer_generation,
+    )
+    return next_from_applied if floor is None else max(next_from_applied, floor + 1)
 
 
 def _established_generation(session: Session, *, tenant_id: str, source_stream: str) -> int | None:
@@ -198,6 +212,33 @@ def _established_generation(session: Session, *, tenant_id: str, source_stream: 
     )
 
 
+def _snapshot_floor(session: Session, *, tenant_id: str, source_stream: str, producer_generation: int) -> int | None:
+    """The `cutoff_sequence` of the most recently ACTIVATED bootstrap
+    snapshot for (stream, generation) -- `None` if none has ever
+    activated. "Activated" means every page of that manifest has
+    `applied_at` set (see `_activate_snapshot_and_reconcile`); an
+    in-progress, incomplete manifest never contributes a floor (INT-009's
+    own "Partial snapshot labeled complete", prohibited).
+
+    INTEGRATION_ACCEPTANCE_CASES.json INT-008 "Snapshot and delta
+    overlap": once a floor is set, `_next_expected_sequence` treats
+    `floor + 1` as a hard minimum (never behind it, regardless of what
+    was or wasn't applied below it the ordinary way), and
+    `_apply_projection` treats any NON-snapshot envelope at or below the
+    floor as already reflected in the snapshot's own positions --
+    applied, but producing no second ledger entry ("Position snapshot is
+    not an extra execution", and no double count of 1..cutoff)."""
+    return session.scalar(
+        select(func.max(InboxEvent.snapshot_cutoff_sequence)).where(
+            InboxEvent.tenant_id == tenant_id,
+            InboxEvent.source_stream == source_stream,
+            InboxEvent.producer_generation == producer_generation,
+            InboxEvent.event_type == EventType.POSITION_SNAPSHOT.value,
+            InboxEvent.applied_at.is_not(None),
+        )
+    )
+
+
 def _apply_projection(session: Session, inbox_event: InboxEvent, envelope: EventEnvelope, *, tenant_id: str) -> None:
     """Mutates `inbox_event` in place: applies its real projection (if
     any) and sets `applied_at`. Never called for an event whose sequence
@@ -209,9 +250,34 @@ def _apply_projection(session: Session, inbox_event: InboxEvent, envelope: Event
     durably stored, `applied_at` left NULL, `parked_reason` set) --
     INT-007's own "Unknown event is parked without economic
     application", never "best-effort financial coercion" by assuming an
-    unfamiliar version parses the same as one this build actually knows."""
+    unfamiliar version parses the same as one this build actually knows.
+
+    Never called with a `POSITION_SNAPSHOT` envelope -- a manifest page
+    is handled entirely by `_ingest_position_snapshot_page`, outside
+    this function and outside the ordinary sequence gate (see
+    `ingest_export_event`'s own comment for why). Every OTHER event type
+    still funnels through here, gated by `_next_expected_sequence`."""
     if envelope.schema_version not in _SUPPORTED_SCHEMA_VERSIONS:
         inbox_event.parked_reason = f"{PARKED_REASON_UNSUPPORTED_SCHEMA_VERSION}:{envelope.schema_version}"
+        return
+
+    floor = _snapshot_floor(
+        session, tenant_id=tenant_id, source_stream=envelope.source_stream,
+        producer_generation=envelope.producer_generation,
+    )
+    if floor is not None and envelope.export_sequence <= floor:
+        # INT-008 "Snapshot and delta overlap": this economic fact is
+        # already reflected in the activated snapshot's own baseline
+        # positions -- applying it a second time via its own ledger
+        # projection would double-count it. Marked applied (it must
+        # still advance past, never park forever) but with NO ledger
+        # entry of its own. Clears any stale parked_reason from an
+        # earlier, pre-activation attempt (e.g. a FEE that once parked
+        # `fee_target_not_found` before its own execution ever arrived)
+        # -- once covered, this row is applied, not parked, and must not
+        # show both.
+        inbox_event.applied_at = datetime.now(timezone.utc)
+        inbox_event.parked_reason = None
         return
 
     if envelope.event_type == EventType.EXECUTION_APPLIED:
@@ -368,6 +434,210 @@ def _apply_and_cascade(
             return
 
 
+def _ingest_position_snapshot_page(
+    session: Session, inbox_event: InboxEvent, envelope: EventEnvelope, *, tenant_id: str
+) -> None:
+    """One page of a bootstrap snapshot manifest (S6 "Snapshot plus
+    deltas", INT-008/INT-009). Called directly from `ingest_export_event`
+    for EVERY `POSITION_SNAPSHOT` envelope, unconditionally and
+    immediately on receipt -- deliberately NEVER gated by
+    `_next_expected_sequence`/`_apply_and_cascade` the way every other
+    event type is. INT-009's own "Interrupted bootstrap resumes" requires
+    a manifest to be detected complete and activated the instant its own
+    last missing page arrives, regardless of arrival order -- gating page
+    receipt on ordinary sequence order would let an out-of-order page get
+    silently gap-parked by the generic mechanism WITHOUT its own manifest
+    metadata ever being cached, permanently deadlocking that manifest's
+    own completeness check (a real bug this exact design avoids).
+
+    Caches the page's own manifest metadata onto `inbox_event`
+    unconditionally, but only actually activates the manifest (real
+    ledger baseline entries, every page's own `applied_at` set) once
+    every `page_index` in `0..page_count-1` has been received --
+    INT-009's own "Partial snapshot labeled complete" is prohibited, so a
+    page received before its siblings stays durably received but
+    unapplied.
+
+    Validated against every sibling page already received for the SAME
+    `manifest_id` before caching anything: a page claiming a different
+    `producer_generation` than its siblings is INT-009's own "Attempt to
+    mix a page from another generation... rejected"
+    (`manifest_generation_mismatch`); one claiming a different
+    `page_count`/`cutoff_sequence` than its siblings is a manifest whose
+    own metadata disagrees with itself, never silently reconciled
+    (`manifest_metadata_mismatch`). Either park this page and leave it
+    permanently unapplied -- same "never coerced" posture as every other
+    `parked_reason`."""
+    if envelope.schema_version not in _SUPPORTED_SCHEMA_VERSIONS:
+        inbox_event.parked_reason = f"{PARKED_REASON_UNSUPPORTED_SCHEMA_VERSION}:{envelope.schema_version}"
+        return
+
+    payload = PositionSnapshotPayload.model_validate(envelope.payload)
+
+    sibling_pages = session.scalars(
+        select(InboxEvent).where(
+            InboxEvent.tenant_id == tenant_id,
+            InboxEvent.manifest_id == payload.manifest_id,
+            InboxEvent.event_id != inbox_event.event_id,
+        )
+    ).all()
+    for sibling in sibling_pages:
+        if sibling.producer_generation != envelope.producer_generation:
+            inbox_event.parked_reason = f"{PARKED_REASON_MANIFEST_GENERATION_MISMATCH}:{payload.manifest_id}"
+            return
+        if sibling.snapshot_page_count != payload.page_count or sibling.snapshot_cutoff_sequence != payload.cutoff_sequence:
+            inbox_event.parked_reason = f"{PARKED_REASON_MANIFEST_METADATA_MISMATCH}:{payload.manifest_id}"
+            return
+
+    inbox_event.manifest_id = payload.manifest_id
+    inbox_event.snapshot_page_index = payload.page_index
+    inbox_event.snapshot_page_count = payload.page_count
+    inbox_event.snapshot_cutoff_sequence = payload.cutoff_sequence
+    session.flush()
+
+    received_page_indices = set(
+        session.scalars(
+            select(InboxEvent.snapshot_page_index).where(
+                InboxEvent.tenant_id == tenant_id,
+                InboxEvent.manifest_id == payload.manifest_id,
+            )
+        ).all()
+    )
+    if len(received_page_indices) < payload.page_count:
+        # Awaiting the rest of the manifest -- not an error, not yet
+        # applied. Resuming after an interruption (INT-009) is exactly
+        # this: whichever pages already arrived stay durably received,
+        # and the FIRST later call that completes the set is the one
+        # that activates it, regardless of which page happened to be last.
+        return
+
+    _activate_snapshot_and_reconcile(
+        session,
+        tenant_id=tenant_id,
+        source_stream=envelope.source_stream,
+        producer_generation=envelope.producer_generation,
+        manifest_id=payload.manifest_id,
+        cutoff_sequence=payload.cutoff_sequence,
+        producer_id=envelope.producer_id,
+        evidence_class=envelope.evidence_class,
+    )
+
+
+def _activate_snapshot_and_reconcile(
+    session: Session,
+    *,
+    tenant_id: str,
+    source_stream: str,
+    producer_generation: int,
+    manifest_id: str,
+    cutoff_sequence: int,
+    producer_id: str,
+    evidence_class: object,
+) -> None:
+    """Called exactly once per manifest, the instant its last page
+    arrives. Three things, in order, all inside the caller's own
+    transaction:
+
+    1. One real `Book.PLATFORM` ledger baseline entry per
+       `PositionSnapshotEntry` across every page of the manifest --
+       "Position snapshot is not an extra execution", so tagged with its
+       own `source_authority` prefix (`signal-copier-snapshot-relay:`,
+       never the ordinary `signal-copier-relay:` an EXECUTION_APPLIED
+       row gets) and timestamped at the EARLIEST `event_time` among the
+       manifest's own pages, since the snapshot as a whole describes one
+       single point-in-time state even though its pages were emitted
+       (and may have arrived) separately.
+    2. Every page's own `applied_at` is set -- this is what makes
+       `_snapshot_floor` see this manifest's `cutoff_sequence` as a real
+       floor from this point on.
+    3. Reconciliation, per INT-008's own "Snapshot and delta overlap":
+       any non-snapshot row already received for this exact
+       (stream, generation) at or below `cutoff_sequence` -- whether it
+       arrived before or after this manifest completed -- is swept
+       through `_apply_projection`, which (now that the floor is set)
+       marks it applied with NO second ledger entry, never double-
+       counting an economic fact the snapshot's own baseline already
+       covers. Anything ABOVE `cutoff_sequence` is then cascaded forward
+       exactly like `_apply_and_cascade` already does, since a bootstrap
+       snapshot activating is exactly the kind of event that can unblock
+       a long run of already-received, previously out-of-order deltas.
+
+    Deliberately out of this slice's own bounded scope: a non-snapshot
+    row at or below `cutoff_sequence` that was already applied NORMALLY
+    (with its own real ledger entry) before this manifest ever activated
+    is never revisited or corrected here -- this build does not attempt
+    to retroactively remove or net out a ledger entry that already
+    existed at the time a later snapshot's own baseline was established.
+    """
+    pages = session.scalars(
+        select(InboxEvent).where(
+            InboxEvent.tenant_id == tenant_id,
+            InboxEvent.manifest_id == manifest_id,
+        )
+    ).all()
+    envelopes_by_event_id = {page.event_id: EventEnvelope.model_validate_json(page.envelope_json) for page in pages}
+    earliest_event_time = min(env.event_time for env in envelopes_by_event_id.values())
+
+    for page in pages:
+        page_payload = PositionSnapshotPayload.model_validate(envelopes_by_event_id[page.event_id].payload)
+        for position in page_payload.positions:
+            append_entry(
+                session,
+                tenant_id=tenant_id,
+                book=Book.PLATFORM,
+                instrument=position.instrument.instrument_id,
+                side=_SIDE_BY_PAYLOAD_VALUE[position.side],
+                quantity=position.quantity,
+                price=position.average_cost,
+                currency=position.instrument.currency,
+                multiplier=position.instrument.multiplier,
+                event_time=earliest_event_time,
+                source_authority=f"signal-copier-snapshot-relay:{producer_id}",
+                evidence_class=evidence_class,
+            )
+
+    now = datetime.now(timezone.utc)
+    for page in pages:
+        page.applied_at = now
+    session.flush()
+
+    covered = session.scalars(
+        select(InboxEvent).where(
+            InboxEvent.tenant_id == tenant_id,
+            InboxEvent.source_stream == source_stream,
+            InboxEvent.producer_generation == producer_generation,
+            InboxEvent.event_type != EventType.POSITION_SNAPSHOT.value,
+            InboxEvent.export_sequence <= cutoff_sequence,
+            InboxEvent.applied_at.is_(None),
+        )
+    ).all()
+    for row in covered:
+        row_envelope = EventEnvelope.model_validate_json(row.envelope_json)
+        _apply_projection(session, row, row_envelope, tenant_id=tenant_id)
+    session.flush()
+
+    while True:
+        expected = _next_expected_sequence(
+            session, tenant_id=tenant_id, source_stream=source_stream, producer_generation=producer_generation,
+        )
+        next_parked = session.scalars(
+            select(InboxEvent).where(
+                InboxEvent.tenant_id == tenant_id,
+                InboxEvent.source_stream == source_stream,
+                InboxEvent.producer_generation == producer_generation,
+                InboxEvent.export_sequence == expected,
+                InboxEvent.applied_at.is_(None),
+            )
+        ).first()
+        if next_parked is None:
+            return
+        next_envelope = EventEnvelope.model_validate_json(next_parked.envelope_json)
+        _apply_projection(session, next_parked, next_envelope, tenant_id=tenant_id)
+        session.flush()
+        if next_parked.applied_at is None:
+            return
+
+
 def ingest_export_event(session: Session, envelope_json: str) -> InboxEvent:
     """Idempotent, tenant-safe ingest of one exported envelope. Never
     trusts a tenant_id from the payload -- the ONLY source of tenant
@@ -446,6 +716,22 @@ def ingest_export_event(session: Session, envelope_json: str) -> InboxEvent:
             inbox_event.parked_reason = (
                 f"{PARKED_REASON_NEW_GENERATION_REQUIRES_BOOTSTRAP}:{envelope.producer_generation}"
             )
+        return inbox_event
+
+    if envelope.event_type == EventType.POSITION_SNAPSHOT:
+        # A manifest page is handled entirely OUTSIDE the ordinary
+        # `_next_expected_sequence` gate -- see `_ingest_position_snapshot_page`'s
+        # own docstring for why: INT-009's own "Interrupted bootstrap
+        # resumes" requires a manifest to activate the instant its own
+        # last missing page is delivered, regardless of which page index
+        # that happens to be or how it relates to any OTHER (non-
+        # snapshot) event's sequence position on the same stream. Gating
+        # page receipt on ordinary sequence order would let an
+        # out-of-order page get gap-parked by the generic mechanism
+        # below WITHOUT ever having its own manifest metadata cached --
+        # silently deadlocking a manifest that can now never be detected
+        # complete.
+        _ingest_position_snapshot_page(session, inbox_event, envelope, tenant_id=tenant_id)
         return inbox_event
 
     expected = _next_expected_sequence(
