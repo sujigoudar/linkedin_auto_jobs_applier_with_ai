@@ -264,6 +264,7 @@ from app.services.product_admin import (
     list_published_products,
     update_product_draft,
 )
+from app.services.integration_status import get_integration_status
 from app.services.operations_overview import get_operations_overview
 from app.services.release_review import (
     InvalidReviewDecisionError,
@@ -326,6 +327,45 @@ def operations_overview_page(
     set_tenant_scope(session, scope.tenant_id)
     overview = get_operations_overview(session, tenant_id=scope.tenant_id)
     return templates.TemplateResponse(request, "ad01_overview.html", {"overview": overview})
+
+
+@router.get("/api/v1/ops/integration-status")
+def integration_status_endpoint(
+    scope: TenantScope = Depends(get_current_scope),
+    session: Session = Depends(get_db_session),
+) -> dict:
+    """Signal Platform Integration Correction Pack's own
+    INTEGRATION_DECISION.md S11 "Integration Status panel" -- see
+    app/services/integration_status.py's own module docstring for
+    exactly what this reports and what it deliberately doesn't yet
+    (gaps, snapshot/bootstrap state, cross-service lag). A JSON API
+    rather than a template page: this is the first real backing query
+    for that panel (S12's own "First complete proof... populates the
+    corresponding private staff view"), not yet wired into a rendered
+    screen."""
+    try:
+        require_permission(scope.role, "view_integration_status")
+    except PermissionDenied as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+    set_tenant_scope(session, scope.tenant_id)
+    report = get_integration_status(session, tenant_id=scope.tenant_id)
+    return {
+        "streams": [
+            {
+                "source_stream": s.source_stream,
+                "environment": s.environment,
+                "registered_at": s.registered_at.isoformat(),
+                "received_count": s.received_count,
+                "applied_count": s.applied_count,
+                "unapplied_count": s.unapplied_count,
+                "latest_received_at": s.latest_received_at.isoformat() if s.latest_received_at else None,
+                "latest_applied_at": s.latest_applied_at.isoformat() if s.latest_applied_at else None,
+            }
+            for s in report.streams
+        ],
+        "platform_ledger_entries_count": report.platform_ledger_entries_count,
+    }
 
 
 @router.get("/ops/products")

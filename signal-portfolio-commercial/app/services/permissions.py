@@ -160,6 +160,16 @@ _ALLOWED: dict[str, frozenset[Role]] = {
     #: CU-03 "Selected portfolio detail" -- a customer's own selection
     #: detail, same shape as "view_own_customer_overview".
     "view_own_selection_detail": frozenset({Role.CUSTOMER}),
+    #: Signal Platform Integration Correction Pack's own
+    #: INTEGRATION_DECISION.md S11 "Integration Status panel" / S8:
+    #: "The first export grants are PRIVATE_OWNER or explicitly scoped
+    #: PRIVATE_STAFF_RESEARCH, not public or customer-wide access."
+    #: Deliberately narrower than "view_operations_overview": this
+    #: exposes real PLATFORM-book execution telemetry (the owner's own
+    #: private trading), not general cross-subsystem business counts --
+    #: PUBLISHER_OPERATOR/BILLING_OPERATOR/SUPPORT_READONLY have no
+    #: legitimate reason to see it.
+    "view_integration_status": frozenset({Role.OWNER, Role.RESEARCHER}),
 }
 
 
