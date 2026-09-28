@@ -193,6 +193,16 @@ class _Settings(BaseSettings):
     # and uses real money.
     SCHWAB_ACKNOWLEDGE_NO_SANDBOX: bool = False
 
+    # app/brokers/robinhood.py's own RobinhoodBroker -- Robinhood has
+    # never published an official trading API, has no sandbox, and
+    # automating trades against it through these reverse-engineered
+    # endpoints is outside Robinhood's own Terms of Service for
+    # programmatic access. Gated behind this SEPARATE, explicit
+    # acknowledgement on top of having credentials set -- set it to true
+    # only once you understand every order this broker places is real
+    # money AND that using it this way is outside Robinhood's own ToS.
+    ROBINHOOD_ACKNOWLEDGE_TOS_RISK: bool = False
+
     # How often app/reconciliation.py re-checks PENDING orders on brokers that
     # support get_order_status() (currently Alpaca and IBKR).
     RECONCILE_INTERVAL_SECONDS: float = 30.0
@@ -321,6 +331,7 @@ CCXT_EXCHANGE_ID = _settings.CCXT_EXCHANGE_ID
 CCXT_SANDBOX = _settings.CCXT_SANDBOX
 CCXT_EXCHANGES = [e.strip() for e in _settings.CCXT_EXCHANGES.split(",") if e.strip()]
 SCHWAB_ACKNOWLEDGE_NO_SANDBOX = _settings.SCHWAB_ACKNOWLEDGE_NO_SANDBOX
+ROBINHOOD_ACKNOWLEDGE_TOS_RISK = _settings.ROBINHOOD_ACKNOWLEDGE_TOS_RISK
 
 RITHMIC_USER = _settings.RITHMIC_USER
 RITHMIC_PASSWORD = _settings.RITHMIC_PASSWORD

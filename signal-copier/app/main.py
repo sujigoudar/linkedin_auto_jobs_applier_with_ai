@@ -39,6 +39,7 @@ from app.brokers.ibkr import IBKRBroker
 from app.brokers.mt4_mt5 import MetaApiBroker, MT5Broker
 from app.brokers.ninjatrader import NinjaTraderBroker
 from app.brokers.oanda import OANDABroker
+from app.brokers.robinhood import RobinhoodBroker
 from app.brokers.schwab import SchwabBroker
 from app.brokers.paper import PaperBroker
 from app.brokers.rithmic import RithmicBroker
@@ -147,6 +148,19 @@ else:
     logger.info(
         "schwab broker not registered: SCHWAB_ACKNOWLEDGE_NO_SANDBOX is not set "
         "(Schwab has no sandbox -- see app/brokers/schwab.py's own module docstring)"
+    )
+# See app/brokers/robinhood.py's own module docstring and config.py's own
+# ROBINHOOD_ACKNOWLEDGE_TOS_RISK docstring: Robinhood has no official
+# trading API, no sandbox, and automating trades against it is outside
+# Robinhood's own Terms of Service -- gated the same way Schwab is above,
+# behind an explicit acknowledgement on top of having credentials set.
+if config.ROBINHOOD_ACKNOWLEDGE_TOS_RISK:
+    _optional_brokers.append(("robinhood", RobinhoodBroker))
+else:
+    logger.info(
+        "robinhood broker not registered: ROBINHOOD_ACKNOWLEDGE_TOS_RISK is not set "
+        "(no official API, no sandbox, outside Robinhood's own ToS -- see "
+        "app/brokers/robinhood.py's own module docstring)"
     )
 for broker_name, broker_factory in _optional_brokers:
     try:
