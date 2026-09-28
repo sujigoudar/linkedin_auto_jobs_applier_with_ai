@@ -26,12 +26,31 @@ resolves the tenant through it FIRST and calls `set_tenant_scope`
 immediately after, before touching `inbox_events` or `ledger_entries`
 -- both of which stay protected by the same, unmodified `tenant_isolation`
 policy every other table uses.
+
+Ordering and gap detection (INTEGRATION_ACCEPTANCE_CASES.json INT-006,
+INTEGRATION_DECISION.md S6's own "Keep separate received, validated and
+applied high-water marks... An incompatible schema, unknown identity or
+out-of-order dependency parks the stream at the relevant applied
+boundary"): every envelope is always RECEIVED and durably stored the
+moment it arrives (`InboxEvent.received_at`), regardless of order. It
+is only APPLIED (a real ledger projection, `applied_at` set) once its
+own `export_sequence` is next in line for that `source_stream` --
+`_next_expected_sequence` computes that boundary from the highest
+already-APPLIED sequence, never from what's merely been received. An
+event that arrives ahead of its predecessor is parked (received, not
+applied) rather than silently skipped or applied out of order;
+`_apply_and_cascade` re-checks, after applying each event, whether the
+next expected sequence is now sitting in the table already received
+and unapplied, and keeps applying forward until it hits a genuine gap
+or runs out of received events -- so 42-then-41 still ends with both
+42 and 41 correctly applied, in the right order, without needing 42
+redelivered a second time.
 """
 from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 from signal_platform_contracts import EventEnvelope, EventType, ExecutionAppliedPayload
 
@@ -86,6 +105,90 @@ def _registered_tenant_id(session: Session, source_stream: str) -> str | None:
     return registration.tenant_id if registration is not None else None
 
 
+def _next_expected_sequence(session: Session, *, tenant_id: str, source_stream: str) -> int:
+    """One past the highest already-APPLIED export_sequence for this
+    stream -- 0 if nothing has been applied yet. Deliberately keyed off
+    `applied_at IS NOT NULL`, never off what's merely been received:
+    a received-but-parked event must never advance this boundary, or a
+    real gap would be invisible."""
+    highest_applied = session.scalar(
+        select(func.max(InboxEvent.export_sequence)).where(
+            InboxEvent.tenant_id == tenant_id,
+            InboxEvent.source_stream == source_stream,
+            InboxEvent.applied_at.is_not(None),
+        )
+    )
+    return 0 if highest_applied is None else highest_applied + 1
+
+
+def _apply_projection(session: Session, inbox_event: InboxEvent, envelope: EventEnvelope, *, tenant_id: str) -> None:
+    """Mutates `inbox_event` in place: applies its real projection (if
+    any) and sets `applied_at`. Never called for an event whose sequence
+    isn't next in line -- see `_next_expected_sequence`."""
+    if envelope.event_type == EventType.EXECUTION_APPLIED:
+        payload = ExecutionAppliedPayload.model_validate(envelope.payload)
+        entry = append_entry(
+            session,
+            tenant_id=tenant_id,
+            book=Book.PLATFORM,
+            instrument=payload.instrument.instrument_id,
+            side=_SIDE_BY_PAYLOAD_VALUE[payload.side],
+            quantity=payload.filled_quantity,
+            price=payload.filled_price,
+            currency=payload.instrument.currency,
+            multiplier=payload.instrument.multiplier,
+            fee=payload.fee,
+            event_time=envelope.event_time,
+            source_authority=f"signal-copier-relay:{envelope.producer_id}",
+            evidence_class=envelope.evidence_class,
+        )
+        inbox_event.ledger_entry_id = entry.entry_id
+        inbox_event.applied_at = datetime.now(timezone.utc)
+    elif envelope.event_type == EventType.SOURCE_RECEIPT:
+        # S7: "SOURCE records what was recommended; it does not claim an
+        # execution" -- no ledger projection. Applied immediately since
+        # there is nothing further this event type could apply.
+        inbox_event.applied_at = datetime.now(timezone.utc)
+    # Every other EventType has no implemented payload yet (see
+    # signal_platform_contracts's own IMPLEMENTED_EVENT_TYPES) -- the row
+    # is stored (received) honestly, but stays un-applied rather than
+    # fabricating a projection for a payload shape this build doesn't
+    # understand yet. Note this means such an event can never advance
+    # `_next_expected_sequence` either -- an unimplemented event type
+    # permanently parks every later sequence on its own stream until a
+    # future build adds real support for it, which is the honest
+    # consequence of "keep separate received/applied cursors", not a bug.
+
+
+def _apply_and_cascade(
+    session: Session, inbox_event: InboxEvent, envelope: EventEnvelope, *, tenant_id: str
+) -> None:
+    """Applies `inbox_event` (already confirmed next-in-line by the
+    caller), then keeps walking forward: if the event now sitting at the
+    new expected sequence was already received earlier (parked behind
+    this one), apply it too, and repeat -- so redelivering the ONE
+    missing sequence number unblocks every later event already sitting
+    in the table, without needing any of them redelivered again."""
+    _apply_projection(session, inbox_event, envelope, tenant_id=tenant_id)
+    session.flush()
+
+    while True:
+        expected = _next_expected_sequence(session, tenant_id=tenant_id, source_stream=envelope.source_stream)
+        next_parked = session.scalars(
+            select(InboxEvent).where(
+                InboxEvent.tenant_id == tenant_id,
+                InboxEvent.source_stream == envelope.source_stream,
+                InboxEvent.export_sequence == expected,
+                InboxEvent.applied_at.is_(None),
+            )
+        ).first()
+        if next_parked is None:
+            return
+        next_envelope = EventEnvelope.model_validate_json(next_parked.envelope_json)
+        _apply_projection(session, next_parked, next_envelope, tenant_id=tenant_id)
+        session.flush()
+
+
 def ingest_export_event(session: Session, envelope_json: str) -> InboxEvent:
     """Idempotent, tenant-safe ingest of one exported envelope. Never
     trusts a tenant_id from the payload -- the ONLY source of tenant
@@ -134,35 +237,16 @@ def ingest_export_event(session: Session, envelope_json: str) -> InboxEvent:
     session.add(inbox_event)
     session.flush()
 
-    if envelope.event_type == EventType.EXECUTION_APPLIED:
-        payload = ExecutionAppliedPayload.model_validate(envelope.payload)
-        entry = append_entry(
-            session,
-            tenant_id=tenant_id,
-            book=Book.PLATFORM,
-            instrument=payload.instrument.instrument_id,
-            side=_SIDE_BY_PAYLOAD_VALUE[payload.side],
-            quantity=payload.filled_quantity,
-            price=payload.filled_price,
-            currency=payload.instrument.currency,
-            multiplier=payload.instrument.multiplier,
-            fee=payload.fee,
-            event_time=envelope.event_time,
-            source_authority=f"signal-copier-relay:{envelope.producer_id}",
-            evidence_class=envelope.evidence_class,
-        )
-        inbox_event.ledger_entry_id = entry.entry_id
-        inbox_event.applied_at = datetime.now(timezone.utc)
-    elif envelope.event_type == EventType.SOURCE_RECEIPT:
-        # S7: "SOURCE records what was recommended; it does not claim an
-        # execution" -- no ledger projection. Applied immediately since
-        # there is nothing further this event type could apply.
-        inbox_event.applied_at = datetime.now(timezone.utc)
-    # Every other EventType has no implemented payload yet (see
-    # signal_platform_contracts's own IMPLEMENTED_EVENT_TYPES) -- the row
-    # is stored (received) honestly, but stays un-applied rather than
-    # fabricating a projection for a payload shape this build doesn't
-    # understand yet.
+    expected = _next_expected_sequence(session, tenant_id=tenant_id, source_stream=envelope.source_stream)
+    if envelope.export_sequence <= expected:
+        # Next in line (or, rarer, an anomalously low sequence a correct
+        # producer would never send -- applying it directly can't create
+        # a gap either way). Apply now, then walk forward through
+        # whatever was already parked waiting for exactly this sequence.
+        _apply_and_cascade(session, inbox_event, envelope, tenant_id=tenant_id)
+    # else: export_sequence > expected -- a genuine gap. Received and
+    # durably stored (inbox_event is already committed-on-flush above),
+    # but deliberately left unapplied: `_next_expected_sequence` stays
+    # at its current value until the missing predecessor(s) arrive.
 
-    session.flush()
     return inbox_event

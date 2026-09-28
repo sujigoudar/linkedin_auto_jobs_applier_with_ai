@@ -14,9 +14,9 @@ infrastructure this environment doesn't have (a real broker sandbox, disk-
 pressure simulation, multi-process outage injection) are marked `BLOCKED`
 with what would be needed, never silently skipped or claimed done.
 
-Last updated: after commit `407157a` (slice 11) plus the same-session
-`signal_platform_contracts` import-boundary tests and the INT-038
-XSS-inertness test.
+Last updated: after slice 13 (ordering/gap detection, INT-006), on top of
+slice 11 (`407157a`), the `signal_platform_contracts` import-boundary
+tests (INT-035) and the INT-038 XSS-inertness test (both slice 12).
 
 ## Legend
 
@@ -39,7 +39,7 @@ XSS-inertness test.
 | INT-003 | Source transaction rollback | PASS | `test_export_outbox.py::test_a_failed_order_insert_leaves_no_orphaned_export_event` — the exact atomicity property, load-bearing verified in slice 3. |
 | INT-004 | Receiver commits then response lost | PASS | `test_integration_inbox.py::test_reingesting_the_identical_event_is_a_harmless_no_op`, `test_relay_worker.py::test_run_once_signs_the_batch_and_marks_applied_events_delivered` — retry-safe by construction (idempotent ingest + only-delivered events marked). |
 | INT-005 | Identical identity with conflicting payload | PASS | `test_integration_inbox.py::test_reingesting_the_same_event_id_with_a_different_payload_raises` — `EventIntegrityError`, load-bearing verified in slice 4. |
-| INT-006 | Ordering and gap detection | NOT_RUN | `export_sequence` is unique per stream (DB constraint) but nothing holds the applied high-water mark for an out-of-order delivery — each event applies independently as soon as it's received. Needs a real received/applied-cursor-with-dependency-check, not built. |
+| INT-006 | Ordering and gap detection | PASS | `test_integration_inbox_ordering.py::test_delivering_the_missing_predecessor_cascades_through_the_parked_successor` — delivering sequence 1 before 0 parks it unapplied (`test_an_out_of_order_arrival_is_received_but_not_applied`); delivering 0 afterward applies both, in order, without redelivering 1. Load-bearing verified in slice 13: removed the cascade loop and confirmed exactly the two cascade-dependent tests failed. |
 | INT-007 | Unsupported schema version | PARTIAL | An `EventType` this build doesn't implement a payload for is stored but never applied (`ingest_export_event`'s own trailing comment). A literally malformed/future `schema_version` is rejected by pydantic validation (422) rather than parked-and-visible on the stream status — not the same behavior the case asks for. |
 | INT-008 / INT-009 | Snapshot/bootstrap cases | NOT_RUN | No snapshot/bootstrap mechanism exists (`INTEGRATION_DECISION.md` S6 "Snapshot plus deltas" — explicitly deferred, every event is live-delivered only). |
 | INT-010 | Producer restored to older DB | NOT_RUN | No producer-generation binding exists. |
@@ -76,15 +76,15 @@ XSS-inertness test.
 
 ## Summary
 
-- **PASS: 24** — each row above cites its own specific evidence (a
-  slice-4-through-11 test, a pre-existing test from an earlier phase, or a
+- **PASS: 25** — each row above cites its own specific evidence (a
+  slice-4-through-13 test, a pre-existing test from an earlier phase, or a
   named structural/architectural reason with no counter-example code path)
 - **PARTIAL: 7** — real, honest partial coverage; each row names exactly
   what's missing
 - **BLOCKED: 1** — needs real deployment infrastructure
-- **NOT_RUN: 8** — depends on explicitly-deferred subsystems (source
-  ingestion, snapshot/bootstrap, generation binding, account dedup,
-  ordering/gap detection) or wasn't re-verified in this pass
+- **NOT_RUN: 7** — depends on explicitly-deferred subsystems (source
+  ingestion, snapshot/bootstrap, generation binding, account dedup) or
+  wasn't re-verified in this pass
 
 No case above is marked PASS without a cited, currently-passing automated
 test or a stated structural reason with no counter-example code path. Where
