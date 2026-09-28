@@ -33,11 +33,15 @@ import asyncio
 import logging
 from datetime import datetime, timezone
 
+from signal_platform_contracts import Environment, EvidenceClass
+
+from app import config
 from app.brokers.base import BrokerAdapter
 from app.capital_allocator import CapitalAllocator
 from app.db import SignalStore
+from app.export_events import build_execution_applied_envelope
 from app.lifecycle.manager import PositionLifecycleManager
-from app.models import DestinationAccount, OrderResult, OrderStatus, Side
+from app.models import AssetClass, DestinationAccount, OrderResult, OrderStatus, Side
 
 logger = logging.getLogger(__name__)
 
@@ -149,7 +153,7 @@ class OrderReconciler:
                 lifecycle.pending_exit.broker_order_id if lifecycle.pending_exit is not None else None,
             )
             if not order_is_lifecycles_own_pending_order:
-                self._correct_position(order, result.status, result.filled_quantity, result)
+                self._correct_position(order, result.status, result.filled_quantity, result, account)
             else:
                 self.store.update_order_status(order["id"], result)
             corrected += 1
@@ -354,7 +358,12 @@ class OrderReconciler:
         return resolved
 
     def _correct_position(
-        self, order: dict, new_status: OrderStatus, confirmed_quantity: float | None, result: OrderResult
+        self,
+        order: dict,
+        new_status: OrderStatus,
+        confirmed_quantity: float | None,
+        result: OrderResult,
+        account: DestinationAccount,
     ) -> None:
         if not order["symbol"] or not order["side"]:
             self.store.update_order_status(order["id"], result)
@@ -364,6 +373,22 @@ class OrderReconciler:
         side = Side(order["side"])
         optimistic_quantity = order["filled_quantity"] or 0.0
         signed_delta = 0.0
+
+        if new_status == OrderStatus.FILLED:
+            # B5: a broker like Alpaca/IBKR reports PENDING at placement
+            # time and only confirms FILLED later, right here -- see this
+            # module's own docstring. app/engine.py's own
+            # `_build_export_envelope` only ever runs for a result that's
+            # ALREADY FILLED synchronously at placement time, so this was
+            # the one confirmed-fill path that never exported an
+            # EXECUTION_APPLIED event to the commercial platform at all --
+            # a real fill the reconciler itself is the sole confirmation
+            # of. Exported here, before `correct_position_and_update_order_status`
+            # below, using `order`'s own `signal_id`/`asset_class`/`analyst`
+            # (see `list_pending_orders`'s own docstring on why the JOIN
+            # exists) exactly the way `_build_export_envelope` already does
+            # for the synchronous-fill path.
+            self._export_reconciled_fill(order, account, side, result)
 
         if new_status == OrderStatus.REJECTED:
             # REJECTED also covers "canceled"/"expired" on adapters like Alpaca
@@ -394,6 +419,35 @@ class OrderReconciler:
             order["id"], order["account_id"], order["symbol"], signed_delta, result
         )
         self._release_reservation_if_any(order)
+
+    def _export_reconciled_fill(
+        self, order: dict, account: DestinationAccount, side: Side, result: OrderResult
+    ) -> None:
+        """Mirrors app/engine.py's `_build_export_envelope` for a fill this
+        reconciler itself confirmed (rather than one the engine saw
+        synchronously at placement time) -- same builder, same per-
+        deployment config, same per-(account, source_stream) export
+        sequence from the outbox. Returns early (no export, matching
+        `build_execution_applied_envelope`'s own contract) if `result` is
+        missing a field the payload actually requires -- e.g. a broker
+        that reports a terminal FILLED status without a `filled_price`."""
+        source_stream = f"signal-copier:{account.account_id}"
+        envelope = build_execution_applied_envelope(
+            result,
+            account=account,
+            symbol=order["symbol"],
+            side=side,
+            asset_class=AssetClass(order["asset_class"]),
+            source_stream=source_stream,
+            export_sequence=self.store.next_export_sequence(source_stream),
+            producer_id=config.RELAY_PRODUCER_ID,
+            evidence_class=EvidenceClass[config.RELAY_EVIDENCE_CLASS],
+            environment=Environment[config.RELAY_ENVIRONMENT],
+            originating_source_event_id=order["signal_id"],
+            originating_analyst_id=order["analyst"],
+        )
+        if envelope is not None:
+            self.store.append_export_event(envelope)
 
     def _release_reservation_if_any(self, order: dict) -> None:
         """E03 (bounded): `order`'s status is now confirmed terminal

@@ -535,12 +535,23 @@ class SignalStore:
 
     def list_pending_orders(self) -> list[dict]:
         """Orders still PENDING with a broker_order_id to re-check (see
-        app/reconciliation.py)."""
+        app/reconciliation.py). Joined to this order's originating signal
+        (B5: real fills from brokers like Alpaca/IBKR that report PENDING
+        at placement time and only confirm FILLED later, via this exact
+        poll, were never exported to the commercial platform -- only a
+        synchronous FILLED at placement time built an export envelope,
+        see app/engine.py's `_build_export_envelope`) so the reconciler
+        can build one too: `signal_id`/`asset_class`/`analyst` are exactly
+        what `build_execution_applied_envelope` needs beyond what this
+        table already carries. `orders.signal_id` is `NOT NULL REFERENCES
+        signals(id)`, so this JOIN never drops a row."""
         with self._connect() as conn:
             rows = conn.execute(
-                """SELECT id, account_id, broker, symbol, side, requested_quantity,
-                          filled_quantity, broker_order_id, reserved_notional
-                   FROM orders WHERE status = 'pending' AND broker_order_id IS NOT NULL"""
+                """SELECT o.id, o.account_id, o.broker, o.symbol, o.side, o.requested_quantity,
+                          o.filled_quantity, o.broker_order_id, o.reserved_notional,
+                          o.signal_id, s.asset_class, s.analyst
+                   FROM orders o JOIN signals s ON o.signal_id = s.id
+                   WHERE o.status = 'pending' AND o.broker_order_id IS NOT NULL"""
             ).fetchall()
         return [
             {
@@ -553,6 +564,9 @@ class SignalStore:
                 "filled_quantity": r[6],
                 "broker_order_id": r[7],
                 "reserved_notional": r[8],
+                "signal_id": r[9],
+                "asset_class": r[10],
+                "analyst": r[11],
             }
             for r in rows
         ]
