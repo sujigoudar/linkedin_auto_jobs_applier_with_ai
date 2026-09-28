@@ -19,7 +19,7 @@ def test_fresh_database_is_stamped_at_head(tmp_path):
     row = conn.execute("SELECT version_num FROM alembic_version").fetchone()
     conn.close()
 
-    assert row == ("0004",)  # current head -- see alembic/versions/0004_add_position_excursions_table.py
+    assert row == ("0005",)  # current head -- see alembic/versions/0005_add_execution_stage_timestamps.py
 
 
 def test_legacy_pre_alembic_database_is_stamped_not_recreated(tmp_path):
@@ -49,7 +49,7 @@ def test_legacy_pre_alembic_database_is_stamped_not_recreated(tmp_path):
     signal_row = conn.execute("SELECT id FROM signals WHERE id = ?", (signal.id,)).fetchone()
     conn.close()
 
-    assert version_row == ("0004",)  # current head -- see alembic/versions/0004_add_position_excursions_table.py
+    assert version_row == ("0005",)  # current head -- see alembic/versions/0005_add_execution_stage_timestamps.py
     assert signal_row is not None  # the pre-existing row survived untouched
 
 

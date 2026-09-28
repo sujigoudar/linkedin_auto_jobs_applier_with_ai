@@ -93,6 +93,15 @@ class StopRecord:
     broker_order_id: str | None = None
     protected_quantity: float = 0.0
     status: ProtectionStatus = ProtectionStatus.UNPROTECTED
+    #: PU-A2: the real moment the broker confirmed this stop is actually
+    #: resting (i.e. the instant `status` last became STOP_CONFIRMED) --
+    #: app/execution_quality.py's "protection acknowledgment" stage. Reset
+    #: to None whenever protection stops being confirmed (rejected, errored,
+    #: or an ambiguous submission -- see PositionLifecycleManager._place_stop_locked),
+    #: so a stale confirmation timestamp never survives a later loss of
+    #: coverage. Never backfilled/guessed -- only set at the exact call
+    #: site that sets status = STOP_CONFIRMED.
+    confirmed_at: datetime | None = None
 
 
 @dataclass

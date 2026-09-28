@@ -310,9 +310,17 @@ class SignalCopierEngine:
             symbol = symbol_for_account(signal, account)
 
             if account.managed_lifecycle:
-                result = await self._handle_managed_signal(signal, account, symbol)
+                result, submitted_at, protection_confirmed_at = await self._handle_managed_signal(
+                    signal, account, symbol
+                )
                 self.store.save_order_result(
-                    result, broker=account.broker, symbol=symbol, side=signal.side, requested_quantity=None
+                    result,
+                    broker=account.broker,
+                    symbol=symbol,
+                    side=signal.side,
+                    requested_quantity=None,
+                    submitted_at=submitted_at,
+                    protection_confirmed_at=protection_confirmed_at,
                 )
                 results.append(result)
                 continue
@@ -359,6 +367,12 @@ class SignalCopierEngine:
                 results.append(rejection)
                 continue
 
+            # PU-A2: the real moment this engine actually calls the broker --
+            # the "decision -> submission" boundary app/execution_quality.py's
+            # stage breakdown reports, captured immediately before the call
+            # so nothing else on this path (routing, sizing, the capital-
+            # admission check above) is folded into it.
+            submitted_at = datetime.now(timezone.utc)
             try:
                 result = await broker.place_order(order_signal, account, quantity, symbol)
             except Exception as exc:  # noqa: BLE001 - one account's failure must not block others
@@ -414,6 +428,7 @@ class SignalCopierEngine:
                 applied_quantity=applied_quantity,
                 reserved_notional=reserved_notional,
                 export_envelope=export_envelope,
+                submitted_at=submitted_at,
             )
             results.append(result)
 
@@ -488,12 +503,16 @@ class SignalCopierEngine:
 
     async def _submit_order(
         self, order_signal: Signal, quantity: float, account: DestinationAccount, symbol: str, broker: BrokerAdapter
-    ) -> tuple[OrderResult, float | None]:
-        """Returns (result, applied_quantity) — `applied_quantity` is what was
-        actually applied to the tracked position (None if nothing was), for
-        the caller to pass into `save_order_result`'s `applied_quantity` so
-        the stored row matches what `record_fill` did (see that parameter's
-        docstring for why the two must agree)."""
+    ) -> tuple[OrderResult, float | None, datetime]:
+        """Returns (result, applied_quantity, submitted_at) — `applied_quantity`
+        is what was actually applied to the tracked position (None if nothing
+        was), for the caller to pass into `save_order_result`'s
+        `applied_quantity` so the stored row matches what `record_fill` did
+        (see that parameter's docstring for why the two must agree).
+        `submitted_at` (PU-A2) is the real moment this call actually reached
+        the broker, captured immediately before it -- see handle_signal's
+        identical field for what it feeds into."""
+        submitted_at = datetime.now(timezone.utc)
         try:
             result = await broker.place_order(order_signal, account, quantity, symbol)
         except Exception as exc:  # noqa: BLE001 - one account's failure must not block others
@@ -507,7 +526,7 @@ class SignalCopierEngine:
             # must stay zero, never fall back to the requested quantity.
             applied_quantity = quantity if result.filled_quantity is None else result.filled_quantity
             self.store.record_fill(account.account_id, symbol, order_signal.side, applied_quantity)
-        return result, applied_quantity
+        return result, applied_quantity, submitted_at
 
     async def _resolve_and_submit_plain_close(
         self, signal: Signal, account: DestinationAccount, symbol: str, broker: BrokerAdapter
@@ -552,7 +571,9 @@ class SignalCopierEngine:
                     return result
 
                 order_signal, quantity = resolved
-                result, applied_quantity = await self._submit_order(order_signal, quantity, account, symbol, broker)
+                result, applied_quantity, submitted_at = await self._submit_order(
+                    order_signal, quantity, account, symbol, broker
+                )
                 self.store.save_order_result(
                     result,
                     broker=account.broker,
@@ -560,6 +581,7 @@ class SignalCopierEngine:
                     side=order_signal.side,
                     requested_quantity=quantity,
                     applied_quantity=applied_quantity,
+                    submitted_at=submitted_at,
                 )
                 return result
             finally:
@@ -567,23 +589,33 @@ class SignalCopierEngine:
 
     async def _handle_managed_signal(
         self, signal: Signal, account: DestinationAccount, symbol: str
-    ) -> OrderResult:
+    ) -> tuple[OrderResult, datetime | None, datetime | None]:
         """Route a BUY/SELL/CLOSE signal for a `managed_lifecycle` account through
-        `PositionLifecycleManager` instead of the plain broker.place_order path."""
+        `PositionLifecycleManager` instead of the plain broker.place_order path.
+
+        Returns (result, submitted_at, protection_confirmed_at) -- the latter
+        two are PU-A2's execution-quality timestamps, both None for a CLOSE
+        (an exit, not an entry: nothing here submits a fresh protective stop
+        for it, and app/execution_quality.py's protection stage is entry-only
+        -- see _handle_managed_close)."""
         if signal.side == Side.CLOSE:
             return await self._handle_managed_close(signal, account, symbol)
         return await self._handle_managed_entry(signal, account, symbol)
 
     async def _handle_managed_entry(
         self, signal: Signal, account: DestinationAccount, symbol: str
-    ) -> OrderResult:
+    ) -> tuple[OrderResult, datetime | None, datetime | None]:
         broker = self.brokers.get(account.broker)
         if broker is None:
-            return OrderResult(
-                account_id=account.account_id,
-                status=OrderStatus.ERROR,
-                signal_id=signal.id,
-                message=f"no broker adapter registered for '{account.broker}'",
+            return (
+                OrderResult(
+                    account_id=account.account_id,
+                    status=OrderStatus.ERROR,
+                    signal_id=signal.id,
+                    message=f"no broker adapter registered for '{account.broker}'",
+                ),
+                None,
+                None,
             )
 
         quantity = size_for_account(signal, account)
@@ -604,14 +636,18 @@ class SignalCopierEngine:
 
         error = self.lifecycle_manager.validate_plan(plan)
         if error is not None:
-            return OrderResult(
-                account_id=account.account_id, status=OrderStatus.REJECTED, signal_id=signal.id, message=error
+            return (
+                OrderResult(
+                    account_id=account.account_id, status=OrderStatus.REJECTED, signal_id=signal.id, message=error
+                ),
+                None,
+                None,
             )
 
         admitted, notional, rejection = await self._try_reserve_capital(account, signal, quantity)
         if not admitted:
             assert rejection is not None  # _try_reserve_capital always sets this when admitted is False
-            return rejection
+            return rejection, None, None
 
         self.lifecycle_manager.start_plan(plan)
 
@@ -638,6 +674,9 @@ class SignalCopierEngine:
             raw=signal.raw,
         )
 
+        # PU-A2: submission moment for this managed entry -- see
+        # handle_signal's identical field for what it feeds into.
+        submitted_at = datetime.now(timezone.utc)
         try:
             result = await broker.place_order(entry_signal, account, quantity, symbol)
         except Exception as exc:  # noqa: BLE001 - one account's failure must not block others
@@ -667,10 +706,15 @@ class SignalCopierEngine:
             # released -- see app/capital_allocator.py's "Known gap".
             self.capital_allocator.release(account.account_id, notional)
             self.lifecycle_manager.register_pending_entry(account, symbol, None, quantity)
-            return OrderResult(
-                account_id=account.account_id, status=OrderStatus.ERROR, signal_id=signal.id, message=str(exc)
+            return (
+                OrderResult(
+                    account_id=account.account_id, status=OrderStatus.ERROR, signal_id=signal.id, message=str(exc)
+                ),
+                submitted_at,
+                None,
             )
 
+        protection_confirmed_at: datetime | None = None
         if result.status == OrderStatus.REJECTED:
             # A broker-confirmed rejection (or a client-side validation
             # failure that never reached the network) is the one case that
@@ -713,9 +757,15 @@ class SignalCopierEngine:
             # when the broker's FILLED response didn't report one; that stays
             # honestly unknown rather than assumed (see on_entry_fill's
             # docstring).
-            await self.lifecycle_manager.on_entry_fill(
+            lifecycle_after_fill = await self.lifecycle_manager.on_entry_fill(
                 account, symbol, filled_quantity, entry_price=result.filled_price
             )
+            # PU-A2: real only if the broker actually confirmed the stop
+            # resting synchronously within on_entry_fill above -- None
+            # (never fabricated) if it didn't (no verified
+            # place_protective_stop for this broker, or the submission
+            # failed/was rejected -- see StopRecord.confirmed_at).
+            protection_confirmed_at = lifecycle_after_fill.stop.confirmed_at
         elif result.status == OrderStatus.PENDING:
             # Don't assume the requested quantity is owned yet -- retain the
             # intent (this may already be a real, accepted order) and let
@@ -755,28 +805,52 @@ class SignalCopierEngine:
                 await self.lifecycle_manager.resolve_pending_entry(
                     account, symbol, result.filled_quantity, remainder_cancelled=False
                 )
+                # PU-A2: resolve_pending_entry may have placed/confirmed the
+                # protective stop synchronously (same reasoning as the
+                # FILLED branch above) -- re-read the lifecycle rather than
+                # assume, since resolve_pending_entry doesn't return one.
+                lifecycle_now = self.lifecycle_manager.get_lifecycle(account.account_id, symbol)
+                if lifecycle_now is not None:
+                    protection_confirmed_at = lifecycle_now.stop.confirmed_at
 
-        return result
+        return result, submitted_at, protection_confirmed_at
 
     async def _handle_managed_close(
         self, signal: Signal, account: DestinationAccount, symbol: str, source: str = "provider_exit"
-    ) -> OrderResult:
+    ) -> tuple[OrderResult, datetime | None, datetime | None]:
+        """Returns (result, submitted_at, protection_confirmed_at) like
+        `_handle_managed_entry`, for the same call-site shape -- but a CLOSE
+        is an exit, not an entry: nothing here confirms a fresh protective
+        stop for it, so `protection_confirmed_at` is always None (PU-A2's
+        protection stage is entry-only in this codebase today). `submitted_at`
+        is also None here -- unlike the plain-account close path (see
+        `_submit_order`), `request_exit`'s own submission call is inside
+        app/lifecycle/manager.py, not this method, so there is no real
+        submission instant available at this call site to report honestly."""
         lifecycle = self.lifecycle_manager.get_lifecycle(account.account_id, symbol)
         if lifecycle is None or lifecycle.closed:
-            return OrderResult(
-                account_id=account.account_id,
-                status=OrderStatus.REJECTED,
-                signal_id=signal.id,
-                message="no open position to close",
+            return (
+                OrderResult(
+                    account_id=account.account_id,
+                    status=OrderStatus.REJECTED,
+                    signal_id=signal.id,
+                    message="no open position to close",
+                ),
+                None,
+                None,
             )
 
         available = self.lifecycle_manager.arbiter.available_to_sell(account.account_id, symbol)
         if available <= 0:
-            return OrderResult(
-                account_id=account.account_id,
-                status=OrderStatus.REJECTED,
-                signal_id=signal.id,
-                message="no shares available to sell",
+            return (
+                OrderResult(
+                    account_id=account.account_id,
+                    status=OrderStatus.REJECTED,
+                    signal_id=signal.id,
+                    message="no shares available to sell",
+                ),
+                None,
+                None,
             )
 
         # `request_exit` is now the single execution-application owner for this
@@ -788,7 +862,8 @@ class SignalCopierEngine:
         # (a partial fill followed by a cancelled remainder used to leave the
         # tracked position flat/wrong forever, since nothing ever corrected
         # this optimistic write).
-        return await self.lifecycle_manager.request_exit(account, symbol, available, source=source)
+        result = await self.lifecycle_manager.request_exit(account, symbol, available, source=source)
+        return result, None, None
 
     async def close_position(
         self, account: DestinationAccount, symbol: str, reason: str = "manual_exit"
@@ -841,7 +916,9 @@ class SignalCopierEngine:
             lifecycle_before_close = self.lifecycle_manager.get_lifecycle(account.account_id, symbol)
             resolved_side = lifecycle_before_close.exit_side if lifecycle_before_close is not None else Side.CLOSE
 
-            result = await self._handle_managed_close(close_signal, account, symbol, source=reason)
+            result, _submitted_at, _protection_confirmed_at = await self._handle_managed_close(
+                close_signal, account, symbol, source=reason
+            )
             # DB-01: PositionLifecycleManager.request_exit (which this
             # ultimately calls into) reports some outcomes with
             # signal_id="" (it has no Signal of its own there, only a

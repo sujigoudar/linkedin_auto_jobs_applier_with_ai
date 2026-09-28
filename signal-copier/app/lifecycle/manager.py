@@ -1035,6 +1035,7 @@ class PositionLifecycleManager:
             # failure). Neither counts as STOP_CONFIRMED.
             lifecycle.stop.status = ProtectionStatus.UNPROTECTED
             lifecycle.stop.protected_quantity = 0.0
+            lifecycle.stop.confirmed_at = None
             logger.warning(
                 "no protective stop in place for account=%s symbol=%s (broker '%s' has no "
                 "verified place_protective_stop, or the submission failed/was rejected)",
@@ -1057,6 +1058,7 @@ class PositionLifecycleManager:
             lifecycle.stop.status = ProtectionStatus.UNPROTECTED
             lifecycle.stop.protected_quantity = 0.0
             lifecycle.stop.broker_order_id = None
+            lifecycle.stop.confirmed_at = None
             logger.error(
                 "protective stop submission for account=%s symbol=%s returned an ambiguous "
                 "result (status=%s, broker_order_id=%s) -- treating as unprotected rather "
@@ -1076,6 +1078,9 @@ class PositionLifecycleManager:
         lifecycle.stop.broker_confirmed_price = price
         lifecycle.stop.protected_quantity = quantity
         lifecycle.stop.status = ProtectionStatus.STOP_CONFIRMED
+        # PU-A2: the real moment the broker confirmed this stop is resting --
+        # app/execution_quality.py's "protection acknowledgment" stage.
+        lifecycle.stop.confirmed_at = datetime.now(timezone.utc)
 
     async def _tighten_stop_to(self, lifecycle: PositionLifecycle, account: DestinationAccount, price: float) -> None:
         current = lifecycle.stop.desired_price
@@ -1247,6 +1252,7 @@ def _lifecycle_to_state(lifecycle: PositionLifecycle, ledger: dict) -> dict:
             "broker_order_id": lifecycle.stop.broker_order_id,
             "protected_quantity": lifecycle.stop.protected_quantity,
             "status": lifecycle.stop.status.value,
+            "confirmed_at": lifecycle.stop.confirmed_at.isoformat() if lifecycle.stop.confirmed_at else None,
         },
         "pending_exit": None
         if lifecycle.pending_exit is None
@@ -1307,6 +1313,7 @@ def _lifecycle_from_state(row: dict) -> PositionLifecycle:
     )
 
     stop_row = row["stop"]
+    stop_confirmed_at_row = stop_row.get("confirmed_at")
     stop = StopRecord(
         desired_price=stop_row.get("desired_price"),
         submitted_price=stop_row.get("submitted_price"),
@@ -1314,6 +1321,7 @@ def _lifecycle_from_state(row: dict) -> PositionLifecycle:
         broker_order_id=stop_row.get("broker_order_id"),
         protected_quantity=stop_row.get("protected_quantity", 0.0),
         status=ProtectionStatus(stop_row.get("status", ProtectionStatus.UNPROTECTED.value)),
+        confirmed_at=datetime.fromisoformat(stop_confirmed_at_row) if stop_confirmed_at_row else None,
     )
 
     pending_row = row.get("pending_exit")

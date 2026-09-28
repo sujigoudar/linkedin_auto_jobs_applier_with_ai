@@ -77,6 +77,17 @@ CREATE TABLE IF NOT EXISTS orders (
     filled_price REAL,
     message TEXT,
     executed_at TEXT NOT NULL,
+    -- PU-A2: real multi-stage execution-latency timestamps -- see
+    -- app/execution_quality.py's module docstring for exactly which of the
+    -- 7 conceptual TCA stages these two (plus `executed_at` above) cover,
+    -- and which honestly collapse together for structural reasons instead.
+    -- Both nullable: NULL means this order never reached that stage (a
+    -- rejection before submission ever happened, or -- for
+    -- protection_confirmed_at -- a non-managed_lifecycle account, or a
+    -- managed entry whose stop was never confirmed resting), never a
+    -- fabricated value.
+    submitted_at TEXT,
+    protection_confirmed_at TEXT,
     -- E03 (bounded): the capital_allocator.py notional this specific order
     -- reserved, set only while its status is 'pending' and there's a real
     -- broker_order_id to poll -- see app/capital_allocator.py's "Known gap"
@@ -434,6 +445,8 @@ class SignalStore:
         applied_quantity: float | None = None,
         reserved_notional: float | None = None,
         export_envelope: EventEnvelope | None = None,
+        submitted_at: datetime | None = None,
+        protection_confirmed_at: datetime | None = None,
     ) -> int:
         """Persist an order result and return its row id.
 
@@ -480,14 +493,21 @@ class SignalStore:
         parameter exists to close). Omit this for calls that never touched
         the tracked position (REJECTED/ERROR results, or a save with no
         `symbol`/`side` at all).
+
+        `submitted_at`/`protection_confirmed_at` (PU-A2): real multi-stage
+        execution-latency timestamps -- see app/execution_quality.py's
+        module docstring for what each one is and isn't. Both `None` (never
+        a fabricated fallback) when the caller never reached that stage --
+        see app/engine.py's own call sites for exactly when each is set.
         """
         stored_filled_quantity = applied_quantity if applied_quantity is not None else result.filled_quantity
         with self._connect() as conn:
             cursor = conn.execute(
                 """INSERT INTO orders
                    (account_id, broker, symbol, side, requested_quantity, signal_id, status,
-                    broker_order_id, filled_quantity, filled_price, message, executed_at, reserved_notional)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    broker_order_id, filled_quantity, filled_price, message, executed_at, reserved_notional,
+                    submitted_at, protection_confirmed_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     result.account_id,
                     broker,
@@ -502,6 +522,8 @@ class SignalStore:
                     result.message,
                     result.executed_at.isoformat(),
                     reserved_notional,
+                    submitted_at.isoformat() if submitted_at else None,
+                    protection_confirmed_at.isoformat() if protection_confirmed_at else None,
                 ),
             )
             if export_envelope is not None:
@@ -1464,18 +1486,31 @@ class SignalStore:
 
     def list_filled_orders_with_signal_timing(self, account_id: str) -> list[dict]:
         """Every FILLED order for this account joined to its originating
-        signal's `received_at` -- app/execution_quality.py's only source
-        for signal-to-fill latency. There is no separately tracked
-        decision/submission/acknowledgement timestamp in this schema
-        (see that module's docstring for why its own report says so
-        honestly rather than inventing finer-grained stages)."""
-        query = """SELECT o.symbol, o.executed_at, s.received_at
+        signal's `received_at`, plus this order's own PU-A2 stage
+        timestamps (`submitted_at`/`protection_confirmed_at`) --
+        app/execution_quality.py's source for both the original
+        signal-to-fill latency and the finer-grained stage breakdown built
+        on top of it. Every one of `submitted_at`/`protection_confirmed_at`
+        may be `None` for a given row (a rejection before submission, a
+        non-managed_lifecycle account, or a managed entry whose stop was
+        never confirmed) -- that module's own docstring says exactly which
+        stages this schema does and doesn't separately track."""
+        query = """SELECT o.symbol, o.executed_at, s.received_at, o.submitted_at, o.protection_confirmed_at
                    FROM orders o JOIN signals s ON o.signal_id = s.id
                    WHERE o.account_id = ? AND o.status = 'filled'
                    ORDER BY o.executed_at ASC"""
         with self._connect() as conn:
             rows = conn.execute(query, (account_id,)).fetchall()
-        return [{"symbol": r[0], "executed_at": r[1], "received_at": r[2]} for r in rows]
+        return [
+            {
+                "symbol": r[0],
+                "executed_at": r[1],
+                "received_at": r[2],
+                "submitted_at": r[3],
+                "protection_confirmed_at": r[4],
+            }
+            for r in rows
+        ]
 
     def list_recent_orders(self, limit: int = 50, account_id: str | None = None) -> list[dict]:
         query = """SELECT id, account_id, broker, symbol, side, requested_quantity, signal_id,
