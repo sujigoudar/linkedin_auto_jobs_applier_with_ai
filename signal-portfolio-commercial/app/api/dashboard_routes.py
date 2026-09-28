@@ -57,7 +57,15 @@ what is and is not implemented yet.
   No NAV/marks-history model exists for a standard portfolio product,
   so the performance/drawdown panel always honestly reports the track
   record as unavailable, never a guessed curve. A draft/unpublished
-  slug returns a scoped 404, never its content.
+  slug returns a scoped 404, never its content. "Try our fit
+  simulator" is a real, bounded call to signal-copier's own signed,
+  non-owner `POST /catalog/providers/{source}/fit-simulation` (see
+  app/services/fit_simulation_client.py) -- honestly rendered as
+  unavailable for every product today, since no product yet has a
+  real signal-copier source mapping or real historical price CSV
+  configured (`config.FIT_SIM_CATALOG_CONFIG_JSON` defaults to empty);
+  the wiring itself is real and tested end to end with the
+  cross-service HTTP call mocked at the boundary.
 - PU-05 "Pricing and service compatibility": real plan-cards data
   (app/models/billing.py's TEST_MODE_MONTHLY_PRICE_CENTS), but ONLY
   once billing is genuinely connected -- those fixture prices are
@@ -330,6 +338,8 @@ from app.services.public_site import (
     get_published_portfolio_detail,
     get_service_status,
 )
+from app.services.fit_simulation_client import get_fit_sim_availability, run_fit_simulation
+from app.rate_limit import PUBLIC_FIT_SIM_RATE_LIMIT, limiter
 from app.services.candidate_comparison import (
     CandidateNotFoundError,
     InvalidCandidateDraftError,
@@ -1234,7 +1244,72 @@ def public_portfolio_detail_page(slug: str, request: Request, session: Session =
     if detail is None:
         raise HTTPException(status_code=404, detail="not found")
     channels = get_channel_compatibility()
-    return templates.TemplateResponse(request, "pu03_portfolio_detail.html", {"detail": detail, "channels": channels})
+    fit_sim_unavailable = get_fit_sim_availability(slug)
+    return templates.TemplateResponse(
+        request,
+        "pu03_portfolio_detail.html",
+        {"detail": detail, "channels": channels, "fit_sim_unavailable": fit_sim_unavailable, "fit_sim_result": None},
+    )
+
+
+@router.post("/portfolios/{slug}/fit-simulation")
+@limiter.limit(PUBLIC_FIT_SIM_RATE_LIMIT)
+def public_portfolio_fit_simulation(
+    slug: str,
+    request: Request,
+    session: Session = Depends(get_db_session),
+    account_size: float = Form(...),
+    max_per_trade: float = Form(...),
+):
+    """PU-03's "Try our fit simulator" -- the real, personalized "what
+    would copying this provider have done to MY account" number an
+    anonymous visitor can compute for THEIR OWN stated account size and
+    max-per-trade, calling signal-copier's own bounded, signed, non-owner
+    `POST /catalog/providers/{source}/fit-simulation` server-side (see
+    app/services/fit_simulation_client.py's own module docstring for the
+    full design and why the browser never talks to signal-copier
+    directly). A draft/unpublished slug is the same scoped 404 as the GET
+    route above -- this form is never reachable for a product that isn't
+    genuinely public.
+
+    Re-validates the same publication + availability checks the GET
+    route already computed -- a crafted POST straight to this route (no
+    prior GET) gets exactly the same honest "unavailable" outcome, never
+    a code path that only existed because the GET route happened to
+    gate the form's visibility."""
+    detail = get_published_portfolio_detail(session, slug)
+    if detail is None:
+        raise HTTPException(status_code=404, detail="not found")
+    channels = get_channel_compatibility()
+
+    if account_size <= 0 or max_per_trade <= 0:
+        fit_sim_result = None
+        fit_sim_unavailable = get_fit_sim_availability(slug)
+        error = "Account size and max per trade must both be greater than zero."
+        return templates.TemplateResponse(
+            request,
+            "pu03_portfolio_detail.html",
+            {
+                "detail": detail,
+                "channels": channels,
+                "fit_sim_unavailable": fit_sim_unavailable,
+                "fit_sim_result": fit_sim_result,
+                "fit_sim_error": error,
+            },
+        )
+
+    outcome = run_fit_simulation(slug, account_size=account_size, max_per_trade=max_per_trade)
+    fit_sim_unavailable = None if outcome.available else outcome
+    return templates.TemplateResponse(
+        request,
+        "pu03_portfolio_detail.html",
+        {
+            "detail": detail,
+            "channels": channels,
+            "fit_sim_unavailable": fit_sim_unavailable,
+            "fit_sim_result": outcome if outcome.available else None,
+        },
+    )
 
 
 @router.get("/compare")

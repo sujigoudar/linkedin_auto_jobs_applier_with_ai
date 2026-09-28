@@ -26,6 +26,9 @@ from __future__ import annotations
 import json
 
 from fastapi import Depends, FastAPI, HTTPException, Request
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
 from sqlalchemy.orm import Session
 
 from app import config
@@ -33,6 +36,7 @@ from app.api.dashboard_routes import router as dashboard_router
 from app.api.dependencies import get_current_scope, get_db_session
 from app.api.relay_routes import router as relay_router
 from app.db import make_engine, make_session_factory, set_tenant_scope
+from app.rate_limit import limiter
 from app.services.auth import TenantScope
 from app.services.stripe_webhook import (
     InvalidSignatureHeaderError,
@@ -55,6 +59,13 @@ def create_app(database_url: str | None = None, relay_database_url: str | None =
     app.state.relay_session_factory = make_session_factory(relay_engine)
     app.include_router(dashboard_router)
     app.include_router(relay_router)
+
+    #: C06-equivalent (bounded): per-IP rate limiting for the one public
+    #: route that fans out into a cross-service call
+    #: (`POST /portfolios/{slug}/fit-simulation` -- see app/rate_limit.py).
+    app.state.limiter = limiter
+    app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)  # type: ignore[arg-type]  # slowapi's handler is typed narrower (RateLimitExceeded, not the generic Exception Starlette expects) than the real, correct runtime behavior needs
+    app.add_middleware(SlowAPIMiddleware)
 
     @app.get("/healthz")
     def healthz() -> dict:

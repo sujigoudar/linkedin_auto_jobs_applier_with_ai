@@ -80,6 +80,39 @@
     </div>
 
     <div class="panel">
+      <h2>Try our fit simulator</h2>
+      <p>See what copying this provider's own historical signals would have done to <em>your</em> hypothetical account -- a real, personalized computation, not a marketing estimate.</p>
+      {% if fit_sim_error %}
+      <p class="unsupported">{{ fit_sim_error }}</p>
+      {% endif %}
+      {% if fit_sim_result %}
+      <dl>
+        <dt>Account size</dt><dd>${{ "%.2f"|format(fit_sim_result.report.summary.account_size) }}</dd>
+        <dt>Max per trade</dt><dd>${{ "%.2f"|format(fit_sim_result.report.summary.max_per_trade) }}</dd>
+        <dt>Signals in window</dt><dd>{{ fit_sim_result.report.summary.total_signals }}</dd>
+        <dt>Signals that fit your size</dt>
+        <dd>{{ fit_sim_result.report.summary.fit_count }}{% if fit_sim_result.report.summary.fit_percentage is not none %} ({{ "%.0f"|format(fit_sim_result.report.summary.fit_percentage * 100) }}%){% endif %}</dd>
+        <dt>Simulated P&amp;L at your size</dt><dd>${{ "%.2f"|format(fit_sim_result.report.summary.simulated_pnl_at_your_size) }}</dd>
+        <dt>Worst drawdown at your size</dt><dd>${{ "%.2f"|format(fit_sim_result.report.summary.worst_drawdown_at_your_size) }}</dd>
+      </dl>
+      <p class="unsupported">A real, disclosed simulation methodology -- not every signal is included: only ones where a real recorded entry price was at or under your own max-per-trade ceiling. Past signals are not a promise of future results.</p>
+      {% elif fit_sim_unavailable %}
+      <div class="empty-state">
+        <p>The fit simulator is not available for this portfolio yet.</p>
+        <p>{{ fit_sim_unavailable.detail }}</p>
+      </div>
+      {% else %}
+      <form method="post" action="/portfolios/{{ detail.slug }}/fit-simulation">
+        <label for="account_size">Account size ($)</label>
+        <input type="number" step="0.01" min="0.01" name="account_size" id="account_size" required>
+        <label for="max_per_trade">Max per trade ($)</label>
+        <input type="number" step="0.01" min="0.01" name="max_per_trade" id="max_per_trade" required>
+        <button type="submit">Run simulation</button>
+      </form>
+      {% endif %}
+    </div>
+
+    <div class="panel">
       <h2>Enrollment</h2>
       <p class="unsupported">Eligibility checking and disclosure documents are not implemented yet -- no dead links are shown in their place.</p>
     </div>
