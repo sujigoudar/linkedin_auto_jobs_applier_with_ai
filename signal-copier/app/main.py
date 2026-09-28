@@ -42,6 +42,7 @@ from app.brokers.oanda import OANDABroker
 from app.brokers.paper import PaperBroker
 from app.brokers.rithmic import RithmicBroker
 from app.brokers.signalstack import SignalStackBroker
+from app.brokers.tradestation import TradeStationBroker
 from app.brokers.tradovate import TradovateBroker
 from app.config_admin import seed_from_yaml_if_empty
 from app.context import fred as fred_context
@@ -95,6 +96,7 @@ brokers = {
     "ninjatrader": NinjaTraderBroker(),
     "tradovate": TradovateBroker(),
     "oanda": OANDABroker(),
+    "tradestation": TradeStationBroker(),
 }
 # These brokers need optional packages installed (and, for Rithmic, connection
 # credentials up front); only register them if available so the paper-only
