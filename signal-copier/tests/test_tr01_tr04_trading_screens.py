@@ -213,6 +213,30 @@ async def test_all_four_trading_screens_render_real_content(live_server):
             controls_text = await page.inner_text("#tr03-p06")
             assert "no backing capability" in controls_text
 
+            # Two more real signals, posted only now (after TR-02/TR-03
+            # above already asserted against the single original BTCUSDT
+            # signal/position, so the positions grid's first row is still
+            # the one TR-03 navigated into) so TR-04's new charts (PU-B3)
+            # have more than one bucket to break down: a second
+            # tradingview signal (routed to acct1 the same as above -- the
+            # routing rule has no symbol_filter, so it matches every
+            # tradingview signal) with a different side/asset class/
+            # symbol, and a signal from an unrouted source ("manual", no
+            # routing rule configured for it) so the real "accepted, no
+            # order yet" disposition bucket is also exercised.
+            webhook2 = client.post(
+                "/webhook/tradingview",
+                json={"symbol": "EURUSD", "side": "sell", "quantity": 1.0, "asset_class": "forex"},
+                headers={"X-Webhook-Secret": "test-webhook-secret"},
+            )
+            assert webhook2.status_code == 200
+            webhook3 = client.post(
+                "/webhook/manual",
+                json={"symbol": "ETHUSDT", "side": "sell", "quantity": 1.0, "asset_class": "crypto"},
+                headers={"X-Webhook-Secret": "test-webhook-secret"},
+            )
+            assert webhook3.status_code == 200
+
             # TR-04: Incoming signal stream.
             await page.click('a[href="#/trade/signals"]')
             await page.wait_for_selector("#tr04-p03", timeout=5000)
@@ -221,6 +245,61 @@ async def test_all_four_trading_screens_render_real_content(live_server):
             disposition_text = await page.inner_text("#tr04-p03")
             assert "tradingview" in disposition_text
             assert "BTCUSDT" in disposition_text
+
+            # PU-B3: the 5 additive signal-analytics charts, computed
+            # client-side from the exact same 3 real seeded signals above
+            # (2x tradingview: BTCUSDT/buy/crypto and EURUSD/sell/forex;
+            # 1x manual: ETHUSDT/sell/crypto, unrouted so it has no order).
+            await wait_settled("#tr04-p05")
+
+            def chart_data(canvas_id):
+                return page.evaluate(
+                    "(id) => { const c = Chart.getChart(document.getElementById(id)); "
+                    "return c ? { labels: c.data.labels, values: c.data.datasets[0].data } : null; }",
+                    canvas_id,
+                )
+
+            # LOAD-BEARING INVARIANT: the by-source/by-side/by-asset-class
+            # breakdown counts must exactly match the real signals list --
+            # each chart's own values must sum to the total real signal
+            # count (3), and each individual category's count must be
+            # exactly right, not off-by-one or double-counted.
+            await page.wait_for_selector("#tr04-source-chart", timeout=5000)
+            source_data = await chart_data("tr04-source-chart")
+            assert sum(source_data["values"]) == 3
+            source_counts = dict(zip(source_data["labels"], source_data["values"], strict=True))
+            assert source_counts["tradingview"] == 2
+            assert source_counts["manual"] == 1
+
+            side_data = await chart_data("tr04-side-chart")
+            assert sum(side_data["values"]) == 3
+            side_counts = dict(zip(side_data["labels"], side_data["values"], strict=True))
+            assert side_counts["buy"] == 1
+            assert side_counts["sell"] == 2
+
+            assetclass_data = await chart_data("tr04-assetclass-chart")
+            assert sum(assetclass_data["values"]) == 3
+            assetclass_counts = dict(zip(assetclass_data["labels"], assetclass_data["values"], strict=True))
+            assert assetclass_counts["crypto"] == 2
+            assert assetclass_counts["forex"] == 1
+
+            # Volume-over-time: all 3 signals were received within the same
+            # test run (well under 48h apart), so this must bucket by hour
+            # into a single real, non-padded bucket containing all 3.
+            volume_data = await chart_data("tr04-volume-chart")
+            assert sum(volume_data["values"]) == 3
+            assert len(volume_data["labels"]) == 1
+
+            # Disposition: the 2 real tradingview signals were routed to
+            # acct1 (real orders, whatever their real status), the 1 real
+            # unrouted "manual" signal has no matching order at all -- an
+            # honest "accepted, no order yet" bucket, not a fabricated
+            # rejection.
+            disposition_data = await chart_data("tr04-disposition-chart")
+            assert sum(disposition_data["values"]) == 3
+            disposition_counts = dict(zip(disposition_data["labels"], disposition_data["values"], strict=True))
+            assert disposition_counts["accepted, no order yet"] == 1
+            assert sum(v for k, v in disposition_counts.items() if k != "accepted, no order yet") == 2
 
             # Browser-history-backed navigation: back button returns to
             # the legacy dashboard's default (no-hash) view.
