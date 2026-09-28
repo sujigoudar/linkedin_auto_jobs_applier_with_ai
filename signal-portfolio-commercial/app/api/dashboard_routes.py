@@ -208,6 +208,9 @@ from app.services.publisher_destination import (
 )
 from app.services.support_case import InvalidSupportCaseError, create_support_case, list_support_cases
 from app.services.publication_admin import get_publication_intent_detail
+from app.services.copy_mandate import InvalidCopyMandateError, create_copy_mandate_draft, list_own_copy_mandates
+from app.models.platform_connection import PlatformConnectionState
+from app.models.portfolio_selection import PortfolioSelectionState
 from app.services.platform_connection import (
     InvalidPlatformConnectionError,
     create_platform_connection,
@@ -2216,3 +2219,113 @@ def disconnect_platform_connection_page(
     disconnect_platform_connection(session, connection)
     session.commit()
     return RedirectResponse(url="/app/connections", status_code=303)
+
+
+_ALL_COPY_MANDATE_START_MODES = ["new_entries_only", "sync_existing"]
+
+
+def _require_copy_mandates(scope: TenantScope) -> None:
+    try:
+        require_permission(scope.role, "manage_own_copy_mandates")
+    except PermissionDenied as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+
+@router.get("/app/copy/new")
+def copy_mandate_wizard_page(
+    request: Request,
+    scope: TenantScope = Depends(get_current_scope),
+    session: Session = Depends(get_db_session),
+    error: str | None = None,
+):
+    """CU-09 "Copy setup and mandate wizard" -- see this route
+    module's own docstring above for what is and is not implemented:
+    only "Save mandate draft without effect" is honestly buildable --
+    Preview activation and Confirm authorized activation both need
+    real price/position/publisher connectivity this build does not
+    have."""
+    _require_copy_mandates(scope)
+    set_tenant_scope(session, scope.tenant_id)
+    selections = [
+        s
+        for s in list_own_portfolio_selections(session, tenant_id=scope.tenant_id, user_id=scope.user_id)
+        if s.state == PortfolioSelectionState.ACTIVE
+    ]
+    connections = [
+        c
+        for c in list_own_platform_connections(session, tenant_id=scope.tenant_id, user_id=scope.user_id)
+        if c.state == PlatformConnectionState.DECLARED
+    ]
+    mandates = list_own_copy_mandates(session, tenant_id=scope.tenant_id, user_id=scope.user_id)
+    return templates.TemplateResponse(
+        request,
+        "cu09_copy_wizard.html",
+        {
+            "selections": selections,
+            "connections": connections,
+            "mandates": mandates,
+            "all_start_modes": _ALL_COPY_MANDATE_START_MODES,
+            "error": error,
+        },
+    )
+
+
+@router.post("/app/copy/new")
+def create_copy_mandate_draft_page(
+    request: Request,
+    selection_id: str = Form(...),
+    connection_id: str = Form(...),
+    allocation_amount: str = Form(...),
+    allocation_currency: str = Form(...),
+    max_trade_risk: str = Form(""),
+    max_loss: str = Form(""),
+    start_mode: str = Form("new_entries_only"),
+    policy_version_id: str = Form(...),
+    consent_version: str = Form(...),
+    scope: TenantScope = Depends(get_current_scope),
+    session: Session = Depends(get_db_session),
+):
+    _require_copy_mandates(scope)
+    set_tenant_scope(session, scope.tenant_id)
+    try:
+        create_copy_mandate_draft(
+            session,
+            tenant_id=scope.tenant_id,
+            user_id=scope.user_id,
+            selection_id=selection_id,
+            connection_id=connection_id,
+            allocation_amount=allocation_amount,
+            allocation_currency=allocation_currency,
+            max_trade_risk=max_trade_risk or None,
+            max_loss=max_loss or None,
+            start_mode=start_mode,
+            policy_version_id=policy_version_id,
+            consent_version=consent_version,
+        )
+    except InvalidCopyMandateError as exc:
+        session.rollback()
+        selections = [
+            s
+            for s in list_own_portfolio_selections(session, tenant_id=scope.tenant_id, user_id=scope.user_id)
+            if s.state == PortfolioSelectionState.ACTIVE
+        ]
+        connections = [
+            c
+            for c in list_own_platform_connections(session, tenant_id=scope.tenant_id, user_id=scope.user_id)
+            if c.state == PlatformConnectionState.DECLARED
+        ]
+        mandates = list_own_copy_mandates(session, tenant_id=scope.tenant_id, user_id=scope.user_id)
+        return templates.TemplateResponse(
+            request,
+            "cu09_copy_wizard.html",
+            {
+                "selections": selections,
+                "connections": connections,
+                "mandates": mandates,
+                "all_start_modes": _ALL_COPY_MANDATE_START_MODES,
+                "error": str(exc),
+            },
+            status_code=400,
+        )
+    session.commit()
+    return RedirectResponse(url="/app/copy/new", status_code=303)

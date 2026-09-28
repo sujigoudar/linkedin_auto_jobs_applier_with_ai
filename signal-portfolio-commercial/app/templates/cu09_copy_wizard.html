@@ -1,0 +1,96 @@
+{% extends "_base.html" %}
+{% block title %}Copy setup and mandate wizard{% endblock %}
+{% block content %}
+<h1>Copy setup and mandate wizard</h1>
+
+{% if error %}<div class="conflict">{{ error }}</div>{% endif %}
+
+{% if not selections or not connections %}
+<div class="panel">
+  <div class="empty-state">
+    <p>A verified eligible connection and released portfolio are required.</p>
+  </div>
+  {% if not selections %}<p><a href="/app/portfolios">Select a portfolio</a> first.</p>{% endif %}
+  {% if not connections %}<p><a href="/app/connections/new">Connect a platform</a> first.</p>{% endif %}
+</div>
+{% else %}
+<div class="panel">
+  <h2>Portfolio version / Connection/account</h2>
+  <form method="post" action="/app/copy/new">
+    <label for="selection_id">Portfolio selection</label>
+    <select id="selection_id" name="selection_id">
+      {% for s in selections %}<option value="{{ s.selection_id }}">{{ s.product_id }}</option>{% endfor %}
+    </select>
+
+    <label for="connection_id">Connection</label>
+    <select id="connection_id" name="connection_id">
+      {% for c in connections %}<option value="{{ c.connection_id }}">{{ c.platform }} -- {{ c.masked_account_label }}</option>{% endfor %}
+    </select>
+
+    <h2>Allocation constraints</h2>
+    <label for="allocation_amount">Allocation amount</label>
+    <input type="text" id="allocation_amount" name="allocation_amount" required>
+
+    <label for="allocation_currency">Currency</label>
+    <input type="text" id="allocation_currency" name="allocation_currency" value="USD" required>
+
+    <label for="max_trade_risk">Maximum per-trade risk (optional)</label>
+    <input type="text" id="max_trade_risk" name="max_trade_risk">
+
+    <label for="max_loss">Loss limit (optional)</label>
+    <input type="text" id="max_loss" name="max_loss">
+
+    <h2>New-only versus sync</h2>
+    <label for="start_mode">Start mode</label>
+    <select id="start_mode" name="start_mode">
+      {% for m in all_start_modes %}<option value="{{ m }}">{{ m }}</option>{% endfor %}
+    </select>
+    <p class="help">sync_existing requires a separate fresh price/exposure preview this build does not have -- new_entries_only is the safe default.</p>
+
+    <label for="policy_version_id">Policy</label>
+    <input type="text" id="policy_version_id" name="policy_version_id" required>
+
+    <label for="consent_version">Mandate document version</label>
+    <input type="text" id="consent_version" name="consent_version" required>
+
+    <p><button type="submit">Save mandate draft</button></p>
+  </form>
+</div>
+
+<div class="panel">
+  <h2>Preview</h2>
+  <p><span class="badge badge-unknown">UNSUPPORTED</span> -- no real gates/positions/price read exists in this build; a saved mandate is a draft only, with no effect.</p>
+</div>
+
+<div class="panel">
+  <h2>Agreements/step-up</h2>
+  <p><span class="badge badge-unknown">UNSUPPORTED</span> -- no real step-up authentication challenge exists in this build.</p>
+</div>
+
+<div class="panel">
+  <h2>Operation status</h2>
+  <p><span class="badge badge-unknown">UNSUPPORTED</span> -- Confirm authorized activation needs a real scoped publisher/execution pipeline this build does not have; a mandate here can only ever be a draft.</p>
+</div>
+{% endif %}
+
+<div class="panel">
+  <h2>Existing mandate drafts</h2>
+  {% if mandates %}
+  <table>
+    <thead><tr><th>Selection</th><th>Connection</th><th>Amount</th><th>State</th></tr></thead>
+    <tbody>
+      {% for m in mandates %}
+      <tr>
+        <td>{{ m.selection_id }}</td>
+        <td>{{ m.connection_id }}</td>
+        <td>{{ m.allocation_amount }} {{ m.allocation_currency }}</td>
+        <td>{{ m.state.value }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p>No mandate draft has been saved yet.</p>
+  {% endif %}
+</div>
+{% endblock %}

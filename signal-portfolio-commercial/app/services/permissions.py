@@ -149,6 +149,10 @@ _ALLOWED: dict[str, frozenset[Role]] = {
     #: customer's own connections, same shape as
     #: "manage_own_portfolio_selections" and its siblings.
     "manage_own_platform_connections": frozenset({Role.CUSTOMER}),
+    #: CU-09 "Copy setup and mandate wizard" -- a customer's own
+    #: mandate drafts, same shape as "manage_own_platform_connections"
+    #: and its siblings.
+    "manage_own_copy_mandates": frozenset({Role.CUSTOMER}),
 }
 
 

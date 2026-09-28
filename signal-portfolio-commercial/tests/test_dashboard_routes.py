@@ -2112,3 +2112,70 @@ def test_disconnect_platform_connection_is_a_scoped_not_found_for_another_custom
     other_customer_headers = _auth_headers(user_id="user-other-conn", role=MembershipRole.CUSTOMER)
     response = client.post(f"/app/connections/{connection_id}/disconnect", headers=other_customer_headers)
     assert response.status_code == 404
+
+
+def test_copy_mandate_wizard_page_requires_customer_role(db_session):
+    client = _client(db_session)
+    response = client.get("/app/copy/new", headers=_auth_headers(role=MembershipRole.OWNER))
+    assert response.status_code == 403
+
+
+def test_copy_mandate_wizard_page_shows_the_real_empty_state(db_session):
+    client = _client(db_session)
+    response = client.get("/app/copy/new", headers=_auth_headers(role=MembershipRole.CUSTOMER))
+    assert response.status_code == 200
+    assert "A verified eligible connection and released portfolio are required." in response.text
+
+
+def test_create_copy_mandate_draft_over_real_http(db_session):
+    from app.models.product import Product, ProductLifecycleState
+
+    _seed_customer_membership(db_session)
+    product = Product(
+        tenant_id="tenant-a", product_name="HTTP Mandate Product", slug="http-mandate-product",
+        lifecycle_state=ProductLifecycleState.PUBLISHED,
+    )
+    db_session.add(product)
+    db_session.commit()
+
+    client = _client(db_session)
+    headers = _auth_headers(role=MembershipRole.CUSTOMER)
+
+    selection_response = client.post("/app/portfolios", data={"product_id": product.product_id}, headers=headers)
+    assert selection_response.status_code == 303
+
+    connection_response = client.post(
+        "/app/connections/new",
+        data={"platform": "collective2", "environment": "local_simulation", "masked_account_label": "Test ****1234"},
+        headers=headers,
+    )
+    assert connection_response.status_code == 303
+
+    wizard_response = client.get("/app/copy/new", headers=headers)
+    assert wizard_response.status_code == 200
+    assert "A verified eligible connection and released portfolio are required." not in wizard_response.text
+
+    from app.services.platform_connection import list_own_platform_connections
+    from app.services.portfolio_selection import list_own_portfolio_selections
+
+    selection_id = list_own_portfolio_selections(db_session, tenant_id="tenant-a", user_id="user-a")[0].selection_id
+    connection_id = list_own_platform_connections(db_session, tenant_id="tenant-a", user_id="user-a")[0].connection_id
+
+    create_response = client.post(
+        "/app/copy/new",
+        data={
+            "selection_id": selection_id,
+            "connection_id": connection_id,
+            "allocation_amount": "500.00",
+            "allocation_currency": "USD",
+            "start_mode": "new_entries_only",
+            "policy_version_id": "policy-1",
+            "consent_version": "consent-1",
+        },
+        headers=headers,
+    )
+    assert create_response.status_code == 303
+
+    final_response = client.get("/app/copy/new", headers=headers)
+    assert "draft" in final_response.text
+    assert "500.00" in final_response.text

@@ -243,8 +243,18 @@ Seven slices are DONE:
   hosted OAuth authorization or account-identity readback exists.
   Begin authorization/Verify connection and the Capability report/
   Reauthorization tasks panels are all explicit UNSUPPORTED.
+- CU-09 Copy setup and mandate wizard: `GET`/`POST /app/copy/new`
+  (CUSTOMER only) -- closes the "no copy-mandate model exists at all"
+  gap AD-11's own slice already documented. A new CopyMandate model
+  refuses any selection_id/connection_id that isn't both real AND
+  currently eligible (an ACTIVE CU-02 selection, a DECLARED CU-07/
+  CU-08 connection). There is no ACTIVE mandate state at all -- only
+  DRAFT/CANCELLED -- since real activation needs a scoped publisher/
+  execution pipeline this build does not have. Preview activation,
+  Confirm authorized activation, Agreements/step-up, and Operation
+  status are all explicit UNSUPPORTED.
 
-Full suite is 561 tests, ruff and mypy both green (**use `python3 -m
+Full suite is 572 tests, ruff and mypy both green (**use `python3 -m
 ruff`/`python3 -m mypy`/`python3 -m pytest` explicitly** -- this sandbox
 has a stray `uv tool`-installed `ruff`/`mypy` shadowing the project's
 real declared versions on bare `PATH`, which produced a false-negative
@@ -268,13 +278,14 @@ See `dashboard_state.json`'s `current_slice`/`second_slice`/
 `twentysecond_slice`/`twentythird_slice`/`twentyfourth_slice`/
 `twentyfifth_slice`/`twentysixth_slice`/`twentyseventh_slice`/
 `twentyeighth_slice`/`twentyninth_slice`/`thirtieth_slice`/
-`thirtyfirst_slice`/`thirtysecond_slice`/`thirtythird_slice` for the
-exact file lists and what was deliberately left unbuilt in each. 31 of
-66 screens (AD-01, AD-02, AD-03, AD-04, AD-05, AD-08, AD-10, PU-03,
-PU-05, ID-04, AD-16, CU-14, AD-09, CU-16, AD-12, AD-11, AD-17, AD-13,
-AD-19, AD-14, AD-18, AD-20, CU-02, CU-12, CU-13, AD-15, PU-04, PU-07,
-AD-22, CU-07, CU-08 partially done) remain -- pick the next one
-following the steps below. **If you add a
+`thirtyfirst_slice`/`thirtysecond_slice`/`thirtythird_slice`/
+`thirtyfourth_slice` for the exact file lists and what was
+deliberately left unbuilt in each. 30 of 66 screens (AD-01, AD-02,
+AD-03, AD-04, AD-05, AD-08, AD-10, PU-03, PU-05, ID-04, AD-16, CU-14,
+AD-09, CU-16, AD-12, AD-11, AD-17, AD-13, AD-19, AD-14, AD-18, AD-20,
+CU-02, CU-12, CU-13, AD-15, PU-04, PU-07, AD-22, CU-07, CU-08, CU-09
+partially done) remain -- pick the next one following the steps
+below. **If you add a
 new table to
 `_TENANT_SCOPED_TABLES` in app/db.py, pin any EARLIER migration that
 already calls `_apply_row_level_security` with no explicit `tables`
