@@ -295,6 +295,59 @@ CREATE TABLE IF NOT EXISTS signal_episodes (
     targets TEXT NOT NULL
 );
 
+-- Placement-rate-limiter / drawdown-governor persistence (admission
+-- control on OUTBOUND order-placement frequency and on equity drawdown --
+-- see app/placement_rate_limiter.py / app/drawdown_governor.py). The
+-- rate limiter itself needs no new table at all -- every count it checks
+-- is derived fresh from `orders`/`signals`/`positions`, already above.
+-- These two small per-account snapshot tables are what makes the
+-- drawdown governor's own two baselines genuinely persistent: queried
+-- fresh on every admission check, never kept only in an in-memory
+-- counter that a restart would silently reset.
+
+-- One row per (account, UTC calendar date): this account's own
+-- REALIZED_PLUS_UNREALIZED equity (app/drawdown_governor.py's
+-- `compute_account_equity`) the FIRST time it was observed that date.
+-- Written once via INSERT OR IGNORE and never overwritten afterward -- a
+-- later, lower equity reading the same day must not silently move the
+-- baseline START_OF_DAY_DRAWDOWN is measured against.
+CREATE TABLE IF NOT EXISTS account_equity_snapshots (
+    account_id TEXT NOT NULL,
+    snapshot_date TEXT NOT NULL,
+    equity REAL NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (account_id, snapshot_date)
+);
+
+-- One row per account: the highest REALIZED_PLUS_UNREALIZED equity ever
+-- observed for it -- ratcheted up (never down) each time
+-- DrawdownGovernor.evaluate sees a new high, so PEAK_EQUITY_DRAWDOWN is
+-- always measured against a real historical peak, not one recomputed
+-- from scratch (which could understate a peak reached earlier and since
+-- given back).
+CREATE TABLE IF NOT EXISTS account_peak_equity (
+    account_id TEXT PRIMARY KEY,
+    peak_equity REAL NOT NULL,
+    achieved_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+-- One row per account: whether app/drawdown_governor.py's REQUIRE_REVIEW
+-- action is currently in effect. Deliberately sticky -- see that
+-- module's own docstring: set review_required=1 the first time a
+-- REQUIRE_REVIEW threshold is crossed and left there across every later
+-- evaluate() call, however much equity recovers, until a real, explicit
+-- DrawdownGovernor.clear_review() call sets it back to 0. No other code
+-- path ever writes review_required=0 here.
+CREATE TABLE IF NOT EXISTS account_drawdown_review (
+    account_id TEXT PRIMARY KEY,
+    review_required INTEGER NOT NULL DEFAULT 0,
+    reason TEXT NOT NULL DEFAULT '',
+    triggered_at TEXT,
+    cleared_at TEXT,
+    updated_at TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_orders_executed_at ON orders (executed_at);
 CREATE INDEX IF NOT EXISTS idx_orders_account_id ON orders (account_id);
 CREATE INDEX IF NOT EXISTS idx_signals_received_at ON signals (received_at);
@@ -1555,6 +1608,140 @@ class SignalStore:
                 """INSERT OR IGNORE INTO idempotency_records (idempotency_key, response_json, created_at, fingerprint)
                    VALUES (?, ?, ?, ?)""",
                 (idempotency_key, json.dumps(response), datetime.now(timezone.utc).isoformat(), fingerprint),
+            )
+
+    # --- Placement-rate-limiter admission counts (app/placement_rate_limiter.py) ---
+
+    def count_entry_orders_since(
+        self,
+        since: datetime,
+        *,
+        account_id: str | None = None,
+        source: str | None = None,
+        analyst: str | None = None,
+        symbol: str | None = None,
+    ) -> int:
+        """Count of admitted NEW-entry order placements (status IN
+        'filled'/'pending' -- an order this service actually SENT to a
+        broker and that wasn't itself immediately rejected/errored) since
+        `since`, at whichever scope the caller asks for (global when
+        every filter is None). Always joined to the originating signal so
+        a resolved CLOSE -- which reaches `orders` as a plain buy/sell,
+        indistinguishable from an entry by `orders.side` alone -- is
+        excluded via the ORIGINAL signal's own `side` column instead:
+        app/engine.py's close-resolution paths build a fresh opposing-side
+        Signal for the broker call but never `save_signal` it again (only
+        the original CLOSE/managed-exit signal is persisted, or none at
+        all for a manager-internal exit with `signal_id=""`, which this
+        INNER JOIN then simply excludes), so `s.side = 'close'` reliably
+        identifies a resolved close's order row here, not a guess.
+        `symbol` filters on the order's own destination symbol
+        (post `symbol_for_account` mapping), not the source's raw signal
+        symbol -- the actual instrument this specific account traded."""
+        query = """SELECT COUNT(*) FROM orders o JOIN signals s ON o.signal_id = s.id
+                   WHERE o.status IN ('filled', 'pending') AND s.side != 'close' AND o.executed_at >= ?"""
+        params: list = [since.isoformat()]
+        if account_id is not None:
+            query += " AND o.account_id = ?"
+            params.append(account_id)
+        if source is not None:
+            query += " AND s.source = ?"
+            params.append(source)
+        if analyst is not None:
+            query += " AND s.analyst = ?"
+            params.append(analyst)
+        if symbol is not None:
+            query += " AND o.symbol = ?"
+            params.append(symbol)
+        with self._connect() as conn:
+            row = conn.execute(query, params).fetchone()
+        return row[0] if row else 0
+
+    # --- Drawdown-governor persistence (app/drawdown_governor.py) ---
+
+    def set_start_of_day_equity_if_absent(self, account_id: str, snapshot_date: str, equity: float) -> float:
+        """Persist `equity` as this account's start-of-day baseline for
+        `snapshot_date` ONLY if no baseline is recorded yet for that date
+        -- returns whichever value ends up stored (the one just inserted,
+        or an existing baseline from earlier the same day, possibly from a
+        process that has since restarted). See `account_equity_snapshots`'
+        own schema comment for why a later call never overwrites an
+        already-set baseline."""
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            conn.execute(
+                """INSERT OR IGNORE INTO account_equity_snapshots (account_id, snapshot_date, equity, created_at)
+                   VALUES (?, ?, ?, ?)""",
+                (account_id, snapshot_date, equity, now),
+            )
+            row = conn.execute(
+                "SELECT equity FROM account_equity_snapshots WHERE account_id = ? AND snapshot_date = ?",
+                (account_id, snapshot_date),
+            ).fetchone()
+        assert row is not None  # just inserted (or already present) in the same transaction
+        return row[0]
+
+    def get_peak_equity(self, account_id: str) -> float | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT peak_equity FROM account_peak_equity WHERE account_id = ?", (account_id,)
+            ).fetchone()
+        return row[0] if row else None
+
+    def upsert_peak_equity(self, account_id: str, equity: float, achieved_at: datetime) -> None:
+        """Ratchet this account's persisted peak equity up to `equity` --
+        callers are expected to only call this once they've already
+        confirmed `equity` is a new high (see DrawdownGovernor.evaluate);
+        this method itself does not compare against the existing value, so
+        calling it with a lower equity WOULD silently lower the peak --
+        the one and only caller never does that."""
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            conn.execute(
+                """INSERT INTO account_peak_equity (account_id, peak_equity, achieved_at, updated_at)
+                   VALUES (?, ?, ?, ?)
+                   ON CONFLICT (account_id) DO UPDATE SET
+                     peak_equity = excluded.peak_equity, achieved_at = excluded.achieved_at,
+                     updated_at = excluded.updated_at""",
+                (account_id, equity, achieved_at.isoformat(), now),
+            )
+
+    def get_drawdown_review(self, account_id: str) -> dict | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                """SELECT review_required, reason, triggered_at, cleared_at
+                   FROM account_drawdown_review WHERE account_id = ?""",
+                (account_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return {"review_required": bool(row[0]), "reason": row[1], "triggered_at": row[2], "cleared_at": row[3]}
+
+    def set_drawdown_review(self, account_id: str, required: bool, reason: str = "") -> None:
+        """The only write path for `account_drawdown_review` -- called with
+        `required=True` the first time DrawdownGovernor.evaluate observes a
+        REQUIRE_REVIEW threshold crossed for this account (never again
+        while it's already set), and with `required=False` ONLY by
+        DrawdownGovernor.clear_review's real, explicit unblock action --
+        never automatically as equity recovers. `triggered_at`/`cleared_at`
+        each only move when the write actually changes review_required in
+        that direction, so both stay a genuine audit trail rather than
+        being touched by every no-op re-affirming call."""
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            conn.execute(
+                """INSERT INTO account_drawdown_review
+                   (account_id, review_required, reason, triggered_at, cleared_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?)
+                   ON CONFLICT (account_id) DO UPDATE SET
+                     review_required = excluded.review_required,
+                     reason = excluded.reason,
+                     triggered_at = CASE WHEN excluded.review_required = 1
+                                         THEN excluded.triggered_at ELSE account_drawdown_review.triggered_at END,
+                     cleared_at = CASE WHEN excluded.review_required = 0
+                                       THEN excluded.cleared_at ELSE account_drawdown_review.cleared_at END,
+                     updated_at = excluded.updated_at""",
+                (account_id, int(required), reason, now if required else None, now if not required else None, now),
             )
 
 

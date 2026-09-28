@@ -78,11 +78,13 @@ from app import config
 from app.brokers.base import BrokerAdapter
 from app.capital_allocator import CapitalAllocator, confirmed_open_notional
 from app.db import SignalStore
+from app.drawdown_governor import DrawdownAction, DrawdownEvaluation, DrawdownGovernor
 from app.export_events import build_execution_applied_envelope, build_source_receipt_envelope
 from app.lifecycle.manager import PositionLifecycleManager
 from app.lifecycle.models import PositionPlan, Target, TargetAction
 from app.logging_config import bind_signal_context
 from app.models import AssetClass, DestinationAccount, OrderResult, OrderStatus, Side, Signal
+from app.placement_rate_limiter import PlacementRateLimiter
 from app.providers import ProviderRegistry, SettingsOverride
 from app.risk import size_for_account, symbol_for_account
 from app.routing import RoutingConfig
@@ -100,12 +102,21 @@ class SignalCopierEngine:
         store: SignalStore,
         lifecycle_manager: PositionLifecycleManager | None = None,
         provider_registry: ProviderRegistry | None = None,
+        placement_rate_limiter: PlacementRateLimiter | None = None,
+        drawdown_governor: DrawdownGovernor | None = None,
     ):
         self.routing = routing
         self.brokers = brokers
         self.store = store
         self.lifecycle_manager = lifecycle_manager or PositionLifecycleManager(brokers)
         self.provider_registry = provider_registry or ProviderRegistry()
+        # P0 (batch C): persistent, DB-backed admission control on NEW
+        # entries only -- see each module's own docstring. Both default-
+        # construct against `store` with every limit/threshold unset
+        # (see app/config.py), so an engine built with neither argument
+        # behaves exactly as before this batch.
+        self.placement_rate_limiter = placement_rate_limiter or PlacementRateLimiter(store)
+        self.drawdown_governor = drawdown_governor or DrawdownGovernor(store)
         # Serializes a plain (non-managed_lifecycle) account's close resolution +
         # submission per (account_id, symbol) -- see _resolve_and_submit_plain_close.
         # managed_lifecycle accounts already get this from CloseArbiter; plain
@@ -323,7 +334,17 @@ class SignalCopierEngine:
                 results.append(result)
                 continue
 
-            order_signal, quantity = signal, size_for_account(signal, account)
+            drawdown_evaluation, admission_rejection = self._check_new_entry_admission(signal, account, symbol)
+            if admission_rejection is not None:
+                self.store.save_order_result(
+                    admission_rejection, broker=account.broker, symbol=symbol, side=signal.side, requested_quantity=None
+                )
+                results.append(admission_rejection)
+                continue
+
+            order_signal, quantity = signal, size_for_account(
+                signal, account, drawdown_size_multiplier=drawdown_evaluation.size_multiplier
+            )
 
             if (order_signal.stop_loss is not None or order_signal.take_profit is not None) and not broker.supports_native_bracket:
                 # This account isn't managed_lifecycle, so nothing will submit a
@@ -419,6 +440,52 @@ class SignalCopierEngine:
             results.append(result)
 
         return results
+
+    def _check_new_entry_admission(
+        self, signal: Signal, account: DestinationAccount, symbol: str
+    ) -> tuple[DrawdownEvaluation, OrderResult | None]:
+        """The one admission-control checkpoint every NEW entry (plain or
+        managed_lifecycle) passes through before sizing/placing an order --
+        never called for a CLOSE (those are resolved/submitted through
+        their own dedicated paths above, which never call this). Runs the
+        drawdown governor first, then the placement rate limiter, and
+        returns (drawdown_evaluation, rejection_or_None): callers use the
+        evaluation's `size_multiplier` when admitted, and must return/save
+        `rejection` as-is (a real, specific reason, never a silent drop)
+        when it isn't `None` without going any further for this account.
+        """
+        drawdown_evaluation = self.drawdown_governor.evaluate(account.account_id)
+        if drawdown_evaluation.action is DrawdownAction.WARN:
+            structured_logger.warning(
+                "drawdown_warn",
+                account_id=account.account_id,
+                reasons=drawdown_evaluation.reasons,
+                equity=drawdown_evaluation.equity,
+            )
+        if drawdown_evaluation.action in (DrawdownAction.PAUSE_NEW_ENTRIES, DrawdownAction.REQUIRE_REVIEW):
+            reason_text = "; ".join(drawdown_evaluation.reasons) or "a configured drawdown threshold was crossed"
+            return drawdown_evaluation, OrderResult(
+                account_id=account.account_id,
+                status=OrderStatus.REJECTED,
+                signal_id=signal.id,
+                message=(
+                    f"drawdown governor: {drawdown_evaluation.action.value} for account "
+                    f"'{account.account_id}' ({reason_text}) -- refusing this new entry"
+                ),
+            )
+
+        rate_limit_rejection = self.placement_rate_limiter.check_admission(
+            account_id=account.account_id, provider=signal.source, analyst=signal.analyst, symbol=symbol
+        )
+        if rate_limit_rejection is not None:
+            return drawdown_evaluation, OrderResult(
+                account_id=account.account_id,
+                status=OrderStatus.REJECTED,
+                signal_id=signal.id,
+                message=rate_limit_rejection,
+            )
+
+        return drawdown_evaluation, None
 
     async def _try_reserve_capital(
         self, account: DestinationAccount, order_signal: Signal, quantity: float
@@ -587,7 +654,11 @@ class SignalCopierEngine:
                 message=f"no broker adapter registered for '{account.broker}'",
             )
 
-        quantity = size_for_account(signal, account)
+        drawdown_evaluation, admission_rejection = self._check_new_entry_admission(signal, account, symbol)
+        if admission_rejection is not None:
+            return admission_rejection
+
+        quantity = size_for_account(signal, account, drawdown_size_multiplier=drawdown_evaluation.size_multiplier)
         targets = []
         if signal.take_profit is not None:
             targets.append(Target(trigger_price=signal.take_profit, action=TargetAction.SELL, reduce_fraction=1.0))
