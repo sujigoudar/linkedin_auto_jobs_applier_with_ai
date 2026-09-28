@@ -86,3 +86,28 @@ def test_ad01_page_does_not_link_to_trading_page_for_support_readonly(db_session
     response = client.get("/ops", headers=_auth_headers(role=MembershipRole.SUPPORT_READONLY))
     assert response.status_code == 200
     assert '/ops/trading' not in response.text
+
+
+def test_a_malicious_source_stream_or_instrument_name_renders_inert(db_session):
+    """INTEGRATION_ACCEPTANCE_CASES.json INT-038 "HTML and error text
+    remain inert across bridge" -- a source_stream/instrument value an
+    attacker fully controls (nothing in app/services/integration_inbox.py
+    validates its content) must never reach the rendered page as live
+    markup. Jinja2Templates autoescapes by default; this proves it for
+    real on this session's own new templates rather than assuming it."""
+    marker = "<script>window.__pwned = true</script>"
+    register_export_stream(
+        db_session, tenant_id="tenant-a", source_stream=marker, environment="LOCAL_SIM",
+    )
+    append_entry(
+        db_session, tenant_id="tenant-a", book=Book.PLATFORM, instrument=marker, side=Side.BUY,
+        quantity=Decimal(1), price=Decimal(100), currency="USD", event_time=_T0, source_authority="test",
+        evidence_class=EvidenceClass.OBSERVED_OWNER_LIVE,
+    )
+    db_session.commit()
+
+    client = _client(db_session)
+    response = client.get("/ops/trading", headers=_auth_headers(role=MembershipRole.OWNER))
+    assert response.status_code == 200
+    assert marker not in response.text
+    assert "&lt;script&gt;" in response.text
