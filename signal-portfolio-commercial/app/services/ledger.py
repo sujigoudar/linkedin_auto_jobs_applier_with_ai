@@ -33,6 +33,7 @@ def append_entry(
     follower_connection_id: str | None = None,
     originating_analyst_id: str | None = None,
     sleeve_id: str | None = None,
+    external_observation_id: str | None = None,
 ) -> LedgerEntry:
     """`evidence_class` is a required argument, not a default, per
     Signal Platform Integration Correction Pack's own INTEGRATION_DECISION.md
@@ -64,6 +65,7 @@ def append_entry(
         follower_connection_id=follower_connection_id,
         originating_analyst_id=originating_analyst_id,
         sleeve_id=sleeve_id,
+        external_observation_id=external_observation_id,
     )
     session.add(entry)
     session.flush()
@@ -107,6 +109,7 @@ def append_correction(
         follower_connection_id=original.follower_connection_id,
         originating_analyst_id=original.originating_analyst_id,
         sleeve_id=original.sleeve_id,
+        external_observation_id=original.external_observation_id,
         event_time=event_time,
         source_authority=source_authority,
         reconciliation_state=ReconciliationState.UNRECONCILED,

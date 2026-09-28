@@ -133,6 +133,18 @@ class LedgerEntry(Base):
     #: (INTEGRATION_DECISION.md S12 step 6) to populate for real later.
     follower_connection_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
 
+    #: The observation source's own stable identifier for this fill
+    #: (e.g. a Collective2 "TradeId"/eToro "PositionID") -- meaningful
+    #: only for `book == Book.FOLLOWER` entries, S12 step 6's own real
+    #: observation-connector boundary (app/services/
+    #: follower_observation.py). NULL for every other book. This is the
+    #: idempotency key a redelivered/re-polled observation of the SAME
+    #: real fill is deduplicated by -- the same "SAME identity, harmless
+    #: re-detect" contract app/services/integration_inbox.py's own
+    #: `event_id` already gives the private-relay boundary, applied here
+    #: to the third-party-observation boundary instead.
+    external_observation_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+
     #: `signal_platform_contracts.ExecutionAppliedPayload.originating_
     #: analyst_id`, carried straight through by app/services/
     #: integration_inbox.py's own `_apply_projection`. NULL means "not
