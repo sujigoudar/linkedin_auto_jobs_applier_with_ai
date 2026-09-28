@@ -63,6 +63,7 @@ import app.models.product  # noqa: F401
 import app.models.publication  # noqa: F401
 import app.models.publisher_destination  # noqa: F401
 import app.models.publisher_writer_claim  # noqa: F401
+import app.models.real_account_route  # noqa: F401
 import app.models.release_review  # noqa: F401
 import app.models.research_run  # noqa: F401
 import app.models.rights  # noqa: F401
