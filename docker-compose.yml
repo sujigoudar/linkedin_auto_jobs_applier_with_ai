@@ -56,7 +56,13 @@ services:
     environment:
       # The restricted runtime connection ops/bootstrap.py's own role-
       # provisioning step creates -- never superuser, never BYPASSRLS.
-      COMMERCIAL_DATABASE_URL: "postgresql+psycopg://commercial@postgres:5432/commercial"
+      # Its own password (below) is a real, separate value: a
+      # passwordless role only works against Postgres's own `trust`
+      # auth method, which the official `postgres` image (this stack's
+      # own `postgres` service) does NOT use by default -- confirmed
+      # for real in this session, `fe_sendauth: no password supplied`,
+      # against a genuine `postgres:16` container.
+      COMMERCIAL_DATABASE_URL: "postgresql+psycopg://commercial:local-sim-commercial-role-password@postgres:5432/commercial"
       # A SEPARATE, more-privileged connection used ONLY by the
       # entrypoint's own migration + bootstrap steps -- see deploy/
       # entrypoint-commercial.sh's own comment for why this must be
@@ -64,7 +70,12 @@ services:
       # superuser is fine for this local/paper stack; a real production
       # deployment should use a dedicated migrator role instead.
       COMMERCIAL_MIGRATOR_DATABASE_URL: "postgresql+psycopg://postgres:local-sim-postgres-password@postgres:5432/commercial"
-      RELAY_DATABASE_URL: "postgresql+psycopg://relay_role@postgres:5432/commercial"
+      RELAY_DATABASE_URL: "postgresql+psycopg://relay_role:local-sim-relay-role-password@postgres:5432/commercial"
+      # Read by ops/bootstrap.py directly (never a CLI argument -- see
+      # its own module docstring) to set each role's own real password
+      # via ALTER ROLE, matching the two connection strings above.
+      COMMERCIAL_RUNTIME_ROLE_PASSWORD: "local-sim-commercial-role-password"
+      RELAY_ROLE_PASSWORD: "local-sim-relay-role-password"
       ENVIRONMENT: "LOCAL_SIM"
       # Must match signal-copier's own RELAY_SIGNING_SECRET below --
       # both sides already default to the SAME literal LOCAL_SIM value

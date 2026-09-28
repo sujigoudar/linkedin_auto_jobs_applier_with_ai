@@ -11,7 +11,7 @@ DEFAULT PRIVILEGES` on the schema (the same superuser or schema-owning
 connection `alembic upgrade head` itself used -- never the restricted
 runtime role this script is ABOUT to create).
 
-Does four real things, each idempotent (safe to re-run against an
+Does five real things, each idempotent (safe to re-run against an
 already-bootstrapped database):
 
 1. Creates the Postgres role `app/config.py`'s own `COMMERCIAL_
@@ -30,7 +30,20 @@ already-bootstrapped database):
    superuser -- doing so would silently defeat every `tenant_isolation`/
    `product_visibility`/`content_document_visibility` policy the
    migrations already set up, regardless of `FORCE ROW LEVEL SECURITY`.
-3. Provisions one real `Tenant` + one real owner `Membership` (never a
+3. Sets a real password on BOTH this runtime role AND `relay_role`
+   (created earlier, by migration `3f7a19c02b8e`, with no password of
+   its own -- a second genuine gap this session found: neither role
+   has ever had a password anywhere in this build, which only ever
+   worked against Postgres's own `trust` auth method; the official
+   `postgres` Docker image (and any real managed Postgres) defaults to
+   password auth, so a passwordless role cannot connect at all --
+   reproduced for real: `fe_sendauth: no password supplied` against a
+   genuine `postgres:16` container). Read from
+   `COMMERCIAL_RUNTIME_ROLE_PASSWORD`/`RELAY_ROLE_PASSWORD`
+   environment variables, never a CLI argument (a password on a
+   process's own argv is visible to every other process on the same
+   host via `/proc`); this script refuses to run with either unset.
+4. Provisions one real `Tenant` + one real owner `Membership` (never a
    fabricated one) and prints a freshly-issued owner JWT via
    `app.services.auth.issue_token`. There is no self-service login page
    in this build yet (confirmed: no `/login` route or template exists
@@ -39,7 +52,7 @@ already-bootstrapped database):
    owner access (e.g. `curl -H "Authorization: Bearer <token>" ...` or
    pasted into a browser's own dev-tools-set cookie/header for manual
    use).
-4. Registers every export stream the paired `signal-copier` deployment
+5. Registers every export stream the paired `signal-copier` deployment
    will actually use (`register_export_stream`), so the relay's very
    first batch is never rejected with `UnregisteredStreamError`.
    `signal-copier` exports on TWO INDEPENDENT stream namespaces, not
@@ -61,6 +74,7 @@ already-bootstrapped database):
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 
 from sqlalchemy import text
@@ -99,6 +113,23 @@ def _bootstrap_runtime_role(engine, *, role_name: str) -> None:
                 f"GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO {role_name}"
             )
         )
+
+
+def _set_role_password(engine, *, role_name: str, password: str) -> None:
+    """`ALTER ROLE ... PASSWORD` -- confirmed for real against a genuine
+    Postgres instance that this DDL statement rejects a bound parameter
+    outright (`syntax error at or near "$1"`; Postgres's own DDL
+    statements, unlike DML, never accept one at all, not even outside a
+    `DO $$ ... $$` block). The password value is therefore interpolated
+    as an escaped SQL string literal -- doubling every embedded single
+    quote, the standard Postgres escaping for a literal -- the same way
+    `role_name` is already interpolated as a validated identifier just
+    below."""
+    if not role_name.isidentifier():
+        raise ValueError(f"{role_name!r} is not a safe Postgres identifier -- refusing to interpolate it into DDL")
+    escaped_password = password.replace("'", "''")
+    with engine.begin() as conn:
+        conn.execute(text(f"ALTER ROLE {role_name} PASSWORD '{escaped_password}'"))
 
 
 def _provision_tenant_and_owner(session, *, tenant_id: str, tenant_name: str, user_id: str, email: str) -> None:
@@ -141,11 +172,24 @@ def main() -> int:
         parser.error(
             "at least one --account-id and one --source-name are required -- "
             "without them, the paired signal-copier deployment's own events can never apply "
-            "(see this script's own module docstring, point 4)"
+            "(see this script's own module docstring, point 5)"
+        )
+
+    runtime_role_password = os.environ.get("COMMERCIAL_RUNTIME_ROLE_PASSWORD")
+    relay_role_password = os.environ.get("RELAY_ROLE_PASSWORD")
+    if not runtime_role_password or not relay_role_password:
+        parser.error(
+            "COMMERCIAL_RUNTIME_ROLE_PASSWORD and RELAY_ROLE_PASSWORD must both be set in the "
+            "environment (never as a CLI argument -- see this script's own module docstring, "
+            "point 3) -- without a real password, neither role can connect to a Postgres server "
+            "using ordinary password auth, which is every real deployment including the official "
+            "postgres Docker image this build's own docker-compose.yml uses"
         )
 
     engine = make_engine(config.COMMERCIAL_DATABASE_URL)
     _bootstrap_runtime_role(engine, role_name=args.runtime_role)
+    _set_role_password(engine, role_name=args.runtime_role, password=runtime_role_password)
+    _set_role_password(engine, role_name="relay_role", password=relay_role_password)
 
     session_factory = make_session_factory(engine)
     session = session_factory()
