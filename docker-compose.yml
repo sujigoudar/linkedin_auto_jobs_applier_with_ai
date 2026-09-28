@@ -108,6 +108,19 @@ services:
     depends_on:
       commercial:
         condition: service_healthy
+    # A real deployment's actual broker/vendor credentials (CCXT_*_API_KEY,
+    # ALPACA_*, IBKR_*, TWILIO_*, etc -- see signal-copier/.env.example for
+    # the full list) belong in a real signal-copier/.env file, which this
+    # loads if present -- a genuine gap this audit found: nothing anywhere
+    # in this stack ever read that file into the container at all, so a
+    # real .env full of real credentials next to this compose file would
+    # silently never reach the app. `required: false` (Compose Spec
+    # 2.24+, confirmed against this session's own `docker compose
+    # version`) keeps this a no-op for the LOCAL_SIM quickstart, which
+    # has no such file -- only `environment:` below is real for that case.
+    env_file:
+      - path: ./signal-copier/.env
+        required: false
     environment:
       ACCOUNTS_CONFIG_PATH: "config/accounts.example.yaml"
       ROUTING_CONFIG_PATH: "config/routing.example.yaml"
@@ -117,6 +130,13 @@ services:
       # exposing this port beyond localhost/a private network.
       WEBHOOK_SHARED_SECRET: "local-sim-webhook-secret"
       OWNER_PASSWORD: "local-sim-owner-password"
+      # A real, non-empty value is ALSO required for owner-authenticated
+      # routes (the dashboard, /orders, /positions, close/flatten) to work
+      # at all -- app/auth.py's own auth_configured() refuses every
+      # session unless BOTH OWNER_PASSWORD and this are set, previously
+      # missing here entirely, so any owner-gated route would fail closed
+      # even with a real OWNER_PASSWORD set.
+      SESSION_SECRET: "local-sim-session-secret-change-if-ever-deployed"
       DATABASE_PATH: "/app/data/signal_copier.db"
       # The in-process relay worker's own target -- signal-copier's own
       # container-network hostname for the commercial service, its
