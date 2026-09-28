@@ -54,6 +54,7 @@ from app.context import fx as fx_context
 from app.context import sec_edgar
 from app.db import SignalStore, alembic_code_head
 from app.economics import compute_account_economics
+from app.equity_history import EquitySnapshotter
 from app.execution_quality import compute_execution_quality
 from app.engine import SignalCopierEngine
 from app.logging_config import configure_structlog
@@ -207,6 +208,11 @@ provider_scout = ProviderScout(
     win_rate_threshold=config.PROVIDER_VALUE_WIN_RATE_THRESHOLD,
     profit_factor_threshold=config.PROVIDER_VALUE_PROFIT_FACTOR_THRESHOLD,
 )
+equity_snapshotter = EquitySnapshotter(
+    store=store,
+    lifecycle_manager=lifecycle_manager,
+    interval_seconds=config.EQUITY_SNAPSHOT_INTERVAL_SECONDS,
+)
 relay_scheduler = RelayScheduler(store=store, interval_seconds=config.RELAY_POLL_INTERVAL_SECONDS)
 
 # Pull-based sources only start if fully configured via env vars.
@@ -266,6 +272,7 @@ async def lifespan(app: FastAPI):
     await reconciler.start()
     await price_monitor.start()
     await provider_scout.start()
+    await equity_snapshotter.start()
     if config.RELAY_INGRESS_URL:
         # Same "pull-based, only starts if fully configured" convention
         # as TelegramSource/DiscordSource/etc. above -- a deployment with
@@ -279,6 +286,7 @@ async def lifespan(app: FastAPI):
 
     if config.RELAY_INGRESS_URL:
         await relay_scheduler.stop()
+    await equity_snapshotter.stop()
     await provider_scout.stop()
     await price_monitor.stop()
     await reconciler.stop()
@@ -403,6 +411,10 @@ async def health() -> dict:
     # day, so gating overall health on it would report "degraded" for
     # hours after every fresh install/restart despite nothing being wrong.
     provider_scout_ok = _fresh(provider_scout.last_success_at, config.PROVIDER_SCOUT_INTERVAL_SECONDS)
+    # Same "informational only" reasoning as provider_scout_ok -- a missed
+    # or delayed equity snapshot pass doesn't affect position protection,
+    # so it must never drag down overall `status`.
+    equity_snapshotter_ok = _fresh(equity_snapshotter.last_success_at, config.EQUITY_SNAPSHOT_INTERVAL_SECONDS)
     # Same "informational only" reasoning as provider_scout_ok above: a
     # deployment with no RELAY_INGRESS_URL never starts this scheduler at
     # all (see `lifespan`), so it would report perpetually "not fresh"
@@ -423,6 +435,7 @@ async def health() -> dict:
         "price_monitor_ok": price_monitor_ok,
         "reconciler_ok": reconciler_ok,
         "provider_scout_ok": provider_scout_ok,
+        "equity_snapshotter_ok": equity_snapshotter_ok,
         "relay_ok": relay_ok,
     }
 
@@ -476,6 +489,7 @@ async def system_info(_owner: dict = Depends(require_owner_read)) -> dict:
         "reconcile_interval_seconds": config.RECONCILE_INTERVAL_SECONDS,
         "price_monitor_interval_seconds": config.PRICE_MONITOR_INTERVAL_SECONDS,
         "provider_scout_interval_seconds": config.PROVIDER_SCOUT_INTERVAL_SECONDS,
+        "equity_snapshot_interval_seconds": config.EQUITY_SNAPSHOT_INTERVAL_SECONDS,
         "auth_configured": auth_configured(),
         "owner_credential_kind": (
             "hashed (OWNER_PASSWORD_HASH)"
@@ -938,6 +952,48 @@ async def get_account_execution_quality(account_id: str, _owner: dict = Depends(
     if account_id not in routing_config.accounts:
         raise HTTPException(status_code=404, detail=f"no account '{account_id}'")
     return compute_execution_quality(store, account_id).to_dict()
+
+
+@app.get("/accounts/{account_id}/equity-history")
+async def get_account_equity_history(
+    account_id: str,
+    since: datetime | None = Query(default=None),
+    until: datetime | None = Query(default=None),
+    limit: int = Query(default=1000, gt=0, le=10000),
+    _owner: dict = Depends(require_owner_read),
+) -> dict:
+    """PU-A3: this account's real, persisted equity/P&L snapshot series
+    (see app/equity_history.py's EquitySnapshotter, which writes one row
+    per account every `EQUITY_SNAPSHOT_INTERVAL_SECONDS`) -- the queryable
+    history Phase B1/B4/B6/B8's equity/P&L/drawdown curves read, so none of
+    them needs to add its own tracking.
+
+    `realized_pnl` in each row is exactly what
+    `GET /accounts/{account_id}/economics` would have independently
+    computed at that snapshot's `captured_at` -- never a second P&L
+    calculation. `cumulative_pnl` is `realized_pnl + unrealized_pnl`,
+    honestly named that (not "equity") because this account has no
+    configured starting-balance baseline -- see EquitySnapshotter's module
+    docstring. `unpriced_open_symbols` lists any symbol that had an open
+    position but no real observed price at that snapshot, so a chart can
+    show that a given point's `unrealized_pnl` is a partial figure rather
+    than silently treating it as complete.
+
+    `since`/`until` are optional ISO-8601 timestamps bounding
+    `captured_at` (each inclusive); `limit` caps how many rows come back
+    (oldest first), default 1000."""
+    if account_id not in routing_config.accounts:
+        raise HTTPException(status_code=404, detail=f"no account '{account_id}'")
+    snapshots = store.list_equity_snapshots(account_id, since=since, until=until, limit=limit)
+    return {
+        "account_id": account_id,
+        "note": "cumulative_pnl is realized_pnl + unrealized_pnl -- this account has no configured "
+        "starting-balance baseline, so this is a real cumulative P&L series, not a broker-confirmed "
+        "absolute equity figure. unpriced_open_symbols on a row lists any open-position symbol with "
+        "no real observed price at that snapshot (its unrealized contribution there is 0.0, not a "
+        "verified zero).",
+        "snapshots": snapshots,
+    }
 
 
 @app.post("/positions/{account_id}/{symbol}/close")

@@ -212,6 +212,12 @@ class _Settings(BaseSettings):
     # see app/pricing.py's module docstring).
     PRICE_MONITOR_INTERVAL_SECONDS: float = 15.0
 
+    # How often app/equity_history.py's EquitySnapshotter persists one real
+    # equity/P&L snapshot per configured account (PU-A3). Default: 5 minutes
+    # -- frequent enough for a real intraday equity curve, infrequent enough
+    # that a large account roster's snapshot pass stays cheap.
+    EQUITY_SNAPSHOT_INTERVAL_SECONDS: float = 300.0
+
     # How often app/provider_scout.py re-evaluates every signal source/analyst
     # that ISN'T yet a tracked provider_subscriptions row against
     # PROVIDER_VALUE_* below, looking for a free provider worth promoting.
@@ -361,6 +367,7 @@ RITHMIC_SOURCE_ACCOUNT_ID = _settings.RITHMIC_SOURCE_ACCOUNT_ID
 
 RECONCILE_INTERVAL_SECONDS = _settings.RECONCILE_INTERVAL_SECONDS
 PRICE_MONITOR_INTERVAL_SECONDS = _settings.PRICE_MONITOR_INTERVAL_SECONDS
+EQUITY_SNAPSHOT_INTERVAL_SECONDS = _settings.EQUITY_SNAPSHOT_INTERVAL_SECONDS
 PROVIDER_SCOUT_INTERVAL_SECONDS = _settings.PROVIDER_SCOUT_INTERVAL_SECONDS
 PROVIDER_VALUE_MIN_SAMPLE_SIZE = _settings.PROVIDER_VALUE_MIN_SAMPLE_SIZE
 PROVIDER_VALUE_WIN_RATE_THRESHOLD = _settings.PROVIDER_VALUE_WIN_RATE_THRESHOLD

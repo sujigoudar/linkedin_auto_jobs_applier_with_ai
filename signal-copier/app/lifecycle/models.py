@@ -225,17 +225,35 @@ class PositionLifecycle:
     lowest_price_since_entry: float | None = None
     lowest_price_at: datetime | None = None
 
+    # --- PU-A3: real last-known price, for equity/unrealized-P&L snapshots ---
+    #
+    # `highest_price_since_entry`/`lowest_price_since_entry` above are
+    # EXTREMES (for MAE/MFE), not "what price is this position at right
+    # now" -- app/equity_history.py needs the latter to value an open
+    # position against its real cost basis, and must not misuse an extreme
+    # for that. `last_observed_price` is simply the most recent real price
+    # `observe_price` was called with (a genuine entry fill or feed tick --
+    # same provenance guarantee as the two fields above), so it moves with
+    # every observation instead of only ratcheting outward. None until at
+    # least one real observation has arrived -- never fabricated.
+    last_observed_price: float | None = None
+    last_observed_price_at: datetime | None = None
+
     def observe_price(self, price: float, at: datetime) -> None:
-        """Record one real price observation for MAE/MFE tracking. Callers
-        must only ever pass a genuine, broker/feed-reported price (or a
-        confirmed fill price) — never an estimated or synthetic one; see
-        this dataclass's field docstrings above for why."""
+        """Record one real price observation for MAE/MFE tracking (and,
+        PU-A3, for the last-known-price snapshot consumers like
+        app/equity_history.py read). Callers must only ever pass a
+        genuine, broker/feed-reported price (or a confirmed fill price) --
+        never an estimated or synthetic one; see this dataclass's field
+        docstrings above for why."""
         if self.highest_price_since_entry is None or price > self.highest_price_since_entry:
             self.highest_price_since_entry = price
             self.highest_price_at = at
         if self.lowest_price_since_entry is None or price < self.lowest_price_since_entry:
             self.lowest_price_since_entry = price
             self.lowest_price_at = at
+        self.last_observed_price = price
+        self.last_observed_price_at = at
 
     @property
     def has_price_data(self) -> bool:

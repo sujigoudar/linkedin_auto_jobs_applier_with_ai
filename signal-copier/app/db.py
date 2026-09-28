@@ -324,6 +324,44 @@ CREATE INDEX IF NOT EXISTS idx_position_excursions_account_symbol
     ON position_excursions (account_id, symbol);
 CREATE INDEX IF NOT EXISTS idx_position_excursions_closed_at ON position_excursions (closed_at);
 
+-- PU-A3: a real, persisted equity/P&L snapshot per account, taken
+-- periodically (see app/equity_history.py's EquitySnapshotter) -- the
+-- durable time series that closes the "no persisted equity/balance
+-- HISTORY exists" gap Phase B1 identified (`GET /accounts/{id}/economics`/
+-- `balance` only ever expose CURRENT aggregate values).
+--
+-- `realized_pnl` is exactly app/economics.py's `compute_account_economics`
+-- own `realized_pnl` at `captured_at` -- never a second, independent P&L
+-- calculation (see that module's own load-bearing test).
+--
+-- `unrealized_pnl` sums, over this account's open positions, (last real
+-- observed price - average cost) * open quantity, using ONLY a real price
+-- from app/lifecycle/models.py's `PositionLifecycle.last_observed_price`
+-- (itself fed solely by app/pricing.py's PriceMonitor or a real entry
+-- fill). A symbol with an open position but no real price observed yet
+-- contributes 0.0 here and is listed in `unpriced_open_symbols` instead --
+-- an honest disclosure of incompleteness, never a fabricated mark.
+--
+-- This codebase's DestinationAccount/AccountRequest have no
+-- starting_balance/starting_capital field, so there is no real,
+-- broker-confirmed absolute equity baseline to report. `cumulative_pnl`
+-- (== realized_pnl + unrealized_pnl at this snapshot) is deliberately
+-- named for what it honestly is -- cumulative P&L since this account's
+-- own execution history began -- rather than called "equity", which would
+-- imply an absolute balance this service never configured or observed.
+CREATE TABLE IF NOT EXISTS account_equity_snapshots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    account_id TEXT NOT NULL,
+    captured_at TEXT NOT NULL,
+    realized_pnl REAL NOT NULL,
+    unrealized_pnl REAL NOT NULL,
+    cumulative_pnl REAL NOT NULL,
+    unpriced_open_symbols TEXT NOT NULL DEFAULT '[]'
+);
+
+CREATE INDEX IF NOT EXISTS idx_account_equity_snapshots_account_captured
+    ON account_equity_snapshots (account_id, captured_at);
+
 CREATE INDEX IF NOT EXISTS idx_orders_executed_at ON orders (executed_at);
 CREATE INDEX IF NOT EXISTS idx_orders_account_id ON orders (account_id);
 CREATE INDEX IF NOT EXISTS idx_signals_received_at ON signals (received_at);
@@ -923,6 +961,75 @@ class SignalStore:
                 "mfe": r[10],
                 "has_price_data": bool(r[11]),
                 "closed_at": r[12],
+            }
+            for r in rows
+        ]
+
+    def record_equity_snapshot(
+        self,
+        account_id: str,
+        *,
+        captured_at: datetime,
+        realized_pnl: float,
+        unrealized_pnl: float,
+        cumulative_pnl: float,
+        unpriced_open_symbols: list[str] | None = None,
+    ) -> None:
+        """PU-A3: append one real, honestly-labeled equity/P&L snapshot for
+        this account -- see `account_equity_snapshots`'s schema comment.
+        Always an append (never an upsert): each snapshot is one real point
+        on this account's real cumulative-P&L time series, not a
+        replaceable "current state" row."""
+        with self._connect() as conn:
+            conn.execute(
+                """INSERT INTO account_equity_snapshots
+                   (account_id, captured_at, realized_pnl, unrealized_pnl, cumulative_pnl, unpriced_open_symbols)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (
+                    account_id,
+                    captured_at.isoformat(),
+                    realized_pnl,
+                    unrealized_pnl,
+                    cumulative_pnl,
+                    json.dumps(unpriced_open_symbols or []),
+                ),
+            )
+
+    def list_equity_snapshots(
+        self,
+        account_id: str,
+        *,
+        since: datetime | None = None,
+        until: datetime | None = None,
+        limit: int = 1000,
+    ) -> list[dict]:
+        """This account's real, persisted equity/P&L snapshot series,
+        oldest first (the natural order for charting a curve) -- optionally
+        bounded to `[since, until]` (each inclusive)."""
+        query = (
+            "SELECT id, account_id, captured_at, realized_pnl, unrealized_pnl, cumulative_pnl, "
+            "unpriced_open_symbols FROM account_equity_snapshots WHERE account_id = ?"
+        )
+        params: list = [account_id]
+        if since is not None:
+            query += " AND captured_at >= ?"
+            params.append(since.isoformat())
+        if until is not None:
+            query += " AND captured_at <= ?"
+            params.append(until.isoformat())
+        query += " ORDER BY captured_at ASC LIMIT ?"
+        params.append(limit)
+        with self._connect() as conn:
+            rows = conn.execute(query, params).fetchall()
+        return [
+            {
+                "id": r[0],
+                "account_id": r[1],
+                "captured_at": r[2],
+                "realized_pnl": r[3],
+                "unrealized_pnl": r[4],
+                "cumulative_pnl": r[5],
+                "unpriced_open_symbols": json.loads(r[6]) if r[6] else [],
             }
             for r in rows
         ]
