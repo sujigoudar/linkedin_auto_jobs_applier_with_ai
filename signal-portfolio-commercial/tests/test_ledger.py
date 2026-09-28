@@ -9,7 +9,7 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
 
-from app.models.ledger import Book, LedgerEntry, ReconciliationState, Side
+from app.models.ledger import Book, EvidenceClass, LedgerEntry, ReconciliationState, Side
 from app.services.ledger import UnknownLedgerEntryError, append_correction, append_entry
 
 
@@ -25,6 +25,7 @@ def test_append_entry_persists_the_given_fields(db_session):
         currency="USD",
         event_time=datetime.now(timezone.utc),
         source_authority="broker-fill-confirmation",
+        evidence_class=EvidenceClass.OBSERVED_FOLLOWER_LIVE,
     )
 
     fetched = db_session.get(LedgerEntry, entry.entry_id)
@@ -33,6 +34,46 @@ def test_append_entry_persists_the_given_fields(db_session):
     assert fetched.price == Decimal("100.50")
     assert fetched.correction_of is None
     assert fetched.reconciliation_state == ReconciliationState.UNRECONCILED
+    assert fetched.evidence_class == EvidenceClass.OBSERVED_FOLLOWER_LIVE
+
+
+def test_append_entry_leaves_fee_unset_by_default(db_session):
+    """Signal Platform Integration Correction Pack's own INTEGRATION_DECISION.md
+    S7: "Importing a zero default is not proof of a verified zero fee." --
+    an entry with no known fee must record that as unknown, never a
+    fabricated $0.00."""
+    entry = append_entry(
+        db_session,
+        tenant_id="tenant-a",
+        book=Book.FOLLOWER,
+        instrument="AAPL",
+        side=Side.BUY,
+        quantity=Decimal("10"),
+        price=Decimal("100.50"),
+        currency="USD",
+        event_time=datetime.now(timezone.utc),
+        source_authority="broker-fill-confirmation",
+        evidence_class=EvidenceClass.OBSERVED_FOLLOWER_LIVE,
+    )
+    assert entry.fee is None
+
+
+def test_append_entry_records_an_explicitly_known_zero_fee(db_session):
+    entry = append_entry(
+        db_session,
+        tenant_id="tenant-a",
+        book=Book.FOLLOWER,
+        instrument="AAPL",
+        side=Side.BUY,
+        quantity=Decimal("10"),
+        price=Decimal("100.50"),
+        currency="USD",
+        event_time=datetime.now(timezone.utc),
+        source_authority="broker-fill-confirmation",
+        evidence_class=EvidenceClass.OBSERVED_FOLLOWER_LIVE,
+        fee=Decimal("0"),
+    )
+    assert entry.fee == Decimal("0")
 
 
 def test_a_direct_update_against_the_table_is_rejected(db_session):
@@ -47,6 +88,7 @@ def test_a_direct_update_against_the_table_is_rejected(db_session):
         currency="USD",
         event_time=datetime.now(timezone.utc),
         source_authority="test",
+        evidence_class=EvidenceClass.SYNTHETIC_FIXTURE,
     )
     db_session.commit()
 
@@ -70,6 +112,7 @@ def test_a_direct_delete_against_the_table_is_rejected(db_session):
         currency="USD",
         event_time=datetime.now(timezone.utc),
         source_authority="test",
+        evidence_class=EvidenceClass.SYNTHETIC_FIXTURE,
     )
     db_session.commit()
 
@@ -91,6 +134,7 @@ def test_a_correction_adds_a_new_row_and_leaves_the_original_untouched(db_sessio
         currency="USD",
         event_time=datetime.now(timezone.utc),
         source_authority="analyst-alert",
+        evidence_class=EvidenceClass.SYNTHETIC_FIXTURE,
     )
     db_session.commit()
 
@@ -124,6 +168,7 @@ def test_a_correction_inherits_identity_fields_from_the_original(db_session):
         currency="USD",
         event_time=datetime.now(timezone.utc),
         source_authority="test",
+        evidence_class=EvidenceClass.OBSERVED_OWNER_LIVE,
     )
     correction = append_correction(
         db_session,
@@ -139,6 +184,7 @@ def test_a_correction_inherits_identity_fields_from_the_original(db_session):
     assert correction.instrument == original.instrument
     assert correction.side == original.side
     assert correction.currency == original.currency
+    assert correction.evidence_class == EvidenceClass.OBSERVED_OWNER_LIVE
 
 
 def test_correcting_an_unknown_entry_raises(db_session):

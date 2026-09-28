@@ -12,7 +12,7 @@ from decimal import Decimal
 
 from sqlalchemy.orm import Session
 
-from app.models.ledger import Book, LedgerEntry, ReconciliationState, Side
+from app.models.ledger import Book, EvidenceClass, LedgerEntry, ReconciliationState, Side
 
 
 def append_entry(
@@ -27,9 +27,17 @@ def append_entry(
     currency: str,
     event_time: datetime,
     source_authority: str,
+    evidence_class: EvidenceClass,
     multiplier: Decimal = Decimal(1),
-    fee: Decimal = Decimal(0),
+    fee: Decimal | None = None,
 ) -> LedgerEntry:
+    """`evidence_class` is a required argument, not a default, per
+    Signal Platform Integration Correction Pack's own INTEGRATION_DECISION.md
+    S7 -- there is no honest default for "what kind of evidence is this."
+    `fee` defaults to `None` (unknown), never `Decimal(0)`: "Importing a
+    zero default is not proof of a verified fee" (S7) -- a caller that
+    genuinely knows the fee is zero (e.g. a commission-free venue) passes
+    `Decimal(0)` explicitly; a caller that doesn't know passes nothing."""
     entry = LedgerEntry(
         tenant_id=tenant_id,
         book=book,
@@ -42,6 +50,7 @@ def append_entry(
         fee=fee,
         event_time=event_time,
         source_authority=source_authority,
+        evidence_class=evidence_class,
     )
     session.add(entry)
     session.flush()
@@ -65,8 +74,8 @@ def append_correction(
     """Record a correction for `original_entry_id` as a brand-new row
     referencing it via `correction_of` -- the original is never modified.
     The correction inherits the original's tenant/book/instrument/side/
-    currency/multiplier (those identify WHAT was being recorded; only the
-    numbers being corrected are supplied fresh here)."""
+    currency/multiplier/evidence_class (those identify WHAT was being
+    recorded; only the numbers being corrected are supplied fresh here)."""
     original = session.get(LedgerEntry, original_entry_id)
     if original is None:
         raise UnknownLedgerEntryError(f"no ledger entry {original_entry_id!r} to correct")
@@ -81,6 +90,7 @@ def append_correction(
         multiplier=original.multiplier,
         currency=original.currency,
         fee=original.fee if fee is None else fee,
+        evidence_class=original.evidence_class,
         event_time=event_time,
         source_authority=source_authority,
         reconciliation_state=ReconciliationState.UNRECONCILED,

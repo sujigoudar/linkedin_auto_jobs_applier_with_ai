@@ -17,6 +17,18 @@ booked at the time stays reconstructable.
 Money fields are `Numeric`, never `Float` -- "Use Decimal or integer
 minor/tick units at accounting boundaries; do not calculate exact money
 in... floating point."
+
+`evidence_class` (Signal Platform Integration Correction Pack's own
+INTEGRATION_DECISION.md S7): every entry declares, by construction, what
+kind of evidence it is -- a synthetic test fixture, an internal paper
+trade, a hypothetical backtest, an actually observed owner/follower
+execution, or a platform's own reported model result. A dashboard must
+never have to guess this from context, and a bridge importing an
+observation from signal-copier must never leave it implicit. Reuses
+`signal_platform_contracts.EvidenceClass` -- the same enum the export
+envelope itself carries -- as the one source of truth for this dimension,
+rather than a second, potentially-drifting definition of the same seven
+values living only in this app.
 """
 from __future__ import annotations
 
@@ -29,6 +41,15 @@ from sqlalchemy import DateTime, Enum, ForeignKey, Numeric, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db import Base
+from signal_platform_contracts import EvidenceClass
+
+__all__ = [
+    "Book",
+    "EvidenceClass",
+    "LedgerEntry",
+    "ReconciliationState",
+    "Side",
+]
 
 
 def _uuid() -> str:
@@ -73,11 +94,23 @@ class LedgerEntry(Base):
     price: Mapped[Decimal] = mapped_column(_MONEY, nullable=False)
     multiplier: Mapped[Decimal] = mapped_column(_MONEY, nullable=False, default=Decimal(1))
     currency: Mapped[str] = mapped_column(String, nullable=False)
-    fee: Mapped[Decimal] = mapped_column(_MONEY, nullable=False, default=Decimal(0))
+    #: NULL means "fee not yet known", never zero -- INTEGRATION_DECISION.md
+    #: S7: "Importing a zero default is not proof of a verified zero fee."
+    #: A caller that genuinely knows the fee is zero (e.g. a commission-
+    #: free venue) passes `Decimal(0)` explicitly; app/services/ledger.py's
+    #: own `append_entry` never substitutes one on a caller's behalf.
+    fee: Mapped[Decimal | None] = mapped_column(_MONEY, nullable=True)
 
     event_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     receipt_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_now)
     source_authority: Mapped[str] = mapped_column(String, nullable=False)
+    #: Nullable at the DATABASE level only so an additive migration never
+    #: breaks a pre-existing row -- app/services/ledger.py's own
+    #: append_entry/append_correction require it as a real argument, so
+    #: every entry this application itself ever writes has one. A NULL
+    #: here means "written before this column existed", never "no
+    #: evidence class applies".
+    evidence_class: Mapped[EvidenceClass | None] = mapped_column(Enum(EvidenceClass, native_enum=False), nullable=True)
     reconciliation_state: Mapped[ReconciliationState] = mapped_column(
         Enum(ReconciliationState, native_enum=False), nullable=False, default=ReconciliationState.UNRECONCILED
     )
