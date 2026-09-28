@@ -32,6 +32,14 @@
     grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
     gap: 16px;
   }
+  /* A class selector like .grid beats the UA stylesheet's [hidden]
+     { display: none } (attribute selectors have lower specificity than
+     class selectors), so the legacy dashboard's own display:grid was
+     bleeding through underneath every TR-0X route view even while its
+     `hidden` attribute was correctly set. */
+  [hidden] {
+    display: none !important;
+  }
   section.panel {
     background: var(--panel);
     border: 1px solid var(--border);

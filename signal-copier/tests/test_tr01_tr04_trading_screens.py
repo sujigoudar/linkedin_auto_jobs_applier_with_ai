@@ -175,6 +175,14 @@ async def test_all_four_trading_screens_render_real_content(live_server):
             await wait_settled("#tr01-p03")
             assert "Trading command center" == await page.inner_text("#route-title")
             assert "acct1" in await page.inner_text("#tr01-p03")
+            # A route view being real doesn't mean the legacy dashboard
+            # actually stopped rendering underneath it: `hidden` alone is
+            # not enough when a class selector like `.grid`'s own
+            # `display: grid` outranks the `[hidden]` attribute selector's
+            # `display: none` in CSS specificity, so assert the real
+            # computed visibility, not just the DOM attribute.
+            assert await page.is_hidden("#legacy-content")
+            assert await page.is_visible("#route-view")
 
             # TR-02: Positions and allocations.
             await page.click('a[href="#/trade/positions"]')
