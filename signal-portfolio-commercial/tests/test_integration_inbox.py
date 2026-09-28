@@ -22,6 +22,7 @@ from signal_platform_contracts import (
 )
 
 from app.models.ledger import Book, LedgerEntry
+from app.models.sleeve import Sleeve
 from app.models.tenancy import Tenant
 from app.services.integration_inbox import (
     EventIntegrityError,
@@ -122,13 +123,27 @@ def _fee_envelope(*, event_id, export_sequence, broker_order_id, fee, source_str
     )
 
 
-def _source_receipt_envelope(*, event_id="evt-src-1", export_sequence=0, source_stream="signal-copier:acct1"):
+def _source_receipt_envelope(
+    *,
+    event_id="evt-src-1",
+    export_sequence=0,
+    source_stream="signal-copier:acct1",
+    quantity="10",
+    price="150.00",
+    source_provider_id="telegram",
+    analyst_id=None,
+    parser_version="v3",
+    source_event_id="src-evt-1",
+):
     payload = SourceReceiptPayload(
-        source=SourceIdentity(source_provider_id="telegram", parser_version="v3", source_event_id="src-evt-1"),
+        source=SourceIdentity(
+            source_provider_id=source_provider_id, analyst_id=analyst_id, parser_version=parser_version,
+            source_event_id=source_event_id,
+        ),
         instrument=_instrument(),
         side="buy",
-        quantity="10",
-        price="150.00",
+        quantity=quantity,
+        price=price,
     )
     payload_dict = payload.model_dump(mode="json")
     now = datetime.now(timezone.utc)
@@ -227,7 +242,10 @@ def test_ingest_execution_applied_event_with_unknown_fee_leaves_ledger_fee_none(
     assert entry.fee is None
 
 
-def test_ingest_source_receipt_event_creates_no_ledger_entry(db_session):
+def test_ingest_source_receipt_event_with_known_quantity_and_price_creates_a_real_source_book_entry(db_session):
+    """S12 step 5 "Portfolio Lab source feed": a SOURCE_RECEIPT with a
+    real quantity/price produces a real Book.SOURCE ledger entry, never
+    a Book.PLATFORM/execution one."""
     _seed_tenant(db_session)
     register_export_stream(db_session, tenant_id="tenant-a", source_stream="signal-copier:acct1", environment="LOCAL_SIM")
     db_session.commit()
@@ -236,8 +254,101 @@ def test_ingest_source_receipt_event_creates_no_ledger_entry(db_session):
     inbox_event = ingest_export_event(db_session, envelope.model_dump_json())
     db_session.commit()
 
+    assert inbox_event.applied_at is not None
+    assert inbox_event.ledger_entry_id is not None
+    entry = db_session.get(LedgerEntry, inbox_event.ledger_entry_id)
+    assert entry is not None
+    assert entry.book == Book.SOURCE
+    assert entry.instrument == "AAPL"
+    assert entry.quantity == Decimal("10")
+    assert entry.price == Decimal("150.00")
+    assert entry.sleeve_id is None  # no sleeve admitted for this (provider, analyst, parser_version) tuple
+
+
+def test_ingest_source_receipt_event_with_unknown_quantity_or_price_creates_no_ledger_entry(db_session):
+    """A bare "buy AAPL" recommendation with no quantity/price genuinely
+    has nothing numeric to record -- applied (received, nothing
+    further this event type could apply), but no ledger row, never a
+    fabricated placeholder."""
+    _seed_tenant(db_session)
+    register_export_stream(db_session, tenant_id="tenant-a", source_stream="signal-copier:acct1", environment="LOCAL_SIM")
+    db_session.commit()
+
+    envelope = _source_receipt_envelope(quantity=None, price=None)
+    inbox_event = ingest_export_event(db_session, envelope.model_dump_json())
+    db_session.commit()
+
     assert inbox_event.ledger_entry_id is None
     assert inbox_event.applied_at is not None
+
+
+def test_a_source_receipt_matching_an_admitted_sleeve_is_tagged_with_it(db_session):
+    """INT-026-adjacent (sleeve<->source identity mapping, S12 step 5):
+    an EXACT (provider, analyst, parser_version) match against a real
+    admitted Sleeve tags the resulting Book.SOURCE entry with it."""
+    _seed_tenant(db_session)
+    register_export_stream(db_session, tenant_id="tenant-a", source_stream="signal-copier:acct1", environment="LOCAL_SIM")
+    sleeve = Sleeve(
+        tenant_id="tenant-a", provider="telegram", analyst="alice", strategy_horizon="swing",
+        asset_class="equity", parser_version="v3", execution_policy_id="policy-1", cost_model_id="cost-1",
+        capacity_policy_id="capacity-1", risk_unit_id="risk-1", history_origin="live",
+    )
+    db_session.add(sleeve)
+    db_session.commit()
+
+    envelope = _source_receipt_envelope(source_provider_id="telegram", analyst_id="alice", parser_version="v3")
+    inbox_event = ingest_export_event(db_session, envelope.model_dump_json())
+    db_session.commit()
+
+    entry = db_session.get(LedgerEntry, inbox_event.ledger_entry_id)
+    assert entry.sleeve_id == sleeve.sleeve_id
+    assert entry.originating_analyst_id == "alice"
+
+
+def test_a_source_receipt_is_never_matched_to_a_sleeve_with_a_different_analyst(db_session):
+    """No "join only by provider": two sleeves share the SAME provider
+    but different analysts -- a receipt for bob must never be tagged
+    with alice's sleeve, even though it's the only other one for this
+    provider."""
+    _seed_tenant(db_session)
+    register_export_stream(db_session, tenant_id="tenant-a", source_stream="signal-copier:acct1", environment="LOCAL_SIM")
+    alice_sleeve = Sleeve(
+        tenant_id="tenant-a", provider="telegram", analyst="alice", strategy_horizon="swing",
+        asset_class="equity", parser_version="v3", execution_policy_id="policy-1", cost_model_id="cost-1",
+        capacity_policy_id="capacity-1", risk_unit_id="risk-1", history_origin="live",
+    )
+    db_session.add(alice_sleeve)
+    db_session.commit()
+
+    envelope = _source_receipt_envelope(source_provider_id="telegram", analyst_id="bob", parser_version="v3")
+    inbox_event = ingest_export_event(db_session, envelope.model_dump_json())
+    db_session.commit()
+
+    entry = db_session.get(LedgerEntry, inbox_event.ledger_entry_id)
+    assert entry.sleeve_id is None  # never alice_sleeve.sleeve_id
+
+
+def test_a_source_receipt_with_no_analyst_is_never_matched_to_any_sleeve(db_session):
+    """A sleeve requires a real analyst (app/models/sleeve.py's own
+    NOT NULL `analyst` column) -- an unattributed source receipt can
+    never match one, by construction, never "the whole provider's"
+    sleeve."""
+    _seed_tenant(db_session)
+    register_export_stream(db_session, tenant_id="tenant-a", source_stream="signal-copier:acct1", environment="LOCAL_SIM")
+    sleeve = Sleeve(
+        tenant_id="tenant-a", provider="telegram", analyst="alice", strategy_horizon="swing",
+        asset_class="equity", parser_version="v3", execution_policy_id="policy-1", cost_model_id="cost-1",
+        capacity_policy_id="capacity-1", risk_unit_id="risk-1", history_origin="live",
+    )
+    db_session.add(sleeve)
+    db_session.commit()
+
+    envelope = _source_receipt_envelope(source_provider_id="telegram", analyst_id=None, parser_version="v3")
+    inbox_event = ingest_export_event(db_session, envelope.model_dump_json())
+    db_session.commit()
+
+    entry = db_session.get(LedgerEntry, inbox_event.ledger_entry_id)
+    assert entry.sleeve_id is None
 
 
 def test_reingesting_the_identical_event_is_a_harmless_no_op(db_session):

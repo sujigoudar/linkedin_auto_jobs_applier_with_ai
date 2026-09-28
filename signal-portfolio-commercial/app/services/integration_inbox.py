@@ -58,12 +58,14 @@ from signal_platform_contracts import (
     EventType,
     ExecutionAppliedPayload,
     FeePayload,
+    SourceReceiptPayload,
 )
 
 from app.db import set_tenant_scope
 from app.models.integration_inbox import ExportStreamRegistration, InboxEvent
 from app.models.ledger import Book, LedgerEntry, Side
 from app.services.ledger import append_correction, append_entry
+from app.services.sleeve_mapping import resolve_sleeve_for_source
 
 _SIDE_BY_PAYLOAD_VALUE = {"buy": Side.BUY, "sell": Side.SELL}
 
@@ -189,8 +191,42 @@ def _apply_projection(session: Session, inbox_event: InboxEvent, envelope: Event
         inbox_event.applied_at = datetime.now(timezone.utc)
     elif envelope.event_type == EventType.SOURCE_RECEIPT:
         # S7: "SOURCE records what was recommended; it does not claim an
-        # execution" -- no ledger projection. Applied immediately since
-        # there is nothing further this event type could apply.
+        # execution" -- a real Book.SOURCE ledger entry (S12 step 5
+        # "Portfolio Lab source feed"), never a Book.PLATFORM/execution
+        # one, and ONLY when the recommendation itself carried a real
+        # quantity AND price -- LedgerEntry.quantity/price are NOT NULL
+        # columns, and a bare "buy AAPL" alert with neither genuinely
+        # has nothing to record numerically yet. Such a receipt is still
+        # applied (there is nothing further this event type could apply
+        # once its ledger projection, if any, is decided) but produces
+        # no ledger row -- an honest partial-coverage outcome, not a
+        # parked/incomplete one.
+        source_payload = SourceReceiptPayload.model_validate(envelope.payload)
+        if source_payload.quantity is not None and source_payload.price is not None:
+            sleeve = resolve_sleeve_for_source(
+                session,
+                tenant_id=tenant_id,
+                source_provider_id=source_payload.source.source_provider_id,
+                analyst_id=source_payload.source.analyst_id,
+                parser_version=source_payload.source.parser_version,
+            )
+            entry = append_entry(
+                session,
+                tenant_id=tenant_id,
+                book=Book.SOURCE,
+                instrument=source_payload.instrument.instrument_id,
+                side=_SIDE_BY_PAYLOAD_VALUE[source_payload.side],
+                quantity=source_payload.quantity,
+                price=source_payload.price,
+                currency=source_payload.instrument.currency,
+                multiplier=source_payload.instrument.multiplier,
+                event_time=envelope.event_time,
+                source_authority=f"signal-copier-relay:{envelope.producer_id}",
+                evidence_class=envelope.evidence_class,
+                originating_analyst_id=source_payload.source.analyst_id,
+                sleeve_id=sleeve.sleeve_id if sleeve is not None else None,
+            )
+            inbox_event.ledger_entry_id = entry.entry_id
         inbox_event.applied_at = datetime.now(timezone.utc)
     elif envelope.event_type == EventType.FEE:
         payload = FeePayload.model_validate(envelope.payload)

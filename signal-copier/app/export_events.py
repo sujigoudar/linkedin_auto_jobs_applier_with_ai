@@ -44,11 +44,20 @@ from signal_platform_contracts import (
     ExecutionAppliedPayload,
     InstrumentIdentity,
     PrivateAccountIdentity,
+    SourceIdentity,
+    SourceReceiptPayload,
     build_subject,
     compute_payload_hash,
 )
 
-from app.models import AssetClass, DestinationAccount, OrderResult, OrderStatus, Side
+from app.models import AssetClass, DestinationAccount, OrderResult, OrderStatus, Side, Signal
+
+#: SourceIdentity.parser_version is required (S5), but this codebase has
+#: no real per-source-adapter parser-version registry yet (same
+#: disclosed-default pattern as `currency`/`multiplier`/`venue` above) --
+#: every SOURCE_RECEIPT this slice exports carries this literal until a
+#: real one exists.
+_UNVERSIONED_PARSER = "unversioned"
 
 _QUANTITY_CONVENTION_BY_ASSET_CLASS = {
     AssetClass.CRYPTO: "units",
@@ -78,6 +87,7 @@ def build_execution_applied_envelope(
     evidence_class: EvidenceClass,
     environment: Environment,
     originating_source_event_id: str | None = None,
+    originating_analyst_id: str | None = None,
 ) -> EventEnvelope | None:
     """Returns `None` (see this module's own docstring) unless `result`
     is a FILLED order with every field `ExecutionAppliedPayload` actually
@@ -111,6 +121,7 @@ def build_execution_applied_envelope(
         broker=account.broker,
         broker_order_id=result.broker_order_id,
         originating_source_event_id=originating_source_event_id,
+        originating_analyst_id=originating_analyst_id,
     )
     payload_dict = payload.model_dump(mode="json")
     now = datetime.now(timezone.utc)
@@ -124,6 +135,83 @@ def build_execution_applied_envelope(
         subject=build_subject(account=account_identity, instrument=instrument),
         event_time=result.executed_at,
         effective_time=result.executed_at,
+        availability_time=now,
+        receipt_time=now,
+        environment=environment,
+        evidence_class=evidence_class,
+        payload_hash=compute_payload_hash(payload_dict),
+        payload=payload_dict,
+    )
+
+
+def build_source_receipt_envelope(
+    signal: Signal,
+    *,
+    source_stream: str,
+    export_sequence: int,
+    producer_id: str,
+    evidence_class: EvidenceClass,
+    environment: Environment,
+) -> EventEnvelope | None:
+    """S12 step 5 "Portfolio Lab source feed": exports every source
+    instruction as it's RECEIVED (S7: "SOURCE records what was
+    recommended; it does not claim an execution"), independent of
+    whether routing ever sends it to a broker. Returns `None` for a
+    `Side.CLOSE` signal -- `SourceReceiptPayload.side` only accepts
+    "buy"/"sell" (a close's real direction depends on whatever position
+    is open at execution time, which isn't a property of the
+    RECOMMENDATION itself), not a payload-shape limitation this
+    function can work around by guessing.
+
+    `instrument.venue`: unlike `build_execution_applied_envelope`
+    (which has a real destination `DestinationAccount.broker` to use),
+    a source recommendation is received before any routing decision --
+    there is no broker/venue yet, genuinely, not merely unresolved.
+    Uses the literal `"unspecified"` rather than fabricating one; a
+    later EXECUTION_APPLIED for the same instrument (if this signal is
+    ever routed and filled) carries the real venue.
+
+    `source.parser_version`: see this module's own `_UNVERSIONED_PARSER`
+    docstring -- no per-adapter parser-version registry exists yet.
+    """
+    if signal.side == Side.CLOSE:
+        return None
+
+    instrument = InstrumentIdentity(
+        instrument_id=signal.symbol,
+        venue="unspecified",
+        market_type=signal.asset_class.value,
+        currency=_resolve_currency(signal.symbol),
+        multiplier="1",
+        quantity_convention=_QUANTITY_CONVENTION_BY_ASSET_CLASS[signal.asset_class],
+    )
+    source_identity = SourceIdentity(
+        source_provider_id=signal.source,
+        analyst_id=signal.analyst,
+        parser_version=_UNVERSIONED_PARSER,
+        source_event_id=signal.id,
+    )
+    payload = SourceReceiptPayload(
+        source=source_identity,
+        instrument=instrument,
+        side=signal.side.value,
+        quantity=None if signal.quantity is None else str(signal.quantity),
+        price=None if signal.price is None else str(signal.price),
+        stop_loss=None if signal.stop_loss is None else str(signal.stop_loss),
+        take_profit=None if signal.take_profit is None else str(signal.take_profit),
+    )
+    payload_dict = payload.model_dump(mode="json")
+    now = datetime.now(timezone.utc)
+
+    return EventEnvelope(
+        event_type=EventType.SOURCE_RECEIPT,
+        event_id=f"source-receipt:{signal.id}",
+        producer_id=producer_id,
+        source_stream=source_stream,
+        export_sequence=export_sequence,
+        subject=build_subject(source=source_identity, instrument=instrument),
+        event_time=signal.received_at,
+        effective_time=signal.received_at,
         availability_time=now,
         receipt_time=now,
         environment=environment,

@@ -143,6 +143,18 @@ class LedgerEntry(Base):
     #: whole account.
     originating_analyst_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
 
+    #: Which `Sleeve` (app/services/sleeve_mapping.py's own
+    #: `resolve_sleeve_for_source`) this entry was matched to at ingest
+    #: time -- meaningful only for `book == Book.SOURCE` entries
+    #: (S12 step 5 "Portfolio Lab source feed"). NULL means no sleeve
+    #: was admitted for this exact (provider, analyst, parser_version)
+    #: tuple yet, never "the whole account" or some other sleeve. No
+    #: FOREIGN KEY constraint, same reasoning as `follower_connection_id`
+    #: above: a sleeve can be redefined/retired later without
+    #: invalidating the historical fact that THIS entry matched it at
+    #: the time it was recorded.
+    sleeve_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+
     #: Points at the entry this one corrects -- NULL for an original entry.
     #: The original row is never updated or deleted; this is how a mistake
     #: is fixed instead.

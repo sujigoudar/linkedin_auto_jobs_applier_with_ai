@@ -78,7 +78,7 @@ from app import config
 from app.brokers.base import BrokerAdapter
 from app.capital_allocator import CapitalAllocator, confirmed_open_notional
 from app.db import SignalStore
-from app.export_events import build_execution_applied_envelope
+from app.export_events import build_execution_applied_envelope, build_source_receipt_envelope
 from app.lifecycle.manager import PositionLifecycleManager
 from app.lifecycle.models import PositionPlan, Target, TargetAction
 from app.logging_config import bind_signal_context
@@ -134,6 +134,7 @@ class SignalCopierEngine:
         side: Side,
         asset_class: AssetClass,
         originating_source_event_id: str | None = None,
+        originating_analyst_id: str | None = None,
     ) -> EventEnvelope | None:
         """Wraps app/export_events.py's builder with this deployment's own
         config (producer id, evidence class, environment) and a real,
@@ -157,7 +158,30 @@ class SignalCopierEngine:
             evidence_class=EvidenceClass[config.RELAY_EVIDENCE_CLASS],
             environment=Environment[config.RELAY_ENVIRONMENT],
             originating_source_event_id=originating_source_event_id,
+            originating_analyst_id=originating_analyst_id,
         )
+
+    def _export_source_receipt(self, signal: Signal) -> None:
+        """S12 step 5 "Portfolio Lab source feed": exports this signal as
+        RECEIVED, independent of whether routing ever sends it anywhere
+        -- called once per real (non-replayed) signal, right after
+        `self.store.save_signal`, before routing/fan-out. Keyed on its
+        own stream (`signal-copier:source:<source>`), never an
+        account's own stream -- a source recommendation exists before
+        any account/routing decision. `build_source_receipt_envelope`
+        returns `None` for a CLOSE signal (see its own docstring); this
+        is a real, checked skip, not a silent failure."""
+        source_stream = f"signal-copier:source:{signal.source}"
+        envelope = build_source_receipt_envelope(
+            signal,
+            source_stream=source_stream,
+            export_sequence=self.store.next_export_sequence(source_stream),
+            producer_id=config.RELAY_PRODUCER_ID,
+            evidence_class=EvidenceClass[config.RELAY_EVIDENCE_CLASS],
+            environment=Environment[config.RELAY_ENVIRONMENT],
+        )
+        if envelope is not None:
+            self.store.append_export_event(envelope)
 
     def _effective_settings(self, signal: Signal, account: DestinationAccount) -> SettingsOverride:
         account_defaults = SettingsOverride(
@@ -211,6 +235,7 @@ class SignalCopierEngine:
             return [_order_result_from_row(row) for row in already_processed]
 
         self.store.save_signal(signal)
+        self._export_source_receipt(signal)
 
         # EXE-10: an account's own `enabled=False` is an entry pause, not
         # an exit block -- a CLOSE signal must still reach an account that
@@ -378,6 +403,7 @@ class SignalCopierEngine:
                 side=order_signal.side,
                 asset_class=order_signal.asset_class,
                 originating_source_event_id=signal.id,
+                originating_analyst_id=signal.analyst,
             )
             self.store.save_order_result(
                 result,

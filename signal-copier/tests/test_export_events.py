@@ -1,14 +1,15 @@
-"""app/export_events.py's own `build_execution_applied_envelope` --
-unit tests isolating its guard conditions directly (not through the
-full engine), since a REJECTED/ERROR OrderResult in this codebase's own
-current adapters also happens to leave broker_order_id/filled_quantity/
-filled_price unset, which would make the FILLED-only check look
-redundant if only exercised end-to-end through the engine."""
+"""app/export_events.py's own `build_execution_applied_envelope` and
+`build_source_receipt_envelope` -- unit tests isolating each builder's
+guard conditions directly (not through the full engine), since a
+REJECTED/ERROR OrderResult in this codebase's own current adapters also
+happens to leave broker_order_id/filled_quantity/filled_price unset,
+which would make the FILLED-only check look redundant if only
+exercised end-to-end through the engine."""
 import pytest
-from signal_platform_contracts import Environment, EvidenceClass
+from signal_platform_contracts import EventType, Environment, EvidenceClass
 
-from app.export_events import build_execution_applied_envelope
-from app.models import AssetClass, DestinationAccount, OrderResult, OrderStatus, Side
+from app.export_events import build_execution_applied_envelope, build_source_receipt_envelope
+from app.models import AssetClass, DestinationAccount, OrderResult, OrderStatus, Side, Signal
 
 
 def _account():
@@ -99,3 +100,77 @@ def test_currency_resolves_from_a_slash_pair_symbol():
 def test_currency_defaults_to_usd_for_a_plain_symbol():
     envelope = _build()
     assert envelope.payload["instrument"]["currency"] == "USD"
+
+
+def _build_receipt(**overrides):
+    fields = {
+        "source": "tradingview",
+        "symbol": "AAPL",
+        "side": Side.BUY,
+        "asset_class": AssetClass.EQUITY,
+        "analyst": None,
+        "quantity": 10.0,
+        "price": 150.0,
+    }
+    fields.update(overrides)
+    signal = Signal(**fields)
+    return build_source_receipt_envelope(
+        signal,
+        source_stream=f"signal-copier:source:{signal.source}",
+        export_sequence=0,
+        producer_id="test-producer",
+        evidence_class=EvidenceClass.INTERNAL_PAPER,
+        environment=Environment.LOCAL_SIM,
+    ), signal
+
+
+def test_a_real_signal_produces_a_source_receipt_envelope():
+    envelope, signal = _build_receipt()
+    assert envelope is not None
+    assert envelope.event_type == EventType.SOURCE_RECEIPT
+    assert envelope.event_id == f"source-receipt:{signal.id}"
+    assert envelope.payload["source"]["source_provider_id"] == "tradingview"
+    assert envelope.payload["quantity"] == "10.0"
+    assert envelope.payload["price"] == "150.0"
+
+
+def test_a_close_signal_produces_nothing():
+    """A close's real direction depends on whatever position is open at
+    execution time -- not a property of the recommendation itself, and
+    SourceReceiptPayload.side only accepts buy/sell -- see this
+    builder's own docstring."""
+    envelope, _ = _build_receipt(side=Side.CLOSE)
+    assert envelope is None
+
+
+def test_analyst_is_carried_through_to_source_identity():
+    envelope, _ = _build_receipt(analyst="alice")
+    assert envelope.payload["source"]["analyst_id"] == "alice"
+
+
+def test_a_signal_with_no_analyst_carries_no_analyst_id():
+    envelope, _ = _build_receipt(analyst=None)
+    assert envelope.payload["source"].get("analyst_id") is None
+
+
+def test_unknown_quantity_and_price_are_carried_through_as_none_not_coerced():
+    """A source recommendation that carries no quantity/price of its own
+    (e.g. a bare "buy AAPL" alert) must not have zero or any other
+    placeholder value fabricated for it."""
+    envelope, _ = _build_receipt(quantity=None, price=None)
+    assert "quantity" not in envelope.payload or envelope.payload["quantity"] is None
+    assert "price" not in envelope.payload or envelope.payload["price"] is None
+
+
+def test_the_event_id_is_stable_for_the_same_signal_id_enabling_idempotent_redelivery():
+    signal = Signal(source="tradingview", symbol="AAPL", side=Side.BUY, quantity=10.0, price=150.0)
+    first = build_source_receipt_envelope(
+        signal, source_stream="signal-copier:source:tradingview", export_sequence=0,
+        producer_id="test-producer", evidence_class=EvidenceClass.INTERNAL_PAPER, environment=Environment.LOCAL_SIM,
+    )
+    second = build_source_receipt_envelope(
+        signal, source_stream="signal-copier:source:tradingview", export_sequence=0,
+        producer_id="test-producer", evidence_class=EvidenceClass.INTERNAL_PAPER, environment=Environment.LOCAL_SIM,
+    )
+    assert first.event_id == second.event_id
+    assert first.payload_hash == second.payload_hash
