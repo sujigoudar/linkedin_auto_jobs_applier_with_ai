@@ -5,15 +5,31 @@ bind the real disposable-Postgres session tests/conftest.py already set
 up) but exercise `get_current_scope` for real, against a real signed
 token from app/services/auth.py -- there is no auth bypass path a test
 takes that a real caller couldn't also take.
+
+`get_current_scope` accepts EITHER a Bearer token (the original,
+still-used-by-relay/API-caller path) OR the ID-01/ID-02/ID-03 web
+session cookie (app/services/local_auth.py) -- a browser navigating
+this app's own HTML pages has no natural way to attach a bearer header
+to every GET, so the cookie path is what those pages actually use. A
+cookie-authenticated MUTATION additionally requires a matching
+`X-CSRF-Token` header (same two-part design, same reason, as
+signal-copier's own app/auth.py `RequireOwner`) -- a Bearer-token
+caller needs no such check (nothing auto-attaches a custom header the
+way a cookie auto-attaches, so Bearer auth was never CSRF-vulnerable in
+the first place).
 """
 from __future__ import annotations
 
 from collections.abc import Iterator
 
-from fastapi import HTTPException, Request
+from fastapi import Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
+from app.models.tenancy import MembershipRole
 from app.services.auth import InvalidTokenError, TenantScope, decode_token
+from app.services.local_auth import get_web_session
+
+SESSION_COOKIE_NAME = "cp_session"
 
 
 def get_db_session(request: Request) -> Iterator[Session]:
@@ -36,13 +52,27 @@ def get_relay_db_session(request: Request) -> Iterator[Session]:
         session.close()
 
 
-def get_current_scope(request: Request) -> TenantScope:
+def get_current_scope(request: Request, db: Session = Depends(get_db_session)) -> TenantScope:
     auth_header = request.headers.get("Authorization", "")
-    if not auth_header.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="missing bearer token")
+    if auth_header.startswith("Bearer "):
+        token = auth_header[len("Bearer "):]
+        try:
+            return decode_token(token)
+        except InvalidTokenError as exc:
+            raise HTTPException(status_code=401, detail=str(exc)) from exc
 
-    token = auth_header[len("Bearer "):]
+    session_id = request.cookies.get(SESSION_COOKIE_NAME)
+    web_session = get_web_session(db, session_id=session_id)
+    if web_session is None:
+        raise HTTPException(status_code=401, detail="missing bearer token or session cookie")
+
+    if request.method not in ("GET", "HEAD", "OPTIONS"):
+        csrf_header = request.headers.get("X-CSRF-Token")
+        if not csrf_header or csrf_header != web_session.csrf_token:
+            raise HTTPException(status_code=403, detail="missing or invalid CSRF token")
+
     try:
-        return decode_token(token)
-    except InvalidTokenError as exc:
-        raise HTTPException(status_code=401, detail=str(exc)) from exc
+        role = MembershipRole(web_session.role)
+    except ValueError as exc:
+        raise HTTPException(status_code=401, detail="session has an unrecognized role") from exc
+    return TenantScope(tenant_id=web_session.tenant_id, user_id=web_session.user_id, role=role)

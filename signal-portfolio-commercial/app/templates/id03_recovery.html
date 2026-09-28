@@ -1,0 +1,49 @@
+{% extends "_base.html" %}
+{% block title %}Account recovery{% endblock %}
+{% block content %}
+<h1>Account recovery</h1>
+
+{% if error %}
+<div class="conflict">{{ error }}</div>
+{% endif %}
+{% if notice %}
+<div class="panel">{{ notice }}</div>
+{% endif %}
+
+{% if reset_url %}
+<div class="panel">
+  <p>Recovery is <strong>not emailed in this deployment</strong> -- no email provider is configured yet
+  (see this screen's own real limitation, disclosed rather than hidden). Use this link to finish resetting
+  your password:</p>
+  <p><a href="{{ reset_url }}">{{ reset_url }}</a></p>
+</div>
+{% endif %}
+
+<div class="panel">
+  <h2>Request a recovery link</h2>
+  <form method="post" action="/auth/recovery/request">
+    <label for="recovery-email">Email</label>
+    <input id="recovery-email" type="email" name="email" required maxlength="254">
+    <button type="submit">Send recovery link</button>
+  </form>
+</div>
+
+<div class="panel">
+  <h2>Have a recovery token?</h2>
+  <form method="post" action="/auth/recovery/reset">
+    <label for="reset-token">Recovery token</label>
+    <input id="reset-token" type="text" name="reset_url_token" required>
+    <label for="new-password">New password</label>
+    <input id="new-password" type="password" name="new_password" required>
+    <button type="submit">Reset password</button>
+  </form>
+</div>
+
+<p class="help"><a href="/auth">Return to sign in</a></p>
+
+<div class="panel">
+  <h2>Multi-factor / session step-up</h2>
+  <p><span class="badge badge-unknown">UNSUPPORTED</span> -- no MFA enrollment exists in this build yet; this
+  screen currently implements password recovery only.</p>
+</div>
+{% endblock %}

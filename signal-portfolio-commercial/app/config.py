@@ -61,6 +61,16 @@ class _Settings(BaseSettings):
     #: broker-facing credential.
     RELAY_SIGNING_SECRET: str = "LOCAL_SIM-not-a-real-relay-secret-change-if-ever-deployed"
 
+    #: app/api/dependencies.py's ID-01/ID-02/ID-03 web session cookie
+    #: (`SESSION_COOKIE_NAME`). Same reasoning, same default, as
+    #: signal-copier's own app/config.py's own `FORCE_SECURE_COOKIES`:
+    #: `request.url.scheme` alone sees only "http" behind a TLS-
+    #: terminating reverse proxy (the proxy, not this process, terminates
+    #: TLS), so a real deployment behind one must set this explicitly
+    #: rather than this process trusting a spoofable X-Forwarded-Proto
+    #: header by default.
+    FORCE_SECURE_COOKIES: bool = False
+
 
 _settings = _Settings()
 
@@ -70,3 +80,4 @@ LOCAL_JWT_SECRET = _settings.LOCAL_JWT_SECRET
 STRIPE_WEBHOOK_SECRET = _settings.STRIPE_WEBHOOK_SECRET
 RELAY_DATABASE_URL = _settings.RELAY_DATABASE_URL
 RELAY_SIGNING_SECRET = _settings.RELAY_SIGNING_SECRET
+FORCE_SECURE_COOKIES = _settings.FORCE_SECURE_COOKIES

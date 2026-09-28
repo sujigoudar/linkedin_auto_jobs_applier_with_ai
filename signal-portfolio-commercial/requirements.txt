@@ -16,6 +16,8 @@ psycopg[binary]>=3.1
 pydantic>=2.0
 pydantic-settings>=2.0
 pyjwt>=2.8
+pwdlib[argon2]>=0.2  # app/services/local_auth.py's real password hashing (ID-01/ID-03) -- same
+                     # library, same reason, as the paired signal-copier service's own app/auth.py
 alembic
 pytest
 pytest-asyncio

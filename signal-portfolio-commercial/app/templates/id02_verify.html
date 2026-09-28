@@ -1,0 +1,30 @@
+{% extends "_base.html" %}
+{% block title %}Verify your email{% endblock %}
+{% block content %}
+<h1>Verify your email</h1>
+
+{% if state == "pending_link_shown" %}
+<div class="panel">
+  <p>Account created. Verification is <strong>not emailed in this deployment</strong> -- no email provider is
+  configured yet (see this screen's own real limitation, disclosed rather than hidden). Use this link to
+  finish verifying your account:</p>
+  <p><a href="{{ verify_url }}">{{ verify_url }}</a></p>
+</div>
+{% elif state == "verified" %}
+<div class="panel">
+  <p>Your email is verified and you are now signed in.</p>
+  <p><a href="/app">Continue to your overview</a></p>
+</div>
+{% elif state == "verified_no_membership" %}
+<div class="panel">
+  <p>Your email is verified, but this identity has no tenant membership yet. <a href="/auth">Sign in</a> once one is provisioned.</p>
+</div>
+{% elif state == "invalid" %}
+<div class="conflict">{{ error }}</div>
+<p><a href="/auth">Return to sign in</a></p>
+{% else %}
+<div class="empty-state">
+  <p>No verification token was provided. Check the link from your signup confirmation, or <a href="/auth">sign in</a> if you've already verified.</p>
+</div>
+{% endif %}
+{% endblock %}

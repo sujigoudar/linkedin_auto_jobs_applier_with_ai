@@ -145,12 +145,14 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import RedirectResponse
 from fastapi.templating import Jinja2Templates
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.api.dependencies import get_current_scope, get_db_session
+from app import config
+from app.api.dependencies import SESSION_COOKIE_NAME, get_current_scope, get_db_session
 from app.db import set_tenant_scope
 from app.models.product import ProductLifecycleState, ServiceMode
-from app.models.tenancy import MembershipRole
+from app.models.tenancy import Membership, MembershipRole
 from app.services.auth import TenantScope
 from app.services.eligibility import (
     InvalidEligibilityFactsError,
@@ -293,6 +295,18 @@ from app.services.research_run import (
     list_research_runs,
 )
 from app.services.rights_registry import list_rights_grants
+from app.services.local_auth import (
+    AccountAlreadyExistsError,
+    InvalidCredentialsError,
+    InvalidTokenError as LocalAuthInvalidTokenError,
+    authenticate,
+    create_account,
+    create_web_session,
+    delete_web_session,
+    request_password_reset,
+    reset_password,
+    verify_email,
+)
 from app.services.sleeve_admin import InvalidSleeveDraftError, create_sleeve, list_sleeves
 from app.services.source_coverage import compute_source_coverage
 
@@ -2671,3 +2685,178 @@ def cancel_copy_mandate_page(
         )
     session.commit()
     return RedirectResponse(url=f"/app/copy/{mandate_id}/manage", status_code=303)
+
+
+# --- ID-01/ID-02/ID-03: real local sign-in/sign-up/verify/recover ---
+#
+# See app/services/local_auth.py's own module docstring for exactly what
+# this is (a real, working local credential system for THIS deployment)
+# and is not (a Supabase Auth integration -- a real production
+# deployment's own external task). Anonymous routes, no tenant scope.
+#
+# Email delivery is NOT wired -- disclosed, not hidden. create_account/
+# request_password_reset return a real, single-use token; with no
+# SMTP/email-provider integration in this codebase, the verify/reset
+# link is shown directly on the confirmation page below rather than
+# silently dropped -- usable today, and the exact seam a real email
+# provider plugs into later (send the same link instead of rendering
+# it).
+
+
+def _set_session_cookie(request: Request, response, session_id: str) -> None:
+    # SEC-05 (same reasoning as signal-copier's own app/main.py login
+    # route): `request.url.scheme` alone is wrong behind a TLS-
+    # terminating reverse proxy, so FORCE_SECURE_COOKIES is the explicit
+    # operator override for that deployment.
+    response.set_cookie(
+        SESSION_COOKIE_NAME, session_id, httponly=True, samesite="strict", path="/",
+        secure=request.url.scheme == "https" or config.FORCE_SECURE_COOKIES,
+    )
+
+
+@router.get("/auth")
+def sign_in_page(request: Request, error: str | None = None, notice: str | None = None):
+    """ID-01 "Sign in and create account"."""
+    return templates.TemplateResponse(request, "id01_auth.html", {"error": error, "notice": notice})
+
+
+@router.post("/auth/signin")
+def sign_in_submit(
+    request: Request,
+    email: str = Form(...),
+    password: str = Form(...),
+    return_route: str = Form("/app"),
+    session: Session = Depends(get_db_session),
+):
+    try:
+        user = authenticate(session, email=email, password=password)
+    except InvalidCredentialsError:
+        return templates.TemplateResponse(
+            request, "id01_auth.html", {"error": "Incorrect email or password.", "notice": None}, status_code=401
+        )
+
+    membership = session.execute(
+        select(Membership).where(Membership.user_id == user.user_id)
+    ).scalars().first()
+    if membership is None:
+        return templates.TemplateResponse(
+            request, "id01_auth.html", {"error": "This identity has no tenant membership.", "notice": None}, status_code=403
+        )
+
+    session_id, _csrf_token = create_web_session(
+        session, user_id=user.user_id, tenant_id=membership.tenant_id, role=membership.role
+    )
+    safe_return_route = return_route if return_route.startswith("/") else "/app"
+    response = RedirectResponse(url=safe_return_route, status_code=303)
+    _set_session_cookie(request, response, session_id)
+    return response
+
+
+@router.post("/auth/signup")
+def sign_up_submit(
+    request: Request,
+    email: str = Form(...),
+    password: str = Form(...),
+    tenant_display_name: str = Form(""),
+    accept_terms: str = Form(""),
+    session: Session = Depends(get_db_session),
+):
+    if not accept_terms:
+        return templates.TemplateResponse(
+            request, "id01_auth.html", {"error": "You must accept the terms to create an account.", "notice": None},
+            status_code=400,
+        )
+    try:
+        _user, token = create_account(
+            session, email=email, password=password, tenant_display_name=tenant_display_name or email,
+        )
+    except AccountAlreadyExistsError:
+        session.rollback()
+        # No email enumeration (ID-01's own acceptance text): the SAME
+        # generic message a real signup failure would show.
+        return templates.TemplateResponse(
+            request, "id01_auth.html", {"error": "Could not create this account. Check your details and try again.", "notice": None},
+            status_code=400,
+        )
+    return RedirectResponse(url=f"/auth/verify?token={token.token}&pending=1", status_code=303)
+
+
+@router.get("/auth/verify")
+def verify_email_page(request: Request, token: str | None = None, pending: str | None = None, session: Session = Depends(get_db_session)):
+    """ID-02 "Email verification and auth callback". `pending=1` (set by
+    the signup redirect above) shows the just-issued token's own link
+    directly on the page -- see this section's own header comment on
+    why: no email provider is wired in yet."""
+    if token is None:
+        return templates.TemplateResponse(request, "id02_verify.html", {"state": "pending_no_token", "verify_url": None, "error": None})
+    if pending:
+        verify_url = str(request.url_for("verify_email_page")) + f"?token={token}"
+        return templates.TemplateResponse(request, "id02_verify.html", {"state": "pending_link_shown", "verify_url": verify_url, "error": None})
+
+    try:
+        user = verify_email(session, token=token)
+    except LocalAuthInvalidTokenError:
+        return templates.TemplateResponse(
+            request, "id02_verify.html", {"state": "invalid", "verify_url": None, "error": "This verification link is invalid or has expired."},
+            status_code=400,
+        )
+
+    membership = session.execute(
+        select(Membership).where(Membership.user_id == user.user_id)
+    ).scalars().first()
+    if membership is None:
+        return templates.TemplateResponse(request, "id02_verify.html", {"state": "verified_no_membership", "verify_url": None, "error": None})
+
+    session_id, _csrf_token = create_web_session(session, user_id=user.user_id, tenant_id=membership.tenant_id, role=membership.role)
+    response = templates.TemplateResponse(request, "id02_verify.html", {"state": "verified", "verify_url": None, "error": None})
+    _set_session_cookie(request, response, session_id)
+    return response
+
+
+@router.get("/auth/recovery")
+def recovery_page(request: Request, reset_url: str | None = None, error: str | None = None, notice: str | None = None):
+    """ID-03 "Recovery, MFA and session verification" -- the "MFA/
+    session step-up" half of this screen's own spec has nothing to step
+    up to yet (no MFA enrollment exists in this build); this route
+    implements the password-recovery half for real."""
+    return templates.TemplateResponse(request, "id03_recovery.html", {"reset_url": reset_url, "error": error, "notice": notice})
+
+
+@router.post("/auth/recovery/request")
+def recovery_request_submit(request: Request, email: str = Form(...), session: Session = Depends(get_db_session)):
+    token = request_password_reset(session, email=email)
+    # Same message whether or not the email matched an account -- no
+    # email enumeration (ID-01's own acceptance text applies equally here).
+    notice = "If that email has an account, a recovery link has been issued."
+    reset_url = None
+    if token is not None:
+        reset_url = str(request.url_for("recovery_page")) + f"?reset_url_token={token.token}"
+    return templates.TemplateResponse(request, "id03_recovery.html", {"reset_url": reset_url, "error": None, "notice": notice})
+
+
+@router.post("/auth/recovery/reset")
+def recovery_reset_submit(
+    request: Request,
+    reset_url_token: str = Form(...),
+    new_password: str = Form(...),
+    session: Session = Depends(get_db_session),
+):
+    try:
+        reset_password(session, token=reset_url_token, new_password=new_password)
+    except LocalAuthInvalidTokenError:
+        return templates.TemplateResponse(
+            request, "id03_recovery.html",
+            {"reset_url": None, "error": "This recovery link is invalid or has expired.", "notice": None},
+            status_code=400,
+        )
+    return RedirectResponse(url="/auth?notice=Password+reset.+Sign+in+with+your+new+password.", status_code=303)
+
+
+@router.post("/auth/logout")
+def logout_submit(request: Request, session: Session = Depends(get_db_session)):
+    session_id = request.cookies.get(SESSION_COOKIE_NAME)
+    if session_id:
+        delete_web_session(session, session_id=session_id)
+    response = RedirectResponse(url="/auth", status_code=303)
+    response.delete_cookie(SESSION_COOKIE_NAME, path="/")
+    return response

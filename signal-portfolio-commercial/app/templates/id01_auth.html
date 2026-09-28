@@ -1,0 +1,42 @@
+{% extends "_base.html" %}
+{% block title %}Sign in{% endblock %}
+{% block content %}
+<h1>Sign in</h1>
+
+{% if error %}
+<div class="conflict">{{ error }}</div>
+{% endif %}
+{% if notice %}
+<div class="panel">{{ notice }}</div>
+{% endif %}
+
+<div class="panel">
+  <h2>Sign in</h2>
+  <form method="post" action="/auth/signin">
+    <label for="signin-email">Email</label>
+    <input id="signin-email" type="email" name="email" required maxlength="254">
+    <label for="signin-password">Password</label>
+    <input id="signin-password" type="password" name="password" required>
+    <input type="hidden" name="return_route" value="/app">
+    <p class="help"><a href="/auth/recovery">Forgot your password?</a></p>
+    <button type="submit">Sign in</button>
+  </form>
+</div>
+
+<div class="panel">
+  <h2>Create account</h2>
+  <form method="post" action="/auth/signup">
+    <label for="signup-email">Email</label>
+    <input id="signup-email" type="email" name="email" required maxlength="254">
+    <label for="signup-password">Password</label>
+    <input id="signup-password" type="password" name="password" required>
+    <label for="signup-tenant-name">Workspace name</label>
+    <input id="signup-tenant-name" type="text" name="tenant_display_name" placeholder="(defaults to your email)">
+    <label><input type="checkbox" name="accept_terms" value="1" style="width:auto;display:inline-block;"> I accept the Terms and Privacy Policy</label>
+    <p class="help">Creating an account does not authorize trading or subscribe you to anything.</p>
+    <button type="submit">Create account</button>
+  </form>
+</div>
+
+<p class="help">Need help? See the <a href="/help">Help and compatibility guide</a>.</p>
+{% endblock %}

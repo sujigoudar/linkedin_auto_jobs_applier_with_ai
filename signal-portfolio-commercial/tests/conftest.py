@@ -53,6 +53,7 @@ import app.models.eligibility  # noqa: F401
 import app.models.integration_configuration  # noqa: F401
 import app.models.integration_inbox  # noqa: F401
 import app.models.ledger  # noqa: F401
+import app.models.local_auth  # noqa: F401
 import app.models.managed_program  # noqa: F401
 import app.models.notification_preferences  # noqa: F401
 import app.models.platform_connection  # noqa: F401

@@ -66,6 +66,16 @@ class UserIdentity(Base):
     user_id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
     email: Mapped[str] = mapped_column(String, nullable=False, unique=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_now)
+    #: Backs ID-01/ID-03 (dashboard_spec/screens/) -- a real, working
+    #: local password credential for THIS deployment (see
+    #: app/services/local_auth.py's own module docstring for why this is
+    #: not a Supabase Auth integration). NULL for an identity that was
+    #: only ever provisioned out-of-band (e.g. ops/bootstrap.py's own
+    #: operator provisioning) and has never set a local password.
+    password_hash: Mapped[str | None] = mapped_column(String, nullable=True)
+    #: Set once ID-02's own verification token is consumed. NULL means
+    #: unverified -- never inferred true just because a password is set.
+    email_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class Membership(Base):
