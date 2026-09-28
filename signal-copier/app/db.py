@@ -571,6 +571,49 @@ class SignalStore:
             for r in rows
         ]
 
+    def has_any_order_for(self, account_id: str, symbol: str) -> bool:
+        """Whether this service has EVER recorded any order (any status) for
+        this exact (account, symbol) -- used by app/reconciliation.py's
+        orphan-position detection: a broker-reported position with no row
+        here at all, and no nonzero tracked `positions` row either, has no
+        local provenance whatsoever."""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM orders WHERE account_id = ? AND symbol = ? LIMIT 1", (account_id, symbol)
+            ).fetchone()
+        return row is not None
+
+    def list_rejected_orders_with_broker_id(self) -> list[dict]:
+        """Every order this service currently believes ended REJECTED
+        (which also covers "canceled"/"expired" on adapters like Alpaca --
+        see `list_pending_orders`'s sibling docstring in
+        app/reconciliation.py) that still carries a real `broker_order_id`
+        -- what app/reconciliation.py's late-fill reconstruction cross-
+        checks against each broker's own trade/execution history, since a
+        REJECTED order that the broker's history later shows as actually
+        filled is exactly the dangerous case that check exists for."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT id, account_id, broker, symbol, side, requested_quantity,
+                          filled_quantity, broker_order_id, signal_id
+                   FROM orders
+                   WHERE status = 'rejected' AND broker_order_id IS NOT NULL"""
+            ).fetchall()
+        return [
+            {
+                "id": r[0],
+                "account_id": r[1],
+                "broker": r[2],
+                "symbol": r[3],
+                "side": r[4],
+                "requested_quantity": r[5],
+                "filled_quantity": r[6],
+                "broker_order_id": r[7],
+                "signal_id": r[8],
+            }
+            for r in rows
+        ]
+
     def update_order_status(self, order_row_id: int, result: OrderResult) -> None:
         with self._connect() as conn:
             self._update_order_status_locked(conn, order_row_id, result)

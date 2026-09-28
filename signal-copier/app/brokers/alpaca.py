@@ -49,7 +49,16 @@ import os
 import httpx
 
 from app.brokers.base import BrokerAdapter
-from app.models import AccountBalance, AssetClass, DestinationAccount, OrderResult, OrderStatus, Side, Signal
+from app.models import (
+    AccountBalance,
+    AssetClass,
+    BrokerOpenOrder,
+    DestinationAccount,
+    OrderResult,
+    OrderStatus,
+    Side,
+    Signal,
+)
 
 
 class AlpacaBroker(BrokerAdapter):
@@ -394,6 +403,139 @@ class AlpacaBroker(BrokerAdapter):
             buying_power=_float_or_none("buying_power"),
             maintenance_margin=_float_or_none("maintenance_margin"),
         )
+
+    #: Alpaca order `type` values that mean "this is a protective stop" --
+    #: used to tag `BrokerOpenOrder.role` for app/protection_auditor.py.
+    #: `trailing_stop` counts too (still a real resting stop, just with a
+    #: trailing offset instead of a fixed price).
+    _STOP_ORDER_TYPES = frozenset({"stop", "stop_limit", "trailing_stop"})
+
+    async def list_open_orders(self, account: DestinationAccount, symbol: str) -> list[BrokerOpenOrder] | None:
+        """`GET /v2/orders?status=open&symbols={symbol}` -- Alpaca's own
+        real, currently-working order list, independent of anything this
+        service submitted or tracks. See app/protection_auditor.py."""
+        try:
+            api_key, api_secret, base_url = self._credentials_for(account)
+        except RuntimeError:
+            return None
+        try:
+            response = await self._client.get(
+                f"{base_url}/v2/orders",
+                headers={"APCA-API-KEY-ID": api_key, "APCA-API-SECRET-KEY": api_secret},
+                params={"status": "open", "symbols": symbol},
+            )
+            response.raise_for_status()
+        except httpx.HTTPError:
+            return None
+
+        orders = []
+        for order in response.json():
+            order_type = order.get("type") or ""
+            order_class = order.get("order_class") or ""
+            if order_type in self._STOP_ORDER_TYPES:
+                role = "stop"
+            elif order_type == "limit" and order_class in ("bracket", "oco", "oto"):
+                # A resting limit leg of a bracket/OCO/OTO order -- the only
+                # case Alpaca's own data makes a take-profit leg
+                # distinguishable from an ordinary limit order at all.
+                role = "target"
+            else:
+                role = "other"
+            qty = order.get("qty")
+            if qty is None:
+                continue  # unusable without a quantity -- skip rather than fabricate one
+            orders.append(
+                BrokerOpenOrder(
+                    account_id=account.account_id,
+                    symbol=order.get("symbol", symbol),
+                    broker_order_id=order.get("id", ""),
+                    side=Side(order.get("side", "sell")),
+                    quantity=float(qty),
+                    price=float(order["stop_price"]) if order.get("stop_price") else (
+                        float(order["limit_price"]) if order.get("limit_price") else None
+                    ),
+                    role=role,
+                )
+            )
+        return orders
+
+    async def get_trade_history(
+        self, account: DestinationAccount, symbol: str, since: object | None = None
+    ) -> list[OrderResult] | None:
+        """`GET /v2/orders?status=closed&symbols={symbol}` -- Alpaca's own
+        record of what actually happened to orders that are no longer
+        working (filled, canceled, rejected, expired), independent of this
+        service's own `orders` table. Used by app/reconciliation.py's
+        late-fill reconstruction: a broker execution this service's own
+        bookkeeping never saw (or mis-recorded) is exactly what this can
+        reveal that `get_order_status` (by id, only for an order this
+        service already knows the id of) cannot on its own."""
+        try:
+            api_key, api_secret, base_url = self._credentials_for(account)
+        except RuntimeError:
+            return None
+        try:
+            response = await self._client.get(
+                f"{base_url}/v2/orders",
+                headers={"APCA-API-KEY-ID": api_key, "APCA-API-SECRET-KEY": api_secret},
+                params={"status": "closed", "symbols": symbol, "limit": "100", "direction": "desc"},
+            )
+            response.raise_for_status()
+        except httpx.HTTPError:
+            return None
+
+        results = []
+        for order in response.json():
+            status = order.get("status")
+            filled_qty = order.get("filled_qty")
+            filled_price = order.get("filled_avg_price")
+            if status == "filled":
+                new_status = OrderStatus.FILLED
+            elif status in ("canceled", "rejected", "expired"):
+                new_status = OrderStatus.REJECTED
+            else:
+                continue  # not a terminal status this can honestly report
+            results.append(
+                OrderResult(
+                    account_id=account.account_id,
+                    status=new_status,
+                    signal_id="",  # the caller correlates by broker_order_id, not this
+                    broker_order_id=order.get("id"),
+                    filled_quantity=float(filled_qty) if filled_qty else None,
+                    filled_price=float(filled_price) if filled_price else None,
+                    message=f"Alpaca trade history: {status}",
+                )
+            )
+        return results
+
+    async def list_broker_positions(self, account: DestinationAccount) -> dict[str, float] | None:
+        """`GET /v2/positions` -- every symbol this account actually holds a
+        position in, real-time, from Alpaca itself. Used by
+        app/reconciliation.py's orphan-position detection: unlike
+        `get_broker_position` (one symbol at a time), this is what can
+        reveal a position in a symbol this service has never heard of at
+        all."""
+        try:
+            api_key, api_secret, base_url = self._credentials_for(account)
+        except RuntimeError:
+            return None
+        try:
+            response = await self._client.get(
+                f"{base_url}/v2/positions",
+                headers={"APCA-API-KEY-ID": api_key, "APCA-API-SECRET-KEY": api_secret},
+            )
+            response.raise_for_status()
+        except httpx.HTTPError:
+            return None
+
+        positions: dict[str, float] = {}
+        for position in response.json():
+            symbol = position.get("symbol")
+            qty = position.get("qty")
+            if symbol is None or qty is None:
+                continue
+            positions[symbol] = float(qty)
+        return positions
 
     async def close(self) -> None:
         await self._client.aclose()

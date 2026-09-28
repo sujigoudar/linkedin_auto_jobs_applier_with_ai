@@ -1016,6 +1016,86 @@ class PositionLifecycleManager:
         lifecycle.stop.protected_quantity = quantity
         lifecycle.stop.status = ProtectionStatus.STOP_CONFIRMED
 
+    async def resync_stop_from_audit(
+        self,
+        account: DestinationAccount,
+        symbol: str,
+        true_quantity: float,
+        price: float,
+        exit_side: Side,
+    ) -> OrderResult | None:
+        """Repair entry point for app/protection_auditor.py: place or
+        in-place-replace a protective stop sized to `true_quantity` --
+        a quantity ProtectionAuditor derived directly from the broker's
+        OWN position readback, never from this manager's internal
+        `CloseArbiter` ledger or `StopRecord`. That distinction is the
+        whole point: if this manager's internal bookkeeping is exactly
+        what's wrong (the bug ProtectionAuditor exists to catch), resizing
+        to `tx.owned` (what `_replace_stop_price` does for the NORMAL
+        resize path) would just re-place a stop sized to the same wrong
+        number. This reuses the exact same broker calls
+        (`place_protective_stop` / `replace_stop_quantity`) and the exact
+        same `StopRecord` field updates as the normal path -- it is not a
+        second order-placement path, only a different, externally-verified
+        source for the target quantity.
+
+        Refuses (returns None, places nothing) if this position is halted
+        -- see CloseArbiter.halt, which app/protection_auditor.py itself
+        uses for a genuinely ambiguous/UNKNOWN finding. A halted position
+        must not be silently "fixed" underneath the halt; that halt exists
+        specifically to force a human to look at it."""
+        broker = self.brokers.get(account.broker)
+        if broker is None:
+            return None
+
+        async with self.arbiter.transition(account.account_id, symbol) as tx:
+            if tx.is_halted:
+                logger.warning(
+                    "resync_stop_from_audit refused for account=%s symbol=%s: position is halted (%s)",
+                    account.account_id,
+                    symbol,
+                    tx.halt_reason,
+                )
+                return None
+
+            lifecycle = self._lifecycles.get((account.account_id, symbol))
+            existing_order_id = lifecycle.stop.broker_order_id if lifecycle is not None else None
+
+            result: OrderResult | None = None
+            if existing_order_id:
+                replaced = await broker.replace_stop_quantity(account, existing_order_id, true_quantity, price)
+                if replaced is not None and replaced.status not in (OrderStatus.ERROR, OrderStatus.REJECTED):
+                    result = replaced
+
+            if result is None:
+                result = await broker.place_protective_stop(account, symbol, true_quantity, price, exit_side)
+
+            if result is None or result.status in (OrderStatus.ERROR, OrderStatus.REJECTED):
+                if lifecycle is not None:
+                    lifecycle.stop.status = ProtectionStatus.UNPROTECTED
+                    lifecycle.stop.protected_quantity = 0.0
+                    self._persist(lifecycle)
+                return result
+            if result.status == OrderStatus.FILLED or not result.broker_order_id:
+                # Same ambiguous-outcome handling as `_place_stop_locked` --
+                # not confirmed resting coverage, don't report it as such.
+                if lifecycle is not None:
+                    lifecycle.stop.status = ProtectionStatus.UNPROTECTED
+                    lifecycle.stop.protected_quantity = 0.0
+                    lifecycle.stop.broker_order_id = None
+                    self._persist(lifecycle)
+                return result
+
+            if lifecycle is not None:
+                lifecycle.stop.desired_price = price
+                lifecycle.stop.submitted_price = price
+                lifecycle.stop.broker_confirmed_price = price
+                lifecycle.stop.broker_order_id = result.broker_order_id
+                lifecycle.stop.protected_quantity = true_quantity
+                lifecycle.stop.status = ProtectionStatus.STOP_CONFIRMED
+                self._persist(lifecycle)
+            return result
+
     async def _tighten_stop_to(self, lifecycle: PositionLifecycle, account: DestinationAccount, price: float) -> None:
         current = lifecycle.stop.desired_price
         if current is not None:

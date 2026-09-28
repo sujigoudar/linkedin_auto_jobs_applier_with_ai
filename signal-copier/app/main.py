@@ -66,6 +66,7 @@ from app.providers import SettingsOverride, load_provider_registry_from_store
 from app.provider_scout import ProviderScout
 from app.provider_value import compute_provider_value_report
 from app.rate_limit import INGRESS_RATE_LIMIT, limiter
+from app.protection_auditor import ProtectionAuditor
 from app.reconciliation import OrderReconciler
 from app.relay_scheduler import RelayScheduler
 from app.routing import load_routing_config_from_store
@@ -182,12 +183,21 @@ webhook_source = WebhookSource(on_signal=engine.handle_signal)
 sms_source = TwilioSMSSource(on_signal=engine.handle_signal)
 whatsapp_source = WhatsAppSource(on_signal=engine.handle_signal)
 ninjatrader_source = NinjaTraderSource(on_signal=engine.handle_signal)
+protection_auditor = ProtectionAuditor(
+    brokers=brokers,
+    lifecycle_manager=lifecycle_manager,
+    accounts=routing_config.accounts,
+    store=store,
+    interval_seconds=config.PROTECTION_AUDIT_INTERVAL_SECONDS,
+)
 reconciler = OrderReconciler(
     store=store,
     brokers=brokers,
     interval_seconds=config.RECONCILE_INTERVAL_SECONDS,
     lifecycle_manager=lifecycle_manager,
     capital_allocator=engine.capital_allocator,
+    accounts=routing_config.accounts,
+    protection_auditor=protection_auditor,
 )
 price_monitor = PriceMonitor(
     lifecycle_manager=lifecycle_manager,
@@ -259,6 +269,7 @@ async def lifespan(app: FastAPI):
             logger.exception("failed to start source '%s'", source.name)
     await reconciler.start()
     await price_monitor.start()
+    await protection_auditor.start()
     await provider_scout.start()
     if config.RELAY_INGRESS_URL:
         # Same "pull-based, only starts if fully configured" convention
@@ -274,6 +285,7 @@ async def lifespan(app: FastAPI):
     if config.RELAY_INGRESS_URL:
         await relay_scheduler.stop()
     await provider_scout.stop()
+    await protection_auditor.stop()
     await price_monitor.stop()
     await reconciler.stop()
     for source in _background_sources:
@@ -393,6 +405,11 @@ async def health() -> dict:
         if config.RELAY_INGRESS_URL
         else None
     )
+    # Informational only, same reasoning as provider_scout_ok above: a
+    # deployment with no managed-lifecycle positions open yet has nothing
+    # for this to audit, so it would otherwise report perpetually "not
+    # fresh" and falsely degrade overall status.
+    protection_audit_ok = _fresh(protection_auditor.last_success_at, config.PROTECTION_AUDIT_INTERVAL_SECONDS)
     return {
         # OPS-01: `status` was hardcoded to "ok" regardless of the flags
         # right next to it -- a fresh startup (before either worker's
@@ -404,6 +421,7 @@ async def health() -> dict:
         "reconciler_ok": reconciler_ok,
         "provider_scout_ok": provider_scout_ok,
         "relay_ok": relay_ok,
+        "protection_audit_ok": protection_audit_ok,
     }
 
 
@@ -811,6 +829,44 @@ async def list_positions(_owner: dict = Depends(require_owner_read)) -> dict:
     asynchronously), not a live read of any broker's account state.
     """
     return {"positions": store.list_open_positions(), "managed_lifecycles": _managed_lifecycle_snapshot()}
+
+
+@app.get("/protection-audit")
+async def get_protection_audit_summary(_owner: dict = Depends(require_owner_read)) -> dict:
+    """Every finding from app/protection_auditor.py's most recent pass over
+    every open position, PLUS every orphan position app/reconciliation.py's
+    independent broker-position scan has found -- both computed directly
+    from each broker's own order/position data, never from
+    PositionLifecycleManager's own internal bookkeeping (see
+    app/protection_auditor.py's module docstring for exactly why that
+    independence matters). `incidents` is the subset that's still
+    unresolved (ambiguous, unrepairable, or a repair attempt failed) --
+    what actually needs a human's attention, as opposed to `findings`,
+    which includes every already-fine position too."""
+    return {
+        "findings": [f.to_dict() for f in protection_auditor.list_findings()],
+        "incidents": [f.to_dict() for f in protection_auditor.list_incidents()],
+        "orphan_positions": [o.to_dict() for o in reconciler.list_orphan_positions()],
+        "last_audit_at": protection_auditor.last_success_at.isoformat() if protection_auditor.last_success_at else None,
+    }
+
+
+@app.get("/positions/{account_id}/{symbol}/protection-audit")
+async def get_position_protection_audit(
+    account_id: str, symbol: str, _owner: dict = Depends(require_owner_read)
+) -> dict:
+    """Independently re-verify (right now, not from the last scheduled
+    pass's cache) whether this one position is actually protected at its
+    broker -- see app/protection_auditor.py's module docstring. 404 for an
+    account this deployment doesn't have configured; a live re-check even
+    for a position that isn't currently open (a flat broker position with
+    leftover resting orders is itself a real finding -- see
+    `AuditStatus.STALE_ORDER`)."""
+    account = routing_config.accounts.get(account_id)
+    if account is None:
+        raise HTTPException(status_code=404, detail=f"no account '{account_id}'")
+    finding = await protection_auditor.audit_position(account, symbol)
+    return finding.to_dict()
 
 
 @app.get("/accounts/{account_id}/economics")
