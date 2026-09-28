@@ -31,7 +31,23 @@
 
 <div class="panel">
   <h2>Mandates read view</h2>
-  <p><span class="badge badge-unknown">UNSUPPORTED</span> -- no copy-mandate model exists in this build.</p>
+  {% if record.mandates %}
+  <table>
+    <thead><tr><th>Mandate</th><th>State</th><th>Allocation</th><th>Start mode</th></tr></thead>
+    <tbody>
+      {% for m in record.mandates %}
+      <tr>
+        <td>{{ m.mandate_id }}</td>
+        <td>{{ m.state.value }}</td>
+        <td>{{ m.allocation_amount }} {{ m.allocation_currency }}</td>
+        <td>{{ m.start_mode.value }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p>No copy mandates for this customer.</p>
+  {% endif %}
 </div>
 
 <div class="panel">

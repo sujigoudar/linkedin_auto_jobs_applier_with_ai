@@ -5,7 +5,10 @@ implements a bounded slice of.
 
 Deliberately built entirely from data other screens already made real:
 Membership (role=customer), the customer's own EligibilityAssessment
-(ID-04) and SupportCase rows (CU-14). No new model. `CustomerProfile`
+(ID-04), SupportCase rows (CU-14), and -- since CU-09's own CopyMandate
+now exists -- the customer's own copy mandates, closing AD-11's own
+"no copy-mandate model exists at all" not-yet-built note from before
+CU-09 was built. No new model. `CustomerProfile`
 (app/models/tenancy.py) is NOT used here -- its own docstring makes
 clear it represents the tenant's own relationship as a customer OF THE
 PLATFORM (one row per tenant), a completely different concept from an
@@ -28,8 +31,10 @@ from dataclasses import dataclass
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.models.copy_mandate import CopyMandate
 from app.models.support_case import SupportCase
 from app.models.tenancy import Membership, MembershipRole
+from app.services.copy_mandate import list_own_copy_mandates
 from app.services.eligibility import EligibilityDecision, evaluate_eligibility, get_eligibility_assessment
 
 
@@ -44,6 +49,7 @@ class CustomerSupportRecord:
     user_id: str
     eligibility_decisions: list[EligibilityDecision]
     cases: list[SupportCase]
+    mandates: list[CopyMandate]
 
 
 def list_customers(session: Session, *, tenant_id: str) -> list[CustomerSummary]:
@@ -78,4 +84,5 @@ def get_customer_support_record(session: Session, *, tenant_id: str, user_id: st
             .order_by(SupportCase.created_at.desc())
         ).all()
     )
-    return CustomerSupportRecord(user_id=user_id, eligibility_decisions=decisions, cases=cases)
+    mandates = list_own_copy_mandates(session, tenant_id=tenant_id, user_id=user_id)
+    return CustomerSupportRecord(user_id=user_id, eligibility_decisions=decisions, cases=cases, mandates=mandates)

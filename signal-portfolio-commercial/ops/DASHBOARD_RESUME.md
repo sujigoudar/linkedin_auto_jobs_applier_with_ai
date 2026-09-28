@@ -292,8 +292,16 @@ Seven slices are DONE:
   `product_visibility` -- verified end-to-end against a live disposable
   Postgres cluster: an unscoped `app_role` session genuinely sees only
   a PUBLISHED row, never a DRAFT one, at the database layer.
+- AD-11's own Mandates read view (extension, not a new screen): its own
+  earlier slice documented "no copy-mandate model exists at all" as a
+  gap, which CU-09's own CopyMandate closed since. `get_customer_
+  support_record` now also calls CU-09's own `list_own_copy_mandates`
+  -- no new table, no new query. Load-bearing verified: a raw
+  same-tenant-only mandate query (no user_id filter) let another
+  customer's own mandate leak into the first customer's support
+  record; the real scoped query never does.
 
-Full suite is 609 tests, ruff and mypy both green (**use `python3 -m
+Full suite is 612 tests, ruff and mypy both green (**use `python3 -m
 ruff`/`python3 -m mypy`/`python3 -m pytest` explicitly** -- this sandbox
 has a stray `uv tool`-installed `ruff`/`mypy` shadowing the project's
 real declared versions on bare `PATH`, which produced a false-negative
@@ -319,8 +327,9 @@ See `dashboard_state.json`'s `current_slice`/`second_slice`/
 `twentyeighth_slice`/`twentyninth_slice`/`thirtieth_slice`/
 `thirtyfirst_slice`/`thirtysecond_slice`/`thirtythird_slice`/
 `thirtyfourth_slice`/`thirtyfifth_slice`/`thirtysixth_slice`/
-`thirtyseventh_slice`/`thirtyeighth_slice` for the exact file lists and
-what was deliberately left unbuilt in each. 26 of 66 screens remain.
+`thirtyseventh_slice`/`thirtyeighth_slice`/`thirtyninth_slice` for the
+exact file lists and what was deliberately left unbuilt in each. 26 of
+66 screens remain.
 Several of those are genuinely infrastructure-
 blocked and NOT to be force-built without fabricating a capability:
 CU-04 (no customer-to-alert linkage), CU-05/CU-06/CU-15 (need a real

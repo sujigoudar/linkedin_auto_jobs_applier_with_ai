@@ -1231,6 +1231,50 @@ def test_customer_detail_shows_real_eligibility_and_cases_over_real_http(db_sess
     assert "Billing question HTTP" in staff_response.text
 
 
+def test_customer_detail_shows_a_real_copy_mandate_over_real_http(db_session):
+    _seed_customer_membership(db_session)
+    product = _seed_published_product(db_session, slug="ad11-mandate-product")
+    customer_headers = _auth_headers(role=MembershipRole.CUSTOMER)
+    client = _client(db_session)
+
+    client.post("/app/portfolios", data={"product_id": product.product_id}, headers=customer_headers)
+    client.post(
+        "/app/connections/new",
+        data={
+            "platform": "collective2",
+            "environment": "local_simulation",
+            "masked_account_label": "Test ****1234",
+        },
+        headers=customer_headers,
+    )
+
+    from app.services.copy_mandate import list_own_copy_mandates
+    from app.services.platform_connection import list_own_platform_connections
+    from app.services.portfolio_selection import list_own_portfolio_selections
+
+    selection_id = list_own_portfolio_selections(db_session, tenant_id="tenant-a", user_id="user-a")[0].selection_id
+    connection_id = list_own_platform_connections(db_session, tenant_id="tenant-a", user_id="user-a")[0].connection_id
+    client.post(
+        "/app/copy/new",
+        data={
+            "selection_id": selection_id,
+            "connection_id": connection_id,
+            "allocation_amount": "100",
+            "allocation_currency": "USD",
+            "start_mode": "new_entries_only",
+            "policy_version_id": "policy-1",
+            "consent_version": "consent-1",
+        },
+        headers=customer_headers,
+    )
+    assert list_own_copy_mandates(db_session, tenant_id="tenant-a", user_id="user-a")
+
+    staff_response = client.get("/ops/customers/user-a", headers=_auth_headers(role=MembershipRole.OWNER))
+    assert staff_response.status_code == 200
+    assert "USD" in staff_response.text
+    assert "draft" in staff_response.text
+
+
 def test_integrations_page_requires_owner_or_publisher_operator(db_session):
     client = _client(db_session)
     response = client.get("/ops/integrations", headers=_auth_headers(role=MembershipRole.RESEARCHER))
