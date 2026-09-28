@@ -1,0 +1,42 @@
+{% extends "_base.html" %}
+{% block title %}Connection wizard{% endblock %}
+{% block content %}
+<p><a href="/app/connections">&larr; Platform connections</a></p>
+<h1>Connection wizard</h1>
+
+{% if error %}<div class="conflict">{{ error }}</div>{% endif %}
+
+<div class="panel">
+  <h2>Platform and mode</h2>
+  <p>No real hosted OAuth authorization exists in this build -- only a declared, <code>local_simulation</code>-only connection record can be saved.</p>
+</div>
+
+<div class="panel">
+  <h2>Hosted authorization</h2>
+  <p><span class="badge badge-unknown">UNSUPPORTED</span> -- there is no hosted authorization flow to begin.</p>
+</div>
+
+<div class="panel">
+  <h2>Account verification</h2>
+  <p><span class="badge badge-unknown">UNSUPPORTED</span> -- there is no real account-identity readback to verify against.</p>
+</div>
+
+<div class="panel">
+  <h2>Save</h2>
+  <form method="post" action="/app/connections/new">
+    <label for="platform">Platform</label>
+    <select id="platform" name="platform">
+      {% for p in all_platforms %}<option value="{{ p }}">{{ p }}</option>{% endfor %}
+    </select>
+
+    <label for="environment">Environment</label>
+    <input type="text" id="environment" name="environment" value="local_simulation" required>
+    <p class="help">Only <code>local_simulation</code> is accepted -- no real external connectivity exists in this build.</p>
+
+    <label for="masked_account_label">Account label (e.g. "IBKR ****1234")</label>
+    <input type="text" id="masked_account_label" name="masked_account_label" required>
+
+    <p><button type="submit">Save verified connection</button></p>
+  </form>
+</div>
+{% endblock %}

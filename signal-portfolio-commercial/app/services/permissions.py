@@ -145,6 +145,10 @@ _ALLOWED: dict[str, frozenset[Role]] = {
     #: AD-22 "Commercial deployments and recovery" -- exactly this
     #: screen's own access list.
     "view_deployment_status": frozenset({Role.OWNER, Role.PUBLISHER_OPERATOR}),
+    #: CU-07 "Platform connections" / CU-08 "Connection wizard" -- a
+    #: customer's own connections, same shape as
+    #: "manage_own_portfolio_selections" and its siblings.
+    "manage_own_platform_connections": frozenset({Role.CUSTOMER}),
 }
 
 

@@ -2030,3 +2030,85 @@ def test_deployment_status_page_shows_real_service_status_and_no_fabricated_qual
     assert "NOT_CONFIGURED" in response.text
     assert "No deployment has been qualified for this service." in response.text
     assert "UNSUPPORTED" in response.text
+
+
+def test_platform_connections_page_requires_customer_role(db_session):
+    client = _client(db_session)
+    response = client.get("/app/connections", headers=_auth_headers(role=MembershipRole.OWNER))
+    assert response.status_code == 403
+
+
+def test_platform_connections_page_shows_the_real_empty_state(db_session):
+    client = _client(db_session)
+    response = client.get("/app/connections", headers=_auth_headers(role=MembershipRole.CUSTOMER))
+    assert response.status_code == 200
+    assert "No platform account is connected." in response.text
+
+
+def test_create_platform_connection_rejects_a_non_local_simulation_environment_over_http(db_session):
+    _seed_customer_membership(db_session)
+    client = _client(db_session)
+    response = client.post(
+        "/app/connections/new",
+        data={"platform": "collective2", "environment": "live", "masked_account_label": "Test ****1234"},
+        headers=_auth_headers(role=MembershipRole.CUSTOMER),
+    )
+    assert response.status_code == 400
+    assert "EXTERNAL_ENVIRONMENT_NOT_AUTHORIZED" in response.text
+
+
+def test_create_then_disconnect_platform_connection_over_real_http(db_session):
+    _seed_customer_membership(db_session)
+    client = _client(db_session)
+    headers = _auth_headers(role=MembershipRole.CUSTOMER)
+    create_response = client.post(
+        "/app/connections/new",
+        data={"platform": "collective2", "environment": "local_simulation", "masked_account_label": "Test ****1234"},
+        headers=headers,
+    )
+    assert create_response.status_code == 303
+
+    list_response = client.get("/app/connections", headers=headers)
+    assert "collective2" in list_response.text
+    assert "declared" in list_response.text
+
+    import re
+
+    match = re.search(r"/app/connections/([^/]+)/disconnect", list_response.text)
+    assert match is not None
+    connection_id = match.group(1)
+
+    disconnect_response = client.post(f"/app/connections/{connection_id}/disconnect", headers=headers)
+    assert disconnect_response.status_code == 303
+
+    final_response = client.get("/app/connections", headers=headers)
+    assert "disconnected" in final_response.text
+
+
+def test_disconnect_platform_connection_is_a_scoped_not_found_for_another_customer(db_session):
+    from app.models.tenancy import Membership, MembershipRole as Role, UserIdentity
+
+    _seed_customer_membership(db_session, user_id="user-a")
+    client = _client(db_session)
+    owner_headers = _auth_headers(user_id="user-a", role=MembershipRole.CUSTOMER)
+    create_response = client.post(
+        "/app/connections/new",
+        data={"platform": "etoro", "environment": "local_simulation", "masked_account_label": "Test ****1234"},
+        headers=owner_headers,
+    )
+    assert create_response.status_code == 303
+
+    list_response = client.get("/app/connections", headers=owner_headers)
+    import re
+
+    match = re.search(r"/app/connections/([^/]+)/disconnect", list_response.text)
+    connection_id = match.group(1)
+
+    db_session.add(UserIdentity(user_id="user-other-conn", email="user-other-conn@example.com"))
+    db_session.flush()
+    db_session.add(Membership(tenant_id="tenant-a", user_id="user-other-conn", role=Role.CUSTOMER))
+    db_session.commit()
+
+    other_customer_headers = _auth_headers(user_id="user-other-conn", role=MembershipRole.CUSTOMER)
+    response = client.post(f"/app/connections/{connection_id}/disconnect", headers=other_customer_headers)
+    assert response.status_code == 404

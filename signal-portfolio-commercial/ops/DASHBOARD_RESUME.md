@@ -233,8 +233,18 @@ Seven slices are DONE:
   infrastructure exists in this build; "No deployment has been
   qualified for this service" is used as-is since it is genuinely and
   completely true here.
+- CU-07 Platform connections + CU-08 Connection wizard: `GET /app/
+  connections`, `GET`/`POST /app/connections/new`,
+  `POST /app/connections/{id}/disconnect` (CUSTOMER only) -- a new
+  PlatformConnection model records only a customer's own DECLARED
+  intent to connect a reviewed platform (collective2/etoro/
+  metaapi_copyfactory, the same three AD-09/AD-17 already use).
+  environment is restricted to `local_simulation` only -- no real
+  hosted OAuth authorization or account-identity readback exists.
+  Begin authorization/Verify connection and the Capability report/
+  Reauthorization tasks panels are all explicit UNSUPPORTED.
 
-Full suite is 548 tests, ruff and mypy both green (**use `python3 -m
+Full suite is 561 tests, ruff and mypy both green (**use `python3 -m
 ruff`/`python3 -m mypy`/`python3 -m pytest` explicitly** -- this sandbox
 has a stray `uv tool`-installed `ruff`/`mypy` shadowing the project's
 real declared versions on bare `PATH`, which produced a false-negative
@@ -258,12 +268,13 @@ See `dashboard_state.json`'s `current_slice`/`second_slice`/
 `twentysecond_slice`/`twentythird_slice`/`twentyfourth_slice`/
 `twentyfifth_slice`/`twentysixth_slice`/`twentyseventh_slice`/
 `twentyeighth_slice`/`twentyninth_slice`/`thirtieth_slice`/
-`thirtyfirst_slice`/`thirtysecond_slice` for the exact file lists and
-what was deliberately left unbuilt in each. 33 of 66 screens (AD-01,
-AD-02, AD-03, AD-04, AD-05, AD-08, AD-10, PU-03, PU-05, ID-04, AD-16,
-CU-14, AD-09, CU-16, AD-12, AD-11, AD-17, AD-13, AD-19, AD-14, AD-18,
-AD-20, CU-02, CU-12, CU-13, AD-15, PU-04, PU-07, AD-22 partially done)
-remain -- pick the next one following the steps below. **If you add a
+`thirtyfirst_slice`/`thirtysecond_slice`/`thirtythird_slice` for the
+exact file lists and what was deliberately left unbuilt in each. 31 of
+66 screens (AD-01, AD-02, AD-03, AD-04, AD-05, AD-08, AD-10, PU-03,
+PU-05, ID-04, AD-16, CU-14, AD-09, CU-16, AD-12, AD-11, AD-17, AD-13,
+AD-19, AD-14, AD-18, AD-20, CU-02, CU-12, CU-13, AD-15, PU-04, PU-07,
+AD-22, CU-07, CU-08 partially done) remain -- pick the next one
+following the steps below. **If you add a
 new table to
 `_TENANT_SCOPED_TABLES` in app/db.py, pin any EARLIER migration that
 already calls `_apply_row_level_security` with no explicit `tables`

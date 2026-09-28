@@ -1,0 +1,51 @@
+{% extends "_base.html" %}
+{% block title %}Platform connections{% endblock %}
+{% block content %}
+<h1>Platform connections</h1>
+
+<div class="panel">
+  <h2>Connection cards/table</h2>
+  {% if connections %}
+  <table>
+    <thead><tr><th>Platform</th><th>Environment</th><th>Masked account</th><th>State</th><th></th></tr></thead>
+    <tbody>
+      {% for c in connections %}
+      <tr>
+        <td>{{ c.platform }}</td>
+        <td>{{ c.environment }}</td>
+        <td>{{ c.masked_account_label }}</td>
+        <td>{{ c.state.value }}</td>
+        <td>
+          {% if c.state.value == "declared" %}
+          <form method="post" action="/app/connections/{{ c.connection_id }}/disconnect" style="display:inline;">
+            <button type="submit">Review disconnect</button>
+          </form>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="empty-state">
+    <p>No platform account is connected.</p>
+  </div>
+  {% endif %}
+  <p><a href="/app/connections/new">Connect platform</a></p>
+</div>
+
+<div class="panel">
+  <h2>Capability report</h2>
+  <p><span class="badge badge-unknown">UNSUPPORTED</span> -- no real capability/readback check exists in this build; a declared connection has never been verified against the actual platform.</p>
+</div>
+
+<div class="panel">
+  <h2>Eligibility</h2>
+  <p>Connected does not mean authorized to copy. A declared connection carries no trading or copying authority by itself.</p>
+</div>
+
+<div class="panel">
+  <h2>Reauthorization tasks</h2>
+  <p><span class="badge badge-unknown">UNSUPPORTED</span> -- no real OAuth authorization exists in this build, so there is no reauthorization flow to track.</p>
+</div>
+{% endblock %}

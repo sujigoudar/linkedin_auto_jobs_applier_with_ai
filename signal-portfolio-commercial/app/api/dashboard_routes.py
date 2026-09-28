@@ -208,6 +208,13 @@ from app.services.publisher_destination import (
 )
 from app.services.support_case import InvalidSupportCaseError, create_support_case, list_support_cases
 from app.services.publication_admin import get_publication_intent_detail
+from app.services.platform_connection import (
+    InvalidPlatformConnectionError,
+    create_platform_connection,
+    disconnect_platform_connection,
+    get_own_platform_connection,
+    list_own_platform_connections,
+)
 from app.services.customer_display_preferences import (
     InvalidDisplayPreferencesError,
     get_display_preferences,
@@ -2121,3 +2128,91 @@ def deployment_status_page(
     _require_deployment_status(scope)
     service_status = get_service_status()
     return templates.TemplateResponse(request, "ad22_system.html", {"service_status": service_status})
+
+
+_ALL_PLATFORM_CONNECTION_PLATFORMS = ["collective2", "etoro", "metaapi_copyfactory"]
+
+
+def _require_platform_connections(scope: TenantScope) -> None:
+    try:
+        require_permission(scope.role, "manage_own_platform_connections")
+    except PermissionDenied as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+
+@router.get("/app/connections")
+def platform_connections_page(
+    request: Request,
+    scope: TenantScope = Depends(get_current_scope),
+    session: Session = Depends(get_db_session),
+):
+    """CU-07 "Platform connections" -- see this route module's own
+    docstring above for what is and is not implemented."""
+    _require_platform_connections(scope)
+    set_tenant_scope(session, scope.tenant_id)
+    connections = list_own_platform_connections(session, tenant_id=scope.tenant_id, user_id=scope.user_id)
+    return templates.TemplateResponse(request, "cu07_connections.html", {"connections": connections})
+
+
+@router.get("/app/connections/new")
+def platform_connection_wizard_page(
+    request: Request,
+    scope: TenantScope = Depends(get_current_scope),
+    error: str | None = None,
+):
+    """CU-08 "Connection wizard" -- see this route module's own
+    docstring above for what is and is not implemented: no real hosted
+    OAuth authorization or account-identity readback exists, so only a
+    DECLARED, local_simulation-only record can honestly be saved here."""
+    _require_platform_connections(scope)
+    return templates.TemplateResponse(
+        request, "cu08_connection_wizard.html", {"all_platforms": _ALL_PLATFORM_CONNECTION_PLATFORMS, "error": error}
+    )
+
+
+@router.post("/app/connections/new")
+def create_platform_connection_page(
+    request: Request,
+    platform: str = Form(...),
+    environment: str = Form(...),
+    masked_account_label: str = Form(...),
+    scope: TenantScope = Depends(get_current_scope),
+    session: Session = Depends(get_db_session),
+):
+    _require_platform_connections(scope)
+    set_tenant_scope(session, scope.tenant_id)
+    try:
+        create_platform_connection(
+            session,
+            tenant_id=scope.tenant_id,
+            user_id=scope.user_id,
+            platform=platform,
+            environment=environment,
+            masked_account_label=masked_account_label,
+        )
+    except InvalidPlatformConnectionError as exc:
+        session.rollback()
+        return templates.TemplateResponse(
+            request,
+            "cu08_connection_wizard.html",
+            {"all_platforms": _ALL_PLATFORM_CONNECTION_PLATFORMS, "error": str(exc)},
+            status_code=400,
+        )
+    session.commit()
+    return RedirectResponse(url="/app/connections", status_code=303)
+
+
+@router.post("/app/connections/{connection_id}/disconnect")
+def disconnect_platform_connection_page(
+    connection_id: str,
+    scope: TenantScope = Depends(get_current_scope),
+    session: Session = Depends(get_db_session),
+):
+    _require_platform_connections(scope)
+    set_tenant_scope(session, scope.tenant_id)
+    connection = get_own_platform_connection(session, connection_id, tenant_id=scope.tenant_id, user_id=scope.user_id)
+    if connection is None:
+        raise HTTPException(status_code=404, detail="not found")
+    disconnect_platform_connection(session, connection)
+    session.commit()
+    return RedirectResponse(url="/app/connections", status_code=303)
