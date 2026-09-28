@@ -878,6 +878,71 @@ See `tests/test_backtest_simulator.py`, `tests/test_backtest_replay.py`,
 `tests/test_backtest_csv_provider.py`, and `tests/test_backtest_api.py`
 for the ambiguity-handling and end-to-end proofs.
 
+### Provider fit simulator ("what would copying this source have done to MY account")
+
+```
+POST /providers/{source}/fit-simulation
+```
+
+The personalized-to-the-viewer number copy-trading marketing funnels
+(the Alertsify pattern: "type your account size, see what every trader
+would have paid you") use to answer that question BEFORE anyone
+subscribes to anything — distinct from `POST /backtest` above, which
+never rescales a signal past its own recorded `quantity`, and distinct
+from `app/provider_value.py`, which only scores an account's own real,
+already-subscribed fill history. Built entirely on top of
+`BacktestEngine`; see `app/backtest/fit_simulator.py`'s own module
+docstring for the exact, disclosed sizing methodology before trusting
+its output, but the short version:
+
+- Every one of `/backtest`'s own limitations still applies (no
+  market-data vendor connected, `AMBIGUOUS`-bar ambiguity preserved not
+  guessed, no shared-capital portfolio simulation, no slippage/fees
+  unless applied separately).
+- A trade **"fits"** your stated `max_per_trade` only if its own real
+  entry price is at or under that ceiling (you could take at least 1
+  unit) — otherwise it's excluded from the personalized numbers
+  entirely, not silently zeroed.
+- A fitting trade is rescaled to
+  `min(the_source's_own_recorded_quantity, max_per_trade / entry_price)`
+  — replicate the source's own size when it's small enough, cap it at
+  your own ceiling otherwise — and its P&L is scaled by the exact same
+  ratio (correct because P&L is linear in quantity for every asset class
+  this engine scores; see `BacktestEngine`'s own `EXIT_UNSCORABLE`
+  handling for the one exception, options, which this excludes the same
+  way `/backtest` already does).
+- The response's own `equity_curve` and `worst_drawdown_at_your_size`
+  (a real peak-to-trough dollar drawdown on the rescaled curve, not a
+  losing-streak count) are computed only from resolved, fitting trades.
+  `full_size_summary` in the response is the source's own real,
+  unscaled record — "their record at full size" — for a caller that
+  wants to show both numbers side by side.
+
+```bash
+curl -X POST http://localhost:8000/providers/alerts_guy/fit-simulation \
+  -H 'Content-Type: application/json' \
+  -H 'Authorization: Bearer <owner-session-token>' \
+  -d '{
+        "source": "alerts_guy",
+        "account_size": 25000,
+        "max_per_trade": 2500,
+        "lookback_days": 90,
+        "csv_paths": {"AAPL": "/path/to/AAPL_daily_bars.csv"}
+      }'
+```
+
+Owner-gated for now, same as `/backtest` — this service has no
+customer-facing auth model of its own. A real prospect-facing "browse
+providers" catalog page (e.g. in signal-portfolio-commercial's public
+site) would need its own separate, appropriately-scoped route calling
+into this one with a service credential; that cross-service wiring
+doesn't exist yet and isn't guessed at here — this endpoint is the
+backend piece a catalog UI would call, not the UI itself.
+
+See `tests/test_fit_simulator.py` and `tests/test_backtest_api.py`'s
+`test_fit_simulation_endpoint_*` tests for the rescaling-correctness and
+end-to-end proofs.
+
 ## Dashboard
 
 ```

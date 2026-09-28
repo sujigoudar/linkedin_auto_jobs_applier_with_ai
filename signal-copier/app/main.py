@@ -30,6 +30,7 @@ from pydantic import BaseModel, Field, field_validator
 from app import config
 from app.auth import SESSION_COOKIE_NAME, RequireOwner, create_session, verify_password
 from app.backtest.cost_stress import apply_cost_stress
+from app.backtest.fit_simulator import simulate_provider_fit
 from app.backtest.models import CsvPriceHistoryProvider
 from app.backtest.replay import BacktestEngine
 from app.brokers.alpaca import AlpacaBroker
@@ -1578,6 +1579,75 @@ async def run_backtest(request: BacktestRequest, _owner: dict = Depends(require_
         )
 
     return response
+
+
+class ProviderFitSimulationRequest(BaseModel):
+    """See app/backtest/fit_simulator.py's module docstring for exactly
+    what this does and doesn't simulate, and its own disclosed sizing
+    methodology, before trusting its output. This is the personalized
+    "what would copying this source have done to MY account" number a
+    copy-trading marketing funnel shows a PROSPECT before they ever
+    subscribe -- not a rename of `/backtest` above (which never rescales
+    to a hypothetical account) or `app/provider_value.py` (which only
+    scores an account's own real, already-subscribed fill history)."""
+
+    source: str
+    account_size: float = Field(gt=0)
+    max_per_trade: float = Field(gt=0)
+    lookback_days: float = Field(default=90.0, gt=0)
+    #: symbol -> local CSV path (columns: timestamp,open,high,low,close[,volume]).
+    #: See app/backtest/models.py's module docstring for why this project
+    #: can't fetch historical bars for you -- same limitation as `/backtest`.
+    csv_paths: dict[str, str]
+    max_hold_days: float = 30.0
+
+
+@app.post("/providers/{source}/fit-simulation")
+async def run_provider_fit_simulation(
+    source: str, request: ProviderFitSimulationRequest, _owner: dict = Depends(require_owner)
+) -> dict:
+    """Owner-gated for now, same as `/backtest` above -- this service has
+    no customer-facing auth model of its own (see README.md's "Owner
+    authentication" section). A real prospect-facing "browse providers"
+    surface (e.g. a public catalog page in signal-portfolio-commercial)
+    would need its own separate, appropriately-scoped route calling into
+    this one with a service credential, not this endpoint exposed
+    directly to the public internet -- that cross-service wiring doesn't
+    exist yet and isn't guessed at here."""
+    if request.source != source:
+        raise HTTPException(status_code=422, detail="path 'source' and body 'source' must match")
+
+    csv_paths = {symbol: Path(path) for symbol, path in request.csv_paths.items()}
+    provider = CsvPriceHistoryProvider(csv_paths)
+
+    report = simulate_provider_fit(
+        store,
+        provider,
+        source=request.source,
+        account_size=request.account_size,
+        max_per_trade=request.max_per_trade,
+        lookback_days=request.lookback_days,
+        max_hold=timedelta(days=request.max_hold_days),
+    )
+
+    return {
+        "summary": report.summary(),
+        "equity_curve": [{"time": t.isoformat(), "cumulative_pnl": v} for t, v in report.equity_curve],
+        "trades": [
+            {
+                "signal_id": t.signal_id,
+                "symbol": t.symbol,
+                "entry_time": t.entry_time.isoformat(),
+                "exit_time": t.exit_time.isoformat() if t.exit_time else None,
+                "outcome": t.outcome.value,
+                "fits": t.fits,
+                "original_quantity": t.original_quantity,
+                "simulated_quantity": t.simulated_quantity,
+                "pnl": t.pnl,
+            }
+            for t in report.trades
+        ],
+    }
 
 
 # --- Read-only market/economic context (app/context/) ---
