@@ -126,7 +126,7 @@
       });
     } else {
       const rows = signals.map((s) => [
-        `<span class="mono">${escapeHtml(s.id)}</span>`,
+        `<a class="mono" href="#/trade/signals/${encodeURIComponent(s.id)}">${escapeHtml(s.id)}</a>`,
         `<span class="mono">${escapeHtml(s.source)}</span>`,
         escapeHtml(s.analyst || "(none)"),
         s.received_at || "—",

@@ -695,7 +695,8 @@ class SignalStore:
     def list_recent_signals(self, limit: int = 50) -> list[dict]:
         with self._connect() as conn:
             rows = conn.execute(
-                """SELECT id, source, symbol, side, asset_class, quantity, price, received_at, analyst
+                """SELECT id, source, symbol, side, asset_class, quantity, price, received_at, analyst,
+                          stop_loss, take_profit, raw
                    FROM signals ORDER BY received_at DESC LIMIT ?""",
                 (limit,),
             ).fetchall()
@@ -716,6 +717,20 @@ class SignalStore:
                 # signal" (same convention `save_signal` already writes),
                 # never fabricated.
                 "analyst": r[8] or None,
+                # TR-05 (signal evidence and plan preview): `stop_loss` and
+                # `take_profit` were always persisted per-signal (see the
+                # `signals` table above and `save_signal` below) but never
+                # previously projected out of this method -- TR-05's
+                # "Risk/stop/horizon plan" panel needs the actual resolved
+                # values, not just quantity/price. `raw` is the exact,
+                # unmodified payload/text this signal was parsed from --
+                # TR-05's "Original/revisions" panel's only real evidence
+                # (this schema has no revision history; only the single
+                # received version is ever stored, which that panel says
+                # honestly rather than inventing a revision list).
+                "stop_loss": r[9],
+                "take_profit": r[10],
+                "raw": json.loads(r[11]) if r[11] else {},
             }
             for r in rows
         ]
