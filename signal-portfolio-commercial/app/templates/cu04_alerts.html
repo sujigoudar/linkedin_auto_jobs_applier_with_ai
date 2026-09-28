@@ -1,0 +1,62 @@
+{% extends "_base.html" %}
+{% block title %}Alerts and delivery history{% endblock %}
+{% block content %}
+<h1>Alerts and delivery history</h1>
+
+<div class="panel">
+  <h2>Filters</h2>
+  <p><span class="badge badge-unknown">UNSUPPORTED</span> -- no delivery/portfolio/action/instrument filter index exists yet; the table below shows every alert you are currently entitled to, unfiltered.</p>
+</div>
+
+<div class="panel">
+  <h2>Live indicator</h2>
+  <p><span class="badge badge-unknown">UNSUPPORTED</span> -- this page has no live/SSE update channel; reload to see newer alerts.</p>
+</div>
+
+<div class="panel">
+  <h2>Alert timeline</h2>
+  {% if alerts %}
+  <table>
+    <thead>
+      <tr>
+        <th>Alert</th>
+        <th>Portfolio version</th>
+        <th>Action</th>
+        <th>Instrument</th>
+        <th>Origin</th>
+        <th>Published</th>
+        <th>Expires</th>
+        <th>Lifecycle state</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for intent in alerts %}
+      <tr>
+        <td>{{ intent.intent_id }}</td>
+        <td>{{ intent.portfolio_version_id }}</td>
+        <td>{{ intent.action.value }}</td>
+        <td>{{ intent.instrument_id }}</td>
+        <td>{{ intent.channel }}</td>
+        <td>{{ intent.created_at }}</td>
+        <td>{{ intent.expires_at }}</td>
+        <td><span class="badge badge-unknown">{{ intent.state.value }}</span></td>
+        <td><a href="/app/activity/{{ intent.episode_id }}">Open</a></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <p class="help">Delivered does not mean traded; an expired entry cannot be activated or recast as current.</p>
+  {% else %}
+  <div class="empty-state">
+    <p>There are no alerts available for this selection and period.</p>
+    <p><a href="/app/portfolios">Review my portfolios (CU-02) &rarr;</a></p>
+  </div>
+  {% endif %}
+</div>
+
+<div class="panel">
+  <h2>Delivery receipts</h2>
+  <p><span class="badge badge-unknown">UNSUPPORTED</span> -- no delivery-attempt/external-acknowledgment tracking model exists anywhere in this build. Delivered does not mean traded.</p>
+</div>
+{% endblock %}

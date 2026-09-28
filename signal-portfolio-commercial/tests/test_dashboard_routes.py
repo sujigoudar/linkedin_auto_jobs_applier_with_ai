@@ -3095,3 +3095,315 @@ def test_incident_action_rejects_an_unknown_operation(db_session):
     )
     assert response.status_code == 400
     assert "unknown operation" in response.text
+
+
+def _seed_customer_alert_fixture(
+    db_session,
+    *,
+    tenant_id="tenant-a",
+    user_id="user-a",
+    slug="http-alerts-product",
+    portfolio_version_id="pv-alerts-http-1",
+    episode_id="ep-alerts-http-1",
+    revision=1,
+):
+    """Seeds a customer membership, an ACTIVE PortfolioSelection, and a
+    real PublicationIntent for the PortfolioVersion behind that
+    selection's product -- the real join CU-04/CU-05's own service
+    (app/services/customer_alerts.py) scopes "entitled" through."""
+    from datetime import datetime, timedelta, timezone
+
+    from app.models.portfolio_version import PortfolioVersion
+    from app.models.product import Product, ProductLifecycleState
+    from app.models.portfolio_selection import PortfolioSelection
+    from app.models.publication import (
+        Environment,
+        PublicationAction,
+        PublicationIntent,
+        PublicationState,
+        QuantityBasis,
+    )
+
+    _seed_customer_membership(db_session, tenant_id=tenant_id, user_id=user_id)
+
+    now = datetime.now(timezone.utc)
+    pv = PortfolioVersion(
+        portfolio_version_id=portfolio_version_id,
+        tenant_id=tenant_id,
+        portfolio_id=f"p-{portfolio_version_id}",
+        version_number=1,
+        cash_weight=0,
+        research_cutoff=now,
+        max_subscriber_capacity=100,
+        consent_disclosure_version="v1",
+    )
+    db_session.add(pv)
+    db_session.flush()
+
+    product = Product(
+        tenant_id=tenant_id,
+        product_name="HTTP Alerts Product",
+        slug=slug,
+        lifecycle_state=ProductLifecycleState.PUBLISHED,
+        portfolio_version_id=portfolio_version_id,
+    )
+    db_session.add(product)
+    db_session.flush()
+
+    selection = PortfolioSelection(tenant_id=tenant_id, user_id=user_id, product_id=product.product_id)
+    db_session.add(selection)
+    db_session.flush()
+
+    intent = PublicationIntent(
+        environment=Environment.LOCAL_SIM,
+        portfolio_version_id=portfolio_version_id,
+        episode_id=episode_id,
+        revision=revision,
+        action=PublicationAction.OPEN,
+        channel="collective2",
+        external_strategy_id="strategy-alerts-http",
+        instrument_id="AAPL",
+        quantity="10",
+        quantity_basis=QuantityBasis.UNITS,
+        price_basis="market",
+        policy_hash=f"policy-hash-{episode_id}-{revision}",
+        audience_snapshot_hash="audience-hash-alerts-http",
+        source_revision_ids=["src-rev-alerts-http"],
+        rights_grant_ids=["grant-alerts-http"],
+        body_hash=f"body-hash-{episode_id}-{revision}",
+        idempotency_key=f"idem-{episode_id}-{revision}",
+        valid_from=now,
+        expires_at=now + timedelta(hours=1),
+        state=PublicationState.UNKNOWN,
+    )
+    db_session.add(intent)
+    db_session.commit()
+    return product, selection, intent
+
+
+def test_alerts_page_requires_customer_role(db_session):
+    client = _client(db_session)
+    response = client.get("/app/alerts", headers=_auth_headers(role=MembershipRole.OWNER))
+    assert response.status_code == 403
+
+
+def test_alerts_page_shows_the_real_empty_state(db_session):
+    _seed_customer_membership(db_session)
+    client = _client(db_session)
+    response = client.get("/app/alerts", headers=_auth_headers(role=MembershipRole.CUSTOMER))
+    assert response.status_code == 200
+    assert "There are no alerts available for this selection and period." in response.text
+
+
+def test_alerts_page_shows_the_real_entitled_alert(db_session):
+    product, selection, intent = _seed_customer_alert_fixture(db_session)
+    client = _client(db_session)
+    response = client.get("/app/alerts", headers=_auth_headers(role=MembershipRole.CUSTOMER))
+    assert response.status_code == 200
+    assert intent.intent_id in response.text
+    assert "AAPL" in response.text
+    assert f"/app/activity/{intent.episode_id}" in response.text
+
+
+def test_alerts_page_does_not_leak_another_tenants_alert(db_session):
+    _seed_customer_alert_fixture(db_session, tenant_id="tenant-a", user_id="user-a", slug="http-alerts-a", portfolio_version_id="pv-alerts-a", episode_id="ep-alerts-a")
+    _seed_customer_membership(db_session, tenant_id="tenant-b", user_id="user-b")
+    client = _client(db_session)
+    response = client.get(
+        "/app/alerts", headers=_auth_headers(tenant_id="tenant-b", user_id="user-b", role=MembershipRole.CUSTOMER)
+    )
+    assert response.status_code == 200
+    assert "ep-alerts-a" not in response.text
+    assert "There are no alerts available for this selection and period." in response.text
+
+
+def test_activity_detail_page_requires_customer_role(db_session):
+    client = _client(db_session)
+    response = client.get("/app/activity/nonexistent-episode", headers=_auth_headers(role=MembershipRole.OWNER))
+    assert response.status_code == 403
+
+
+def test_activity_detail_page_is_a_scoped_not_found_for_an_unknown_episode(db_session):
+    _seed_customer_membership(db_session)
+    client = _client(db_session)
+    response = client.get(
+        "/app/activity/nonexistent-episode", headers=_auth_headers(role=MembershipRole.CUSTOMER)
+    )
+    assert response.status_code == 404
+
+
+def test_activity_detail_page_shows_the_real_episode_revisions(db_session):
+    product, selection, intent = _seed_customer_alert_fixture(db_session, episode_id="ep-detail-http-1")
+    client = _client(db_session)
+    response = client.get(f"/app/activity/{intent.episode_id}", headers=_auth_headers(role=MembershipRole.CUSTOMER))
+    assert response.status_code == 200
+    assert intent.episode_id in response.text
+    assert "AAPL" in response.text
+    assert "UNSUPPORTED" in response.text
+
+
+def test_activity_detail_page_is_a_scoped_not_found_across_tenants(db_session):
+    # LOAD_BEARING: this is the exact tenant-isolation invariant --
+    # customer A's own episode must never be readable by a different
+    # tenant's customer, even when the episode_id is known.
+    product, selection, intent = _seed_customer_alert_fixture(
+        db_session, tenant_id="tenant-a", user_id="user-a", slug="http-alerts-x", portfolio_version_id="pv-alerts-x", episode_id="ep-alerts-x"
+    )
+    _seed_customer_membership(db_session, tenant_id="tenant-b", user_id="user-b")
+    client = _client(db_session)
+    other_tenant_headers = _auth_headers(tenant_id="tenant-b", user_id="user-b", role=MembershipRole.CUSTOMER)
+    response = client.get(f"/app/activity/{intent.episode_id}", headers=other_tenant_headers)
+    assert response.status_code == 404
+
+
+def test_activity_detail_page_is_a_scoped_not_found_for_a_different_customer_in_the_same_tenant(db_session):
+    product, selection, intent = _seed_customer_alert_fixture(
+        db_session, tenant_id="tenant-a", user_id="user-a", slug="http-alerts-y", portfolio_version_id="pv-alerts-y", episode_id="ep-alerts-y"
+    )
+    from app.models.tenancy import Membership, UserIdentity
+
+    db_session.add(UserIdentity(user_id="user-c", email="user-c@example.com"))
+    db_session.flush()
+    db_session.add(Membership(tenant_id="tenant-a", user_id="user-c", role=MembershipRole.CUSTOMER))
+    db_session.commit()
+    client = _client(db_session)
+    other_customer_headers = _auth_headers(tenant_id="tenant-a", user_id="user-c", role=MembershipRole.CUSTOMER)
+    response = client.get(f"/app/activity/{intent.episode_id}", headers=other_customer_headers)
+    assert response.status_code == 404
+
+
+def test_performance_page_requires_customer_role(db_session):
+    client = _client(db_session)
+    response = client.get("/app/performance", headers=_auth_headers(role=MembershipRole.OWNER))
+    assert response.status_code == 403
+
+
+def test_performance_page_shows_not_connected_with_no_connection(db_session):
+    _seed_customer_membership(db_session)
+    client = _client(db_session)
+    response = client.get("/app/performance", headers=_auth_headers(role=MembershipRole.CUSTOMER))
+    assert response.status_code == 200
+    assert "NOT_CONNECTED" in response.text
+    assert "UNSUPPORTED" in response.text
+
+
+def test_performance_page_shows_awaiting_observations_once_connected(db_session):
+    _seed_customer_membership(db_session)
+    client = _client(db_session)
+    headers = _auth_headers(role=MembershipRole.CUSTOMER)
+    client.post(
+        "/app/connections/new",
+        data={"platform": "collective2", "environment": "local_simulation", "masked_account_label": "acct-http-1"},
+        headers=headers,
+    )
+    response = client.get("/app/performance", headers=headers)
+    assert response.status_code == 200
+    assert "AWAITING_OBSERVATIONS" in response.text
+
+
+def test_billing_page_requires_customer_role(db_session):
+    client = _client(db_session)
+    response = client.get("/app/billing", headers=_auth_headers(role=MembershipRole.OWNER))
+    assert response.status_code == 403
+
+
+def test_billing_page_shows_the_real_empty_state(db_session):
+    _seed_customer_membership(db_session)
+    client = _client(db_session)
+    response = client.get("/app/billing", headers=_auth_headers(role=MembershipRole.CUSTOMER))
+    assert response.status_code == 200
+    assert "You have no subscription or invoices." in response.text
+    assert "UNSUPPORTED" in response.text
+
+
+def test_billing_page_shows_the_real_tenant_subscription(db_session):
+    from datetime import datetime, timedelta, timezone
+
+    from app.models.billing import ProductTier, Subscription, SubscriptionState
+
+    _seed_customer_membership(db_session)
+    subscription = Subscription(
+        tenant_id="tenant-a",
+        tier=ProductTier.ALERTS_ONE,
+        state=SubscriptionState.ACTIVE_PAID,
+        price_cents=3900,
+        currency="usd",
+        current_period_end=datetime.now(timezone.utc) + timedelta(days=30),
+    )
+    db_session.add(subscription)
+    db_session.commit()
+
+    client = _client(db_session)
+    response = client.get("/app/billing", headers=_auth_headers(role=MembershipRole.CUSTOMER))
+    assert response.status_code == 200
+    assert "ALESRTS_ONE" not in response.text  # sanity: no accidental typo leaks through templating
+    assert "ALERTS_ONE" in response.text
+    assert "39.00 USD" in response.text
+    assert "True" in response.text  # authorizes_new_entry
+
+
+def test_billing_page_does_not_leak_another_tenants_subscription(db_session):
+    from datetime import datetime, timedelta, timezone
+
+    from app.models.billing import ProductTier, Subscription, SubscriptionState
+
+    _seed_customer_membership(db_session, tenant_id="tenant-a", user_id="user-a")
+    _seed_customer_membership(db_session, tenant_id="tenant-b", user_id="user-b")
+    subscription = Subscription(
+        tenant_id="tenant-a",
+        tier=ProductTier.PRO_RESEARCH_API,
+        state=SubscriptionState.ACTIVE_PAID,
+        price_cents=19900,
+        currency="usd",
+        current_period_end=datetime.now(timezone.utc) + timedelta(days=30),
+    )
+    db_session.add(subscription)
+    db_session.commit()
+
+    client = _client(db_session)
+    response = client.get(
+        "/app/billing", headers=_auth_headers(tenant_id="tenant-b", user_id="user-b", role=MembershipRole.CUSTOMER)
+    )
+    assert response.status_code == 200
+    assert "PRO_RESEARCH_API" not in response.text
+    assert "You have no subscription or invoices." in response.text
+
+
+def test_managed_programs_page_requires_customer_role(db_session):
+    client = _client(db_session)
+    response = client.get("/app/managed-programs", headers=_auth_headers(role=MembershipRole.OWNER))
+    assert response.status_code == 403
+
+
+def test_managed_programs_page_shows_the_real_empty_state_and_checklist(db_session):
+    _seed_customer_membership(db_session)
+    client = _client(db_session)
+    response = client.get("/app/managed-programs", headers=_auth_headers(role=MembershipRole.CUSTOMER))
+    assert response.status_code == 200
+    assert "No approved managed-account program is available to you." in response.text
+    assert "NOT_MET" in response.text
+
+
+def test_managed_programs_page_never_shows_a_draft_program_from_another_tenant(db_session):
+    from app.models.managed_program import ManagedProgram, ManagedProgramMode
+
+    _seed_customer_membership(db_session, tenant_id="tenant-a", user_id="user-a")
+    program = ManagedProgram(
+        tenant_id="tenant-a",
+        program_name="Draft Program HTTP",
+        broker_program_id="broker-prog-http-1",
+        mode=ManagedProgramMode.PAMM,
+        allocation_policy_id="alloc-policy-1",
+        nav_policy_id="nav-policy-1",
+        dealing_schedule_id="dealing-1",
+        fee_policy_id=None,
+        agreement_evidence_ids=["ev-1"],
+    )
+    db_session.add(program)
+    db_session.commit()
+
+    client = _client(db_session)
+    response = client.get("/app/managed-programs", headers=_auth_headers(role=MembershipRole.CUSTOMER))
+    assert response.status_code == 200
+    assert "Draft Program HTTP" not in response.text
+    assert "No approved managed-account program is available to you." in response.text

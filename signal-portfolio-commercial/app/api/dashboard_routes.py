@@ -135,6 +135,29 @@ what is and is not implemented yet.
   against audit_events, matching ledger_entries' own append-only
   precedent. Evidence manifest and Export queue are NOT implemented --
   no evidence-bundling or export-job infrastructure exists.
+- CU-04 "Alerts and delivery history" / CU-05 "Alert, trade and
+  order-family detail": a customer's own real, entitled publication-
+  intent timeline (scoped through PortfolioVersion -> Product -> the
+  customer's own ACTIVE PortfolioSelection, never every intent the
+  tenant has published) and its per-episode revision history. Delivery
+  receipts and execution/fees are NOT implemented -- no delivery-
+  attempt/acknowledgment model or ledger-to-episode link exists.
+- CU-06 "Performance and costs": a customer's own real, reconciled
+  Book.FOLLOWER performance, scoped to that customer's own declared
+  connections only (never the tenant's whole FOLLOWER book). Costs/cash
+  flows, attribution, drawdown and win rate are NOT implemented -- no
+  cashflow ledger, subscription-to-selection linkage or episode/equity-
+  curve concept exists.
+- CU-11 "Billing, invoices and plan changes": the tenant's own real,
+  shared Subscription state (this schema has no per-customer
+  subscription) plus real entitlement flags. Invoices, hosted checkout/
+  portal and pending changes are NOT implemented -- no Stripe transport
+  exists in this build (payment processor approval is still pending).
+- CU-15 "Managed program investor report": a real (always-empty today)
+  customer-visible program query plus a real independent eligibility
+  checklist -- ManagedProgramState has no admitted/approved value yet,
+  so no program can legitimately be shown to a customer until a future
+  admission slice adds one.
 """
 from __future__ import annotations
 
@@ -237,6 +260,10 @@ from app.services.customer_display_preferences import (
 )
 from app.services.customer_overview import get_customer_overview
 from app.services.customer_selection_detail import get_own_selection_detail
+from app.services.customer_alerts import get_own_alert_episode, list_own_alerts
+from app.services.customer_performance_report import get_own_performance_report
+from app.services.customer_billing import get_own_billing_state
+from app.services.customer_managed_programs import get_own_managed_programs_view
 from app.services.notification_preferences import (
     InvalidNotificationPreferencesError,
     get_notification_preferences,
@@ -2294,6 +2321,119 @@ def customer_selection_detail_page(
     if detail is None:
         raise HTTPException(status_code=404, detail="not found")
     return templates.TemplateResponse(request, "cu03_selection_detail.html", {"detail": detail})
+
+
+def _require_own_alerts(scope: TenantScope) -> None:
+    try:
+        require_permission(scope.role, "view_own_alerts")
+    except PermissionDenied as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+
+@router.get("/app/alerts")
+def customer_alerts_page(
+    request: Request,
+    scope: TenantScope = Depends(get_current_scope),
+    session: Session = Depends(get_db_session),
+):
+    """CU-04 "Alerts and delivery history" -- see
+    app/services/customer_alerts.py's own docstring for what is and is
+    not implemented."""
+    _require_own_alerts(scope)
+    set_tenant_scope(session, scope.tenant_id)
+    alerts = list_own_alerts(session, tenant_id=scope.tenant_id, user_id=scope.user_id)
+    return templates.TemplateResponse(request, "cu04_alerts.html", {"alerts": alerts})
+
+
+def _require_own_activity_detail(scope: TenantScope) -> None:
+    try:
+        require_permission(scope.role, "view_own_activity_detail")
+    except PermissionDenied as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+
+@router.get("/app/activity/{episode_id}")
+def customer_activity_detail_page(
+    episode_id: str,
+    request: Request,
+    scope: TenantScope = Depends(get_current_scope),
+    session: Session = Depends(get_db_session),
+):
+    """CU-05 "Alert, trade and order-family detail" -- see
+    app/services/customer_alerts.py's own docstring for what is and is
+    not implemented."""
+    _require_own_activity_detail(scope)
+    set_tenant_scope(session, scope.tenant_id)
+    detail = get_own_alert_episode(session, episode_id, tenant_id=scope.tenant_id, user_id=scope.user_id)
+    if detail is None:
+        raise HTTPException(status_code=404, detail="not found")
+    return templates.TemplateResponse(request, "cu05_activity_detail.html", {"detail": detail})
+
+
+def _require_own_performance(scope: TenantScope) -> None:
+    try:
+        require_permission(scope.role, "view_own_performance")
+    except PermissionDenied as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+
+@router.get("/app/performance")
+def customer_performance_page(
+    request: Request,
+    scope: TenantScope = Depends(get_current_scope),
+    session: Session = Depends(get_db_session),
+):
+    """CU-06 "Performance and costs" -- see
+    app/services/customer_performance_report.py's own docstring for what
+    is and is not implemented."""
+    _require_own_performance(scope)
+    set_tenant_scope(session, scope.tenant_id)
+    report = get_own_performance_report(session, tenant_id=scope.tenant_id, user_id=scope.user_id)
+    return templates.TemplateResponse(request, "cu06_performance.html", {"report": report})
+
+
+def _require_own_billing(scope: TenantScope) -> None:
+    try:
+        require_permission(scope.role, "view_own_billing")
+    except PermissionDenied as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+
+@router.get("/app/billing")
+def customer_billing_page(
+    request: Request,
+    scope: TenantScope = Depends(get_current_scope),
+    session: Session = Depends(get_db_session),
+):
+    """CU-11 "Billing, invoices and plan changes" -- see
+    app/services/customer_billing.py's own docstring for what is and is
+    not implemented."""
+    _require_own_billing(scope)
+    set_tenant_scope(session, scope.tenant_id)
+    billing_state = get_own_billing_state(session, tenant_id=scope.tenant_id)
+    return templates.TemplateResponse(request, "cu11_billing.html", {"billing_state": billing_state})
+
+
+def _require_own_managed_programs(scope: TenantScope) -> None:
+    try:
+        require_permission(scope.role, "view_own_managed_programs")
+    except PermissionDenied as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+
+@router.get("/app/managed-programs")
+def customer_managed_programs_page(
+    request: Request,
+    scope: TenantScope = Depends(get_current_scope),
+    session: Session = Depends(get_db_session),
+):
+    """CU-15 "Managed program investor report" -- see
+    app/services/customer_managed_programs.py's own docstring for what
+    is and is not implemented."""
+    _require_own_managed_programs(scope)
+    set_tenant_scope(session, scope.tenant_id)
+    view = get_own_managed_programs_view(session, tenant_id=scope.tenant_id, user_id=scope.user_id)
+    return templates.TemplateResponse(request, "cu15_managed_programs.html", {"view": view})
 
 
 def _require_portfolio_selections(scope: TenantScope) -> None:

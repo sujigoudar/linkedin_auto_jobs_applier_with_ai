@@ -1,0 +1,68 @@
+{% extends "_base.html" %}
+{% block title %}Alert, trade and order-family detail{% endblock %}
+{% block content %}
+<h1>Alert, trade and order-family detail</h1>
+
+{% set latest = detail.revisions[0] %}
+
+<div class="panel">
+  <h2>Identity and origin</h2>
+  <p><strong>Episode:</strong> {{ detail.episode_id }}</p>
+  <p><strong>Portfolio version:</strong> {{ latest.portfolio_version_id }}</p>
+  <p><strong>Origin channel:</strong> {{ latest.channel }} ({{ latest.external_strategy_id }})</p>
+  <p><strong>Instrument:</strong> {{ latest.instrument_id }}</p>
+  <p><strong>Environment:</strong> {{ latest.environment.value }}</p>
+</div>
+
+<div class="panel">
+  <h2>Instruction revisions</h2>
+  <table>
+    <thead><tr><th>Revision</th><th>Action</th><th>Quantity</th><th>Basis</th><th>Lifecycle state</th><th>Valid from</th><th>Expires</th></tr></thead>
+    <tbody>
+      {% for revision in detail.revisions %}
+      <tr>
+        <td>{{ revision.revision }}</td>
+        <td>{{ revision.action.value }}</td>
+        <td>{{ revision.quantity if revision.quantity is not none else "n/a" }}</td>
+        <td>{{ revision.quantity_basis.value }}</td>
+        <td><span class="badge badge-unknown">{{ revision.state.value }}</span></td>
+        <td>{{ revision.valid_from }}</td>
+        <td>{{ revision.expires_at }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="panel">
+  <h2>Publication/delivery timeline</h2>
+  <table>
+    <thead><tr><th>Revision</th><th>Lifecycle state</th><th>Created (published)</th></tr></thead>
+    <tbody>
+      {% for revision in detail.revisions %}
+      <tr>
+        <td>{{ revision.revision }}</td>
+        <td>{{ revision.state.value }}</td>
+        <td>{{ revision.created_at }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <p class="help"><span class="badge badge-unknown">UNSUPPORTED</span> -- receipt time/actor/delivery acknowledgment has no backing model in this build; only this platform's own publication record is shown above, never a fabricated delivery timestamp.</p>
+</div>
+
+<div class="panel">
+  <h2>Execution and fees</h2>
+  <p><span class="badge badge-unknown">UNSUPPORTED</span> -- no ledger-to-episode link exists in this build (LedgerEntry has no episode_id). Owned quantity and native-covered quantity are unavailable, not zero.</p>
+</div>
+
+<div class="panel">
+  <h2>Protection coverage</h2>
+  <p><span class="badge badge-unknown">UNSUPPORTED</span> -- unknown stop coverage is never rendered protected. No working-protection tracking model exists in this build.</p>
+</div>
+
+<div class="panel">
+  <h2>Errors and help</h2>
+  <p><a href="/app/support">Report a discrepancy (CU-14)</a> -- include this episode id ({{ detail.episode_id }}) in your case description.</p>
+</div>
+{% endblock %}

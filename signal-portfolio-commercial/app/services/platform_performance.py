@@ -126,13 +126,28 @@ def compute_platform_performance(session: Session, *, tenant_id: str) -> Platfor
     return compute_book_performance(session, tenant_id=tenant_id, book=Book.PLATFORM)
 
 
-def compute_book_performance(session: Session, *, tenant_id: str, book: Book) -> PlatformPerformanceReport:
+def compute_book_performance(
+    session: Session,
+    *,
+    tenant_id: str,
+    book: Book,
+    follower_connection_ids: frozenset[str] | None = None,
+) -> PlatformPerformanceReport:
+    """`follower_connection_ids`, when given, additionally restricts the
+    replay to `LedgerEntry.follower_connection_id` in that set -- only
+    meaningful (and only ever passed) for `book == Book.FOLLOWER`: a
+    tenant's own `Book.FOLLOWER` rows span every one of its customers'
+    own connections, so a caller reporting ONE customer's own reconciled
+    result (CU-06 "Performance and costs") must narrow to that
+    customer's own connection ids first, or it would silently mix
+    another customer's executions into this one's report. `None` (the
+    default) keeps this function's original tenant-wide behavior for
+    every existing caller."""
+    filters = [LedgerEntry.tenant_id == tenant_id, LedgerEntry.book == book]
+    if follower_connection_ids is not None:
+        filters.append(LedgerEntry.follower_connection_id.in_(follower_connection_ids))
     all_entries = list(
-        session.scalars(
-            select(LedgerEntry)
-            .where(LedgerEntry.tenant_id == tenant_id, LedgerEntry.book == book)
-            .order_by(LedgerEntry.event_time, LedgerEntry.created_at)
-        ).all()
+        session.scalars(select(LedgerEntry).where(*filters).order_by(LedgerEntry.event_time, LedgerEntry.created_at)).all()
     )
 
     # Fold fee corrections into their root entry rather than replaying

@@ -185,6 +185,23 @@ _ALLOWED: dict[str, frozenset[Role]] = {
     #: read-only, matching "support cannot view broker credentials"'s
     #: precedent of a role that reads but does not act.
     "manage_incidents": frozenset({Role.OWNER, Role.PUBLISHER_OPERATOR}),
+    #: CU-04 "Alerts and delivery history" -- a customer's own entitled
+    #: alert timeline, same shape as "view_own_customer_overview" and its
+    #: siblings.
+    "view_own_alerts": frozenset({Role.CUSTOMER}),
+    #: CU-05 "Alert, trade and order-family detail" -- a customer's own
+    #: episode detail, same shape as "view_own_alerts".
+    "view_own_activity_detail": frozenset({Role.CUSTOMER}),
+    #: CU-06 "Performance and costs" -- a customer's own reconciled
+    #: results, same shape as "view_own_alerts".
+    "view_own_performance": frozenset({Role.CUSTOMER}),
+    #: CU-11 "Billing, invoices and plan changes" -- a customer's own
+    #: tenant-shared billing state, same shape as "view_own_alerts".
+    "view_own_billing": frozenset({Role.CUSTOMER}),
+    #: CU-15 "Managed program investor report" -- a customer's own
+    #: managed-program eligibility/status, same shape as
+    #: "view_own_alerts".
+    "view_own_managed_programs": frozenset({Role.CUSTOMER}),
 }
 
 

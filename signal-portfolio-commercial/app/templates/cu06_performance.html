@@ -1,0 +1,69 @@
+{% extends "_base.html" %}
+{% block title %}Performance and costs{% endblock %}
+{% block content %}
+<h1>Performance and costs</h1>
+
+<div class="panel">
+  <h2>Book selector</h2>
+  <p>Book: <strong>actual</strong> (your own executed account) -- reconciled separately from model or platform records.</p>
+  {% if report.connections %}
+  <table>
+    <thead><tr><th>Connection</th><th>Platform</th><th>State</th></tr></thead>
+    <tbody>
+      {% for connection in report.connections %}
+      <tr>
+        <td>{{ connection.connection_id }}</td>
+        <td>{{ connection.platform }}</td>
+        <td>{{ connection.state.value }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p>No platform connection is declared yet.</p>
+  {% endif %}
+</div>
+
+<div class="panel">
+  <h2>Return/drawdown charts</h2>
+  {% if report.performance_state.value == "available" %}
+  <table>
+    <thead><tr><th>Instrument</th><th>Realized P&amp;L</th><th>Net P&amp;L</th><th>Open quantity</th></tr></thead>
+    <tbody>
+      {% for instrument, ip in report.report.per_instrument.items() %}
+      <tr>
+        <td>{{ instrument }}</td>
+        <td>{{ ip.realized_pnl }}</td>
+        <td>{{ ip.net_pnl if ip.net_pnl is not none else "unavailable (fee not yet confirmed)" }}</td>
+        <td>{{ ip.open_quantity }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <p><strong>M-CU-06-01 Net P&amp;L:</strong> {{ report.report.net_pnl if report.report.net_pnl is not none else "unavailable" }}</p>
+  {% elif report.performance_state.value == "awaiting_observations" %}
+  <p><span class="badge badge-unknown">AWAITING_OBSERVATIONS</span> -- connected, but no authorized execution observation has ever been recorded for this account yet. Never a zero or a guessed figure.</p>
+  {% else %}
+  <p><span class="badge badge-unknown">NOT_CONNECTED</span> -- no platform connection backs this account yet.</p>
+  {% endif %}
+  <p><span class="badge badge-unknown">UNSUPPORTED</span> -- maximum drawdown (M-CU-06-02) needs a chronological normalized-equity series this build does not compute; never a guessed figure.</p>
+</div>
+
+<div class="panel">
+  <h2>Costs and cash flows</h2>
+  <p><span class="badge badge-unknown">UNSUPPORTED</span> -- no subscription-to-selection linkage or deposit/withdrawal ledger exists in this build. Subscription cost basis and deposits/withdrawals are unavailable, not zero.</p>
+</div>
+
+<div class="panel">
+  <h2>Attribution</h2>
+  <p><span class="badge badge-unknown">UNSUPPORTED</span> -- no cost/return attribution model exists in this build.</p>
+  <p><span class="badge badge-unknown">UNSUPPORTED</span> -- completed-episode win rate (M-CU-06-03) needs an episode/trade-completion concept this build does not compute.</p>
+</div>
+
+<div class="panel">
+  <h2>Data-quality table</h2>
+  <p><strong>M-CU-06-04 Unresolved items:</strong>
+    {% if report.unresolved_item_count is not none %}{{ report.unresolved_item_count }}{% else %}<span class="badge badge-unknown">UNKNOWN</span> -- no declared connection to scope a snapshot over yet{% endif %}
+  </p>
+</div>
+{% endblock %}

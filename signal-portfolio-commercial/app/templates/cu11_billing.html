@@ -1,0 +1,51 @@
+{% extends "_base.html" %}
+{% block title %}Billing, invoices and plan changes{% endblock %}
+{% block content %}
+<h1>Billing, invoices and plan changes</h1>
+
+<div class="panel">
+  <h2>Current plan</h2>
+  {% if billing_state.current %}
+  <p><strong>Tier:</strong> {{ billing_state.current.tier.value }}</p>
+  <p><strong>State:</strong> <span class="badge badge-unknown">{{ billing_state.current.state.value }}</span></p>
+  <p><strong>Price:</strong> {{ "%.2f"|format(billing_state.current.price_cents / 100) }} {{ billing_state.current.currency|upper }} / month</p>
+  <p><strong>Current period end:</strong> {{ billing_state.current.current_period_end }}</p>
+  {% else %}
+  <div class="empty-state">
+    <p>You have no subscription or invoices.</p>
+    <p><a href="/pricing">Review pricing and service compatibility (PU-05) &rarr;</a></p>
+  </div>
+  {% endif %}
+</div>
+
+<div class="panel">
+  <h2>Pending changes</h2>
+  <p><span class="badge badge-unknown">UNSUPPORTED</span> -- no payment processor connection exists in this build (no Stripe transport), so no scheduled/pending change quote can be shown.</p>
+</div>
+
+<div class="panel">
+  <h2>Invoices</h2>
+  <p><span class="badge badge-unknown">UNSUPPORTED</span> -- no invoice model exists in this build; there is nothing to list or download here.</p>
+</div>
+
+<div class="panel">
+  <h2>Usage entitlement</h2>
+  {% if billing_state.current %}
+  <p><strong>Authorizes new premium actions:</strong> {{ billing_state.authorizes_new_entry }}</p>
+  <p><strong>Authorizes risk-reducing management:</strong> {{ billing_state.authorizes_risk_reducing_management }}</p>
+  <p class="help">A payment outage never stops existing position management or revokes protective orders -- these two flags are deliberately independent.</p>
+  {% else %}
+  <p>No subscription exists to derive entitlement from.</p>
+  {% endif %}
+</div>
+
+<div class="panel">
+  <h2>Platform fee distinction</h2>
+  <p>Your subscription cost above is this platform's own service fee. It is separate from, and never merged with, any broker/exchange execution fee or spread charged by your own connected trading account.</p>
+</div>
+
+<div class="panel">
+  <h2>Actions</h2>
+  <p><span class="badge badge-unknown">UNSUPPORTED</span> -- start hosted checkout and manage subscription both require a real payment-processor session (Stripe checkout/portal); no Stripe transport exists in this build (payment processor approval is still pending). No card input is ever accepted directly in this app.</p>
+</div>
+{% endblock %}

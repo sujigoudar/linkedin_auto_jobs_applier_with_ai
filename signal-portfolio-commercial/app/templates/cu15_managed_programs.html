@@ -1,0 +1,69 @@
+{% extends "_base.html" %}
+{% block title %}Managed program investor report{% endblock %}
+{% block content %}
+<h1>Managed program investor report</h1>
+
+<div class="panel">
+  <h2>Program eligibility</h2>
+  <table>
+    <thead><tr><th>Condition</th><th>Outcome</th><th>Reason</th></tr></thead>
+    <tbody>
+      {% for item in view.eligibility_checklist %}
+      <tr>
+        <td>{{ item.condition }}</td>
+        <td>
+          {% if item.outcome == "MET" %}<span class="badge badge-published">MET</span>
+          {% elif item.outcome == "PENDING" %}<span class="badge badge-queued">PENDING</span>
+          {% elif item.outcome == "NOT_MET" %}<span class="badge badge-denied">NOT_MET</span>
+          {% else %}<span class="badge badge-unknown">{{ item.outcome }}</span>{% endif %}
+        </td>
+        <td>{{ item.reason }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+{% if view.programs %}
+<div class="panel">
+  <h2>Broker mandate</h2>
+  <table>
+    <thead><tr><th>Program</th><th>Broker program</th><th>Mode</th></tr></thead>
+    <tbody>
+      {% for program in view.programs %}
+      <tr>
+        <td>{{ program.program_name }}</td>
+        <td>{{ program.broker_program_id }}</td>
+        <td>{{ program.mode.value }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+<div class="empty-state">
+  <p>No approved managed-account program is available to you.</p>
+  <p><a href="/help">Read the help and compatibility guide (PU-08) &rarr;</a></p>
+</div>
+{% endif %}
+
+<div class="panel">
+  <h2>NAV/units/allocation</h2>
+  <p><span class="badge badge-unknown">UNSUPPORTED</span> -- no approved program admission exists; there is no NAV, unit or allocation record to show. No invented NAV or fee arithmetic.</p>
+</div>
+
+<div class="panel">
+  <h2>Fees/cashflow requests</h2>
+  <p><span class="badge badge-unknown">UNSUPPORTED</span> -- same gap as NAV/units/allocation above; no dealing-request record exists in this build.</p>
+</div>
+
+<div class="panel">
+  <h2>Documents</h2>
+  <p><span class="badge badge-unknown">UNSUPPORTED</span> -- no document store is linked to a managed program in this build.</p>
+</div>
+
+<div class="panel">
+  <h2>Actions</h2>
+  <p><span class="badge badge-unknown">UNSUPPORTED</span> -- opening a broker program, reviewing a statement and requesting a permitted dealing action all require an actually approved broker-native program admission, which does not exist yet. Cash moves only through a broker-approved flow -- never a Stripe deposit into an investment.</p>
+</div>
+{% endblock %}
