@@ -250,6 +250,33 @@ class PositionLifecycleManager:
         state = _lifecycle_to_state(lifecycle, self.arbiter.snapshot(account_id, symbol))
         self.store.save_lifecycle_state(account_id, symbol, state)
 
+    def _persist_closed_excursion(
+        self, lifecycle: PositionLifecycle, account: DestinationAccount, symbol: str
+    ) -> None:
+        """PU-A1: write this now-closed position's final MAE/MFE to
+        `SignalStore.position_excursions` — a durable row that survives
+        both `delete_lifecycle_state` (this lifecycle's in-progress record)
+        and a process restart, so a later analytics/chart batch can query a
+        closed position's excursion the same way it queries any other
+        historical trade record. A no-op with no store wired in (same
+        convention as `_persist`)."""
+        if self.store is None:
+            return
+        self.store.record_position_excursion(
+            account.account_id,
+            symbol,
+            side=lifecycle.plan.side.value,
+            entry_price=lifecycle.entry_price,
+            highest_price_since_entry=lifecycle.highest_price_since_entry,
+            highest_price_at=lifecycle.highest_price_at,
+            lowest_price_since_entry=lifecycle.lowest_price_since_entry,
+            lowest_price_at=lifecycle.lowest_price_at,
+            mae=lifecycle.mae,
+            mfe=lifecycle.mfe,
+            has_price_data=lifecycle.has_price_data,
+            closed_at=datetime.now(timezone.utc),
+        )
+
     def validate_plan(self, plan: PositionPlan) -> str | None:
         """Design section 11: no provider stop, no released fallback -> NO ENTRY.
         The caller resolves fallbacks (provider -> strategy -> asset-level) and
@@ -354,14 +381,26 @@ class PositionLifecycleManager:
             self.store.delete_lifecycle_state(account_id, symbol)
 
     async def on_entry_fill(
-        self, account: DestinationAccount, symbol: str, filled_quantity: float
+        self, account: DestinationAccount, symbol: str, filled_quantity: float, entry_price: float | None = None
     ) -> PositionLifecycle:
         """Call once the entry order confirms a fill — `filled_quantity` is the
         total confirmed so far (design section 2: "Confirmed owned quantity =
         62", not a delta). Immediately submits protection before returning,
-        per the core rule: protect first, everything else follows."""
+        per the core rule: protect first, everything else follows.
+
+        `entry_price` (PU-A1): the real confirmed fill price for this entry
+        (e.g. `OrderResult.filled_price` at the call site) — seeds MAE/MFE
+        tracking (see PositionLifecycle.observe_price/mae/mfe). None (the
+        default) when the caller has no price for this fill; MAE/MFE then
+        stay honestly unknown (None) rather than assumed to be 0. Only sets
+        it once — a repeated/resumed call for an already-priced lifecycle
+        never overwrites the original entry price."""
         lifecycle = self._lifecycles[(account.account_id, symbol)]
         broker = self.brokers.get(account.broker)
+
+        if entry_price is not None and lifecycle.entry_price is None:
+            lifecycle.entry_price = entry_price
+            lifecycle.observe_price(entry_price, datetime.now(timezone.utc))
 
         async with self.arbiter.transition(account.account_id, symbol) as tx:
             lifecycle.confirmed_owned_quantity = filled_quantity
@@ -591,9 +630,21 @@ class PositionLifecycleManager:
     async def on_price_update(self, account: DestinationAccount, symbol: str, price: float) -> list[OrderResult]:
         """Evaluate logical targets and trailing against a new price. Call this
         from whatever feed you have wired up for this broker (see this
-        module's docstring — no feed is wired up generically)."""
+        module's docstring — no feed is wired up generically).
+
+        PU-A1: every call here is, by this module's own contract, a real
+        broker/feed-reported price (see app/pricing.py's PriceMonitor and
+        this method's callers) — so it always updates MAE/MFE tracking via
+        `PositionLifecycle.observe_price`, even while halted (a halt blocks
+        new exits, not honest observation of where price actually went)."""
         lifecycle = self._lifecycles.get((account.account_id, symbol))
-        if lifecycle is None or lifecycle.closed or self.arbiter.is_halted(account.account_id, symbol):
+        if lifecycle is None or lifecycle.closed:
+            return []
+
+        lifecycle.observe_price(price, datetime.now(timezone.utc))
+        self._persist(lifecycle)
+
+        if self.arbiter.is_halted(account.account_id, symbol):
             return []
 
         if await self._consume_expired_time_exit(lifecycle):
@@ -873,10 +924,20 @@ class PositionLifecycleManager:
     ) -> None:
         """Single execution-application owner for a confirmed exit fill —
         called once from `request_exit`'s synchronous branch, once from
-        `resolve_pending_exit`'s terminal branch. Applies the confirmed
-        delta to `SignalStore.positions` atomically alongside the lifecycle
+        `resolve_pending_exit`'s terminal branch, and once from
+        `on_stop_filled`. Applies the confirmed delta to
+        `SignalStore.positions` atomically alongside the lifecycle
         checkpoint that already reflects it (or just persists the lifecycle
-        if there's nothing to apply / no store wired in)."""
+        if there's nothing to apply / no store wired in).
+
+        PU-A1: this is also the single place every path that can close a
+        lifecycle converges on, so it's the one place that finalizes this
+        position's MAE/MFE into `SignalStore.position_excursions` —
+        `lifecycle_state` (the in-progress record) is deleted once closed
+        (see below), so without this, a closed position's excursion data
+        would vanish rather than remain queryable for later analytics."""
+        if lifecycle.closed:
+            self._persist_closed_excursion(lifecycle, account, symbol)
         if self.store is not None and filled_quantity > 0:
             state = None if lifecycle.closed else _lifecycle_to_state(
                 lifecycle, self.arbiter.snapshot(account.account_id, symbol)
@@ -1144,6 +1205,13 @@ def _lifecycle_to_state(lifecycle: PositionLifecycle, ledger: dict) -> dict:
     return {
         "closed": lifecycle.closed,
         "confirmed_owned_quantity": lifecycle.confirmed_owned_quantity,
+        # PU-A1: in-progress MAE/MFE tracking, so a restart resumes it
+        # instead of losing every observation made before the crash.
+        "entry_price": lifecycle.entry_price,
+        "highest_price_since_entry": lifecycle.highest_price_since_entry,
+        "highest_price_at": lifecycle.highest_price_at.isoformat() if lifecycle.highest_price_at else None,
+        "lowest_price_since_entry": lifecycle.lowest_price_since_entry,
+        "lowest_price_at": lifecycle.lowest_price_at.isoformat() if lifecycle.lowest_price_at else None,
         "plan": {
             "account_id": plan.account_id,
             "symbol": plan.symbol,
@@ -1277,6 +1345,8 @@ def _lifecycle_from_state(row: dict) -> PositionLifecycle:
         )
     )
 
+    highest_price_at_row = row.get("highest_price_at")
+    lowest_price_at_row = row.get("lowest_price_at")
     return PositionLifecycle(
         plan=plan,
         confirmed_owned_quantity=row.get("confirmed_owned_quantity", 0.0),
@@ -1284,4 +1354,9 @@ def _lifecycle_from_state(row: dict) -> PositionLifecycle:
         closed=row.get("closed", False),
         pending_exit=pending_exit,
         pending_entry=pending_entry,
+        entry_price=row.get("entry_price"),
+        highest_price_since_entry=row.get("highest_price_since_entry"),
+        highest_price_at=datetime.fromisoformat(highest_price_at_row) if highest_price_at_row else None,
+        lowest_price_since_entry=row.get("lowest_price_since_entry"),
+        lowest_price_at=datetime.fromisoformat(lowest_price_at_row) if lowest_price_at_row else None,
     )

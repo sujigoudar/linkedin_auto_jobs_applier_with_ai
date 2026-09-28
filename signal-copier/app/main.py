@@ -879,6 +879,21 @@ async def list_positions(_owner: dict = Depends(require_owner_read)) -> dict:
     return {"positions": store.list_open_positions(), "managed_lifecycles": _managed_lifecycle_snapshot()}
 
 
+@app.get("/positions/excursions")
+async def list_position_excursions(
+    account_id: str | None = Query(default=None),
+    symbol: str | None = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=500),
+    _owner: dict = Depends(require_owner_read),
+) -> dict:
+    """PU-A1: final MAE/MFE for CLOSED positions, newest-closed first —
+    the historical counterpart to `GET /positions`' in-progress figures for
+    still-open managed lifecycles. Optionally narrowed to one account
+    and/or symbol. A later analytics/chart batch queries this directly
+    rather than adding its own excursion tracking."""
+    return {"excursions": store.list_position_excursions(account_id=account_id, symbol=symbol, limit=limit)}
+
+
 @app.get("/accounts/{account_id}/economics")
 async def get_account_economics(account_id: str, _owner: dict = Depends(require_owner_read)) -> dict:
     """E06: authoritative realized P&L, cost basis and completed-trade win
@@ -1482,6 +1497,21 @@ def _managed_lifecycle_snapshot() -> list[dict]:
                 "uncovered_quantity": lifecycle.uncovered_quantity,
                 "stop_status": lifecycle.stop.status.value,
                 "stop_price": lifecycle.stop.broker_confirmed_price,
+                # PU-A1: real MAE/MFE tracking (see app/lifecycle/models.py's
+                # PositionLifecycle.mae/mfe/observe_price) -- entry_price/the
+                # two extremes/mae/mfe are all None when genuinely unknown
+                # (no entry price captured, or no real price observation has
+                # arrived yet for this account/symbol's broker), never a
+                # fabricated 0. has_price_data distinguishes that from a real
+                # observation that simply hasn't moved.
+                "entry_price": lifecycle.entry_price,
+                "highest_price_since_entry": lifecycle.highest_price_since_entry,
+                "highest_price_at": lifecycle.highest_price_at.isoformat() if lifecycle.highest_price_at else None,
+                "lowest_price_since_entry": lifecycle.lowest_price_since_entry,
+                "lowest_price_at": lifecycle.lowest_price_at.isoformat() if lifecycle.lowest_price_at else None,
+                "mae": lifecycle.mae,
+                "mfe": lifecycle.mfe,
+                "has_price_data": lifecycle.has_price_data,
                 "halted": lifecycle_manager.arbiter.is_halted(account_id, symbol),
                 "halt_reason": lifecycle_manager.arbiter.halt_reason(account_id, symbol) or None,
                 "pending_exit": None

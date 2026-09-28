@@ -708,7 +708,14 @@ class SignalCopierEngine:
             self.capital_allocator.release(account.account_id, notional)
             filled_quantity = result.filled_quantity if result.filled_quantity is not None else quantity
             self.store.record_fill(account.account_id, symbol, signal.side, filled_quantity)
-            await self.lifecycle_manager.on_entry_fill(account, symbol, filled_quantity)
+            # PU-A1: `result.filled_price` is the real confirmed fill price for
+            # this entry — seeds PositionLifecycle's MAE/MFE tracking. None
+            # when the broker's FILLED response didn't report one; that stays
+            # honestly unknown rather than assumed (see on_entry_fill's
+            # docstring).
+            await self.lifecycle_manager.on_entry_fill(
+                account, symbol, filled_quantity, entry_price=result.filled_price
+            )
         elif result.status == OrderStatus.PENDING:
             # Don't assume the requested quantity is owned yet -- retain the
             # intent (this may already be a real, accepted order) and let

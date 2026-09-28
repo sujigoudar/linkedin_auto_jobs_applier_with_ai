@@ -187,6 +187,97 @@ class PositionLifecycle:
     # truth (app/lifecycle/close_arbiter.py's is_halted()/halt_reason()), so
     # this lifecycle and the arbiter's ledger can never disagree about it.
 
+    # --- PU-A1: real MAE/MFE (maximum adverse/favorable excursion) tracking ---
+    #
+    # `entry_price` is the actual confirmed fill price for this position's
+    # entry (set by `PositionLifecycleManager.on_entry_fill`'s `entry_price`
+    # argument) — None when that price is unknown (e.g. a caller that
+    # doesn't have one, or a position whose entry resolved through the
+    # PENDING-entry path, which doesn't yet thread a price through). `mae`/
+    # `mfe` below are deliberately None (not 0.0) whenever there's no entry
+    # price to measure from — "unknown" and "zero excursion" are different
+    # facts and must not be conflated.
+    #
+    # `highest_price_since_entry`/`lowest_price_since_entry` are updated
+    # ONLY from real price observations (see `observe_price`) — a genuine
+    # fill price at entry, or a real feed tick via
+    # `PositionLifecycleManager.on_price_update` (itself only ever called
+    # with a real broker-reported price — see app/pricing.py's
+    # `PriceMonitor`). A broker/account with no live-price capability at
+    # all (`BrokerAdapter.has_last_price_capability` False) simply never
+    # calls `on_price_update` for this position, so these two fields never
+    # move past the entry price — see `has_price_data`, which distinguishes
+    # "we have observed real prices and they never moved" from "no
+    # observation has ever come in beyond the entry fill itself." Neither
+    # case is ever a fabricated value.
+    entry_price: float | None = None
+    highest_price_since_entry: float | None = None
+    highest_price_at: datetime | None = None
+    lowest_price_since_entry: float | None = None
+    lowest_price_at: datetime | None = None
+
+    def observe_price(self, price: float, at: datetime) -> None:
+        """Record one real price observation for MAE/MFE tracking. Callers
+        must only ever pass a genuine, broker/feed-reported price (or a
+        confirmed fill price) — never an estimated or synthetic one; see
+        this dataclass's field docstrings above for why."""
+        if self.highest_price_since_entry is None or price > self.highest_price_since_entry:
+            self.highest_price_since_entry = price
+            self.highest_price_at = at
+        if self.lowest_price_since_entry is None or price < self.lowest_price_since_entry:
+            self.lowest_price_since_entry = price
+            self.lowest_price_at = at
+
+    @property
+    def has_price_data(self) -> bool:
+        """True once at least one real price observation has been recorded
+        (including the entry fill itself, if `entry_price` was known) --
+        False means there is honestly nothing to report MAE/MFE from yet
+        (e.g. a broker with no live-price capability and no entry price
+        either), as distinct from a real observation that simply hasn't
+        moved."""
+        return self.highest_price_since_entry is not None
+
+    @property
+    def mae(self) -> float | None:
+        """Maximum adverse excursion, in price terms: how far price moved
+        AGAINST this position from its entry price, at the worst point
+        observed so far. Always >= 0 (0.0 means no adverse move has been
+        observed yet, not that none is possible). None when there's no
+        entry price or no price observation at all to compute it from —
+        never fabricated as 0.0 in that case.
+
+        Direction is side-dependent: a LONG's adverse move is a price
+        DECREASE (entry minus the lowest price seen); a SHORT's adverse
+        move is a price INCREASE (the highest price seen minus entry) —
+        being short and having the price rise against you is the loss
+        side, not the reverse."""
+        if self.entry_price is None or not self.has_price_data:
+            return None
+        if self.plan.side == Side.BUY:
+            assert self.lowest_price_since_entry is not None  # has_price_data guarantees this
+            return max(0.0, self.entry_price - self.lowest_price_since_entry)
+        assert self.highest_price_since_entry is not None  # has_price_data guarantees this
+        return max(0.0, self.highest_price_since_entry - self.entry_price)
+
+    @property
+    def mfe(self) -> float | None:
+        """Maximum favorable excursion, in price terms: how far price moved
+        IN THIS POSITION'S FAVOR from its entry price, at the best point
+        observed so far. Always >= 0. None under the same conditions as
+        `mae` above.
+
+        Mirror of `mae`'s side handling: a LONG's favorable move is a price
+        INCREASE (the highest price seen minus entry); a SHORT's favorable
+        move is a price DECREASE (entry minus the lowest price seen)."""
+        if self.entry_price is None or not self.has_price_data:
+            return None
+        if self.plan.side == Side.BUY:
+            assert self.highest_price_since_entry is not None  # has_price_data guarantees this
+            return max(0.0, self.highest_price_since_entry - self.entry_price)
+        assert self.lowest_price_since_entry is not None  # has_price_data guarantees this
+        return max(0.0, self.entry_price - self.lowest_price_since_entry)
+
     @property
     def exit_side(self) -> Side:
         return Side.SELL if self.plan.side == Side.BUY else Side.BUY

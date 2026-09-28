@@ -283,6 +283,36 @@ CREATE TABLE IF NOT EXISTS export_events (
     UNIQUE (source_stream, export_sequence)
 );
 
+-- PU-A1: durable, per-closed-position record of real-price-driven MAE/MFE
+-- (maximum adverse/favorable excursion) tracking -- one row per completed
+-- position episode (see app/lifecycle/manager.py's `_persist_closed_excursion`,
+-- called from the single place every lifecycle-closing path converges on).
+-- Written ONCE a position fully closes, so it remains queryable for
+-- analytics/charting after `lifecycle_state`'s own in-progress row for the
+-- same (account_id, symbol) is deleted. `entry_price`/the four price/time
+-- columns/`mae`/`mfe` are all nullable: NULL means "genuinely unknown" (no
+-- entry price, or no real price observation ever arrived — see
+-- `has_price_data`), never a fabricated 0.
+CREATE TABLE IF NOT EXISTS position_excursions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    account_id TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    side TEXT NOT NULL,
+    entry_price REAL,
+    highest_price_since_entry REAL,
+    highest_price_at TEXT,
+    lowest_price_since_entry REAL,
+    lowest_price_at TEXT,
+    mae REAL,
+    mfe REAL,
+    has_price_data INTEGER NOT NULL DEFAULT 0,
+    closed_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_position_excursions_account_symbol
+    ON position_excursions (account_id, symbol);
+CREATE INDEX IF NOT EXISTS idx_position_excursions_closed_at ON position_excursions (closed_at);
+
 CREATE INDEX IF NOT EXISTS idx_orders_executed_at ON orders (executed_at);
 CREATE INDEX IF NOT EXISTS idx_orders_account_id ON orders (account_id);
 CREATE INDEX IF NOT EXISTS idx_signals_received_at ON signals (received_at);
@@ -783,6 +813,97 @@ class SignalStore:
             conn.execute(
                 "DELETE FROM lifecycle_state WHERE account_id = ? AND symbol = ?", (account_id, symbol)
             )
+
+    def record_position_excursion(
+        self,
+        account_id: str,
+        symbol: str,
+        *,
+        side: str,
+        entry_price: float | None,
+        highest_price_since_entry: float | None,
+        highest_price_at: datetime | None,
+        lowest_price_since_entry: float | None,
+        lowest_price_at: datetime | None,
+        mae: float | None,
+        mfe: float | None,
+        has_price_data: bool,
+        closed_at: datetime,
+    ) -> None:
+        """PU-A1: append this now-closed position's final MAE/MFE as a new,
+        durable row -- see `position_excursions`'s schema comment. Appends
+        rather than upserts: the same (account_id, symbol) can legitimately
+        close and later reopen as an independent episode (see
+        PositionLifecycleManager.validate_plan's EXE-09 guard on a SECOND
+        concurrent one), and each episode's own final excursion must remain
+        its own historical row rather than overwrite the previous one."""
+        with self._connect() as conn:
+            conn.execute(
+                """INSERT INTO position_excursions
+                   (account_id, symbol, side, entry_price, highest_price_since_entry, highest_price_at,
+                    lowest_price_since_entry, lowest_price_at, mae, mfe, has_price_data, closed_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    account_id,
+                    symbol,
+                    side,
+                    entry_price,
+                    highest_price_since_entry,
+                    highest_price_at.isoformat() if highest_price_at else None,
+                    lowest_price_since_entry,
+                    lowest_price_at.isoformat() if lowest_price_at else None,
+                    mae,
+                    mfe,
+                    1 if has_price_data else 0,
+                    closed_at.isoformat(),
+                ),
+            )
+
+    def list_position_excursions(
+        self, account_id: str | None = None, symbol: str | None = None, limit: int = 100
+    ) -> list[dict]:
+        """Closed positions' final MAE/MFE, newest-closed first -- the
+        historical/queryable counterpart to the in-progress figures
+        `GET /positions` reports for still-open managed lifecycles (see
+        app/main.py's `_managed_lifecycle_snapshot`). Optionally narrowed to
+        one account and/or symbol."""
+        query = (
+            "SELECT id, account_id, symbol, side, entry_price, highest_price_since_entry, highest_price_at, "
+            "lowest_price_since_entry, lowest_price_at, mae, mfe, has_price_data, closed_at "
+            "FROM position_excursions"
+        )
+        clauses = []
+        params: list = []
+        if account_id is not None:
+            clauses.append("account_id = ?")
+            params.append(account_id)
+        if symbol is not None:
+            clauses.append("symbol = ?")
+            params.append(symbol)
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        query += " ORDER BY closed_at DESC LIMIT ?"
+        params.append(limit)
+        with self._connect() as conn:
+            rows = conn.execute(query, params).fetchall()
+        return [
+            {
+                "id": r[0],
+                "account_id": r[1],
+                "symbol": r[2],
+                "side": r[3],
+                "entry_price": r[4],
+                "highest_price_since_entry": r[5],
+                "highest_price_at": r[6],
+                "lowest_price_since_entry": r[7],
+                "lowest_price_at": r[8],
+                "mae": r[9],
+                "mfe": r[10],
+                "has_price_data": bool(r[11]),
+                "closed_at": r[12],
+            }
+            for r in rows
+        ]
 
     def claim_close(self, account_id: str, symbol: str, *, stale_after_seconds: float = 60.0) -> bool:
         """Atomically claim the exclusive right to resolve-and-submit a
