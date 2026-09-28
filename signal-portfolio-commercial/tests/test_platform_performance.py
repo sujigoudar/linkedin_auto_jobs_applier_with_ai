@@ -7,16 +7,16 @@ from decimal import Decimal
 
 from app.models.ledger import Book, EvidenceClass, Side
 from app.services.ledger import append_entry
-from app.services.platform_performance import compute_platform_performance
+from app.services.platform_performance import compute_book_performance, compute_platform_performance
 
 _T0 = datetime(2026, 1, 1, tzinfo=timezone.utc)
 
 
-def _fill(db_session, *, tenant_id="tenant-a", instrument="AAPL", side, quantity, price, fee=None, multiplier=Decimal(1), when=None):
+def _fill(db_session, *, tenant_id="tenant-a", instrument="AAPL", side, quantity, price, fee=None, multiplier=Decimal(1), when=None, book=Book.PLATFORM, evidence_class=EvidenceClass.OBSERVED_OWNER_LIVE):
     return append_entry(
-        db_session, tenant_id=tenant_id, book=Book.PLATFORM, instrument=instrument, side=side,
+        db_session, tenant_id=tenant_id, book=book, instrument=instrument, side=side,
         quantity=Decimal(str(quantity)), price=Decimal(str(price)), currency="USD",
-        event_time=when or _T0, source_authority="test", evidence_class=EvidenceClass.OBSERVED_OWNER_LIVE,
+        event_time=when or _T0, source_authority="test", evidence_class=evidence_class,
         fee=fee, multiplier=multiplier,
     )
 
@@ -144,3 +144,40 @@ def test_only_platform_book_entries_are_counted_not_other_books(db_session):
     report = compute_platform_performance(db_session, tenant_id="tenant-a")
     assert report.realized_pnl == Decimal(0)
     assert report.per_instrument == {}
+
+
+def test_compute_book_performance_is_book_agnostic_and_platform_wrapper_matches_it(db_session):
+    _fill(db_session, side=Side.BUY, quantity=10, price=100, when=_T0)
+    _fill(db_session, side=Side.SELL, quantity=10, price=110, when=_T0 + timedelta(minutes=1))
+    db_session.commit()
+
+    generic = compute_book_performance(db_session, tenant_id="tenant-a", book=Book.PLATFORM)
+    wrapper = compute_platform_performance(db_session, tenant_id="tenant-a")
+    assert generic.realized_pnl == wrapper.realized_pnl == Decimal(100)
+
+
+def test_model_and_follower_nets_for_the_same_instrument_never_mix(db_session):
+    """INTEGRATION_ACCEPTANCE_CASES.json INT-015 "Different model and
+    follower executions": Model bought 10 at 100 / sold 10 at 110 (net
+    100 gross); follower bought 10 at 101 / sold 10 at 109 (net 80
+    gross, same instrument). Neither book's report may include the
+    other's entries."""
+    _fill(db_session, book=Book.MODEL, evidence_class=EvidenceClass.HYPOTHETICAL_BACKTEST,
+          side=Side.BUY, quantity=10, price=100, when=_T0)
+    _fill(db_session, book=Book.MODEL, evidence_class=EvidenceClass.HYPOTHETICAL_BACKTEST,
+          side=Side.SELL, quantity=10, price=110, when=_T0 + timedelta(minutes=1))
+    _fill(db_session, book=Book.FOLLOWER, evidence_class=EvidenceClass.OBSERVED_FOLLOWER_LIVE,
+          side=Side.BUY, quantity=10, price=101, when=_T0)
+    _fill(db_session, book=Book.FOLLOWER, evidence_class=EvidenceClass.OBSERVED_FOLLOWER_LIVE,
+          side=Side.SELL, quantity=10, price=109, when=_T0 + timedelta(minutes=1))
+    db_session.commit()
+
+    model_report = compute_book_performance(db_session, tenant_id="tenant-a", book=Book.MODEL)
+    follower_report = compute_book_performance(db_session, tenant_id="tenant-a", book=Book.FOLLOWER)
+
+    assert model_report.realized_pnl == Decimal(100)
+    assert follower_report.realized_pnl == Decimal(80)
+    # Neither report's own per-instrument entry count reflects the other
+    # book's fills -- two closing fills each, not four.
+    assert model_report.per_instrument["AAPL"].closing_fills == 1
+    assert follower_report.per_instrument["AAPL"].closing_fills == 1

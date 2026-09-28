@@ -1,9 +1,20 @@
 """AD-XX "Owner trading performance" (not yet a numbered screen -- see
 this module's own docstring on scope) -- real, per-instrument realized
-P&L for the owner's own `Book.PLATFORM` ledger entries, per
-INTEGRATION_DECISION.md S12 step 4: "Complete scoped financial/
-provider metrics, reports, correction propagation and the actual owner
-navigation."
+P&L for any ONE book at a time (`Book.PLATFORM`, `Book.MODEL` or
+`Book.FOLLOWER`), per INTEGRATION_DECISION.md S12 step 4: "Complete
+scoped financial/provider metrics, reports, correction propagation and
+the actual owner navigation."
+
+`compute_book_performance` is the real, book-agnostic function;
+`compute_platform_performance` is a thin, backward-compatible wrapper
+fixed to `Book.PLATFORM` (this module's original, still most common,
+caller). INTEGRATION_ACCEPTANCE_CASES.json INT-015 "Different model
+and follower executions": model and follower net P&L for the same
+instrument must never be summed or overwritten into each other --
+holds by construction here since each call is scoped to exactly one
+book's own rows (`LedgerEntry.book == book`), and the caller decides
+which book's report it's asking for; nothing in this module ever
+mixes two books' entries into one running total.
 
 Ports signal-copier's own `app/economics.py` volume-weighted-average-
 cost realized-P&L replay (the same algorithm, same "opening/adding to
@@ -65,10 +76,18 @@ class PlatformPerformanceReport:
 
 
 def compute_platform_performance(session: Session, *, tenant_id: str) -> PlatformPerformanceReport:
+    """Backward-compatible alias for `compute_book_performance(...,
+    book=Book.PLATFORM)` -- this module's original, still most common,
+    entry point (app/api/dashboard_routes.py's own
+    GET /api/v1/ops/platform-performance)."""
+    return compute_book_performance(session, tenant_id=tenant_id, book=Book.PLATFORM)
+
+
+def compute_book_performance(session: Session, *, tenant_id: str, book: Book) -> PlatformPerformanceReport:
     entries = list(
         session.scalars(
             select(LedgerEntry)
-            .where(LedgerEntry.tenant_id == tenant_id, LedgerEntry.book == Book.PLATFORM)
+            .where(LedgerEntry.tenant_id == tenant_id, LedgerEntry.book == book)
             .order_by(LedgerEntry.event_time, LedgerEntry.created_at)
         ).all()
     )
