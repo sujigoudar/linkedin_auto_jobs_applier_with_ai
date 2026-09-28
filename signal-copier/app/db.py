@@ -383,6 +383,8 @@ _COLUMN_MIGRATIONS = [
     ("sessions", "credential_epoch", "TEXT"),
     ("idempotency_records", "fingerprint", "TEXT"),
     ("config_accounts", "max_notional_exposure", "REAL"),
+    ("orders", "submitted_at", "TEXT"),
+    ("orders", "protection_confirmed_at", "TEXT"),
 ]
 
 
