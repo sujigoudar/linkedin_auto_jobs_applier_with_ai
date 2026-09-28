@@ -74,6 +74,43 @@ tests (INT-035) and the INT-038 XSS-inertness test (both slice 12).
 | INT-039 | Same financial definition agrees across views | PASS (trivially) | `platform_performance.py` is the only code path that computes this metric; no second, potentially-conflicting definition exists yet to disagree with it. |
 | INT-040 | Local disk pressure cannot discard financial evidence | BLOCKED | Needs a real storage-ceiling/alerting policy for signal-copier's own SQLite outbox under actual disk-pressure simulation — deployment/ops work, not attempted with a fake filesystem. |
 
+## S12 step 7 "Control plane" (slice 21, not itself a numbered INT case)
+
+INTEGRATION_DECISION.md S12 step 7 asks for "distinct authorized command
+endpoints (research jobs, draft edits, publish, mandate changes, private
+position closes), each with its own authority model." Investigation found:
+research-job creation, content-document draft save/review/publish, and
+copy-mandate create/cancel already existed as real, separately-permissioned
+HTTP command routes (`require_permission(scope.role, "<distinct-string>")`
+per command family) from earlier phases — but NONE of them wrote to
+`app/models/audit_event.py`'s own append-only `AuditEvent` store, whose own
+docstring already called itself "the FIRST real writer... other services do
+not write here yet" (`app/services/staff_access.py` was the only caller).
+Slice 21 wires `append_audit_event` into all 6 of these real command call
+sites (`app/api/dashboard_routes.py`) — every command now leaves a real,
+tenant-scoped, actor-attributed, append-only audit trail, tested end to end
+via `tests/test_dashboard_routes.py` (asserting the exact ordered action
+sequence and actor on each object's own timeline) and load-bearing verified
+(temporarily removed the research-run audit call and confirmed exactly that
+one assertion failed).
+
+Two named commands were deliberately NOT wired to anything new:
+- **Publish** (`app/services/publication_admission.py::admit_publication_intent`,
+  the `publish_intent` permission string) is real and already re-checks
+  rights/entitlement at the actual effect boundary (docs/12_addendum's own
+  CP-003/CP-051 write-up), but has no HTTP route because no real publisher
+  trigger point exists yet in this build ("no live financial publisher/
+  broker/payment authority during build") — wiring a form to it would be
+  contrived UI around a function with nothing real to call it from, not a
+  genuine gap this slice should force closed.
+- **Private position closes** have no commercial-side concept at all, by
+  design: this is exclusively a signal-copier (private engine) authority
+  (`close_position` already exists there, already covered by INT-018/
+  INT-031's own verification that the two apps share no execution-authority
+  code). Building a commercial-side proxy or audit wrapper around it would
+  directly violate the separation-of-authority principle this entire
+  integration exists to enforce, not fill a real gap.
+
 ## Summary
 
 - **PASS: 25** — each row above cites its own specific evidence (a

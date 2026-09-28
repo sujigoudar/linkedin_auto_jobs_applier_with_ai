@@ -621,6 +621,15 @@ def test_create_research_run_then_view_preview(db_session):
     assert "Declared candidates" in detail_response.text
     assert "ESTIMATED" in detail_response.text
 
+    # S12 step 7 "control plane": a real command writes a real audit event.
+    from app.services.audit_log import list_audit_events
+
+    research_run_id = detail_url.rsplit("/", 1)[-1]
+    events = list_audit_events(db_session, tenant_id="tenant-a", object_id=research_run_id)
+    assert len(events) == 1
+    assert events[0].action == "create_research_run"
+    assert events[0].actor_user_id == "user-a"
+
 
 def test_create_research_run_rejects_invalid_subset_bounds_over_http(db_session):
     client = _client(db_session)
@@ -1484,6 +1493,16 @@ def test_save_submit_and_publish_content_document_appears_on_the_public_methodol
     after_publish = client.get("/methodology")
     assert after_publish.status_code == 200
     assert "Publish Flow HTTP" in after_publish.text
+
+    # S12 step 7 "control plane": every real command on this document
+    # wrote its own real audit event, in order.
+    from app.services.audit_log import get_object_timeline
+
+    timeline = get_object_timeline(db_session, tenant_id="tenant-a", object_id=document_id)
+    assert [e.action for e in timeline] == [
+        "save_content_draft", "request_content_review", "publish_content_document",
+    ]
+    assert all(e.actor_user_id == "user-a" for e in timeline)
 
 
 def test_public_methodology_page_shows_the_real_empty_state(db_session):
@@ -2373,6 +2392,14 @@ def test_create_then_cancel_copy_mandate_over_real_http(db_session):
 
     final_response = client.get(f"/app/copy/{mandate_id}/manage", headers=headers)
     assert "cancelled" in final_response.text
+
+    # S12 step 7 "control plane": both real commands on this mandate
+    # wrote their own real audit event, in order.
+    from app.services.audit_log import get_object_timeline
+
+    timeline = get_object_timeline(db_session, tenant_id="tenant-a", object_id=mandate_id)
+    assert [e.action for e in timeline] == ["create_copy_mandate_draft", "cancel_copy_mandate"]
+    assert all(e.actor_user_id == "user-a" for e in timeline)
     assert "No active copy mandate is available to manage." in final_response.text
 
 

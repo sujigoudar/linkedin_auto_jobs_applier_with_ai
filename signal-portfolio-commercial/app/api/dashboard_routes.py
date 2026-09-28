@@ -188,7 +188,7 @@ from app.services.content_document import (
     request_content_review,
     save_content_draft,
 )
-from app.services.audit_log import get_object_timeline, list_audit_events
+from app.services.audit_log import append_audit_event, get_object_timeline, list_audit_events
 from app.services.customer_support_view import get_customer_support_record, list_customers
 from app.services.managed_program import (
     InvalidManagedProgramError,
@@ -755,6 +755,10 @@ def create_research_run_route(
             holdout_fraction=holdout_fraction_decimal,
             cost_scenario_ids=[s.strip() for s in cost_scenario_ids.split(",") if s.strip()],
             resource_profile_id=resource_profile_id or None,
+        )
+        append_audit_event(
+            session, tenant_id=scope.tenant_id, actor_user_id=scope.user_id,
+            object_type="research_run", object_id=run.research_run_id, action="create_research_run",
         )
         session.commit()
     except InvalidResearchRunError as exc:
@@ -1683,7 +1687,7 @@ def save_content_draft_page(
     set_tenant_scope(session, scope.tenant_id)
     evidence_ids = [v.strip() for v in source_evidence_ids.split(",") if v.strip()]
     try:
-        save_content_draft(
+        document = save_content_draft(
             session,
             tenant_id=scope.tenant_id,
             document_type=document_type,
@@ -1692,6 +1696,10 @@ def save_content_draft_page(
             body=body,
             audience_policy_id=audience_policy_id,
             source_evidence_ids=evidence_ids,
+        )
+        append_audit_event(
+            session, tenant_id=scope.tenant_id, actor_user_id=scope.user_id,
+            object_type="content_document", object_id=document.document_id, action="save_content_draft",
         )
     except InvalidContentDraftError as exc:
         session.rollback()
@@ -1720,6 +1728,10 @@ def request_content_review_page(
         raise HTTPException(status_code=404, detail="not found")
     try:
         request_content_review(session, document)
+        append_audit_event(
+            session, tenant_id=scope.tenant_id, actor_user_id=scope.user_id,
+            object_type="content_document", object_id=document.document_id, action="request_content_review",
+        )
     except ContentNotEligibleForReviewError as exc:
         session.rollback()
         documents = list_content_documents(session, tenant_id=scope.tenant_id)
@@ -1753,6 +1765,10 @@ def publish_content_document_page(
         raise HTTPException(status_code=404, detail="not found")
     try:
         publish_content_document(session, document)
+        append_audit_event(
+            session, tenant_id=scope.tenant_id, actor_user_id=scope.user_id,
+            object_type="content_document", object_id=document.document_id, action="publish_content_document",
+        )
     except ContentNotEligibleForPublicationError as exc:
         session.rollback()
         documents = list_content_documents(session, tenant_id=scope.tenant_id)
@@ -2505,7 +2521,7 @@ def create_copy_mandate_draft_page(
     _require_copy_mandates(scope)
     set_tenant_scope(session, scope.tenant_id)
     try:
-        create_copy_mandate_draft(
+        mandate = create_copy_mandate_draft(
             session,
             tenant_id=scope.tenant_id,
             user_id=scope.user_id,
@@ -2518,6 +2534,10 @@ def create_copy_mandate_draft_page(
             start_mode=start_mode,
             policy_version_id=policy_version_id,
             consent_version=consent_version,
+        )
+        append_audit_event(
+            session, tenant_id=scope.tenant_id, actor_user_id=scope.user_id,
+            object_type="copy_mandate", object_id=mandate.mandate_id, action="create_copy_mandate_draft",
         )
     except InvalidCopyMandateError as exc:
         session.rollback()
@@ -2586,6 +2606,10 @@ def cancel_copy_mandate_page(
         raise HTTPException(status_code=404, detail="not found")
     try:
         cancel_copy_mandate(session, mandate)
+        append_audit_event(
+            session, tenant_id=scope.tenant_id, actor_user_id=scope.user_id,
+            object_type="copy_mandate", object_id=mandate.mandate_id, action="cancel_copy_mandate",
+        )
     except MandateNotEligibleForCancellationError as exc:
         session.rollback()
         return templates.TemplateResponse(
