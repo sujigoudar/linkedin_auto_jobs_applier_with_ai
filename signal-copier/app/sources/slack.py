@@ -50,6 +50,31 @@ class SlackSource(SourceAdapter):
     def parse(self, message_text: str, analyst: str | None = None) -> Signal:
         return parse_text_signal(message_text, source=self.name, asset_class=self.asset_class, analyst=analyst)
 
+    async def handle_event(self, event: dict) -> None:
+        """The real filtering/parsing/dispatch logic for one incoming
+        Slack `message` event: channel authorization check, skipping
+        subtype events (edits, joins, bot messages, etc. -- same as the
+        original), analyst-identifier derivation from the raw Slack user
+        ID, and SignalValidationError handling for unparseable text.
+        Extracted out of `start()`'s `@app.event("message")`-registered
+        handler so it is directly callable/testable with a plain dict,
+        without needing a real slack-bolt `AsyncApp`/Socket Mode
+        connection."""
+        if event.get("channel") != self.channel_id or event.get("subtype"):
+            return
+        text = event.get("text", "")
+        # Slack's event gives a raw user ID (e.g. "U123ABC"), not a display
+        # name -- resolving that needs an extra users.info API call this
+        # doesn't make; the ID itself is a stable, sufficient identifier
+        # for app/providers.py's per-analyst overrides.
+        analyst = event.get("user")
+        try:
+            signal = self.parse(text, analyst=analyst)
+        except SignalValidationError:
+            logger.debug("slack message did not parse as a signal: %r", text)
+            return
+        await self.on_signal(signal)
+
     async def start(self) -> None:
         try:
             from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler
@@ -61,20 +86,7 @@ class SlackSource(SourceAdapter):
 
         @app.event("message")
         async def handle_message(event: dict, **kwargs) -> None:
-            if event.get("channel") != self.channel_id or event.get("subtype"):
-                return
-            text = event.get("text", "")
-            # Slack's event gives a raw user ID (e.g. "U123ABC"), not a display
-            # name -- resolving that needs an extra users.info API call this
-            # doesn't make; the ID itself is a stable, sufficient identifier
-            # for app/providers.py's per-analyst overrides.
-            analyst = event.get("user")
-            try:
-                signal = self.parse(text, analyst=analyst)
-            except SignalValidationError:
-                logger.debug("slack message did not parse as a signal: %r", text)
-                return
-            await self.on_signal(signal)
+            await self.handle_event(event)
 
         self._handler = AsyncSocketModeHandler(app, self.app_token)
         asyncio.create_task(self._handler.start_async())

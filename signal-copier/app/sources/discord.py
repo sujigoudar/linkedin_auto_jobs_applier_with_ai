@@ -46,6 +46,29 @@ class DiscordSource(SourceAdapter):
     def parse(self, message_text: str, analyst: str | None = None) -> Signal:
         return parse_text_signal(message_text, source=self.name, asset_class=self.asset_class, analyst=analyst)
 
+    async def handle_message(self, message, *, bot_user=None) -> None:
+        """The real filtering/parsing/dispatch logic for one incoming
+        Discord message: ignore the bot's own messages and anything
+        outside the configured channel, derive the analyst identifier from
+        the author, and handle SignalValidationError for unparseable
+        content. `bot_user` is `client.user` -- passed in explicitly
+        (rather than closed over) since it's only populated once the real
+        `discord.Client` has connected; the original inline `on_message`
+        handler read it off the (nonlocal) `client` at call time too, so
+        passing it as an argument here is the same lookup, just made
+        explicit. Extracted out of `start()`'s `@client.event`-registered
+        handler so it is directly callable/testable with a lightweight
+        fake message object, without needing a real discord.py `Client`
+        connection."""
+        if message.author == bot_user or message.channel.id != self.channel_id:
+            return
+        try:
+            signal = self.parse(message.content, analyst=str(message.author))
+        except SignalValidationError:
+            logger.debug("discord message did not parse as a signal: %r", message.content)
+            return
+        await self.on_signal(signal)
+
     async def start(self) -> None:
         try:
             import discord
@@ -58,14 +81,7 @@ class DiscordSource(SourceAdapter):
 
         @client.event
         async def on_message(message: "discord.Message") -> None:
-            if message.author == client.user or message.channel.id != self.channel_id:
-                return
-            try:
-                signal = self.parse(message.content, analyst=str(message.author))
-            except SignalValidationError:
-                logger.debug("discord message did not parse as a signal: %r", message.content)
-                return
-            await self.on_signal(signal)
+            await self.handle_message(message, bot_user=client.user)
 
         self._client = client
         self._task = asyncio.create_task(client.start(self.bot_token))
