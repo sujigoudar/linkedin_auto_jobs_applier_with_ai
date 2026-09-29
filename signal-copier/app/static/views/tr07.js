@@ -2,20 +2,57 @@
  *
  * Real backing data: GET /accounts (config_accounts -- every live-managed
  * destination account) joined by broker name to GET /brokers (every
- * registered adapter's code-verified capability flags -- see that
- * route's own docstring: computed from whether the adapter overrides the
- * base no-op, not a name/imported-SDK claim). Balance/permission state:
- * GET /accounts/{id}/balance per configured account, same call TR-01
- * already makes for its own risk cards.
+ * registered adapter's code-verified capability flags, plus its real
+ * environment/venue -- see that route's own docstring: computed from
+ * whether the adapter overrides the base no-op, not a name/imported-SDK
+ * claim). Balance/permission state: GET /accounts/{id}/balance per
+ * configured account, same call TR-01 already makes for its own risk
+ * cards. Open-order count and reconciliation status: GET /orders and
+ * GET /positions, scoped per account -- the exact same fields/derivation
+ * TR-13 (Reconciliation and trading incidents) already uses, reused here
+ * rather than re-implemented.
  *
- * Honest gaps, disclosed rather than worked around: the spec's column
- * list (Account, Adapter, Venue/API, Environment, Products, Connection,
- * Qualification, Writer site) is wider than what `config_accounts`
- * tracks. Venue/API variant, Environment (simulation/paper/live) and
- * Writer site have NO field anywhere in this schema -- shown as "not
- * tracked in this build" rather than invented. Products is approximated
- * from `symbol_map` (a rename map, not a product allowlist) and labelled
- * accordingly, never presented as a real restriction list.
+ * Granular capability status (design review, 2026-09): every capability
+ * on this screen is rendered through Components.renderCapabilityState
+ * with the CORRECT rung of implemented < configured < authenticated <
+ * entitled < verified -- never collapsed to a flat yes/no, and never
+ * upgraded past what's actually been checked:
+ *   - The six GET /brokers flags (native bracket, protective stop,
+ *     cancel, replace stop, balance read, position readback) are
+ *     `implemented` when true, `unsupported` when false -- they are
+ *     computed from static method-override introspection
+ *     (app/brokers/base.py), NOT from a live authenticated call, so
+ *     they can never legitimately read `authenticated`/`verified` here.
+ *   - "Last successful authenticated read" is the one place a real live
+ *     authenticated call actually happens (GET /accounts/{id}/balance).
+ *     When it just returned real (non-null) data, that specific check
+ *     reads `authenticated` with a real `lastVerified` timestamp (this
+ *     load). When the adapter has the capability in code but the live
+ *     call returned nothing (missing/bad credentials, or the call
+ *     failed), it stays at `implemented` -- never bumped to
+ *     `authenticated` on a guess.
+ *
+ * Honest gaps, disclosed rather than worked around (still real per this
+ * exact build, re-checked against app/brokers/*.py and app/config.py --
+ * see the credential-reference/account-attributes notes below): Writer
+ * site has no field anywhere in this schema. Venue/API variant and
+ * Environment ARE real, adapter-level fields now (GET /brokers), but are
+ * NOT overridable per account -- shown as the adapter's own value with
+ * that caveat, not invented per-account state. Credential reference is
+ * never a stored field (this project never puts secrets in config) but
+ * this build's own per-broker env-var NAMING CONVENTION is real,
+ * source-verified information -- surfaced as such, never a secret value,
+ * never claimed as proof the account is actually configured. Market-data
+ * entitlement, account type, currency and position mode are not modeled
+ * anywhere in this codebase (per account OR per broker) -- honestly
+ * not_tracked, cross-referencing the one real, adjacent figure this
+ * build does have (maintenance_margin, in the Balance panel). Connection
+ * latency and API quota status are not measured anywhere either
+ * (app/rate_limit.py only throttles inbound webhook/SMS ingress, never
+ * an outbound broker call) -- not_tracked, not fabricated. Products is
+ * approximated from `symbol_map` (a rename map, not a product
+ * allowlist) and labelled accordingly, never presented as a real
+ * restriction list.
  *
  * TR-07-A03 "Pause new entries" is a REAL action, not a new financial
  * capability: `account.enabled=False` is an existing, already-tested
@@ -42,6 +79,90 @@
       if (el) Components.renderCapabilityState(el, opts);
     }
   }
+
+  // --- Real, source-verified per-broker credential env-var NAMING
+  // CONVENTION (app/brokers/*.py's own `_credentials_for`/
+  // `_webhook_url_for`/`_exchange_for`) -- informational only. Never a
+  // secret value, and never evidence that an account's env vars are
+  // actually SET (this screen makes no attempt to read them) -- see
+  // credentialRefFor's own `reason` text, always disclosed alongside it.
+  const CREDENTIAL_REF_PATTERNS = {
+    alpaca: (id) => `ALPACA_${id}_API_KEY (+ _API_SECRET, _BASE_URL)`,
+    schwab: (id) => `SCHWAB_${id}_CLIENT_ID (+ _CLIENT_SECRET, _REFRESH_TOKEN, _ACCOUNT_HASH)`,
+    robinhood: (id) => `ROBINHOOD_${id}_USERNAME (+ _PASSWORD, _ACCOUNT_NUMBER, optional _MFA_CODE)`,
+    tastytrade: (id) => `TASTYTRADE_${id}_SECRET (+ _REFRESH_TOKEN, _TT_ACCOUNT_NUMBER)`,
+    tradestation: (id) => `TRADESTATION_${id}_CLIENT_ID (+ _REFRESH_TOKEN, _TS_ACCOUNT_ID)`,
+    tradovate: (id) => `TRADOVATE_${id}_USERNAME (+ _PASSWORD, _APP_ID, _CID, _SECRET, _DEVICE_ID, _ACCOUNT_SPEC)`,
+    oanda: (id) => `OANDA_${id}_TOKEN (+ _ACCOUNT_ID)`,
+    signalstack: (id) => `SIGNALSTACK_${id}_WEBHOOK_URL`,
+    ninjatrader: (id) => `NT8_${id}_URL`,
+    rithmic: (id) => `RITHMIC_${id}_RITHMIC_ACCOUNT_ID (+ _EXCHANGE)`,
+    mt4_mt5: (id) => `MT5_${id}_LOGIN (+ _PASSWORD, _SERVER)`,
+    mt4_mt5_metaapi: (id) => `MT4_MT5_METAAPI_${id}_ID (token itself is process-wide: MT4_MT5_METAAPI_TOKEN)`,
+    ccxt: (id) => `CCXT_${id}_API_KEY (+ _API_SECRET)`,
+  };
+  function credentialRefState(brokerName, accountId) {
+    const upperId = String(accountId || "").toUpperCase();
+    const pattern = CREDENTIAL_REF_PATTERNS[brokerName];
+    if (pattern) {
+      return {
+        status: "not_tracked",
+        reason: `This build never stores secrets in config; whether these env vars are actually set for this account is not checked by this screen. Real naming convention this adapter's code reads (never the secret value): ${pattern(upperId)}.`,
+      };
+    }
+    if (brokerName === "ibkr") {
+      return {
+        status: "not_tracked",
+        reason: "This adapter connects via process-wide config (IBKR_HOST/IBKR_PORT/IBKR_CLIENT_ID -- a local TWS/Gateway connection), not a per-account API key -- there is no per-account credential reference to show.",
+      };
+    }
+    if (brokerName === "paper") {
+      return { status: "not_tracked", reason: "In-process simulator -- no external credential of any kind to reference." };
+    }
+    return { status: "not_tracked", reason: `No known credential env-var convention for adapter "${brokerName}" in this build.` };
+  }
+
+  function venueEnvCell(broker, key) {
+    const val = broker ? broker[key] : null;
+    if (!val) return null;
+    return pill(val, key === "environment" && val === "live" ? "warn" : "ok");
+  }
+
+  function lastReadCapState(broker, balanceOk, balanceData) {
+    if (!broker || !broker.has_balance_capability) {
+      return {
+        status: "unsupported",
+        reason: "This broker adapter has no real get_account_balance implementation (GET /brokers' has_balance_capability is false) -- there is no live authenticated read to report on for this account.",
+      };
+    }
+    const hasRealData =
+      balanceOk && balanceData && (balanceData.cash !== null || balanceData.equity !== null || balanceData.buying_power !== null);
+    if (hasRealData) {
+      const isPaper = broker.name === "paper";
+      return {
+        status: "authenticated",
+        lastVerified: new Date().toISOString(),
+        reason: isPaper
+          ? "In-process simulator: this account's real, internally-tracked cash/buying-power ledger was just read successfully -- there is no external credential to authenticate against."
+          : "This account's live GET /accounts/{id}/balance call to the real broker API just succeeded and returned real (non-null) cash/equity/buying-power fields -- confirms this account's configured credentials actually authenticate, as of this load.",
+      };
+    }
+    return {
+      status: "implemented",
+      reason: "This adapter has a real get_account_balance implementation, but this account's live read just now returned no confirmed data (missing/invalid credentials, or the broker call failed) -- never upgraded to \"authenticated\" without a real successful call.",
+    };
+  }
+
+  const ACCOUNT_ATTR_NOT_TRACKED = {
+    status: "not_tracked",
+    reason:
+      "Market-data entitlement, account type, currency and position mode are not modeled anywhere in this codebase, per account or per broker (see app/models.py's AccountBalance and app/config.py's AccountRequest for the real fields that exist). Margin, where the broker's own live balance read reports it, is already shown for real in the Balance/permission state panel's Maintenance margin column below -- not repeated here as a separate invented flag.",
+  };
+  const QUOTA_LATENCY_NOT_TRACKED = {
+    status: "not_tracked",
+    reason:
+      "Connection latency and API quota/rate-limit status are not measured or tracked anywhere in this codebase for any broker adapter -- app/rate_limit.py only throttles this app's own inbound webhook/SMS ingress, never an outbound call to a broker. Shown honestly as not tracked rather than a fabricated number.",
+  };
 
   function shell() {
     return `
@@ -83,27 +204,50 @@
     const hasOpenExposure = new Set(allPositions.filter((p) => p.net_quantity !== 0).map((p) => p.account_id));
 
     // --- Capability matrix (independent of account count -- always the
-    // full registered-broker read model). ---
+    // full registered-broker read model). Every one of the six code-
+    // verified flags renders through Components.renderCapabilityState as
+    // `implemented`/`unsupported` -- computed from method-override
+    // introspection, never a live call, so never rendered as
+    // `authenticated`/`verified` here (see this file's own docstring). ---
     if (!brokers.length) {
       StateMatrix.render(els.capabilities, { state: "empty", emptyMessage: "No broker adapters are registered in this build." });
     } else {
-      const rows = brokers.map((b) => [
-        `<span class="mono" id="tr07-broker-${escapeAttr(b.name)}">${escapeHtml(b.name)}</span>`,
-        boolPill(b.supports_native_bracket),
-        boolPill(b.has_protective_stop_capability),
-        boolPill(b.has_cancel_capability),
-        boolPill(b.has_replace_stop_capability),
-        boolPill(b.has_balance_capability),
-        b.supported_asset_classes ? escapeHtml(b.supported_asset_classes.join(", ")) : pill("undeclared", "muted"),
-      ]);
+      const capColumns = [
+        ["supports_native_bracket", "code-verified support for an atomic entry+stop+take-profit bracket/OCO order"],
+        ["has_protective_stop_capability", "code-verified support for a standalone protective stop order"],
+        ["has_cancel_capability", "code-verified support for cancelling an existing order"],
+        ["has_replace_stop_capability", "code-verified support for resizing/repricing a stop order in place"],
+        ["has_balance_capability", "code-verified support for a live cash/equity/buying-power/margin read"],
+        ["has_position_readback_capability", "code-verified support for reading the broker's own position size back"],
+      ];
+      const capSpecs = [];
+      const rows = brokers.map((b) => {
+        const cells = [`<span class="mono" id="tr07-broker-${escapeAttr(b.name)}">${escapeHtml(b.name)}</span>`];
+        for (const [flag, desc] of capColumns) {
+          const slotId = `tr07-cap-${escapeAttr(b.name)}-${flag}`;
+          cells.push(capSlot(slotId));
+          capSpecs.push([
+            slotId,
+            b[flag]
+              ? { status: "implemented", reason: `${desc} -- ${b.name}'s adapter overrides BrokerAdapter's base no-op (app/brokers/base.py). Code-verified, not a live authenticated call.` }
+              : { status: "unsupported", reason: `${desc} -- ${b.name}'s adapter does not override BrokerAdapter's base no-op; no real implementation exists.` },
+          ]);
+        }
+        cells.push(b.supported_asset_classes ? escapeHtml(b.supported_asset_classes.join(", ")) : pill("undeclared", "muted"));
+        const attrSlotId = `tr07-cap-${escapeAttr(b.name)}-attrs`;
+        cells.push(capSlot(attrSlotId));
+        capSpecs.push([attrSlotId, QUOTA_LATENCY_NOT_TRACKED]);
+        return cells;
+      });
       StateMatrix.render(els.capabilities, {
         state: "ready",
-        html: `<p class="section-note">Every flag is code-verified (computed from whether the adapter overrides the base no-op), not a name or imported-SDK claim.</p>${table(
-          ["Adapter", "Native bracket", "Protective stop", "Cancel", "Replace stop", "Balance read", "Supported asset classes"],
+        html: `<p class="section-note">Every capability flag is code-verified (computed from whether the adapter overrides the base no-op), not a name or imported-SDK claim -- see each badge's own "Why / details" for exactly what was checked. "Connection/quota" covers connection latency and API quota status, neither of which this codebase measures for any broker.</p>${table(
+          ["Adapter", "Native bracket", "Protective stop", "Cancel", "Replace stop", "Balance read", "Position readback", "Allowed products (declared subset)", "Connection/quota"],
           rows,
           "No brokers registered."
         )}`,
       });
+      mountCapStates(els.capabilities, capSpecs);
     }
 
     if (!accounts.length) {
@@ -119,7 +263,15 @@
       return;
     }
 
-    const accountRows = accounts.map((a) => {
+    // --- Per-account orders read: real open-order count and reconciliation
+    // status, both scoped to this exact account, reusing the same fields/
+    // derivation TR-13 (Reconciliation and trading incidents) already
+    // relies on rather than re-deriving anything new. ---
+    const ordersPerAccount = await Promise.all(
+      accounts.map((a) => ctx.fetchJSON(`/orders?limit=100&account_id=${encodeURIComponent(a.account_id)}`))
+    );
+
+    const accountRows = accounts.map((a, i) => {
       const broker = brokersByName.get(a.broker);
       const products = Object.keys(a.symbol_map || {}).length
         ? `${Object.keys(a.symbol_map).length} symbol mapping(s)`
@@ -129,32 +281,62 @@
         : a.managed_lifecycle
         ? boolPill(broker.can_protect_a_managed_position, "qualified for managed lifecycle", "not qualified -- missing protective stop")
         : pill("qualified (plain account, no protection required)", "ok");
+
+      const ordersRes = ordersPerAccount[i];
+      const openOrders = ordersRes.ok ? ordersRes.data.unreconciled_order_count : null;
+      const recentOrders = (ordersRes.ok && ordersRes.data.orders) || [];
+      const rejectedCount = recentOrders.filter((o) => o.status === "rejected").length;
+      const acctHalted = lifecycles.filter((l) => l.account_id === a.account_id && l.halted);
+      const acctUncovered = lifecycles.filter((l) => l.account_id === a.account_id && !l.halted && l.uncovered_quantity > 0);
+      let reconciliation;
+      if (acctHalted.length) reconciliation = pill(`halted (${acctHalted.length})`, "bad");
+      else if (acctUncovered.length) reconciliation = pill(`protection deficit (${acctUncovered.length})`, "warn");
+      else if (rejectedCount) reconciliation = pill(`${rejectedCount} rejected order(s)`, "warn");
+      else reconciliation = pill("clean", "ok");
+
+      const venueCell = venueEnvCell(broker, "venue");
+      const envCell = venueEnvCell(broker, "environment");
+
       return [
         `<a class="mono" href="#tr07-broker-${escapeAttr(a.broker)}" data-open-capability="${escapeAttr(a.broker)}">${escapeHtml(a.account_id)}</a>`,
         `<span class="mono">${escapeHtml(a.broker)}</span>`,
-        capSlot(`tr07-cap-venue-${escapeAttr(a.account_id)}`),
-        capSlot(`tr07-cap-env-${escapeAttr(a.account_id)}`),
+        venueCell !== null ? `${venueCell}<div class="section-note">Adapter-level (GET /brokers) -- not overridable per account in this build.</div>` : capSlot(`tr07-cap-venue-${escapeAttr(a.account_id)}`),
+        envCell !== null ? `${envCell}<div class="section-note">Adapter-level (GET /brokers) -- not overridable per account in this build.</div>` : capSlot(`tr07-cap-env-${escapeAttr(a.account_id)}`),
+        capSlot(`tr07-cap-cred-${escapeAttr(a.account_id)}`),
+        capSlot(`tr07-cap-attrs-${escapeAttr(a.account_id)}`),
         products,
         broker ? pill("registered adapter", "ok") : pill("no adapter registered", "bad"),
         typeof qualification === "string" ? qualification : qualification,
+        openOrders === null ? pill("unknown", "muted") : fmtNum(openOrders),
+        reconciliation,
         capSlot(`tr07-cap-writer-${escapeAttr(a.account_id)}`),
       ];
     });
     StateMatrix.render(els.accounts, {
       state: "ready",
-      html: `<p class="section-note">Products is approximated from each account's symbol_map (a rename map, not a real product allowlist) -- click an account to jump to its adapter's row in the Capability matrix below.</p>${table(
-        ["Account", "Adapter", "Venue/API", "Environment", "Products", "Connection", "Qualification", "Writer site"],
+      html: `<p class="section-note">Products is approximated from each account's symbol_map (a rename map, not a real product allowlist). Open orders and Reconciliation are real, computed from this exact account's own GET /orders / GET /positions state (same derivation TR-13 uses) -- click an account to jump to its adapter's row in the Capability matrix below.</p>${table(
+        ["Account", "Adapter", "Venue/API", "Environment", "Credential reference", "Account attributes", "Products", "Connection", "Qualification", "Open orders (pending)", "Reconciliation", "Writer site"],
         accountRows,
         "No accounts."
       )}`,
     });
     mountCapStates(
       els.accounts,
-      accounts.flatMap((a) => [
-        [`tr07-cap-venue-${escapeAttr(a.account_id)}`, { status: "not_tracked", reason: "Venue/API variant is not tracked per account in this build." }],
-        [`tr07-cap-env-${escapeAttr(a.account_id)}`, { status: "not_tracked", reason: "Environment (simulation/paper/live) is not tracked per account in this build." }],
-        [`tr07-cap-writer-${escapeAttr(a.account_id)}`, { status: "not_tracked", reason: "Writer site is not tracked per account in this build." }],
-      ])
+      accounts.flatMap((a) => {
+        const broker = brokersByName.get(a.broker);
+        const specs = [
+          [`tr07-cap-cred-${escapeAttr(a.account_id)}`, credentialRefState(a.broker, a.account_id)],
+          [`tr07-cap-attrs-${escapeAttr(a.account_id)}`, ACCOUNT_ATTR_NOT_TRACKED],
+        ];
+        if (!venueEnvCell(broker, "venue")) {
+          specs.push([`tr07-cap-venue-${escapeAttr(a.account_id)}`, { status: "not_tracked", reason: "This adapter has no declared venue value (GET /brokers' venue is null for it in this build)." }]);
+        }
+        if (!venueEnvCell(broker, "environment")) {
+          specs.push([`tr07-cap-env-${escapeAttr(a.account_id)}`, { status: "not_tracked", reason: "This adapter resolves paper/live per-account from an env var read at call time rather than storing it on the instance -- GET /brokers' environment is null for it, so this screen shows the honest gap rather than a guess." }]);
+        }
+        specs.push([`tr07-cap-writer-${escapeAttr(a.account_id)}`, { status: "not_tracked", reason: "Writer site is not tracked per account in this build." }]);
+        return specs;
+      })
     );
     els.accounts.querySelectorAll("[data-open-capability]").forEach((a) => {
       a.addEventListener("click", () => {
@@ -165,20 +347,33 @@
 
     // --- Balance/permission state ---
     const balances = await Promise.all(accounts.map((a) => ctx.fetchJSON(`/accounts/${encodeURIComponent(a.account_id)}/balance`)));
-    const balanceRows = accounts.map((a, i) => {
-      const b = balances[i].ok ? balances[i].data : null;
-      return [
-        `<span class="mono">${escapeHtml(a.account_id)}</span>`,
-        b && b.equity !== null && b.equity !== undefined ? fmtNum(b.equity) : pill("unknown", "muted"),
-        b && b.buying_power !== null && b.buying_power !== undefined ? fmtNum(b.buying_power) : pill("unknown / not applicable", "muted"),
-        b && b.maintenance_margin !== null && b.maintenance_margin !== undefined ? fmtNum(b.maintenance_margin) : pill("unknown / not applicable", "muted"),
-        balances[i].ok ? pill("reachable", "ok") : pill("unreachable", "bad"),
-      ];
-    });
+    const balanceRows = accounts.map((a, i) => [
+      `<span class="mono">${escapeHtml(a.account_id)}</span>`,
+      balances[i].ok && balances[i].data.equity !== null && balances[i].data.equity !== undefined ? fmtNum(balances[i].data.equity) : pill("unknown", "muted"),
+      balances[i].ok && balances[i].data.buying_power !== null && balances[i].data.buying_power !== undefined ? fmtNum(balances[i].data.buying_power) : pill("unknown / not applicable", "muted"),
+      balances[i].ok && balances[i].data.maintenance_margin !== null && balances[i].data.maintenance_margin !== undefined ? fmtNum(balances[i].data.maintenance_margin) : pill("unknown / not applicable", "muted"),
+      balances[i].ok ? pill("reachable", "ok") : pill("unreachable", "bad"),
+      capSlot(`tr07-cap-lastread-${escapeAttr(a.account_id)}`),
+      capSlot(`tr07-cap-quota-${escapeAttr(a.account_id)}`),
+    ]);
     StateMatrix.render(els.balance, {
       state: "ready",
-      html: table(["Account", "Equity", "Buying power", "Maintenance margin", "Connection"], balanceRows, "No accounts."),
+      html: `<p class="section-note">Buying power is real for the paper broker (a genuinely computed simulated cash ledger) and any other broker whose adapter has a real get_account_balance implementation returning it -- unknown/not applicable elsewhere, never a guessed figure.</p>${table(
+        ["Account", "Equity", "Buying power", "Maintenance margin", "Connection", "Last successful authenticated read", "Connection latency / API quota"],
+        balanceRows,
+        "No accounts."
+      )}`,
     });
+    mountCapStates(
+      els.balance,
+      accounts.flatMap((a, i) => {
+        const broker = brokersByName.get(a.broker);
+        return [
+          [`tr07-cap-lastread-${escapeAttr(a.account_id)}`, lastReadCapState(broker, balances[i].ok, balances[i].ok ? balances[i].data : null)],
+          [`tr07-cap-quota-${escapeAttr(a.account_id)}`, QUOTA_LATENCY_NOT_TRACKED],
+        ];
+      })
+    );
 
     // --- Change review checklist ---
     const reviewRows = accounts.flatMap((a) => {
