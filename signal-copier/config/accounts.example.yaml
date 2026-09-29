@@ -51,6 +51,14 @@ accounts:
     broker: signalstack
     multiplier: 1.0
     enabled: false
+    # P0-5: SignalStackBroker has no verified get_broker_position -- a plain
+    # (non-managed_lifecycle) account's CLOSE on it is BLOCKED by default
+    # (fail-closed) until this is set. Only set this to true if you are
+    # certain nothing else (a manual trade at the broker, another
+    # automated system, a corporate action) can move this account's real
+    # position outside Signal Copier -- see README.md's "Exclusive-writer
+    # qualification" section before uncommenting.
+    # exclusive_writer_qualified: true
 
   bybit_main:
     broker: signalstack
