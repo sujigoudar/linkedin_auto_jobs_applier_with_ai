@@ -78,7 +78,7 @@ from app.services.catalog_fit_sim_auth import (
     StaleCatalogFitSimTimestampError,
     verify_catalog_fit_sim_signature,
 )
-from app.risk import symbol_for_account
+from app.risk import size_for_account, symbol_for_account
 from app.routing import RoutingConfig, RoutingRule, load_routing_config_from_store
 from app.sources.text_parser import classify_batch
 from app.sources.discord import DiscordSource
@@ -1041,6 +1041,134 @@ async def get_capital_allocation(_owner: dict = Depends(require_owner_read)) -> 
             }
         )
     return {"accounts": accounts_out}
+
+
+# Representative HYPOTHETICAL signal quantities for TR-12's Sizing tab --
+# not real signals, never persisted, never routed. Deliberately spans a
+# small/typical/large range so the owner can see how account.fixed_quantity
+# vs. account.multiplier actually resolves before a real signal arrives,
+# plus the one case (no quantity on the signal at all) app/risk.py's own
+# `size_for_account` special-cases to a 1.0 base.
+_SIZING_PREVIEW_SCENARIOS = [
+    {"label": "No quantity on signal (defaults to 1.0)", "quantity": None},
+    {"label": "Small signal (quantity 1)", "quantity": 1.0},
+    {"label": "Typical signal (quantity 5)", "quantity": 5.0},
+    {"label": "Large signal (quantity 25)", "quantity": 25.0},
+]
+
+
+@app.get("/policies/sizing-preview")
+async def get_sizing_preview(
+    price: float | None = None, signal_id: str | None = None, _owner: dict = Depends(require_owner_read)
+) -> dict:
+    """TR-12 Sizing tab (`signal_id` omitted): "expected position size under
+    several representative trades and current account conditions" --
+    genuinely computed, never a separately-reimplemented approximation.
+    TR-12 Preview tab (`signal_id` given): the exact same computation, same
+    function call, run against one real, already-received signal instead of
+    the hypothetical scenario list -- so the Sizing tab's illustrative
+    figures and the Preview tab's "what would happen right now" dry-run can
+    never disagree with each other or with the real engine, because both
+    are this one endpoint calling this one function.
+
+    Every scenario/signal below calls `app.risk.size_for_account` DIRECTLY
+    (the exact function `app/engine.py` calls at real signal-admission time)
+    -- a hypothetical `Signal` (never persisted or routed) for
+    the scenario case, or the real stored `Signal` row for the `signal_id`
+    case -- so this can never drift from what a real signal would actually
+    size to. "Current account conditions" is this account's real, current
+    capital-allocation state (`app/capital_allocator.py`'s
+    `confirmed_open_notional` and `CapitalAllocator.pending_reservation`,
+    the same real state `GET /capital-allocation` reports and the same
+    figures E03's admission gate itself reads) -- never a separately
+    fetched or reimplemented copy.
+
+    `price` (scenario mode only) is optional (this build has no reliable
+    "current market price" for an arbitrary symbol independent of a real
+    signal) -- when omitted, notional and hard-ceiling headroom are
+    honestly reported as unknown rather than guessed at; when given,
+    notional = expected quantity * price, checked against the real ceiling
+    arithmetic E03 itself uses (`confirmed_exposure + reserved + new
+    notional > max_exposure`). In `signal_id` mode, the real signal's own
+    `price` (if any) is used instead -- never the `price` query param."""
+    if signal_id is not None:
+        row = next((s for s in store.list_recent_signals(limit=500) if str(s["id"]) == signal_id), None)
+        if row is None:
+            raise HTTPException(status_code=404, detail=f"no signal '{signal_id}'")
+        real_signal = Signal(
+            source=row["source"],
+            symbol=row["symbol"],
+            side=Side(row["side"]),
+            quantity=row["quantity"],
+            price=row["price"],
+            analyst=row["analyst"],
+        )
+        accounts_out = []
+        for account_id, account in routing_config.accounts.items():
+            deployed = confirmed_open_notional(store, account_id)
+            reserved = engine.capital_allocator.pending_reservation(account_id)
+            max_exposure = account.max_notional_exposure
+            expected_quantity = size_for_account(real_signal, account)
+            notional = expected_quantity * real_signal.price if real_signal.price is not None else None
+            would_exceed_ceiling = (
+                (deployed + reserved + notional) > max_exposure
+                if max_exposure is not None and notional is not None
+                else None
+            )
+            accounts_out.append(
+                {
+                    "account_id": account_id,
+                    "expected_quantity": expected_quantity,
+                    "notional": notional,
+                    "deployed_notional": deployed,
+                    "reserved_notional": reserved,
+                    "max_notional_exposure": max_exposure,
+                    "would_exceed_ceiling": would_exceed_ceiling,
+                }
+            )
+        return {"signal_id": signal_id, "signal_price": real_signal.price, "accounts": accounts_out}
+
+    accounts_out = []
+    for account_id, account in routing_config.accounts.items():
+        deployed = confirmed_open_notional(store, account_id)
+        reserved = engine.capital_allocator.pending_reservation(account_id)
+        max_exposure = account.max_notional_exposure
+        scenario_rows = []
+        for scenario in _SIZING_PREVIEW_SCENARIOS:
+            hypothetical_signal = Signal(
+                source="__tr12_sizing_preview__",
+                symbol="PREVIEW",
+                side=Side.BUY,
+                quantity=scenario["quantity"],
+            )
+            expected_quantity = size_for_account(hypothetical_signal, account)
+            notional = expected_quantity * price if price is not None else None
+            would_exceed_ceiling = (
+                (deployed + reserved + notional) > max_exposure
+                if max_exposure is not None and notional is not None
+                else None
+            )
+            scenario_rows.append(
+                {
+                    "label": scenario["label"],
+                    "signal_quantity": scenario["quantity"],
+                    "expected_quantity": expected_quantity,
+                    "notional": notional,
+                    "would_exceed_ceiling": would_exceed_ceiling,
+                }
+            )
+        accounts_out.append(
+            {
+                "account_id": account_id,
+                "fixed_quantity": account.fixed_quantity,
+                "multiplier": account.multiplier,
+                "deployed_notional": deployed,
+                "reserved_notional": reserved,
+                "max_notional_exposure": max_exposure,
+                "scenarios": scenario_rows,
+            }
+        )
+    return {"price": price, "accounts": accounts_out}
 
 
 @app.get("/accounts/{account_id}/execution-quality")
