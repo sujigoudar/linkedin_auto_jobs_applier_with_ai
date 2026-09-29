@@ -205,3 +205,27 @@ async def test_get_order_status_cancelled_with_partial_fill_reports_it(broker):
     assert result is not None
     assert result.status == OrderStatus.REJECTED
     assert result.filled_quantity == 30.0
+
+
+@pytest.mark.asyncio
+async def test_get_order_status_filled_with_a_genuine_zero_fill_stays_zero(broker):
+    """RISK-FC-01 regression: a `status=="Filled"` order whose
+    `orderStatus.filled`/`avgFillPrice` genuinely report 0.0 (a real
+    broker-glitch edge case, not "no data") must surface as a real 0.0,
+    never as `None` -- `filled_quantity=x or None` used to collapse it to
+    `None`, which app/engine.py's `_submit_order`/`handle_signal` and
+    app/lifecycle/manager.py's `resolve_pending_entry` treat as "unknown,
+    fall back to the full requested quantity," turning a confirmed
+    zero-share fill into a fabricated full fill."""
+    broker._trades["order-1"] = _FakeTradeWithStatus(
+        _FakeOrderStatusWithFill("Filled", filled=0.0, avgFillPrice=0.0)
+    )
+    account = DestinationAccount(account_id="acct1", broker="ibkr")
+
+    result = await broker.get_order_status(account, "order-1")
+
+    assert result is not None
+    assert result.status == OrderStatus.FILLED
+    # The old `x or None` behavior would have made both of these None.
+    assert result.filled_quantity == 0.0
+    assert result.filled_price == 0.0

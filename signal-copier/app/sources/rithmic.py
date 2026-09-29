@@ -70,15 +70,26 @@ class RithmicSource(SourceAdapter):
                 return
 
             side = Side.BUY if notification.transaction_type == TransactionType.BUY else Side.SELL
-            price = notification.fill_price or notification.avg_fill_price or None
+            # RISK-FC-02: `x or y or None` treats a genuinely-reported 0.0
+            # the same as "not reported at all" and silently substitutes
+            # something else (or None) for it. `signal.price` feeds
+            # app/engine.py's `_try_reserve_capital`, which SKIPS the
+            # account's notional-exposure ceiling entirely whenever
+            # `order_signal.price is None` -- so a fill price that
+            # collapses to None here isn't just a display gap, it's a
+            # silent admission-check bypass. Use `fill_price` only when
+            # Rithmic actually reported it (not None), falling back to
+            # avg_fill_price only when it didn't, and never coercing a
+            # real reported value via truthiness.
+            price = notification.fill_price if notification.fill_price is not None else notification.avg_fill_price
 
             signal = Signal(
                 source=self.name,
                 symbol=notification.symbol,
                 side=side,
                 asset_class=AssetClass.FUTURE,
-                quantity=float(notification.fill_size) if notification.fill_size else None,
-                price=float(price) if price else None,
+                quantity=float(notification.fill_size) if notification.fill_size is not None else None,
+                price=float(price) if price is not None else None,
                 raw={"account_id": notification.account_id, "exchange": notification.exchange},
             )
             await self.on_signal(signal)

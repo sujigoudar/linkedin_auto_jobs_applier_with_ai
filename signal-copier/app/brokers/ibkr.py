@@ -200,8 +200,19 @@ class IBKRBroker(BrokerAdapter):
             status=new_status,
             signal_id="",  # filled in by the reconciler from its own stored order row
             broker_order_id=broker_order_id,
-            filled_quantity=trade.orderStatus.filled or None,
-            filled_price=trade.orderStatus.avgFillPrice or None,
+            # RISK-FC-01: `x or None` silently turns a genuine, reported
+            # zero (e.g. status=="Filled" with orderStatus.filled==0.0, a
+            # real broker-glitch edge case) into "unknown," which
+            # app/engine.py's `_submit_order`/`handle_signal` and
+            # app/lifecycle/manager.py's `resolve_pending_entry` treat as
+            # "fall back to the full requested quantity" -- exactly the
+            # "explicit zero fill becomes a fictitious full fill" bug
+            # app/brokers/ccxt_broker.py's own place_order already
+            # documents and avoids (`order.get("filled")`, no `or`).
+            # Passed straight through (no `or None`) so a real 0.0 stays
+            # 0.0 rather than becoming "unknown."
+            filled_quantity=trade.orderStatus.filled,
+            filled_price=trade.orderStatus.avgFillPrice,
             message=f"IBKR order status: {status}",
         )
 
