@@ -23,6 +23,7 @@ from app.services.publication import (
 def _intent(**overrides) -> PublicationIntent:
     now = datetime.now(timezone.utc)
     defaults = dict(
+        tenant_id="tenant-a",
         environment=Environment.LOCAL_SIM,
         portfolio_version_id="pv-1",
         episode_id="ep-1",

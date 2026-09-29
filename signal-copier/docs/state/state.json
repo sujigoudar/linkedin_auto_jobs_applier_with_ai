@@ -1,0 +1,18 @@
+{
+  "branch": "claude/signal-copier-redesign",
+  "head_commit": "cdfee8b1dc4d5daea58e178ce679aff37adecba8",
+  "head_commit_summary": "Renumber writer_lease migration to 0015 (0014 taken by command_ledger)",
+  "as_of": "2026-09-29",
+  "alembic_head_revision": "0015",
+  "last_verified": {
+    "status": "unknown_not_independently_reconfirmed",
+    "note": "The most recent substantive commit (55976eb, P0-6 writer lease) documents its own full ruff/mypy/pytest + load-bearing verification in its commit message. The current HEAD (cdfee8b) is a mechanical rebase-time migration rename with no accompanying full-suite re-run described. No independent fresh-checkout re-verification (ruff check ., the CI-scoped mypy command, pytest -q) was performed as part of producing this documentation. Treat 'last_verified' as not current until that is actually re-run -- see docs/agents/VERIFICATION.md."
+  },
+  "open_items": [
+    "trading_authority in GET /system/readiness (app/main.py) is still an unwired not_tracked/not_held placeholder even though P0-6 (writer_lease fencing, 55976eb) has landed on this branch -- the FOLLOW-UP comment referencing P0-6 is stale and should be resolved by wiring in WriterLeaseGuard's real state.",
+    "release_status in GET /system/readiness is a genuine, still-accurate not_tracked placeholder pending P0-7 (a qualification/release-approval taxonomy), which has not landed on this branch yet.",
+    "No formal release process exists yet (docs/process/RELEASE.md) -- pre-1.0, development-branch software.",
+    "tests/test_c07_context_rate_limiting.py has a known, pre-existing wall-clock timing flake under heavy CI load; the accepted mitigation is rerunning it standalone, not disabling it.",
+    "Several broker adapters (Schwab, Robinhood) have no sandbox/paper environment at all and cannot be live-integration-tested from this or any sandboxed environment -- see docs/state/BLOCKERS.md."
+  ]
+}

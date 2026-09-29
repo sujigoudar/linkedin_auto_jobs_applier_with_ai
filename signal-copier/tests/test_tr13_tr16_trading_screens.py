@@ -165,6 +165,192 @@ def test_system_info_reports_real_schema_version_matching_code_head(monkeypatch,
     assert body["schema_version"] == body["schema_head"]  # a freshly stamped database is always at head
 
 
+# --- P0-8 (external release audit): GET /system/readiness splits
+# "reachable" from "ready" into six independently-computed dimensions
+# (liveness/data_readiness/market_data_readiness/trading_authority/
+# protection_readiness/release_status) plus a rollup computed ONLY from
+# them (app/main.py's `_compute_readiness_rollup`). These tests are the
+# load-bearing coverage for that split -- see this batch's own report for
+# the temporary-collapse verification performed against
+# test_readiness_liveness_up_while_data_readiness_unknown_render_both
+# before committing. ---
+
+
+class _UnverifiableBalanceBroker:
+    """A broker that IS reachable (liveness/health say nothing about it at
+    all) but genuinely cannot report a usable account balance this cycle
+    -- the exact "reachable alongside unknown balance" shape the audit
+    calls out. `has_balance_capability` is True (the method is overridden),
+    so this is honestly `unknown`, never `not_tracked` (which would imply
+    no capability exists at all)."""
+
+    name = "unverifiable_balance_broker"
+
+    async def get_account_balance(self, account):  # noqa: ARG002 - interface
+        return None
+
+    async def close(self) -> None:
+        # BrokerAdapter's own safe no-op (app/brokers/base.py) -- every
+        # registered broker's close() is awaited on app shutdown
+        # (app/main.py's lifespan), so a test double registered into the
+        # real, shared `brokers` dict must implement this too.
+        return None
+
+    @property
+    def has_balance_capability(self) -> bool:
+        return True
+
+
+def test_readiness_endpoint_requires_owner_session(monkeypatch, tmp_path):
+    _store, client = _authed_client(monkeypatch, tmp_path)
+    assert client.get("/system/readiness").status_code == 401
+
+
+def test_readiness_endpoint_returns_all_six_dimensions_and_a_rollup(monkeypatch, tmp_path):
+    _store, client = _authed_client(monkeypatch, tmp_path)
+    main_module.routing_config.accounts.clear()
+    login = client.post("/auth/login", json={"password": "test-owner-password"})
+    assert login.status_code == 200
+    response = client.get("/system/readiness")
+    assert response.status_code == 200
+    body = response.json()
+    for key in (
+        "liveness",
+        "data_readiness",
+        "market_data_readiness",
+        "trading_authority",
+        "protection_readiness",
+        "release_status",
+        "rollup",
+    ):
+        assert key in body, key
+    assert body["liveness"]["status"] == "up"
+    assert body["rollup"]["label"] in ("ACTIVE", "STANDBY", "DEGRADED", "NOT READY")
+    # No accounts configured -- data_readiness is honestly not_tracked,
+    # never fabricated as "fresh".
+    assert body["data_readiness"]["status"] == "not_tracked"
+    # No managed-lifecycle position open -- protection_readiness is
+    # honestly not_tracked, never fabricated as "current".
+    assert body["protection_readiness"]["status"] == "not_tracked"
+    # release_status/trading_authority are documented placeholders pending
+    # the P0-7/P0-6 sibling batches -- never fabricated as approved/held.
+    assert body["release_status"]["status"] == "not_tracked"
+    assert "P0-7" in body["release_status"]["reason"]
+
+
+# --- LOAD-BEARING: "reachable" (liveness=up) must never render as if
+# everything else is fine -- data_readiness must independently show
+# `unknown` for an account whose broker cannot report a usable balance,
+# and the overall rollup must reflect that (not stay ACTIVE). ---
+def test_readiness_liveness_up_while_data_readiness_unknown_render_both(monkeypatch, tmp_path):
+    _store, client = _authed_client(monkeypatch, tmp_path)
+    monkeypatch.setitem(main_module.brokers, "unverifiable_balance_broker", _UnverifiableBalanceBroker())
+    main_module.routing_config.accounts.clear()
+    main_module.routing_config.accounts["acct1"] = DestinationAccount(account_id="acct1", broker="unverifiable_balance_broker")
+    # Every OTHER dimension healthy (a fresh worker pass each) -- isolates
+    # this test to data_readiness alone, the exact "reachable alongside
+    # unknown balance" shape the audit calls out, not a fresh-startup
+    # NOT READY from price_monitor/reconciler never having run.
+    now = datetime.now(timezone.utc)
+    main_module.price_monitor.last_success_at = now
+    main_module.reconciler.last_success_at = now
+    main_module.provider_scout.last_success_at = now
+    main_module.equity_snapshotter.last_success_at = now
+    login = client.post("/auth/login", json={"password": "test-owner-password"})
+    assert login.status_code == 200
+
+    response = client.get("/system/readiness")
+    assert response.status_code == 200
+    body = response.json()
+
+    # Both facts must be present and correct, independently:
+    assert body["liveness"]["status"] == "up"
+    assert body["data_readiness"]["status"] == "unknown"
+    accounts = body["data_readiness"]["accounts"]
+    assert len(accounts) == 1
+    assert accounts[0]["account_id"] == "acct1"
+    assert accounts[0]["status"] == "unknown"
+    # An unknown data-readiness account must not silently keep the rollup
+    # at ACTIVE -- it must read DEGRADED (not a critical position-safety
+    # gate, but real and visible, never silent).
+    assert body["rollup"]["label"] == "DEGRADED"
+    assert "account balance" in body["rollup"]["reason"]
+
+
+# --- LOAD-BEARING: trading_authority absent (standby -- not holding
+# writer role) must block an ACTIVE rollup regardless of every other
+# dimension looking fine. ---
+def test_readiness_rollup_blocked_from_active_when_trading_authority_not_held(monkeypatch, tmp_path):
+    monkeypatch.setattr(app_config, "STANDBY_MODE", True)
+    _store, client = _authed_client(monkeypatch, tmp_path)
+    main_module.routing_config.accounts.clear()
+    login = client.post("/auth/login", json={"password": "test-owner-password"})
+    assert login.status_code == 200
+
+    response = client.get("/system/readiness")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["trading_authority"]["status"] == "not_held"
+    assert body["rollup"]["label"] != "ACTIVE"
+    assert body["rollup"]["label"] == "STANDBY"
+
+
+# --- LOAD-BEARING: an unconfirmed stop on an open managed-lifecycle
+# position must force NOT READY, never let the rollup read ACTIVE just
+# because /health's own three flags are all green. ---
+def test_readiness_rollup_not_ready_when_a_managed_lifecycle_stop_is_unconfirmed(monkeypatch, tmp_path):
+    from app.brokers.paper import PaperBroker
+    from app.lifecycle.manager import PositionLifecycleManager
+    from app.lifecycle.models import PositionPlan
+    from app.models import Signal
+
+    monkeypatch.setattr(app_config, "OWNER_PASSWORD", "test-owner-password")
+    monkeypatch.setattr(app_config, "SESSION_SECRET", "test-session-secret")
+    store = SignalStore(str(tmp_path / "tr16_protection_gap.db"))
+    monkeypatch.setattr(main_module, "store", store)
+    monkeypatch.setattr(main_module.engine, "store", store)
+
+    class NoOpStopBroker(PaperBroker):
+        async def place_protective_stop(self, *a, **k):  # noqa: ANN002, ANN003 - test double
+            return None
+
+    broker = NoOpStopBroker()
+    fresh_lifecycle_manager = PositionLifecycleManager(brokers={**main_module.brokers, "paper": broker}, store=store)
+    fresh_lifecycle_manager.capital_allocator = main_module.engine.capital_allocator
+    monkeypatch.setattr(main_module, "lifecycle_manager", fresh_lifecycle_manager)
+    monkeypatch.setattr(main_module.engine, "lifecycle_manager", fresh_lifecycle_manager)
+
+    main_module.routing_config.accounts.clear()
+    main_module.routing_config.accounts["acct1"] = DestinationAccount(account_id="acct1", broker="paper", managed_lifecycle=True)
+
+    plan = PositionPlan(account_id="acct1", symbol="AAPL", side=Side.BUY, planned_quantity=10, broker="paper", initial_stop=90)
+    fresh_lifecycle_manager.start_plan(plan)
+
+    import asyncio
+
+    async def _fill():
+        await broker.place_order(
+            Signal(source="t", symbol="AAPL", side=Side.BUY),
+            main_module.routing_config.accounts["acct1"],
+            10,
+            "AAPL",
+        )
+        await fresh_lifecycle_manager.on_entry_fill(main_module.routing_config.accounts["acct1"], "AAPL", 10)
+
+    asyncio.run(_fill())
+
+    client = TestClient(main_module.app)
+    login = client.post("/auth/login", json={"password": "test-owner-password"})
+    assert login.status_code == 200
+
+    response = client.get("/system/readiness")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["protection_readiness"]["status"] == "gap"
+    assert body["protection_readiness"]["stop_gap_count"] == 1
+    assert body["rollup"]["label"] == "NOT READY"
+
+
 # --- TR-14's real economics/execution-quality reuse (E06/E05, already
 # tested endpoints -- this only proves the screen's own aggregation logic
 # has real, non-empty data to read when a real fill exists). ---

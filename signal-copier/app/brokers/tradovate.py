@@ -175,6 +175,11 @@ class TradovateBroker(BrokerAdapter):
 
         try:
             creds = self._credentials_for(account)
+            if not float(quantity).is_integer():
+                raise RuntimeError(
+                    f"Tradovate requires a whole-number contract quantity; refusing to silently "
+                    f"truncate {quantity!r}"
+                )
         except RuntimeError as exc:
             return OrderResult(account_id=account.account_id, status=OrderStatus.ERROR, signal_id=signal.id, message=str(exc))
 

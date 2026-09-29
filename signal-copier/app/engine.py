@@ -17,7 +17,19 @@ resolves it here, per account, before calling the broker at all:
        has sent, not a live read of the broker's book).
     2. If flat (zero), there's nothing to close: report REJECTED without
        calling the broker.
-    3. Otherwise resolve to the opposing BUY/SELL at the full open
+    3. P0-5: before resolving/submitting anything further, reconcile that
+       tracked quantity against reality -- see
+       `_reconcile_before_plain_close`'s own docstring for the full
+       contract. In short: a plain account's own tracked position can go
+       stale after manual intervention, an external fill placed directly
+       at the broker, a corporate action, or ordinary reconciliation lag,
+       so a plain CLOSE additionally requires EITHER (a) a fresh
+       `BrokerAdapter.get_broker_position` readback that matches the
+       tracked quantity within tolerance, or (b) the account's own
+       explicit, off-by-default `DestinationAccount.exclusive_writer_qualified`
+       flag. Neither holding is a REJECTED result, not a close that
+       proceeds anyway against a possibly-stale local projection.
+    4. Otherwise resolve to the opposing BUY/SELL at the full open
        quantity, and call `place_order` with that — brokers never see
        `Side.CLOSE` from the engine; they only need to implement BUY/SELL.
        (Each broker's own `Side.CLOSE` handling, where present, is a
@@ -37,14 +49,47 @@ unaffected (this is an additive, opt-in layer, same pattern as
 provider, or analyst) skips that destination the same way a disabled
 account already does.
 
-Position tracking itself updates from `OrderResult.filled_quantity` when a
-broker confirms FILLED, or optimistically from the requested quantity when
-a broker only reports PENDING (SignalStack, Alpaca, IBKR, NinjaTrader,
-Rithmic all confirm fills asynchronously, outside this call). That means
-tracked positions on those brokers can drift from the real book if an
-order is later rejected or partially filled after reporting PENDING — this
-is a known limitation of not having a fill-confirmation feedback path from
-those brokers back into this service yet.
+## Position tracking's distinct-field quantity model (AUD-01)
+
+`SignalStore.positions.net_quantity` (`actual_remaining_ownership` by
+contract — see that table's own SCHEMA comment in app/db.py) is updated
+ONLY from a broker-CONFIRMED fill: a synchronous FILLED result, or a real,
+broker-reported `filled_quantity` accompanying a PENDING result (a genuine
+partial-fill progress report). It is NEVER updated optimistically from the
+merely-requested quantity while a broker's order is still PENDING with
+nothing confirmed yet (SignalStack, Alpaca, IBKR, NinjaTrader, Rithmic all
+confirm fills asynchronously, outside this call, via
+app/reconciliation.py's polling loop) — doing so used to let tracked
+positions silently diverge from the real book whenever such an order was
+later rejected or only partially filled, which is not a tolerable basis
+for live holdings, risk, P&L, or a subsequent close in this system.
+
+Every order/fill event distinguishes five fields, persisted on the
+`orders` row (see app/db.py's SCHEMA comment for the exact column
+contract) and surfaced in aggregate via `SignalStore
+.get_outstanding_possible_fill`/`PositionLifecycleManager
+.get_outstanding_possible_fill`:
+
+- `requested_quantity` — what was asked for.
+- `confirmed_cumulative_fill` — what the broker has actually confirmed
+  filled so far for this order, exactly as reported (never guessed).
+- `applied_execution_delta` — the position-impacting change this specific
+  fill event actually applied to `positions.net_quantity` (0.0, not a
+  fabricated guess, when nothing was confirmed yet).
+- `outstanding_possible_fill` — `requested_quantity -
+  confirmed_cumulative_fill` while the order remains PENDING: genuine
+  uncertain exposure that must be tracked and surfaced (e.g. to
+  app/capital_allocator.py, or a position-detail UI), never silently
+  treated as already-owned and never silently treated as zero.
+- `actual_remaining_ownership` — `positions.net_quantity` itself: the
+  current believed-owned quantity, updated only from confirmed fills/exits.
+
+A PENDING order whose broker later reports REJECTED or a lower final fill
+than requested therefore never needed "correcting" from a wrong optimistic
+baseline in the first place — `OrderReconciler._correct_position` still
+applies the (now correctly zero-or-partial) baseline-to-confirmed delta,
+but that delta is the FULL confirmed amount, not a true-up of an inflated
+guess.
 
 ## Managed-lifecycle accounts
 
@@ -67,6 +112,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 from collections import defaultdict
 from dataclasses import replace
 from datetime import datetime, timezone
@@ -74,21 +120,67 @@ from datetime import datetime, timezone
 import structlog
 from signal_platform_contracts import Environment, EventEnvelope, EvidenceClass
 
-from app import config
+from app import command_ledger, config
 from app.brokers.base import BrokerAdapter
-from app.capital_allocator import CapitalAllocator, confirmed_open_notional
+from app.capital_allocator import CapitalAllocator, confirmed_open_notional, owner_wide_exposure
 from app.db import SignalStore
-from app.export_events import build_execution_applied_envelope, build_source_receipt_envelope
+from app.export_events import (
+build_execution_applied_envelope,
+    build_routing_admission_outcome_envelope,
+    build_source_receipt_envelope,
+)
 from app.lifecycle.manager import PositionLifecycleManager
 from app.lifecycle.models import PositionPlan, Target, TargetAction
 from app.logging_config import bind_signal_context
-from app.models import AssetClass, DestinationAccount, OrderResult, OrderStatus, Side, Signal
+from app.models import (
+    AssetClass,
+    CommandType,
+    DestinationAccount,
+    OrderResult,
+    OrderStatus,
+    Side,
+    Signal,
+    UncertaintyState,
+)
 from app.providers import ProviderRegistry, SettingsOverride
 from app.risk import size_for_account, symbol_for_account
 from app.routing import RoutingConfig
+from app.writer_lease import NullLeaseGuard, WriterLeaseGuard
 
 logger = logging.getLogger(__name__)
 structured_logger = structlog.get_logger(__name__)
+
+#: INT-027: the real `OrderStatus` -> `RoutingAdmissionOutcomePayload.outcome`
+#: mapping -- see `app/export_events.py`'s own
+#: `build_routing_admission_outcome_envelope` docstring for what each
+#: outcome string means and signal_platform_contracts.payloads's own
+#: `_KNOWN_ROUTING_OUTCOMES` for why "canceled"/"loss"/"commentary" (part
+#: of INT-027's own requested taxonomy) are deliberately absent -- no
+#: code path in this engine or its broker adapters produces either.
+_OUTCOME_BY_ORDER_STATUS = {
+    OrderStatus.FILLED: "admitted_filled",
+    OrderStatus.PENDING: "admitted_unfilled",
+    OrderStatus.REJECTED: "rejected",
+    OrderStatus.ERROR: "error",
+}
+
+#: P0-5: tolerance for comparing a broker's live position readback against
+#: this service's own locally tracked quantity before a plain close is
+#: allowed to proceed -- see `_positions_reconcile`. A pure `==` would
+#: reject on ordinary floating-point noise (accumulated fills/partial
+#: fills/fx-converted quantities); this is deliberately small (never
+#: large enough to paper over a real, material mismatch) and combines an
+#: absolute floor with a relative term so it scales sanely for both a
+#: fractional crypto position and a large equity/futures one.
+_RECONCILIATION_ABS_TOLERANCE = 1e-6
+_RECONCILIATION_REL_TOLERANCE = 1e-6
+
+
+def _positions_reconcile(broker_position: float, local_position: float) -> bool:
+    tolerance = _RECONCILIATION_ABS_TOLERANCE + _RECONCILIATION_REL_TOLERANCE * max(
+        abs(broker_position), abs(local_position)
+    )
+    return abs(broker_position - local_position) <= tolerance
 
 
 class SignalCopierEngine:
@@ -99,12 +191,27 @@ class SignalCopierEngine:
         store: SignalStore,
         lifecycle_manager: PositionLifecycleManager | None = None,
         provider_registry: ProviderRegistry | None = None,
+        lease_guard: WriterLeaseGuard | NullLeaseGuard | None = None,
     ):
         self.routing = routing
         self.brokers = brokers
         self.store = store
         self.lifecycle_manager = lifecycle_manager or PositionLifecycleManager(brokers)
         self.provider_registry = provider_registry or ProviderRegistry()
+        # Cross-process/cross-host single-writer fencing (see
+        # app/writer_lease.py, docs/FAILOVER.md): checked at the top of
+        # every command-execution entry point below (`handle_signal`,
+        # `close_position`) before any broker call can be reached, and
+        # also passed through to `self.lifecycle_manager` so its own
+        # entry points (on_price_update/request_exit/etc., which can be
+        # driven by background loops, not just a signal/close call) are
+        # covered too. Defaults to a no-op guard so every existing
+        # construction (tests, ad-hoc scripts) that doesn't wire real
+        # fencing is unaffected -- app/main.py is the one place that
+        # constructs a real WriterLeaseGuard, for the app's own live
+        # ACTIVE process.
+        self.lease_guard = lease_guard or NullLeaseGuard()
+        self.lifecycle_manager.lease_guard = self.lease_guard
         # Serializes a plain (non-managed_lifecycle) account's close resolution +
         # submission per (account_id, symbol) -- see _resolve_and_submit_plain_close.
         # managed_lifecycle accounts already get this from CloseArbiter; plain
@@ -115,8 +222,19 @@ class SignalCopierEngine:
         self._plain_close_locks: dict[tuple[str, str], asyncio.Lock] = defaultdict(asyncio.Lock)
         # E03 (bounded): per-account notional-exposure admission gate — see
         # app/capital_allocator.py's module docstring for exactly what this
-        # does and doesn't enforce.
-        self.capital_allocator = CapitalAllocator()
+        # does and doesn't enforce. P0-4: `store=store` makes its
+        # reservations durable and reloads any left unresolved by a
+        # previous process against this same database -- see that
+        # module's own docstring.
+        self.capital_allocator = CapitalAllocator(store=store)
+        # E03 (owner-wide exposure): opt-in global ceiling, see
+        # app/config.py's MAX_OWNER_NOTIONAL_EXPOSURE and
+        # app/capital_allocator.py's `owner_wide_exposure`. Read once at
+        # construction (same pattern every other config.py value this
+        # engine depends on already uses) -- None (the default) means the
+        # owner-wide gate is never evaluated, no change from before this
+        # existed.
+        self.max_owner_notional_exposure: float | None = config.MAX_OWNER_NOTIONAL_EXPOSURE
         # Wired in after construction (app/lifecycle/manager.py's own
         # __init__ can't take this: main.py often constructs a
         # PositionLifecycleManager before this Engine, and so before this
@@ -183,6 +301,49 @@ class SignalCopierEngine:
         if envelope is not None:
             self.store.append_export_event(envelope)
 
+    def _export_routing_outcome(
+        self,
+        signal: Signal,
+        *,
+        outcome: str,
+        account: DestinationAccount | None = None,
+        order_status: OrderStatus | None = None,
+        message: str | None = None,
+    ) -> None:
+        """INT-027 "All permitted source outcomes reach research": exports
+        this signal's real routing/admission/fill outcome as a separate
+        `ROUTING_ADMISSION_OUTCOME` event, correlated to its own
+        `SOURCE_RECEIPT` (see app/export_events.py's own
+        `build_routing_admission_outcome_envelope` docstring). Called
+        unconditionally at every real point in `_handle_signal` where
+        such an outcome becomes known -- for a signal with no
+        destinations at all, for an account skipped before any order was
+        attempted, and for every account that DID reach an order attempt
+        (whatever its `OrderResult.status` turned out to be) -- the same
+        "never miss one" property `_export_source_receipt` already has
+        for the receipt itself. Lives on the SAME stream as the receipt
+        (`signal-copier:source:<source>`), never an account's own stream
+        -- this is about the source's own recommendation reaching its
+        outcome, not a private per-account ledger. A no-op (nothing
+        appended) for a `Side.CLOSE` signal -- see the builder's own
+        docstring for why."""
+        source_stream = f"signal-copier:source:{signal.source}"
+        envelope = build_routing_admission_outcome_envelope(
+            signal,
+            outcome=outcome,
+            source_stream=source_stream,
+            export_sequence=self.store.next_export_sequence(source_stream),
+            producer_id=config.RELAY_PRODUCER_ID,
+            evidence_class=EvidenceClass[config.RELAY_EVIDENCE_CLASS],
+            environment=Environment[config.RELAY_ENVIRONMENT],
+            account=account,
+            broker=account.broker if account is not None else None,
+            order_status=order_status,
+            message=message,
+        )
+        if envelope is not None:
+            self.store.append_export_event(envelope)
+
     def _effective_settings(self, signal: Signal, account: DestinationAccount) -> SettingsOverride:
         account_defaults = SettingsOverride(
             multiplier=account.multiplier,
@@ -213,6 +374,15 @@ class SignalCopierEngine:
             return results
 
     async def _handle_signal(self, signal: Signal) -> list[OrderResult]:
+        # Cross-process/cross-host fencing (app/writer_lease.py): checked
+        # before anything else in this method, including the SIG-01
+        # replay-lookup below -- a process that's been fenced out must
+        # refuse the whole call, not just the eventual broker.place_order.
+        # Raises FencedOutError (uncaught here, deliberately) rather than
+        # returning a REJECTED result -- this is a "this process must
+        # stop acting as writer" condition, not an ordinary per-signal
+        # rejection a caller should retry.
+        self.lease_guard.require_active()
         # SIG-01: this exact signal id may already have been processed --
         # e.g. a caller that retries handle_signal itself after a timeout
         # without knowing whether the first attempt's orders actually went
@@ -246,6 +416,7 @@ class SignalCopierEngine:
         )
         if not destinations:
             logger.info("no destinations configured for source=%s symbol=%s", signal.source, signal.symbol)
+            self._export_routing_outcome(signal, outcome="not_routed")
             return []
 
         results: list[OrderResult] = []
@@ -262,6 +433,7 @@ class SignalCopierEngine:
                     signal.source,
                     signal.analyst,
                 )
+                self._export_routing_outcome(signal, outcome="disabled_by_settings", account=raw_account)
                 continue
             # A per-(signal, account) view with provider/analyst overrides applied —
             # every downstream call reads sizing/managed_lifecycle from this, not
@@ -275,6 +447,23 @@ class SignalCopierEngine:
                 ),
             )
 
+            # DB-0X (order purpose/family): known from the signal itself,
+            # before anything broker/lifecycle-specific has happened yet --
+            # every save_order_result call in this loop iteration shares
+            # this same classification (see app/db.py's SCHEMA comment on
+            # `orders.purpose`/`orders.family_id` for what each value
+            # means). An 'entry' order's family is simply its own
+            # originating signal id. A CLOSE's real family (the entry it's
+            # closing out) is only knowable for a managed_lifecycle account
+            # -- see the managed branch below, which looks it up from that
+            # position's own persisted `PositionPlan.entry_signal_id` and
+            # overrides this default; every other CLOSE (a plain account,
+            # or one of the early rejections below that never reach a
+            # broker/lifecycle at all) has no real entry to attribute it
+            # to, so it stays honestly `None`.
+            order_purpose = "close" if signal.side == Side.CLOSE else "entry"
+            order_family_id: str | None = signal.id if order_purpose == "entry" else None
+
             broker = self.brokers.get(account.broker)
             if broker is None:
                 result = OrderResult(
@@ -283,8 +472,15 @@ class SignalCopierEngine:
                     signal_id=signal.id,
                     message=f"no broker adapter registered for '{account.broker}'",
                 )
-                self.store.save_order_result(result)
+                self.store.save_order_result(result, purpose=order_purpose, family_id=order_family_id)
                 results.append(result)
+                self._export_routing_outcome(
+                    signal,
+                    outcome=_OUTCOME_BY_ORDER_STATUS[result.status],
+                    account=account,
+                    order_status=result.status,
+                    message=result.message,
+                )
                 continue
 
             if not broker.can_trade_asset_class(signal.asset_class):
@@ -303,13 +499,37 @@ class SignalCopierEngine:
                         f"'{signal.asset_class.value}' — refusing to route this signal here"
                     ),
                 )
-                self.store.save_order_result(result, broker=account.broker)
+                self.store.save_order_result(
+                    result, broker=account.broker, purpose=order_purpose, family_id=order_family_id
+                )
                 results.append(result)
+                self._export_routing_outcome(
+                    signal,
+                    outcome=_OUTCOME_BY_ORDER_STATUS[result.status],
+                    account=account,
+                    order_status=result.status,
+                    message=result.message,
+                )
                 continue
 
             symbol = symbol_for_account(signal, account)
 
             if account.managed_lifecycle:
+                if order_purpose == "close":
+                    # DB-0X: the real family this close belongs to is
+                    # whatever entry signal started this same position --
+                    # persisted on its PositionPlan for exactly this (see
+                    # app/lifecycle/models.py's `entry_signal_id`). Looked
+                    # up BEFORE `_handle_managed_signal` runs: a successful
+                    # close may fully flatten and delete this lifecycle's
+                    # persisted state, so it must not be read back after.
+                    # No open lifecycle at all (e.g. "no open position to
+                    # close") leaves this at the safe, honest default set
+                    # above (None) -- there is no real family to report for
+                    # a close of nothing.
+                    existing_lifecycle = self.lifecycle_manager.get_lifecycle(account.account_id, symbol)
+                    if existing_lifecycle is not None and existing_lifecycle.plan.entry_signal_id:
+                        order_family_id = existing_lifecycle.plan.entry_signal_id
                 result, submitted_at, protection_confirmed_at = await self._handle_managed_signal(
                     signal, account, symbol
                 )
@@ -321,13 +541,39 @@ class SignalCopierEngine:
                     requested_quantity=None,
                     submitted_at=submitted_at,
                     protection_confirmed_at=protection_confirmed_at,
+                    purpose=order_purpose,
+                    family_id=order_family_id,
                 )
                 results.append(result)
+                self._export_routing_outcome(
+                    signal,
+                    outcome=_OUTCOME_BY_ORDER_STATUS[result.status],
+                    account=account,
+                    order_status=result.status,
+                    message=result.message,
+                )
                 continue
 
             if signal.side == Side.CLOSE:
+                # DB-0X: a plain (non-managed_lifecycle) account has no
+                # tracked lifecycle object linking this close back to
+                # whichever entry fill(s) produced the position it's
+                # closing -- `_resolve_and_submit_plain_close` itself saves
+                # this order with purpose='close' and family_id=None (the
+                # honest default already set above), not re-derived here.
                 result = await self._resolve_and_submit_plain_close(signal, account, symbol, broker)
                 results.append(result)
+                # A CLOSE signal never gets a SOURCE_RECEIPT (see
+                # build_source_receipt_envelope), so this is a real no-op
+                # here -- called anyway for the same unconditional-call-site
+                # shape as every other branch in this loop.
+                self._export_routing_outcome(
+                    signal,
+                    outcome=_OUTCOME_BY_ORDER_STATUS[result.status],
+                    account=account,
+                    order_status=result.status,
+                    message=result.message,
+                )
                 continue
 
             order_signal, quantity = signal, size_for_account(signal, account)
@@ -353,18 +599,100 @@ class SignalCopierEngine:
                     ),
                 )
                 self.store.save_order_result(
-                    result, broker=account.broker, symbol=symbol, side=order_signal.side, requested_quantity=quantity
+                    result,
+                    broker=account.broker,
+                    symbol=symbol,
+                    side=order_signal.side,
+                    requested_quantity=quantity,
+                    purpose=order_purpose,
+                    family_id=order_family_id,
                 )
                 results.append(result)
+                self._export_routing_outcome(
+                    signal,
+                    outcome=_OUTCOME_BY_ORDER_STATUS[result.status],
+                    account=account,
+                    order_status=result.status,
+                    message=result.message,
+                )
                 continue
 
             admitted, notional, rejection = await self._try_reserve_capital(account, order_signal, quantity)
             if not admitted:
                 assert rejection is not None  # _try_reserve_capital always sets this when admitted is False
                 self.store.save_order_result(
-                    rejection, broker=account.broker, symbol=symbol, side=order_signal.side, requested_quantity=quantity
+                    rejection,
+                    broker=account.broker,
+                    symbol=symbol,
+                    side=order_signal.side,
+                    requested_quantity=quantity,
+                    purpose=order_purpose,
+                    family_id=order_family_id,
                 )
                 results.append(rejection)
+                self._export_routing_outcome(
+                    signal,
+                    outcome=_OUTCOME_BY_ORDER_STATUS[rejection.status],
+                    account=account,
+                    order_status=rejection.status,
+                    message=rejection.message,
+                )
+                continue
+
+            # P0-2: pre-effect durable command-ledger intent, written and
+            # COMMITTED before the broker is ever called -- see
+            # app/command_ledger.py's module docstring. `signal.id` is
+            # this entry's own natural retry identity (the same value
+            # `order_family_id` already uses above); a second call for the
+            # exact same signal/account/quantity/symbol replays this row's
+            # tracked outcome instead of submitting a second broker order.
+            ledger_key = f"entry:{account.account_id}:{symbol}:{signal.id}"
+            ledger_fingerprint = command_ledger.compute_fingerprint(
+                {
+                    "command_type": "entry",
+                    "account_id": account.account_id,
+                    "symbol": symbol,
+                    "side": order_signal.side.value,
+                    "quantity": quantity,
+                    "signal_id": signal.id,
+                }
+            )
+            ledger_entry = self.store.open_command_ledger_entry(
+                idempotency_key=ledger_key,
+                command_type=CommandType.ENTRY,
+                account_id=account.account_id,
+                environment=command_ledger.current_environment(),
+                request_fingerprint=ledger_fingerprint,
+            )
+            if command_ledger.is_duplicate_submission(ledger_entry.uncertainty_state):
+                # A prior attempt under this exact key already ran (or is
+                # running) -- never submit a second broker order for it.
+                # The broker was already released this reservation's fate
+                # one way or another on that first attempt, so release here
+                # too rather than double-reserve.
+                self.capital_allocator.release(account.account_id, notional)
+                logger.info(
+                    "duplicate entry command idempotency_key=%s account=%s symbol=%s -- replaying "
+                    "tracked state=%s instead of resubmitting",
+                    ledger_key,
+                    account.account_id,
+                    symbol,
+                    ledger_entry.uncertainty_state.value,
+                )
+                result = OrderResult(
+                    account_id=account.account_id,
+                    status=OrderStatus.PENDING,
+                    signal_id=signal.id,
+                    broker_order_id=ledger_entry.remote_identifiers.get("broker_order_id"),
+                    message=(
+                        f"duplicate command (idempotency_key={ledger_key}); tracked state="
+                        f"{ledger_entry.uncertainty_state.value}, not resubmitted"
+                    ),
+                )
+                results.append(result)
+                self._export_routing_outcome(
+                    signal, outcome="duplicate_command", account=account, order_status=result.status, message=result.message
+                )
                 continue
 
             # PU-A2: the real moment this engine actually calls the broker --
@@ -383,6 +711,19 @@ class SignalCopierEngine:
                     signal_id=signal.id,
                     message=str(exc),
                 )
+                self.store.mark_command_ledger_outcome(
+                    ledger_key,
+                    uncertainty_state=UncertaintyState.UNKNOWN_AMBIGUOUS,
+                    terminal_evidence=command_ledger.ambiguous_evidence_for_exception(exc),
+                )
+            else:
+                outcome_state, outcome_remote, outcome_evidence = command_ledger.classify_order_result(result)
+                self.store.mark_command_ledger_outcome(
+                    ledger_key,
+                    uncertainty_state=outcome_state,
+                    remote_identifiers=outcome_remote,
+                    terminal_evidence=outcome_evidence,
+                )
 
             # E03 (bounded): a PENDING result with a real broker_order_id is
             # the one case app/reconciliation.py's per-pending-order loop is
@@ -399,16 +740,42 @@ class SignalCopierEngine:
             else:
                 self.capital_allocator.release(account.account_id, notional)
 
-            applied_quantity = None
-            if result.status in (OrderStatus.FILLED, OrderStatus.PENDING):
-                # An explicit, reported zero fill must stay zero -- `x or
-                # quantity` treats 0.0 as falsy and silently substitutes the
-                # full requested quantity, exactly the "zero fill becomes a
-                # fictitious full fill" bug (EXE-04). Only a genuinely
-                # unknown fill (`None` -- the broker hasn't said anything
-                # yet) falls back to the optimistic full-quantity guess.
+            # AUD-01: `applied_quantity`/`confirmed_cumulative_fill`/
+            # `applied_execution_delta`/`outstanding_possible_fill` --
+            # see this module's own docstring section on the distinct-
+            # field quantity model, and app/db.py's `save_order_result`
+            # docstring for exactly what each of these four means.
+            #
+            # A FILLED result is a broker-confirmed synchronous fill --
+            # `result.filled_quantity is None` there is a broker that
+            # confirmed FILLED without reporting a quantity, so the
+            # requested quantity is the only real number available (not
+            # an optimistic guess: the broker DID confirm this happened).
+            #
+            # A PENDING result confirms NOTHING by itself. Only a real,
+            # broker-reported `filled_quantity` alongside PENDING (a
+            # genuine partial-fill progress report, EXE-04: explicit 0.0
+            # is real progress too, not "unknown") is confirmed and
+            # applied. `filled_quantity is None` on a PENDING result means
+            # the broker hasn't said anything yet -- `actual_remaining_
+            # ownership` must NOT change for it, full stop; the full
+            # requested quantity is tracked ONLY as `outstanding_possible_
+            # fill`, genuine uncertain exposure, never applied to the
+            # position.
+            applied_quantity: float | None = None
+            confirmed_cumulative_fill: float | None = None
+            outstanding_possible_fill = 0.0
+            if result.status == OrderStatus.FILLED:
                 applied_quantity = quantity if result.filled_quantity is None else result.filled_quantity
+                confirmed_cumulative_fill = applied_quantity
+            elif result.status == OrderStatus.PENDING:
+                confirmed_cumulative_fill = result.filled_quantity
+                if result.filled_quantity is not None:
+                    applied_quantity = result.filled_quantity
+                outstanding_possible_fill = quantity - (confirmed_cumulative_fill or 0.0)
+            if applied_quantity is not None:
                 self.store.record_fill(account.account_id, symbol, order_signal.side, applied_quantity)
+            applied_execution_delta = applied_quantity if applied_quantity is not None else 0.0
 
             export_envelope = self._build_export_envelope(
                 result,
@@ -426,21 +793,148 @@ class SignalCopierEngine:
                 side=order_signal.side,
                 requested_quantity=quantity,
                 applied_quantity=applied_quantity,
+                confirmed_cumulative_fill=confirmed_cumulative_fill,
+                applied_execution_delta=applied_execution_delta,
+                outstanding_possible_fill=outstanding_possible_fill,
                 reserved_notional=reserved_notional,
                 export_envelope=export_envelope,
                 submitted_at=submitted_at,
+                purpose=order_purpose,
+                family_id=order_family_id,
             )
             results.append(result)
+            self._export_routing_outcome(
+                signal,
+                outcome=_OUTCOME_BY_ORDER_STATUS[result.status],
+                account=account,
+                order_status=result.status,
+                message=result.message,
+            )
 
         return results
+
+    def _reject(self, account: DestinationAccount, order_signal: Signal, message: str) -> OrderResult:
+        return OrderResult(
+            account_id=account.account_id, status=OrderStatus.REJECTED, signal_id=order_signal.id, message=message
+        )
+
+    async def _check_risk_basis(
+        self, account: DestinationAccount, order_signal: Signal, quantity: float
+    ) -> tuple[bool, OrderResult | None]:
+        """E03 (risk-basis sizing): `account.risk_percent_of_equity` gates
+        this entry's risk-to-stop (|entry_price - stop_loss| * quantity)
+        against that percentage of the account's real, just-fetched
+        equity. Fails closed -- REJECTS -- for every one of:
+        - no `stop_loss` on the signal (nothing to compute risk-to-stop
+          against; never assumed to be "no stop" == "no risk").
+        - no broker registered for this account, or that broker doesn't
+          implement `get_account_balance` at all (`has_balance_capability`
+          False) -- there is no real equity figure to check against.
+        - `get_account_balance` returns `None`, or a real `AccountBalance`
+          whose `equity` field is itself `None` (broker reachable but this
+          particular figure genuinely unavailable, e.g. a spot account
+          with no unified equity concept) -- same fail-closed treatment as
+          a broker error: an unresolved risk gate is never a passed one.
+        This call always fetches fresh (no cache), so there is no
+        "stale equity" figure this could silently reuse -- see this
+        module's own `_try_reserve_capital` caller for why a fresh fetch
+        per admission is preferred over a cached one that could grow
+        stale."""
+        if account.risk_percent_of_equity is None:
+            # Defensive/fail-closed, unreachable from `_try_reserve_capital`
+            # (its own caller only invokes this when the field IS set) --
+            # kept so this function is safe standalone and so mypy can
+            # narrow the attribute to `float` below.
+            return False, self._reject(
+                account, order_signal, f"account '{account.account_id}' has no risk_percent_of_equity configured"
+            )
+        risk_percent_of_equity = account.risk_percent_of_equity
+        if order_signal.stop_loss is None:
+            return False, self._reject(
+                account,
+                order_signal,
+                f"account '{account.account_id}' has risk_percent_of_equity configured but this signal "
+                "carries no stop_loss -- risk-to-stop can't be computed, refusing rather than admitting "
+                "an unsized risk",
+            )
+        if order_signal.price is None:
+            # Defensive/fail-closed: every real caller (`_try_reserve_capital`)
+            # already rejects a priceless signal before this is ever reached
+            # whenever ANY gate (including this one) is configured -- this
+            # branch exists so this function is safe to call on its own
+            # (never assumes a caller invariant it can't verify) and so
+            # mypy can narrow `order_signal.price` to `float` below.
+            return False, self._reject(
+                account,
+                order_signal,
+                f"account '{account.account_id}' has risk_percent_of_equity configured but this signal "
+                "carries no price -- risk-to-stop can't be computed, refusing",
+            )
+        if (
+            not math.isfinite(order_signal.price)
+            or order_signal.price <= 0
+            or not math.isfinite(order_signal.stop_loss)
+            or order_signal.stop_loss <= 0
+        ):
+            # Fail-closed defense-in-depth: sources are expected to reject a
+            # non-finite/zero/negative price or stop_loss before a Signal
+            # ever reaches here (app/sources/text_parser.py,
+            # app/sources/ninjatrader.py, app/sources/webhook.py's
+            # _optional_positive_float), but this admission path must never
+            # trust that blindly -- a price of 0 makes risk_notional 0 (an
+            # unbounded admission), a NaN price makes the `>` ceiling
+            # comparison below silently always False (never trips), and a
+            # negative price/stop_loss corrupts the risk-to-stop figure.
+            return False, self._reject(
+                account,
+                order_signal,
+                f"account '{account.account_id}' has risk_percent_of_equity configured but this signal's "
+                f"price ({order_signal.price!r}) or stop_loss ({order_signal.stop_loss!r}) is not a finite "
+                "positive number -- risk-to-stop can't be safely computed, refusing",
+            )
+        stop_loss = order_signal.stop_loss
+        price = order_signal.price
+        broker = self.brokers.get(account.broker)
+        if broker is None or not broker.has_balance_capability:
+            return False, self._reject(
+                account,
+                order_signal,
+                f"account '{account.account_id}' has risk_percent_of_equity configured but its broker "
+                f"'{account.broker}' has no way to report real account equity -- refusing rather than "
+                "sizing risk against an unverified/guessed equity figure",
+            )
+        balance = await broker.get_account_balance(account)
+        if balance is None or balance.equity is None:
+            return False, self._reject(
+                account,
+                order_signal,
+                f"account '{account.account_id}' has risk_percent_of_equity configured but its broker "
+                "could not report a current equity figure right now -- refusing rather than sizing risk "
+                "against a stale or invented one",
+            )
+        equity = balance.equity
+        risk_notional = abs(price - stop_loss) * abs(quantity)
+        risk_ceiling = equity * risk_percent_of_equity
+        if risk_notional > risk_ceiling:
+            return False, self._reject(
+                account,
+                order_signal,
+                f"account '{account.account_id}' risk-to-stop ceiling ({risk_percent_of_equity:.4f} of "
+                f"equity {equity:.2f} = {risk_ceiling:.2f}) would be exceeded by this entry's risk "
+                f"({risk_notional:.2f}) -- refusing",
+            )
+        return True, None
 
     async def _try_reserve_capital(
         self, account: DestinationAccount, order_signal: Signal, quantity: float
     ) -> tuple[bool, float, OrderResult | None]:
-        """E03 (bounded): admit this entry against `account.max_notional_exposure`,
-        if configured. Returns (admitted, notional_reserved, rejection_or_None).
-        `notional_reserved` is always the caller's responsibility to release
-        via `self.capital_allocator.release(account.account_id, notional)`
+        """E03: admit this entry against every gate configured for this
+        account and, if configured, this owner: `account.
+        max_notional_exposure`, `account.risk_percent_of_equity`, and
+        `self.max_owner_notional_exposure`. Returns (admitted,
+        notional_reserved, rejection_or_None). `notional_reserved` is
+        always the caller's responsibility to release via
+        `self.capital_allocator.release(account.account_id, notional)`
         once the broker call this admission was gating has returned AND the
         result isn't a PENDING order with a real broker_order_id -- that one
         case defers the release instead, carrying `notional` forward
@@ -451,36 +945,145 @@ class SignalCopierEngine:
         toward neither this reservation nor confirmed exposure. See both
         callers and app/capital_allocator.py's "Known gap" section for why
         every OTHER outcome still releases immediately (0.0 is a safe no-op
-        release when nothing was actually reserved, i.e. the check was
-        skipped)."""
-        if account.max_notional_exposure is None or order_signal.price is None:
-            return True, 0.0, None
-        notional = abs(quantity) * order_signal.price
-        confirmed = confirmed_open_notional(self.store, account.account_id)
-        admitted = await self.capital_allocator.admit(
-            account.account_id, notional, confirmed_exposure=confirmed, max_exposure=account.max_notional_exposure
+        release when nothing was actually reserved, i.e. no gate was
+        configured).
+
+        Fail-closed, not fail-open, in every one of these cases (a release
+        audit finding this module previously got wrong for the first two):
+        - No gate at all configured for this account or owner-wide: no
+          check to make, admits unconditionally, same as before any of
+          this existed.
+        - SOME gate IS configured but the signal has no `price`: used to
+          silently SKIP the whole check (an unbounded admission, no
+          different from having no ceiling at all). Now REJECTED outright
+          -- this build has no independent current-market-price source to
+          fall back to, and guessing one would be worse than refusing.
+        - This account has open exposure this replay could not resolve
+          (`ExposureReport.unresolved_symbols`, e.g. a fill row with a
+          missing/invalid quantity or price): used to contribute 0.0 to
+          confirmed exposure, i.e. treated as no exposure at all. Now
+          REJECTED -- new admissions are blocked for this account until
+          the position resolves (see app/capital_allocator.py's module
+          docstring, point 2, for why this is safer than inventing a
+          worst-case notional estimate here)."""
+        has_gate = (
+            account.max_notional_exposure is not None
+            or account.risk_percent_of_equity is not None
+            or self.max_owner_notional_exposure is not None
         )
-        if not admitted:
-            return (
-                False,
-                notional,
-                OrderResult(
-                    account_id=account.account_id,
-                    status=OrderStatus.REJECTED,
-                    signal_id=order_signal.id,
-                    message=(
-                        f"account '{account.account_id}' notional exposure ceiling "
-                        f"({account.max_notional_exposure}) would be exceeded by this entry "
-                        f"(confirmed={confirmed:.2f}, requested={notional:.2f}) -- refusing"
-                    ),
-                ),
+        if not has_gate:
+            return True, 0.0, None
+        if order_signal.price is None:
+            return False, 0.0, self._reject(
+                account,
+                order_signal,
+                f"account '{account.account_id}' has a capital/risk exposure gate configured "
+                "(max_notional_exposure, risk_percent_of_equity, and/or an owner-wide ceiling) but this "
+                "signal carries no price -- notional can't be computed and this build has no independent "
+                "current-market-price source to fall back to, so admission is refused rather than "
+                "silently skipping the check (see app/capital_allocator.py)",
             )
-        return True, notional, None
+        if not math.isfinite(order_signal.price) or order_signal.price <= 0:
+            # Fail-closed defense-in-depth, same rationale as the `price is
+            # None` check just above: sources are expected to reject a
+            # non-finite/zero/negative price before a Signal ever reaches
+            # this admission path, but this gate must never trust that
+            # blindly. Left unchecked: price=0 makes notional=0 (every
+            # notional/risk ceiling below is trivially satisfied regardless
+            # of real trade size), price=NaN makes every `>` ceiling
+            # comparison below silently evaluate False (never trips), and
+            # price<0 makes notional negative, corrupting
+            # CapitalAllocator._pending's running total for this account.
+            return False, 0.0, self._reject(
+                account,
+                order_signal,
+                f"account '{account.account_id}' has a capital/risk exposure gate configured but this "
+                f"signal's price ({order_signal.price!r}) is not a finite positive number -- notional "
+                "can't be safely computed, refusing rather than admitting an unbounded or corrupted "
+                "reservation",
+            )
+        notional = abs(quantity) * abs(order_signal.price)
+
+        owner_gated = self.max_owner_notional_exposure is not None
+        if owner_gated:
+            await self.capital_allocator.owner_lock.acquire()
+        try:
+            async with self.capital_allocator.account_lock(account.account_id):
+                exposure = confirmed_open_notional(self.store, account.account_id)
+                if exposure.has_unresolved:
+                    return False, notional, self._reject(
+                        account,
+                        order_signal,
+                        f"account '{account.account_id}' has open exposure for symbol(s) "
+                        f"{exposure.unresolved_symbols} this replay could not resolve an average cost for -- "
+                        "true current notional exposure is unknown and can't safely be treated as zero, "
+                        "refusing new admissions for this account until it resolves",
+                    )
+
+                if account.max_notional_exposure is not None:
+                    pending = self.capital_allocator.pending_reservation(account.account_id)
+                    if exposure.notional + pending + notional > account.max_notional_exposure:
+                        return False, notional, self._reject(
+                            account,
+                            order_signal,
+                            f"account '{account.account_id}' notional exposure ceiling "
+                            f"({account.max_notional_exposure}) would be exceeded by this entry "
+                            f"(confirmed={exposure.notional:.2f}, pending={pending:.2f}, "
+                            f"requested={notional:.2f}) -- refusing",
+                        )
+
+                if account.risk_percent_of_equity is not None:
+                    ok, rejection = await self._check_risk_basis(account, order_signal, quantity)
+                    if not ok:
+                        return False, notional, rejection
+
+                if owner_gated:
+                    owner_exposure = owner_wide_exposure(self.store, self.routing.accounts.values(), self.capital_allocator)
+                    if owner_exposure.has_unresolved:
+                        return False, notional, self._reject(
+                            account,
+                            order_signal,
+                            "owner-wide exposure ceiling is configured but at least one account has open "
+                            f"exposure this replay could not resolve ({owner_exposure.unresolved_symbols}) -- "
+                            "true owner-wide notional exposure is unknown, refusing new admissions until it "
+                            "resolves",
+                        )
+                    # `owner_gated` (from `self.max_owner_notional_exposure is
+                    # not None` above) guarantees this is a float here, but
+                    # mypy can't narrow through the boolean flag -- assert
+                    # rather than silently risk a `None` ceiling comparing
+                    # as "always fits" if that ever changed.
+                    assert self.max_owner_notional_exposure is not None
+                    if owner_exposure.notional + notional > self.max_owner_notional_exposure:
+                        return False, notional, self._reject(
+                            account,
+                            order_signal,
+                            f"owner-wide notional exposure ceiling ({self.max_owner_notional_exposure}) would "
+                            f"be exceeded by this entry (owner-wide confirmed+pending="
+                            f"{owner_exposure.notional:.2f}, requested={notional:.2f}) -- refusing",
+                        )
+
+                self.capital_allocator.reserve_locked(account.account_id, notional, signal_id=order_signal.id)
+                return True, notional, None
+        finally:
+            if owner_gated:
+                self.capital_allocator.owner_lock.release()
 
     def _resolve_close(
-        self, signal: Signal, account: DestinationAccount, symbol: str
+        self, signal: Signal, account: DestinationAccount, symbol: str, *, position: float | None = None
     ) -> tuple[Signal, float] | None:
-        position = self.store.get_position(account.account_id, symbol)
+        """`position`: the caller's already-known tracked position, reused
+        instead of re-reading `SignalStore.get_position` a second time when
+        the caller (`_resolve_and_submit_plain_close`) already read it once
+        under the same (account_id, symbol) lock to run reconciliation
+        against -- re-reading here could otherwise observe a DIFFERENT
+        value if some other, non-close write (e.g. a concurrent entry fill
+        for the same symbol) landed in between, silently resolving this
+        close against a quantity reconciliation never actually checked.
+        `None` (the default) preserves the original single-read behavior
+        for every other caller."""
+        if position is None:
+            position = self.store.get_position(account.account_id, symbol)
         if position == 0:
             return None
 
@@ -503,15 +1106,66 @@ class SignalCopierEngine:
 
     async def _submit_order(
         self, order_signal: Signal, quantity: float, account: DestinationAccount, symbol: str, broker: BrokerAdapter
-    ) -> tuple[OrderResult, float | None, datetime]:
-        """Returns (result, applied_quantity, submitted_at) — `applied_quantity`
-        is what was actually applied to the tracked position (None if nothing
-        was), for the caller to pass into `save_order_result`'s
-        `applied_quantity` so the stored row matches what `record_fill` did
-        (see that parameter's docstring for why the two must agree).
+    ) -> tuple[OrderResult, float | None, float | None, float, float, datetime]:
+        """Returns (result, applied_quantity, confirmed_cumulative_fill,
+        applied_execution_delta, outstanding_possible_fill, submitted_at).
+        `applied_quantity` is what was actually applied to the tracked
+        position (None if nothing was), for the caller to pass into
+        `save_order_result`'s `applied_quantity` so the stored row matches
+        what `record_fill` did (see that parameter's docstring for why the
+        two must agree). The remaining three are AUD-01's distinct-field
+        quantity model -- see handle_signal's identical computation and
+        this module's own docstring section for the shared contract.
         `submitted_at` (PU-A2) is the real moment this call actually reached
         the broker, captured immediately before it -- see handle_signal's
-        identical field for what it feeds into."""
+        identical field for what it feeds into.
+
+        P0-2: this is the plain-account (non-managed_lifecycle) close's
+        one real broker.place_order call site -- `_resolve_and_submit_
+        plain_close`'s own `claim_close` already gives it cross-process
+        exclusion per (account_id, symbol), but the command ledger's own
+        idempotency check is a second, independent layer (a retried close
+        signal reaching this call again AFTER the first one's claim was
+        already released) rather than relying on that lock alone."""
+        ledger_key = f"close:{account.account_id}:{symbol}:{order_signal.id}"
+        ledger_fingerprint = command_ledger.compute_fingerprint(
+            {
+                "command_type": "close",
+                "account_id": account.account_id,
+                "symbol": symbol,
+                "side": order_signal.side.value,
+                "quantity": quantity,
+                "signal_id": order_signal.id,
+            }
+        )
+        ledger_entry = self.store.open_command_ledger_entry(
+            idempotency_key=ledger_key,
+            command_type=CommandType.CLOSE,
+            account_id=account.account_id,
+            environment=command_ledger.current_environment(),
+            request_fingerprint=ledger_fingerprint,
+        )
+        if command_ledger.is_duplicate_submission(ledger_entry.uncertainty_state):
+            logger.info(
+                "duplicate close command idempotency_key=%s account=%s symbol=%s -- replaying "
+                "tracked state=%s instead of resubmitting",
+                ledger_key,
+                account.account_id,
+                symbol,
+                ledger_entry.uncertainty_state.value,
+            )
+            result = OrderResult(
+                account_id=account.account_id,
+                status=OrderStatus.PENDING,
+                signal_id=order_signal.id,
+                broker_order_id=ledger_entry.remote_identifiers.get("broker_order_id"),
+                message=(
+                    f"duplicate command (idempotency_key={ledger_key}); tracked state="
+                    f"{ledger_entry.uncertainty_state.value}, not resubmitted"
+                ),
+            )
+            return result, None, None, 0.0, 0.0, datetime.now(timezone.utc)
+
         submitted_at = datetime.now(timezone.utc)
         try:
             result = await broker.place_order(order_signal, account, quantity, symbol)
@@ -520,13 +1174,130 @@ class SignalCopierEngine:
             result = OrderResult(
                 account_id=account.account_id, status=OrderStatus.ERROR, signal_id=order_signal.id, message=str(exc)
             )
-        applied_quantity = None
-        if result.status in (OrderStatus.FILLED, OrderStatus.PENDING):
-            # See handle_signal's identical fix -- an explicit zero fill
-            # must stay zero, never fall back to the requested quantity.
+            self.store.mark_command_ledger_outcome(
+                ledger_key,
+                uncertainty_state=UncertaintyState.UNKNOWN_AMBIGUOUS,
+                terminal_evidence=command_ledger.ambiguous_evidence_for_exception(exc),
+            )
+        else:
+            outcome_state, outcome_remote, outcome_evidence = command_ledger.classify_order_result(result)
+            self.store.mark_command_ledger_outcome(
+                ledger_key, uncertainty_state=outcome_state, remote_identifiers=outcome_remote, terminal_evidence=outcome_evidence
+            )
+        # AUD-01: mirrors handle_signal's identical branch exactly -- a
+        # PENDING result with `filled_quantity is None` confirms nothing,
+        # so `actual_remaining_ownership` (positions.net_quantity) must not
+        # change for it; only a real, broker-reported quantity (FILLED, or
+        # a genuine partial-fill progress report alongside PENDING -- EXE-04:
+        # explicit 0.0 is real progress too) is applied.
+        applied_quantity: float | None = None
+        confirmed_cumulative_fill: float | None = None
+        outstanding_possible_fill = 0.0
+        if result.status == OrderStatus.FILLED:
             applied_quantity = quantity if result.filled_quantity is None else result.filled_quantity
+            confirmed_cumulative_fill = applied_quantity
+        elif result.status == OrderStatus.PENDING:
+            confirmed_cumulative_fill = result.filled_quantity
+            if result.filled_quantity is not None:
+                applied_quantity = result.filled_quantity
+            outstanding_possible_fill = quantity - (confirmed_cumulative_fill or 0.0)
+        if applied_quantity is not None:
             self.store.record_fill(account.account_id, symbol, order_signal.side, applied_quantity)
-        return result, applied_quantity, submitted_at
+        applied_execution_delta = applied_quantity if applied_quantity is not None else 0.0
+        return (
+            result,
+            applied_quantity,
+            confirmed_cumulative_fill,
+            applied_execution_delta,
+            outstanding_possible_fill,
+            submitted_at,
+        )
+
+    async def _reconcile_before_plain_close(
+        self, signal: Signal, account: DestinationAccount, symbol: str, local_position: float, broker: BrokerAdapter
+    ) -> OrderResult | None:
+        """P0-5: a plain (non-managed_lifecycle) account's CLOSE resolves
+        against this service's own locally tracked position
+        (`SignalStore.get_position` -- see this module's own docstring,
+        "Close signals"), never a live read of the broker's actual book.
+        That's an acceptable simplification only as long as nothing else
+        can move that account's real position without this service
+        knowing -- which is exactly what can stop being true after a
+        manual intervention, an external fill placed directly at the
+        broker, a corporate action, or ordinary reconciliation lag (a
+        PENDING order whose terminal status this service hasn't polled
+        yet). Before a plain close is allowed to proceed, this requires
+        ONE of:
+
+          (a) A fresh broker position readback
+              (`BrokerAdapter.get_broker_position`) that matches
+              `local_position` within `_positions_reconcile`'s tolerance --
+              only real when `broker.has_position_readback_capability` is
+              True (a REAL, verified adapter override -- see
+              app/brokers/base.py's "computed, not declared" section, not
+              a name/imported-SDK claim). This is the preferred path and
+              is checked first.
+
+          (b) This account's own explicit, narrow, OFF-BY-DEFAULT
+              `DestinationAccount.exclusive_writer_qualified` flag -- an
+              operator's deliberate, per-account assertion that nothing
+              else writes to this specific broker account's position, so
+              the local tracked quantity genuinely IS authoritative. Only
+              consulted when (a) isn't available (no verified readback
+              capability, or the readback itself came back unknown) --
+              this method never falls back to (b) just because (a)
+              happened to disagree; a disagreement is reported as a
+              reconciliation failure, not silently downgraded to "trust
+              the flag instead."
+
+        Returns a REJECTED `OrderResult` (never raises, never proceeds) if
+        NEITHER holds -- this is a fail-closed gate: an unreconciled,
+        unqualified plain close must be blocked with a clear, actionable
+        reason, not allowed through on an unproven local projection.
+        Returns `None` when the close may proceed.
+        """
+        if broker.has_position_readback_capability:
+            broker_position = await broker.get_broker_position(account, symbol)
+            if broker_position is not None:
+                if _positions_reconcile(broker_position, local_position):
+                    return None
+                return OrderResult(
+                    account_id=account.account_id,
+                    status=OrderStatus.REJECTED,
+                    signal_id=signal.id,
+                    message=(
+                        f"broker-reported position ({broker_position}) for account "
+                        f"'{account.account_id}' symbol '{symbol}' does not match this service's "
+                        f"own tracked position ({local_position}) -- refusing to close against a "
+                        "stale/unreconciled local projection. Possible causes: manual intervention, "
+                        "an external fill placed directly at the broker, a corporate action, or "
+                        "reconciliation lag. Reconcile the account (or correct the tracked position) "
+                        "before retrying this close."
+                    ),
+                )
+            # `broker_position is None`: a broker that CLAIMS the
+            # capability (overrides the method) but genuinely couldn't
+            # answer this specific query right now. Treat exactly like "no
+            # verified capability" -- fall through to the
+            # exclusive-writer-qualified check below rather than assume
+            # anything about the real book.
+        if account.exclusive_writer_qualified:
+            return None
+        return OrderResult(
+            account_id=account.account_id,
+            status=OrderStatus.REJECTED,
+            signal_id=signal.id,
+            message=(
+                f"cannot reconcile account '{account.account_id}' symbol '{symbol}' before closing: "
+                f"broker '{account.broker}' has no verified position-readback capability (or its "
+                "readback returned unknown), and this account is not marked "
+                "exclusive_writer_qualified. Refusing to close against this service's own locally "
+                "tracked position alone. Either use a broker adapter with a real "
+                "get_broker_position implementation, or set exclusive_writer_qualified=True on this "
+                "account ONLY if you are certain nothing else can write to its position outside "
+                "Signal Copier."
+            ),
+        )
 
     async def _resolve_and_submit_plain_close(
         self, signal: Signal, account: DestinationAccount, symbol: str, broker: BrokerAdapter
@@ -559,21 +1330,45 @@ class SignalCopierEngine:
                     message="a close for this account/symbol is already in progress elsewhere",
                 )
             try:
-                resolved = self._resolve_close(signal, account, symbol)
-                if resolved is None:
+                local_position = self.store.get_position(account.account_id, symbol)
+                if local_position == 0:
                     result = OrderResult(
                         account_id=account.account_id,
                         status=OrderStatus.REJECTED,
                         signal_id=signal.id,
                         message="no open position to close",
                     )
-                    self.store.save_order_result(result)
+                    # DB-0X: a plain account's close always reports
+                    # purpose='close'; family_id stays None -- there's no
+                    # tracked lifecycle to attribute it to (see this
+                    # method's own docstring / app/db.py's SCHEMA comment).
+                    self.store.save_order_result(result, purpose="close", family_id=None)
                     return result
 
-                order_signal, quantity = resolved
-                result, applied_quantity, submitted_at = await self._submit_order(
-                    order_signal, quantity, account, symbol, broker
+                # P0-5: reconcile BEFORE resolving/submitting anything --
+                # see _reconcile_before_plain_close's own docstring for the
+                # full contract. Reuses local_position (already read above,
+                # under this same lock) rather than letting _resolve_close
+                # read it again, which could observe a different value.
+                reconciliation_rejection = await self._reconcile_before_plain_close(
+                    signal, account, symbol, local_position, broker
                 )
+                if reconciliation_rejection is not None:
+                    self.store.save_order_result(reconciliation_rejection, purpose="close", family_id=None)
+                    return reconciliation_rejection
+
+                resolved = self._resolve_close(signal, account, symbol, position=local_position)
+                assert resolved is not None  # local_position != 0 already checked above
+
+                order_signal, quantity = resolved
+                (
+                    result,
+                    applied_quantity,
+                    confirmed_cumulative_fill,
+                    applied_execution_delta,
+                    outstanding_possible_fill,
+                    submitted_at,
+                ) = await self._submit_order(order_signal, quantity, account, symbol, broker)
                 self.store.save_order_result(
                     result,
                     broker=account.broker,
@@ -581,7 +1376,12 @@ class SignalCopierEngine:
                     side=order_signal.side,
                     requested_quantity=quantity,
                     applied_quantity=applied_quantity,
+                    confirmed_cumulative_fill=confirmed_cumulative_fill,
+                    applied_execution_delta=applied_execution_delta,
+                    outstanding_possible_fill=outstanding_possible_fill,
                     submitted_at=submitted_at,
+                    purpose="close",
+                    family_id=None,
                 )
                 return result
             finally:
@@ -632,6 +1432,11 @@ class SignalCopierEngine:
             broker=account.broker,
             initial_stop=signal.stop_loss,
             targets=targets,
+            # DB-0X: this position's own real entry signal id, carried for
+            # its whole lifetime so a later CLOSE for this same
+            # (account_id, symbol) can report the same `orders.family_id`
+            # -- see PositionPlan.entry_signal_id's own docstring.
+            entry_signal_id=signal.id,
         )
 
         error = self.lifecycle_manager.validate_plan(plan)
@@ -674,6 +1479,54 @@ class SignalCopierEngine:
             raw=signal.raw,
         )
 
+        # P0-2: pre-effect durable command-ledger intent -- see
+        # app/command_ledger.py's module docstring and handle_signal's
+        # identical wiring for the plain-account entry path. `signal.id`
+        # (== `entry_signal.id` above) is this entry's natural retry
+        # identity.
+        ledger_key = f"entry:{account.account_id}:{symbol}:{signal.id}"
+        ledger_fingerprint = command_ledger.compute_fingerprint(
+            {
+                "command_type": "entry",
+                "account_id": account.account_id,
+                "symbol": symbol,
+                "side": entry_signal.side.value,
+                "quantity": quantity,
+                "signal_id": signal.id,
+            }
+        )
+        ledger_entry = self.store.open_command_ledger_entry(
+            idempotency_key=ledger_key,
+            command_type=CommandType.ENTRY,
+            account_id=account.account_id,
+            environment=command_ledger.current_environment(),
+            request_fingerprint=ledger_fingerprint,
+        )
+        if command_ledger.is_duplicate_submission(ledger_entry.uncertainty_state):
+            self.capital_allocator.release(account.account_id, notional)
+            logger.info(
+                "duplicate managed entry command idempotency_key=%s account=%s symbol=%s -- replaying "
+                "tracked state=%s instead of resubmitting",
+                ledger_key,
+                account.account_id,
+                symbol,
+                ledger_entry.uncertainty_state.value,
+            )
+            return (
+                OrderResult(
+                    account_id=account.account_id,
+                    status=OrderStatus.PENDING,
+                    signal_id=signal.id,
+                    broker_order_id=ledger_entry.remote_identifiers.get("broker_order_id"),
+                    message=(
+                        f"duplicate command (idempotency_key={ledger_key}); tracked state="
+                        f"{ledger_entry.uncertainty_state.value}, not resubmitted"
+                    ),
+                ),
+                None,
+                None,
+            )
+
         # PU-A2: submission moment for this managed entry -- see
         # handle_signal's identical field for what it feeds into.
         submitted_at = datetime.now(timezone.utc)
@@ -706,6 +1559,11 @@ class SignalCopierEngine:
             # released -- see app/capital_allocator.py's "Known gap".
             self.capital_allocator.release(account.account_id, notional)
             self.lifecycle_manager.register_pending_entry(account, symbol, None, quantity)
+            self.store.mark_command_ledger_outcome(
+                ledger_key,
+                uncertainty_state=UncertaintyState.UNKNOWN_AMBIGUOUS,
+                terminal_evidence=command_ledger.ambiguous_evidence_for_exception(exc),
+            )
             return (
                 OrderResult(
                     account_id=account.account_id, status=OrderStatus.ERROR, signal_id=signal.id, message=str(exc)
@@ -713,6 +1571,14 @@ class SignalCopierEngine:
                 submitted_at,
                 None,
             )
+
+        # P0-2: one real broker answer landed (didn't raise) -- classify
+        # and record it against the pre-effect row opened above, whatever
+        # branch below then does with it.
+        _ledger_state, _ledger_remote, _ledger_evidence = command_ledger.classify_order_result(result)
+        self.store.mark_command_ledger_outcome(
+            ledger_key, uncertainty_state=_ledger_state, remote_identifiers=_ledger_remote, terminal_evidence=_ledger_evidence
+        )
 
         protection_confirmed_at: datetime | None = None
         if result.status == OrderStatus.REJECTED:
@@ -887,6 +1753,13 @@ class SignalCopierEngine:
         being added on a route that can't protect it; they have no
         business blocking someone from *removing* existing risk.
         """
+        # Cross-process/cross-host fencing (app/writer_lease.py) -- same
+        # fail-closed check as `_handle_signal`, and for the same reason:
+        # this is the OTHER top-level entry point that can reach a broker
+        # write (the dashboard's "Exit now"/"Flatten" actions), so it
+        # needs its own independent check rather than relying on whatever
+        # called it having already checked.
+        self.lease_guard.require_active()
         broker = self.brokers.get(account.broker)
         if broker is None:
             return OrderResult(
@@ -931,7 +1804,18 @@ class SignalCopierEngine:
             # above) -- always attribute the row to it rather than trust
             # whatever id happened to come back from deeper in the call.
             result = replace(result, signal_id=close_signal.id)
-            self.store.save_order_result(result, broker=account.broker, symbol=symbol, side=resolved_side)
+            # DB-0X: real family link back to this position's own entry
+            # (see app/lifecycle/models.py's `PositionPlan.entry_signal_id`)
+            # -- already fetched above as `lifecycle_before_close`. None
+            # (never fabricated) when there's no lifecycle to read it from.
+            family_id = (
+                lifecycle_before_close.plan.entry_signal_id
+                if lifecycle_before_close is not None and lifecycle_before_close.plan.entry_signal_id
+                else None
+            )
+            self.store.save_order_result(
+                result, broker=account.broker, symbol=symbol, side=resolved_side, purpose="close", family_id=family_id
+            )
         else:
             # Goes through the same (account_id, symbol) lock as a provider-driven
             # CLOSE signal (see _resolve_and_submit_plain_close) -- a dashboard

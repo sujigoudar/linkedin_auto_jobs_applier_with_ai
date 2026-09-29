@@ -107,6 +107,13 @@ _ALLOWED: dict[str, frozenset[Role]] = {
     #: AD-18 "Audit log and release evidence" -- exactly this screen's
     #: own access list.
     "view_audit_log": frozenset({Role.OWNER, Role.REVIEWER}),
+    #: AD-18 "Audit log and release evidence" -- the evidence-manifest
+    #: export. Deliberately the same role pair as "view_audit_log", not
+    #: a wider or narrower set: exporting a verbatim bundle of rows a
+    #: role can already see is the same authority as viewing them, not
+    #: a distinct, more sensitive command -- no role that is denied the
+    #: audit log itself should be able to reach its export either.
+    "export_evidence_manifest": frozenset({Role.OWNER, Role.REVIEWER}),
     #: AD-20 "Workspace customization and configuration" -- exactly this
     #: screen's own access list. Cosmetic as the fields are, changing the
     #: tenant-wide shared default is an ownership decision, not one any

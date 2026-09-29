@@ -21,6 +21,9 @@
             <button type="submit">Revoke</button>
           </form>
           {% endif %}
+          <form method="post" action="/ops/access/{{ m.user_id }}/revoke-api-tokens" style="display:inline;">
+            <button type="submit">Revoke API tokens</button>
+          </form>
         </td>
       </tr>
       {% endfor %}
@@ -78,6 +81,6 @@
   {% else %}
   <p>No login/logout activity recorded for this tenant yet.</p>
   {% endif %}
-  <p>A revoked membership stops authorizing new requests immediately (every route re-checks role on each request), but an already-issued JWT (Bearer-token callers) remains cryptographically valid until it expires -- only cookie-based web sessions can be explicitly revoked (logged out) through this system today.</p>
+  <p>A revoked membership stops authorizing new requests immediately (every route re-checks role on each request). Bearer-token JWTs are independently revocable: use "Revoke API tokens" above to denylist every currently-active token issued to a staff member (e.g. after a suspected compromise), or cookie-based web sessions can be logged out through this system as before.</p>
 </div>
 {% endblock %}

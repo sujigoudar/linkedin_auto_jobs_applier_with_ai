@@ -8,6 +8,7 @@ from app.services.eligibility import save_eligibility_facts
 from app.services.platform_connection import create_platform_connection
 from app.services.portfolio_selection import create_portfolio_selection
 from app.services.support_case import create_support_case
+from tests._onboarding_fixtures import complete_onboarding_prerequisites
 
 
 def _seed_customer(db_session, *, tenant_id="tenant-a", user_id="user-a"):
@@ -116,6 +117,7 @@ def test_get_customer_support_record_shows_real_eligibility_and_cases(db_session
 
 def test_get_customer_support_record_shows_a_real_copy_mandate(db_session):
     _seed_customer(db_session)
+    complete_onboarding_prerequisites(db_session, tenant_id="tenant-a", user_id="user-a")
     product = Product(
         tenant_id="tenant-a", product_name="Support View Product", slug="support-view-product",
         lifecycle_state=ProductLifecycleState.PUBLISHED,
@@ -162,6 +164,7 @@ def test_get_customer_support_record_never_shows_another_customers_mandate(db_se
     db_session.flush()
     db_session.add(Membership(tenant_id="tenant-a", user_id="user-other", role=MembershipRole.CUSTOMER))
     db_session.commit()
+    complete_onboarding_prerequisites(db_session, tenant_id="tenant-a", user_id="user-other")
 
     product = Product(
         tenant_id="tenant-a", product_name="Other Customer Product", slug="other-customer-product",

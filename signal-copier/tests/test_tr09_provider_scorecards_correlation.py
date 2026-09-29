@@ -454,3 +454,128 @@ async def test_tr09_correlation_panel_shows_honest_insufficient_data_state(live_
             assert "3 real overlapping" in corr_text
         finally:
             await browser.close()
+
+
+@pytest.mark.asyncio
+async def test_tr09_signal_vs_execution_gap_matches_real_seeded_slippage_and_quantity_gap(live_server_inprocess):
+    """Phase C1's new "provider signal vs. our copied execution" panel
+    (#tr09-p10) -- LOAD-BEARING for this batch's riskiest new computation,
+    the signed/side-aware slippage formula in app/static/views/tr09.js's
+    `computeSignalExecutionGap`.
+
+    PaperBroker (app/brokers/paper.py) always fills at exactly the
+    signal's own price with zero slippage by design (see its own
+    docstring) -- so, precisely like this module's own earlier tests seed
+    a real STOP_PLACED event / closed-position excursion directly via
+    `SignalStore` for schema pieces this webhook-only flow can't produce,
+    this test drives one real signal through the real webhook -> engine ->
+    PaperBroker path (so the order row's own real signal_id linkage,
+    requested_quantity sizing, and account attribution are all genuine),
+    then corrects that one order's terminal fill via the exact same real,
+    already-tested `SignalStore.update_order_status` app/reconciliation.py
+    itself calls -- simulating what a REAL broker's confirmed fill report
+    (with real slippage and a real partial fill) would have written to
+    this same row. A second signal's order is flipped to REJECTED the same
+    way, with a real message, to exercise the rejection-reason breakdown.
+    """
+    base_url, store = live_server_inprocess
+    client = httpx.Client(base_url=base_url, timeout=10.0)
+
+    login = client.post("/auth/login", json={"password": "test-owner-pw-tr09b4b5"})
+    assert login.status_code == 200
+    csrf_headers = {"X-CSRF-Token": login.json()["csrf_token"]}
+    webhook_headers = {"X-Webhook-Secret": "test-webhook-secret-tr09b4b5"}
+
+    assert client.post(
+        "/accounts", json={"account_id": "acct-gap", "broker": "paper"}, headers=csrf_headers
+    ).status_code == 200
+    assert client.post(
+        "/routing-rules", json={"source": "provGap", "destinations": ["acct-gap"]}, headers=csrf_headers
+    ).status_code == 200
+    assert client.post(
+        "/providers/provGap", json={"display_name": "Provider Gap"}, headers=csrf_headers
+    ).status_code == 200
+
+    # Signal 1: real BUY signal specifying price=100.0, quantity=10.0 --
+    # PaperBroker fills it instantly at that same price/quantity (zero
+    # slippage, by its own design).
+    resp = client.post(
+        "/webhook/provGap",
+        json={"symbol": "GAPUSD", "side": "buy", "quantity": 10.0, "price": 100.0},
+        headers=webhook_headers,
+    )
+    assert resp.status_code == 200
+
+    # Signal 2: a second real signal whose resulting order is corrected to
+    # REJECTED below (to exercise the rejection-reason breakdown).
+    resp = client.post(
+        "/webhook/provGap",
+        json={"symbol": "GAPUSD2", "side": "buy", "quantity": 5.0, "price": 50.0},
+        headers=webhook_headers,
+    )
+    assert resp.status_code == 200
+
+    orders = client.get("/orders?limit=50", headers=csrf_headers).json()["orders"]
+    order_gapusd = next(o for o in orders if o["symbol"] == "GAPUSD")
+    order_gapusd2 = next(o for o in orders if o["symbol"] == "GAPUSD2")
+    assert order_gapusd["status"] == "filled"
+    assert order_gapusd["requested_quantity"] == pytest.approx(10.0)
+    assert order_gapusd2["status"] == "filled"
+
+    from app.models import OrderResult, OrderStatus
+
+    # Real, deliberately adverse fill for a BUY: paid 101.5 instead of the
+    # signal's own 100.0 (slippage = +1.5, adverse), and only 8.0 of the
+    # requested 10.0 filled (execution gap = +2.0).
+    store.update_order_status(
+        order_gapusd["id"],
+        OrderResult(
+            account_id="acct-gap",
+            status=OrderStatus.FILLED,
+            signal_id=order_gapusd["signal_id"],
+            filled_quantity=8.0,
+            filled_price=101.5,
+            message="",
+        ),
+    )
+    # Real rejection, with a real message, for the second signal's order.
+    store.update_order_status(
+        order_gapusd2["id"],
+        OrderResult(
+            account_id="acct-gap",
+            status=OrderStatus.REJECTED,
+            signal_id=order_gapusd2["signal_id"],
+            filled_quantity=None,
+            filled_price=None,
+            message="simulated risk-check rejection for this test",
+        ),
+    )
+
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(executable_path=_CHROMIUM_EXECUTABLE)
+        page = await browser.new_page()
+        try:
+            await page.goto(base_url)
+            await page.fill("#login-password", "test-owner-pw-tr09b4b5")
+            await page.click("#login-form button[type=submit]")
+            await page.wait_for_selector("#app:not([hidden])", timeout=5000)
+
+            await page.goto(f"{base_url}/#/trade/sources")
+            await page.wait_for_selector("#tr09-p10", timeout=5000)
+            await _wait_settled(page, "#tr09-p10")
+
+            gap_text = await page.inner_text("#tr09-p10")
+            assert "provGap" in gap_text
+            # Real, signed slippage: +1.5 (adverse, paid more than the
+            # signal specified on a BUY) -- must be positive/"adverse",
+            # never negative/"favorable" (a flipped sign would silently
+            # report a real bad fill as if it were a good one).
+            assert "1.5" in gap_text
+            assert "-1.5" not in gap_text
+            assert "adverse" in gap_text
+            assert "favorable" not in gap_text
+            # Real execution gap: requested 10.0, filled 8.0 -> +2.
+            assert "2" in gap_text
+            assert "simulated risk-check rejection for this test" in gap_text
+        finally:
+            await browser.close()

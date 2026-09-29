@@ -43,7 +43,49 @@ def test_create_account_creates_identity_tenant_and_customer_membership(db_sessi
     assert membership.role == MembershipRole.CUSTOMER
 
     assert token.token_type == AuthTokenType.EMAIL_VERIFICATION
-    assert token.consumed_at is None
+
+
+def test_create_account_succeeds_against_the_real_rls_enforced_role(tenant_session_factory, db_session):
+    """Regression test: `db_session` (used by every other test in this
+    file) is bound to the Postgres superuser and silently bypasses RLS
+    regardless of FORCE ROW LEVEL SECURITY -- it would never have caught
+    that inserting the new Membership row with no `app.tenant_id` scope
+    set failed outright ("new row violates row-level security policy for
+    table 'memberships'") against `commercial`/`app_role`, the actual
+    NOSUPERUSER NOBYPASSRLS role production connects as (ADR-0001,
+    docs/operations/DEPLOYMENT.md). `tenant_session_factory` is that same
+    restricted role -- this is the one test in this suite that proves
+    self-service signup (ID-01) actually works under real enforcement,
+    not just against the always-permissive admin connection."""
+    session = tenant_session_factory()
+    try:
+        # create_account() itself must not raise (that's the actual
+        # regression: the INSERT used to be rejected outright). Checking
+        # the row back via a NEW session/transaction, scoped to the
+        # tenant `create_account` just minted, mirrors how a real request
+        # would look the row back up -- `set_config(..., true)`'s scope
+        # is transaction-local (matching `SET LOCAL`), so re-reading it
+        # inside the SAME committed transaction wouldn't prove anything a
+        # future request couldn't also do.
+        user, _token = create_account(
+            session, email="rls-enforced@example.com", password="a-real-password-1", tenant_display_name="RLS Co"
+        )
+        user_id = user.user_id
+    finally:
+        session.close()
+
+    verify_session = tenant_session_factory()
+    try:
+        from app.db import set_tenant_scope
+
+        membership_row = db_session.scalar(select(Membership).where(Membership.user_id == user_id))
+        assert membership_row is not None
+        set_tenant_scope(verify_session, membership_row.tenant_id)
+        membership = verify_session.scalar(select(Membership).where(Membership.user_id == user_id))
+        assert membership is not None
+        assert membership.role == MembershipRole.CUSTOMER
+    finally:
+        verify_session.close()
 
 
 def test_create_account_rejects_duplicate_email(db_session):

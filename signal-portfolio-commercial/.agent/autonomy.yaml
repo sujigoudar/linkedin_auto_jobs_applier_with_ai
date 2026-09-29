@@ -1,0 +1,251 @@
+# Autonomy policy for AI agents working in signal-portfolio-commercial/.
+#
+# This is a multi-tenant, Postgres-backed COMMERCIAL platform: it handles
+# customer money (subscriptions, PAMM/MAM fees) and rights-managed
+# republishing of third-party trading signals to real external venues
+# (Collective2, eToro). "Simulate/build the adapter" and "actually move
+# money or rights state in production" are different orders of magnitude
+# of consequence, and this file is what separates them.
+#
+# Scope: this file governs AGENT decisions during development in this
+# package. It does not grant any agent runtime credentials, production
+# access, or authority over CI/deploy gates (see .agent/quality-gates.yaml,
+# owned separately) or .agent/permissions.yaml (tool/command allow-lists,
+# owned separately). Where those files impose a stricter rule than this
+# one, the stricter rule wins.
+#
+# Reference anchors used throughout (read these before touching the areas
+# they cover):
+#   - Four-book ledger:      app/models/ledger.py, app/services/ledger.py,
+#                             docs/adr/0004-four-book-economic-ledger.md,
+#                             docs/adr/0008-append-only-triggers-on-ledger-tables.md,
+#                             spec/docs/04_metrics_accounting_and_truth.md
+#   - Rights registry/gates: app/services/rights_registry.py,
+#                             app/services/portfolio_rights.py,
+#                             app/models/rights.py,
+#                             spec/docs/01_rights_legal_and_launch_gates.md
+#   - Billing/subscriptions: app/services/customer_billing.py,
+#                             app/services/stripe_webhook.py,
+#                             app/models/billing.py,
+#                             spec/docs/08_products_billing_and_entitlements.md
+#   - Publisher adapters:    app/services/collective2_publisher.py,
+#                             app/services/etoro_adapter.py,
+#                             spec/docs/06_platform_adapters.md
+#   - PAMM/MAM:               app/services/pamm_accounting.py,
+#                             app/services/mam_allocation.py,
+#                             spec/docs/07_managed_accounts_pamm_mam.md
+
+version: 1
+
+levels:
+
+  - level: 0
+    name: never_ask
+    description: >
+      Reversible, low-consequence, or purely internal-to-the-current-work
+      actions. No human check-in needed; just do it.
+    applies_to:
+      - Code formatting (black/ruff/prettier-equivalent), import ordering.
+      - Fixing lint errors.
+      - Fixing tests that the agent's own current change broke, as long
+        as the fix restores the ORIGINAL intended behavior rather than
+        weakening the assertion to make it pass.
+      - >-
+        Doc sync: updating a docstring, README, or docs/* page to match
+        a code change already made in the same unit of work.
+      - Routine refactoring that preserves behavior (renames, extracting
+        a helper, deleting dead code) within a single module/service.
+      - >-
+        Repo exploration: reading code, running existing tests, grepping,
+        inspecting migrations, running `alembic history`, etc.
+    examples:
+      - Reformatting app/services/pamm_accounting.py after an edit.
+      - Renaming a local variable in customer_billing.py for clarity.
+      - Adding a missing docstring cross-reference after moving a function.
+
+  - level: 1
+    name: agent_decides_records_decision
+    description: >
+      Implementation-detail decisions within an already-agreed scope of
+      work. The agent decides and moves on, but writes down WHY (commit
+      message, ADR note, or inline comment) so the reasoning survives —
+      it does not need to ask first, but it does need to leave a trail.
+    applies_to:
+      - Implementation details inside a function/module (algorithms,
+        data structures, control flow) that don't change a public
+        contract.
+      - Choosing among libraries ALREADY in requirements.txt/pyproject
+        (e.g. using `sqlalchemy.select` vs. ORM query style that's
+        already in use elsewhere in the module).
+      - "Internal API/module organization: which service file a new
+        helper lives in, how a service is split into private functions."
+      - "Test methodology: unit vs. integration test shape, fixture
+        design, how a new adapter (e.g. a third publisher stub) is
+        exercised in tests — as long as it follows docs/testing/*."
+    examples:
+      - Deciding to add a private `_validate_tif` helper inside
+        collective2_publisher.py rather than inlining the check.
+      - Choosing table-driven tests for a new mam_allocation.py edge case.
+      - Restructuring rights_registry.py's internal helpers without
+        changing check_rights()'s signature or fail-closed semantics.
+
+  - level: 2
+    name: agent_decides_flags_in_report
+    description: >
+      Decisions with real but contained blast radius: they change what
+      the system CAN do or what it costs, but do not themselves move
+      money, enforce a legal gate, or touch cross-tenant isolation logic.
+      The agent may proceed, but MUST call the decision out explicitly
+      in its final report/PR description so a human reviews it before
+      merge, even if CI is green.
+    applies_to:
+      - Adding a new third-party dependency (new package in
+        requirements/pyproject, not just a new import of something
+        already vendored).
+      - >-
+        Schema/migration additions (new Alembic revision) — including a
+        required tenant-isolation review: every new table/column that
+        stores tenant-scoped data must be checked against the existing
+        RLS pattern (docs/adr/0001-*-row-level-security-multi-tenant-isolation.md)
+        before the agent calls the migration "done", and the report must
+        say explicitly that this check was done and what it found.
+      - New copier-channel/publisher adapters (a new module alongside
+        collective2_publisher.py / etoro_adapter.py) that BUILD request
+        shapes — as long as it preserves the existing rule that no
+        adapter transmits/selects a real (non-demo) endpoint on its own
+        (see etoro_adapter.py's own docstring on this).
+      - Cost/performance tradeoffs (e.g. choosing to denormalize a query,
+        adding a cache, batching size for an ingest job).
+    examples:
+      - Adding a new Alembic migration for a `publisher_destinations`-
+        style table, with a tenant_id column and a review note confirming
+        it follows the RLS pattern in docs/adr/0001-*.
+      - Adding a `tradingview_adapter.py` module that builds (but never
+        sends) a TradingView webhook payload shape.
+      - Adding `httpx` as a dependency to replace hand-rolled HTTP request
+        building in a new adapter, flagged in the PR description.
+
+  - level: 3
+    name: ask_first
+    description: >
+      Changes to logic whose correctness IS the product's core promise
+      to customers and regulators — the four-book ledger's evidentiary
+      separation, rights enforcement, money math, and API/schema
+      contracts other things depend on. Even a well-tested, seemingly
+      correct change here needs a human's go-ahead BEFORE the agent
+      implements it, not just before merge — because getting these wrong
+      is expensive to discover late and easy to get subtly wrong.
+    applies_to:
+      - >-
+        Changes to four-book accounting / economic journal logic:
+        anything touching app/models/ledger.py's Book/Side/
+        ReconciliationState semantics, the append-only trigger contract
+        (enforce_append_only), or how SOURCE/MODEL/PLATFORM/FOLLOWER
+        entries are told apart (e.g. touching evidence_class handling,
+        correction_of semantics, or app/services/ledger.py's
+        append_entry/append_correction).
+      - >-
+        Changes to rights-grant enforcement gates: anything in
+        app/services/rights_registry.py's check_rights() fail-closed
+        logic, app/services/portfolio_rights.py's "every sleeve must
+        independently qualify" intersection rule, or the RightsUse/
+        RightsStatus enums in app/models/rights.py.
+      - >-
+        Billing/subscription-charging logic changes: anything in
+        app/services/customer_billing.py, app/services/stripe_webhook.py,
+        or app/models/billing.py that changes what a customer is charged,
+        what entitlement a plan confers, or webhook signature/replay
+        verification.
+      - >-
+        Breaking API changes: removing/renaming a field in
+        spec/contracts/*.schema.json-backed responses, or any change
+        that would break a documented dashboard_spec/spec contract.
+      - >-
+        Tenant-isolation-relevant schema changes: anything that could
+        weaken the RLS boundary (docs/adr/0001-*), e.g. removing a
+        tenant_id column, changing a policy, or adding a query path that
+        bypasses session-scoped tenant context.
+      - >-
+        PAMM/MAM allocation logic changes: the HWM fee formula in
+        pamm_accounting.py (compute_simple_hwm_fee, next_high_water_mark)
+        or the allocation math in mam_allocation.py.
+    how_to_ask: >
+      State the proposed change, why it's needed, and the specific risk
+      (e.g. "this would let a FOLLOWER-book entry be written without an
+      external_observation_id — breaks the observation-authority
+      guarantee documented in ledger.py"). Wait for an explicit go-ahead
+      before writing the code, not just before merging it.
+    examples:
+      - Proposing to widen Collective2's Tif enum beyond DAY/GTC (blocked
+        pending vendor confirmation per collective2_publisher.py's own
+        docstring) — ask, don't just add the value.
+      - Proposing to let a Subscription row carry a per-user linkage
+        (currently deliberately tenant-only, per customer_billing.py's
+        docstring) — ask first, this is a documented design choice.
+      - Proposing to change compute_simple_hwm_fee to accept cashflow
+        during an interval instead of raising.
+
+  - level: 4
+    name: explicit_approval_required
+    description: >
+      Actions with real-world, hard-to-reverse consequences outside the
+      repository — real money, real customer data, real third-party
+      credentials, or real published content. An agent NEVER takes these
+      actions on its own, even if it believes it has implicit approval
+      from a broader task description. Approval must be explicit and
+      specific to the action, given by a human, immediately before the
+      action is taken.
+    applies_to:
+      - >-
+        Any action that could actually charge a real customer (a live
+        Stripe API call with real credentials — today there is none:
+        stripe_webhook.py's own docstring is explicit that "no Stripe
+        SDK call and no real Stripe account exist in this environment";
+        an agent must never be the one to change that without approval).
+      - Deleting tenant data (any DELETE against a real/staging/
+        production database, as opposed to a local dev/test fixture
+        reset) — including via an Alembic downgrade run against a real
+        environment.
+      - Changing real payment-processor credentials (STRIPE_WEBHOOK_
+        SIGNING_SECRET or equivalent) in any non-local environment.
+      - Publishing a portfolio/signal to a real external channel
+        (Collective2, eToro, etc.) FOR THE FIRST TIME — i.e. flipping a
+        publisher adapter from "builds a request, never transmits it"
+        (the current, deliberate state of collective2_publisher.py and
+        etoro_adapter.py) to actually calling a live, non-demo endpoint.
+        eToro's own adapter docstring already makes this structural
+        ("no code path that would ever choose a real endpoint" today) —
+        an agent must never be the one to remove that guard rail.
+      - >-
+        Granting or revoking real rights entitlements: writing a
+        RightsGrant row with status=GRANTED (or REVOKED) against real
+        provider data outside of a test/seed fixture — this is a legal
+        commercial-rights decision, not an engineering one.
+    how_to_ask: >
+      Name the exact action, the exact credential/endpoint/table
+      affected, and wait for a human to perform or explicitly authorize
+      that specific action. Do not proceed on a general "yes, ship it"
+      for the surrounding feature — this class of action needs its own,
+      separate, explicit yes.
+    examples:
+      - Wiring a real STRIPE_WEBHOOK_SIGNING_SECRET into any non-local
+        config.
+      - Removing eToro adapter's `account_mode != "demo"` guard so a real
+        endpoint could be selected.
+      - Running `alembic downgrade` against a shared/staging database.
+      - Inserting a RightsGrant row with status=GRANTED for a real named
+        source (e.g. one of NAMED_UNKNOWN_SOURCES in rights_registry.py)
+        outside of tests.
+
+notes:
+  - When a single task touches multiple levels (e.g. "add a new publisher
+    adapter" is level 2, but it touches rights-gate call sites which are
+    level 3), the HIGHEST applicable level governs the whole task.
+  - This file classifies DECISIONS an agent makes while building/
+    modifying code. It does not itself grant tool/shell permissions —
+    see .agent/permissions.yaml for what commands an agent may actually
+    run.
+  - If unsure which level an action falls under, treat it as the higher
+    of the two candidate levels — asking unnecessarily costs little;
+    guessing wrong on a level 3/4 action costs real money, real
+    customer trust, or real legal exposure.

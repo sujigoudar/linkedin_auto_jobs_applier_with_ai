@@ -1,0 +1,190 @@
+# Task-category -> docs-to-read index for agents working on signal-copier.
+#
+# Same purpose as docs/manifest.yaml (which indexes docs by trigger), but
+# scoped to concrete agent workflows: "I'm about to do X, what should I
+# read first, and what must I update when I'm done." Read CLAUDE.md first
+# regardless of task category — these entries assume it's already loaded.
+
+version: 1
+
+tasks:
+  modify_broker_adapter:
+    description: Changing or adding a broker adapter under app/brokers/.
+    read_first:
+      - README.md (sections "What's real vs. stubbed", "Stop-loss / take-profit")
+      - docs/architecture/COMPONENTS.md
+      - app/brokers/base.py (the BrokerAdapter interface + capability introspection)
+      - the specific broker's own module docstring (it documents exactly
+        what's verified against the real API/SDK vs. assumed)
+    also_check:
+      - docs/architecture/ARCHITECTURE.md's broker capability table
+      - docs/standards/TESTING.md
+    update_after:
+      - README.md's "What's real vs. stubbed" table
+      - docs/architecture/ARCHITECTURE.md's broker table
+      - docs/architecture/COMPONENTS.md
+      - a new tests/test_<broker>_broker.py file
+      - CHANGELOG.md
+    never:
+      - declare supported_asset_classes or a has_*_capability-backing
+        method as working without verifying it against the real API/SDK
+        source or docs — see app/brokers/base.py's docstring on why a
+        false declaration is worse than an undeclared one
+
+  modify_signal_source:
+    description: Changing or adding a signal source under app/sources/.
+    read_first:
+      - README.md (sections on "Managing config through the GUI/API",
+        "Providers and analysts")
+      - app/sources/base.py
+      - app/sources/text_parser.py (if the source uses the shared free-text parser)
+    update_after:
+      - README.md's source table
+      - docs/architecture/SYSTEM_CONTEXT.md's inbound source table
+      - a new tests/test_<source>_source.py or webhook test file
+      - CHANGELOG.md
+
+  modify_engine_pipeline:
+    description: Changing app/engine.py — routing, sizing, admission, close resolution.
+    read_first:
+      - app/engine.py's own module docstring in full
+      - docs/architecture/DATA_FLOWS.md
+      - app/capital_allocator.py's module docstring
+      - app/command_ledger.py's module docstring
+      - docs/GLOSSARY.md (managed lifecycle, quantity ledger fields, uncertainty state)
+    update_after:
+      - docs/architecture/DATA_FLOWS.md
+      - README.md's relevant section (Close signals / Stop-loss / etc.)
+      - docs/standards/TESTING.md if the testing approach changes
+      - CHANGELOG.md
+
+  modify_managed_lifecycle:
+    description: Changing app/lifecycle/manager.py, close_arbiter.py, or models.py.
+    read_first:
+      - app/lifecycle/manager.py's module docstring (the three-round
+        correctness history is required reading before touching fill
+        arithmetic or protection transfer logic)
+      - app/lifecycle/close_arbiter.py's module docstring
+      - docs/GLOSSARY.md (owned/covered/uncovered/reserved quantity, protection transfer)
+      - tests/test_5e91e78_lifecycle_composition.py,
+        tests/test_protection_transfer.py, tests/test_close_arbiter.py
+    update_after:
+      - README.md's "Managed lifecycle" section
+      - docs/architecture/ARCHITECTURE.md's lifecycle component description
+      - CHANGELOG.md
+      - an ADR if the change reverses a documented correctness decision
+
+  modify_database_schema:
+    description: Adding a table/column or changing app/db.py's SCHEMA.
+    read_first:
+      - app/db.py (SCHEMA constant, _COLUMN_MIGRATIONS note — it's frozen,
+        use Alembic instead)
+      - alembic/versions/ (most recent migration, for the numbering convention)
+      - docs/database/SCHEMA.md
+    must_do:
+      - write a new alembic/versions/NNNN_description.py migration
+      - never edit _COLUMN_MIGRATIONS in app/db.py
+    update_after:
+      - docs/database/SCHEMA.md
+      - docs/architecture/ARCHITECTURE.md's persistence section if a
+        significant new table category is added
+      - CHANGELOG.md
+
+  modify_capital_admission:
+    description: Changing app/capital_allocator.py or its call sites in app/engine.py.
+    read_first:
+      - app/capital_allocator.py's module docstring in full
+      - app/economics.py (confirmed_open_notional's data source)
+      - docs/GLOSSARY.md (capital reservation)
+      - tests/test_e03_capital_exposure_gate.py, tests/test_capital_allocator.py, tests/test_b7_capital_contention.py
+    hard_rule: >
+      Never let an unresolved-exposure or no-resolvable-price case pass
+      through as an implicit skip when a gate is configured — the
+      documented behavior is REJECT, not skip. See CLAUDE.md rule 11.
+    update_after:
+      - README.md's "Multi-asset routing, account selection, and balances" section
+      - CHANGELOG.md
+
+  modify_writer_lease_or_failover:
+    description: Changing app/writer_lease.py, app/promote_cli.py, or the multi-site deploy design.
+    read_first:
+      - app/writer_lease.py's module docstring in full
+      - docs/FAILOVER.md
+      - deploy/RUNBOOK.md
+    hard_rule: >
+      Never make promotion automatic. Every existing path requires a
+      deliberate, human-run `python -m app.promote_cli` invocation with
+      explicit confirmation flags — this is a documented, intentional
+      design constraint, not a gap to close.
+    update_after:
+      - docs/FAILOVER.md
+      - deploy/RUNBOOK.md if the operational procedure itself changes
+      - an ADR if the fencing model itself changes
+
+  modify_command_ledger:
+    description: Changing app/command_ledger.py or a call site that opens/marks a ledger entry.
+    read_first:
+      - app/command_ledger.py's module docstring in full
+      - docs/GLOSSARY.md (command ledger, uncertainty state)
+    hard_rule: >
+      Every real broker command call site must open a ledger entry BEFORE
+      the broker call and mark its outcome (including
+      unknown_ambiguous on an exception) — never let an exception skip
+      the ledger update.
+    update_after:
+      - CHANGELOG.md
+      - an ADR if the three-step shape itself changes
+
+  modify_authentication_or_ingress:
+    description: Changing app/auth.py, app/rate_limit.py, or a webhook/SMS/WhatsApp ingress route.
+    read_first:
+      - docs/security/ARCHITECTURE.md
+      - README.md's "Owner authentication" and "Security notes" sections
+      - app/auth.py
+    update_after:
+      - docs/security/ARCHITECTURE.md
+      - README.md's security section
+      - CHANGELOG.md
+
+  add_or_change_http_route:
+    description: Any new or changed FastAPI route in app/main.py.
+    read_first:
+      - docs/architecture/ARCHITECTURE.md
+      - README.md's relevant endpoint section
+    update_after:
+      - README.md
+      - docs/architecture/SYSTEM_CONTEXT.md if the route crosses an
+        external boundary (a new webhook, a new cross-service auth path)
+      - CHANGELOG.md — this is a public contract change per CLAUDE.md rule 3
+
+  write_or_run_tests:
+    description: Any task that adds, changes, or runs tests.
+    read_first:
+      - docs/standards/TESTING.md
+      - docs/testing/STRATEGY.md
+      - the relevant existing test file, if one already covers this area
+        (tests/ is organized one file per feature/bugfix, named after the
+        adoption-plan/audit item — check for an existing match before
+        creating a new file)
+    hard_rule: >
+      Never weaken or delete an existing test to make a change pass.
+      A regression fix gets a new test reproducing the exact bug, not just
+      a passing suite.
+
+  start_or_resume_session:
+    description: Beginning or resuming any multi-step task on this codebase.
+    read_first:
+      - CLAUDE.md
+      - docs/state/PROGRESS.md
+      - PROJECT_STATUS.yaml
+      - docs/manifest.yaml (to find anything else relevant to the specific task)
+
+  release_or_deploy:
+    description: Preparing a release or running a deployment/promotion.
+    read_first:
+      - docs/operations/RUNBOOK.md
+      - deploy/RUNBOOK.md
+      - docs/process/PROCESS.md
+    must_do:
+      - run ruff check ., the CI-scoped mypy command, and pytest -q; update
+        PROJECT_STATUS.yaml with the real results

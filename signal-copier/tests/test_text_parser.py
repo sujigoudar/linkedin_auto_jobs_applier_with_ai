@@ -63,6 +63,46 @@ def test_negated_or_conditional_commentary_is_refused_not_traded(text):
 @pytest.mark.parametrize(
     "text",
     [
+        "SELL EURUSD 1,000 lots SL 1.0950 TP 1.1050",
+        "BUY BTCUSDT @ 65,000",
+        "BUY AAPL 10 SL 1,850 TP 2,100",
+    ],
+)
+def test_comma_separated_number_is_refused_not_truncated(text):
+    """Audit fix: `-?\\d+(?:\\.\\d+)?` used to stop matching at the comma in
+    "1,000", silently capturing only "1" and discarding ",000" -- a real
+    1000x-undersized quantity/price/level slipping through as a clean
+    PARSED result instead of being rejected. A comma inside a number is
+    ambiguous (thousands separator vs. decimal separator) with no locale
+    signal anywhere in free text, so it must be refused outright, never
+    silently truncated to whatever digits happened to come before the
+    comma."""
+    with pytest.raises(SignalValidationError):
+        parse_text_signal(text, source="test")
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "BUY AAPL 0 shares",
+        "BUY AAPL 10 @ 0",
+        "BUY AAPL 10 SL 0 TP 200",
+        "BUY AAPL 10 SL 185 TP 0",
+    ],
+)
+def test_zero_valued_numeric_field_is_refused_not_traded(text):
+    """Audit fix: app/sources/webhook.py's JSON path already refuses a
+    quantity/price/sl/tp of zero or less ("never a valid trade
+    instruction") -- this text grammar let a literal 0 through as a clean
+    PARSED signal with no such check. Refuse it here too, for the same
+    reason and with the same consistency the webhook path already has."""
+    with pytest.raises(SignalValidationError):
+        parse_text_signal(text, source="test")
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
         "Yesterday I said BUY AAPL 10",
         "BUY AAPL -10 shares",
         "BUY AAPL 10 SL -5 TP 110",

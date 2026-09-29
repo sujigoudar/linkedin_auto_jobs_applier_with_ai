@@ -62,6 +62,24 @@ class TwitterSource(SourceAdapter):
     def parse(self, tweet_text: str, analyst: str | None = None) -> Signal:
         return parse_text_signal(tweet_text, source=self.name, asset_class=self.asset_class, analyst=analyst)
 
+    def parse_tweet(self, tweet) -> Signal | None:
+        """The real per-tweet parsing/error-handling logic: derive the
+        analyst identifier from `tweet.author_id` (tweepy's own object
+        shape -- `tweet_fields=["author_id"]` below makes this available;
+        it's the numeric account ID, not a @handle, since resolving that
+        needs an extra users lookup this doesn't make, but it's stable and
+        sufficient for app/providers.py's per-analyst overrides), then
+        parse the tweet text, returning `None` (and logging) on a
+        SignalValidationError exactly as the original inline `on_tweet`
+        handler did. Extracted out of `_Stream.on_tweet` so it is directly
+        callable/testable with a lightweight fake tweet object, without
+        needing a real tweepy `StreamingClient` connection."""
+        try:
+            return self.parse(tweet.text, analyst=str(tweet.author_id) if tweet.author_id else None)
+        except SignalValidationError:
+            logger.debug("tweet did not parse as a signal: %r", tweet.text)
+            return None
+
     async def start(self) -> None:
         try:
             import tweepy
@@ -73,14 +91,8 @@ class TwitterSource(SourceAdapter):
 
         class _Stream(tweepy.StreamingClient):
             def on_tweet(self, tweet) -> None:  # noqa: ANN001 - tweepy's own signature
-                # tweet_fields=["author_id"] below makes this available -- the
-                # numeric account ID, not a @handle (resolving that needs an
-                # extra users lookup this doesn't make), but stable and
-                # sufficient for app/providers.py's per-analyst overrides.
-                try:
-                    signal = source.parse(tweet.text, analyst=str(tweet.author_id) if tweet.author_id else None)
-                except SignalValidationError:
-                    logger.debug("tweet did not parse as a signal: %r", tweet.text)
+                signal = source.parse_tweet(tweet)
+                if signal is None:
                     return
                 asyncio.run_coroutine_threadsafe(source.on_signal(signal), loop)
 

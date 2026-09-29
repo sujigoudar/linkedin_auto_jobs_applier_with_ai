@@ -61,6 +61,14 @@ class _Settings(BaseSettings):
     #: broker-facing credential.
     RELAY_SIGNING_SECRET: str = "LOCAL_SIM-not-a-real-relay-secret-change-if-ever-deployed"
 
+    #: Optional: the PREVIOUS value of RELAY_SIGNING_SECRET, accepted
+    #: alongside the CURRENT one above by
+    #: app/services/relay_auth.py's own `verify_relay_signature` -- see
+    #: that module's own docstring for the two-step zero-downtime
+    #: rotation procedure this enables. Blank (the default) means no
+    #: previous secret is accepted, i.e. rotation is not in progress.
+    RELAY_SIGNING_SECRET_PREVIOUS: str = ""
+
     #: app/api/dependencies.py's ID-01/ID-02/ID-03 web session cookie
     #: (`SESSION_COOKIE_NAME`). Same reasoning, same default, as
     #: signal-copier's own app/config.py's own `FORCE_SECURE_COOKIES`:
@@ -117,6 +125,7 @@ LOCAL_JWT_SECRET = _settings.LOCAL_JWT_SECRET
 STRIPE_WEBHOOK_SECRET = _settings.STRIPE_WEBHOOK_SECRET
 RELAY_DATABASE_URL = _settings.RELAY_DATABASE_URL
 RELAY_SIGNING_SECRET = _settings.RELAY_SIGNING_SECRET
+RELAY_SIGNING_SECRET_PREVIOUS = _settings.RELAY_SIGNING_SECRET_PREVIOUS
 FORCE_SECURE_COOKIES = _settings.FORCE_SECURE_COOKIES
 
 SIGNAL_COPIER_BASE_URL = _settings.SIGNAL_COPIER_BASE_URL

@@ -484,3 +484,30 @@ async def test_halted_position_rejects_new_exits(manager, account, broker):
 
     assert result.status == OrderStatus.REJECTED
     assert "halted" in result.message
+
+
+@pytest.mark.asyncio
+async def test_get_outstanding_possible_fill_reflects_unresolved_entry(manager, account):
+    """AUD-01: PositionLifecycleManager.get_outstanding_possible_fill --
+    the managed-lifecycle counterpart of SignalStore.get_outstanding_possible_fill
+    -- surfaces a still-unresolved entry's unfilled remainder as genuine
+    uncertain exposure, and clears it once the entry resolves."""
+    plan = _plan(planned_quantity=100.0)
+    manager.start_plan(plan)
+    manager.register_pending_entry(account, "AAPL", "broker-order-1", requested_quantity=100.0)
+
+    # Nothing confirmed yet -- the full 100.0 is still possible, none of it
+    # is owned.
+    assert manager.get_outstanding_possible_fill("acct1") == {"AAPL": 100.0}
+    lifecycle = manager.get_lifecycle("acct1", "AAPL")
+    assert lifecycle.confirmed_owned_quantity == 0.0
+
+    # Partial progress: 40 confirmed, remainder still open.
+    await manager.resolve_pending_entry(account, "AAPL", 40.0, remainder_cancelled=False)
+    assert manager.get_outstanding_possible_fill("acct1") == {"AAPL": 60.0}
+
+    # Remainder resolved (cancelled) -- nothing left outstanding.
+    await manager.resolve_pending_entry(account, "AAPL", 40.0, remainder_cancelled=True)
+    assert manager.get_outstanding_possible_fill("acct1") == {}
+    lifecycle = manager.get_lifecycle("acct1", "AAPL")
+    assert lifecycle.confirmed_owned_quantity == 40.0

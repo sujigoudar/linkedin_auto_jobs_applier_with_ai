@@ -46,10 +46,66 @@
     `;
   }
 
-  function unsupportedNote(reason) {
-    const el = document.createElement("div");
-    StateMatrix.render(el, { state: "unsupported", reason });
-    return el.outerHTML;
+  // Placeholder-slot pattern (see tr04.js): a capability-state badge
+  // renders into a real DOM element, but this view composes each panel's
+  // markup (form fields plus a gap note) as one HTML string before it is
+  // inserted. `unsupportedNote` reserves a slot and queues its opts;
+  // `flushCapStates` mounts everything queued so far once the panel's
+  // string has actually been assigned to `.innerHTML`.
+  let capIdCounter = 0;
+  let pendingCapStates = [];
+  function capSlot(id) {
+    return `<span class="cap-state-slot" id="${id}"></span>`;
+  }
+  function mountCapStates(root, specs) {
+    for (const [id, opts] of specs) {
+      const el = root.querySelector(`#${id}`);
+      if (el) Components.renderCapabilityState(el, opts);
+    }
+  }
+
+  // --- Real, source-verified per-broker credential env-var NAMING
+  // CONVENTION (app/brokers/*.py's own `_credentials_for`/
+  // `_webhook_url_for`/`_exchange_for`) -- informational only, mirrored
+  // from tr07.js. Never a secret value, and never evidence the env vars
+  // are actually set (this build never checks that from a form).
+  const CREDENTIAL_REF_PATTERNS = {
+    alpaca: (id) => `ALPACA_${id}_API_KEY (+ _API_SECRET, _BASE_URL)`,
+    schwab: (id) => `SCHWAB_${id}_CLIENT_ID (+ _CLIENT_SECRET, _REFRESH_TOKEN, _ACCOUNT_HASH)`,
+    robinhood: (id) => `ROBINHOOD_${id}_USERNAME (+ _PASSWORD, _ACCOUNT_NUMBER, optional _MFA_CODE)`,
+    tastytrade: (id) => `TASTYTRADE_${id}_SECRET (+ _REFRESH_TOKEN, _TT_ACCOUNT_NUMBER)`,
+    tradestation: (id) => `TRADESTATION_${id}_CLIENT_ID (+ _REFRESH_TOKEN, _TS_ACCOUNT_ID)`,
+    tradovate: (id) => `TRADOVATE_${id}_USERNAME (+ _PASSWORD, _APP_ID, _CID, _SECRET, _DEVICE_ID, _ACCOUNT_SPEC)`,
+    oanda: (id) => `OANDA_${id}_TOKEN (+ _ACCOUNT_ID)`,
+    signalstack: (id) => `SIGNALSTACK_${id}_WEBHOOK_URL`,
+    ninjatrader: (id) => `NT8_${id}_URL`,
+    rithmic: (id) => `RITHMIC_${id}_RITHMIC_ACCOUNT_ID (+ _EXCHANGE)`,
+    mt4_mt5: (id) => `MT5_${id}_LOGIN (+ _PASSWORD, _SERVER)`,
+    mt4_mt5_metaapi: (id) => `MT4_MT5_METAAPI_${id}_ID (token itself is process-wide: MT4_MT5_METAAPI_TOKEN)`,
+    ccxt: (id) => `CCXT_${id}_API_KEY (+ _API_SECRET)`,
+  };
+  function credentialRefReason(brokerName, accountLabel) {
+    const upperId = String(accountLabel || "{account_label}").toUpperCase();
+    const pattern = CREDENTIAL_REF_PATTERNS[brokerName];
+    if (pattern) {
+      return `Real env-var naming convention this adapter's code reads (never the secret value, never stored by this form): ${pattern(upperId)}. Set these separately, outside this screen, once the account label above is chosen.`;
+    }
+    if (brokerName === "ibkr") {
+      return "This adapter connects via process-wide config (IBKR_HOST/IBKR_PORT/IBKR_CLIENT_ID -- a local TWS/Gateway connection), not a per-account API key -- there is no per-account credential reference to show.";
+    }
+    if (brokerName === "paper") {
+      return "In-process simulator -- no external credential of any kind to reference.";
+    }
+    return `No known credential env-var convention for adapter "${brokerName}" in this build.`;
+  }
+  function unsupportedNote(reason, remediation) {
+    const id = `tr08-cap-${capIdCounter++}`;
+    pendingCapStates.push([id, { status: "unsupported", reason, remediation }]);
+    return capSlot(id);
+  }
+  function flushCapStates(container) {
+    mountCapStates(container, pendingCapStates);
+    pendingCapStates = [];
   }
 
   async function load(ctx) {
@@ -81,6 +137,17 @@
       return;
     }
 
+    function adapterEnvVenueNote(adapterName) {
+      const b = brokers.find((x) => x.name === adapterName);
+      const bits = [];
+      if (b && b.environment) bits.push(`environment: <strong>${escapeHtml(b.environment)}</strong>`);
+      if (b && b.venue) bits.push(`venue/API variant: <strong>${escapeHtml(b.venue)}</strong>`);
+      if (bits.length) {
+        return `<p class="section-note">This adapter's real, code-verified environment/venue (GET /brokers): ${bits.join(", ")} -- adapter-level, not overridable per account in this build (every account on this adapter shares it).</p>`;
+      }
+      return `<p class="section-note">This adapter has no declared environment/venue value (GET /brokers reports both as null for it) -- it resolves paper/live per-account from an env var read at call time instead of storing it on the instance, so there is nothing real to show here rather than a guess.</p>`;
+    }
+
     StateMatrix.render(els.adapter, {
       state: "ready",
       html: `
@@ -90,23 +157,32 @@
           </select>
         </label>
         <p class="section-note">Chosen from this build's live, reviewed adapter registry (GET /brokers) -- never a free-typed module import string.</p>
-        ${unsupportedNote("Environment (simulation/paper/live) is not a tracked field on an account in this build -- there is no per-environment provider mapping to verify against.")}
+        <div id="tr08-adapter-env-note">${adapterEnvVenueNote(brokers[0].name)}</div>
+        ${unsupportedNote("This build's account model has no per-account environment override distinct from the adapter's own (see the real adapter-level value shown above) -- there is no per-environment provider mapping to verify a per-account choice against.")}
       `,
     });
+    flushCapStates(els.adapter);
 
     StateMatrix.render(els.identity, {
       state: "ready",
       html: `
         <label>Account label<input type="text" id="tr08-account-label" maxlength="80" placeholder="paper_main" required></label>
         <p class="section-note">1..80 plain text. No credentials belong in this field.</p>
-        ${unsupportedNote("External broker account reference (external_account_ref) and venue/API variant (venue_id) are not tracked fields in this build's account model.")}
+        ${unsupportedNote("External broker account reference (external_account_ref) is not a tracked field in this build's account model. Venue/API variant IS a real, code-verified field now -- but only at the adapter level (GET /brokers, shown above), never a per-account override.")}
       `,
     });
+    flushCapStates(els.identity);
 
-    StateMatrix.render(els.credential, {
-      state: "unsupported",
-      reason: "Secret reference (credential_ref) is not stored per account in this build -- broker credentials remain environment variables set separately, outside this form, per this project's \"never store secrets in config\" rule (see README.md's Security notes). No raw secret is ever returned or accepted here.",
-    });
+    function renderCredentialPanel(adapterName) {
+      els.credential.removeAttribute("aria-busy");
+      const labelEl = els.identity.querySelector("#tr08-account-label");
+      const accountLabel = labelEl ? labelEl.value.trim() : "";
+      Components.renderCapabilityState(els.credential, {
+        status: "not_tracked",
+        reason: `credential_ref itself is not stored per account in this build -- broker credentials remain environment variables set separately, outside this form, per this project's "never store secrets in config" rule (see README.md's Security notes). No raw secret is ever returned or accepted here. ${credentialRefReason(adapterName, accountLabel)}`,
+      });
+    }
+    renderCredentialPanel(brokers[0].name);
 
     StateMatrix.render(els.products, {
       state: "ready",
@@ -116,6 +192,7 @@
         ${unsupportedNote("Position mode (netting/hedged/spot) is not a tracked field in this build's account model.")}
       `,
     });
+    flushCapStates(els.products);
 
     async function renderCapabilities(adapterName) {
       const broker = brokers.find((b) => b.name === adapterName);
@@ -123,23 +200,56 @@
         StateMatrix.render(els.capabilities, { state: "empty", emptyMessage: "Select an adapter to see its capability evidence." });
         return;
       }
-      const rows = [
-        ["Native bracket order", "not defined in this build", boolPill(broker.supports_native_bracket), "live (computed this request)", "n/a"],
-        ["Protective stop", "not defined in this build", boolPill(broker.has_protective_stop_capability), "live (computed this request)", "n/a"],
-        ["Cancel", "not defined in this build", boolPill(broker.has_cancel_capability), "live (computed this request)", "n/a"],
-        ["Replace stop", "not defined in this build", boolPill(broker.has_replace_stop_capability), "live (computed this request)", "n/a"],
-        ["Balance read", "not defined in this build", boolPill(broker.has_balance_capability), "live (computed this request)", "n/a"],
-        ["Position readback", "not defined in this build", boolPill(broker.has_position_readback_capability), "live (computed this request)", "n/a"],
+      // Every flag here is `implemented`/`unsupported` -- computed from
+      // static method-override introspection (app/brokers/base.py), NEVER
+      // a live authenticated call, so it can never legitimately read
+      // `authenticated`/`entitled`/`verified` on this pre-save screen
+      // (no credentials are entered here at all -- see the note below).
+      const codeVerified = [
+        ["Native bracket order", broker.supports_native_bracket, "atomic entry+stop+take-profit bracket/OCO order"],
+        ["Protective stop", broker.has_protective_stop_capability, "standalone protective stop order"],
+        ["Cancel", broker.has_cancel_capability, "cancelling an existing order"],
+        ["Replace stop", broker.has_replace_stop_capability, "resizing/repricing a stop order in place"],
+        ["Balance read", broker.has_balance_capability, "live cash/equity/buying-power/margin read"],
+        ["Position readback", broker.has_position_readback_capability, "reading the broker's own position size back"],
       ];
+      const rows = [];
+      const capSpecs = [];
+      for (const [label, flag, desc] of codeVerified) {
+        const id = `tr08-cap-row-${capIdCounter++}`;
+        rows.push([label, "not defined in this build", capSlot(id), "live (computed this request)", "n/a"]);
+        capSpecs.push([
+          id,
+          flag
+            ? { status: "implemented", reason: `${desc} -- ${adapterName}'s adapter overrides BrokerAdapter's base no-op. Code-verified, not a live authenticated call (this form enters no credentials).` }
+            : { status: "unsupported", reason: `${desc} -- ${adapterName}'s adapter does not override BrokerAdapter's base no-op; no real implementation exists.` },
+        ]);
+      }
+      const notTracked = [
+        ["Market-data entitlement", "not modeled anywhere in this codebase, per account or per broker."],
+        ["Account type (cash/margin/etc)", "not modeled anywhere in this codebase -- see app/models.py's AccountBalance and app/config.py's AccountRequest for the real fields that exist."],
+        ["Currency", "not modeled anywhere in this codebase; every figure this build reports is in whatever currency the broker's own API happens to report, unlabelled."],
+        ["Position mode (netting/hedged/spot)", "not a tracked field in this build's account model."],
+        ["API quota status", "not measured for any broker -- app/rate_limit.py only throttles this app's own inbound webhook/SMS ingress, never an outbound broker call."],
+        ["Connection latency", "not measured anywhere in this codebase for any broker adapter."],
+      ];
+      for (const [label, reason] of notTracked) {
+        const id = `tr08-cap-row-${capIdCounter++}`;
+        rows.push([label, "not defined in this build", capSlot(id), "n/a", "n/a"]);
+        capSpecs.push([id, { status: "not_tracked", reason }]);
+      }
       StateMatrix.render(els.capabilities, {
         state: "ready",
-        html: `<p class="section-note">Evidence is this adapter's own code introspection, re-verified live on every "Run read-only checks" -- there is no per-account "Required" capability profile defined in this build, so Gap cannot be computed and reads n/a rather than a fabricated verdict.</p>${table(
-          ["Capability", "Required", "Observed", "Evidence age", "Gap"],
+        html: `<p class="section-note">The six code-verified rows are this adapter's own method-override introspection, re-verified live on every "Run read-only checks" -- there is no per-account "Required" capability profile defined in this build, so Gap cannot be computed and reads n/a rather than a fabricated verdict. The remaining rows are honestly not_tracked: this build has no live connectivity check against real credentials at this pre-save stage, so nothing here is ever rendered as authenticated/entitled/verified.</p>${table(
+          ["Capability / attribute", "Required", "Observed", "Evidence age", "Gap"],
           rows,
           "No capability evidence."
         )}
-        ${unsupportedNote("Live identity/scope/position read-only checks against this specific (not-yet-saved) account are not available -- no credentials are entered in this form, and this build has no connectivity-check endpoint for an unconfigured account.")}`,
+        ${unsupportedNote("Live identity/scope/position read-only checks against this specific (not-yet-saved) account are not available -- no credentials are entered in this form, and this build has no connectivity-check endpoint for an unconfigured account.")}
+        <p class="section-note" style="margin-top:10px;">This panel is implementation-derived engineering capability only -- it never claims a specific account/route is actually qualified for live trading. That is a separate, higher-bar, per-exact-route concept (implemented &lt; configured &lt; authenticated &lt; account_entitled &lt; protocol_tested &lt; venue_tested &lt; release_approved) tracked once this account is saved -- see <a href="#/trade/accounts">Broker accounts and capabilities (TR-07)</a>'s "Live qualification status" panel to view or record it.</p>`,
       });
+      mountCapStates(els.capabilities, capSpecs);
+      flushCapStates(els.capabilities);
     }
 
     function currentDraft() {
@@ -229,7 +339,15 @@
       }
     }
 
-    els.adapter.querySelector("#tr08-adapter-select").addEventListener("change", (e) => renderCapabilities(e.target.value));
+    els.adapter.querySelector("#tr08-adapter-select").addEventListener("change", (e) => {
+      renderCapabilities(e.target.value);
+      renderCredentialPanel(e.target.value);
+      const noteEl = els.adapter.querySelector("#tr08-adapter-env-note");
+      if (noteEl) noteEl.innerHTML = adapterEnvVenueNote(e.target.value);
+    });
+    els.identity.querySelector("#tr08-account-label").addEventListener("input", () => {
+      renderCredentialPanel(els.adapter.querySelector("#tr08-adapter-select").value);
+    });
     await renderCapabilities(brokers[0].name);
     renderReview();
 

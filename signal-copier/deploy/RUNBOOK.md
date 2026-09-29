@@ -6,6 +6,13 @@ disabled until every precondition in "Automatic promotion eligibility" below
 is independently true and released — that has not happened, and enabling it
 is a separate, explicit decision, not a default.
 
+See `docs/FAILOVER.md` for the database-backed fencing-token mechanism
+(`app/writer_lease.py`) that backs this procedure automatically, across
+processes and hosts, and `python -m app.promote_cli` (step 2 below) for
+the actual command that performs "Promotion steps" step 2's fencing
+token takeover. That mechanism is an additional, automatic guard
+underneath this manual checklist — it never replaces steps 1-4 below.
+
 ## What "redundant" means here, precisely
 
 - Exactly **one** process may hold broker write credentials for a given
@@ -95,9 +102,20 @@ is a separate, explicit decision, not a default.
    to a human decision — do not promote on a partial answer.
 2. On the new site: copy the restored, verified database into place, set
    real broker credentials in `/etc/signal-copier/active.env` (not
-   `standby.env`), unset `STANDBY_MODE` (or set it to `false`).
+   `standby.env`), unset `STANDBY_MODE` (or set it to `false`). Then run
+   `python -m app.promote_cli promote --confirm-old-writer-fenced
+   --confirm-reconciled --confirm-identity` against that same database —
+   this issues a new fencing token (see `docs/FAILOVER.md`) so any
+   lingering instance of the old writer is refused by every
+   command-execution path on its next attempt, and refuses outright if
+   the existing lease doesn't look genuinely expired yet. This is a
+   second, automatic check ON TOP OF step 1's manual confirmation, never
+   a substitute for it — the tool cannot itself prove the old process is
+   dead.
 3. `systemctl disable signal-copier-standby-status.service && systemctl stop signal-copier-standby-status.service`
-   then `systemctl enable --now signal-copier.service`.
+   then `systemctl enable --now signal-copier.service` (this starts the
+   process that will `acquire()` the fencing token `promote_cli` just
+   issued — see `docs/FAILOVER.md`'s "Where it's checked").
 4. Watch the new process's own startup: `restore_from_store()` rebuilding
    `PositionLifecycleManager`'s in-memory state, then its first
    `OrderReconciler`/`PriceMonitor` cycle. Check `GET /health` shows

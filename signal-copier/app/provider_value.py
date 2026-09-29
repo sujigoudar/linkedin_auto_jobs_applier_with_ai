@@ -110,13 +110,24 @@ class ProviderValue:
         return self.gross_profit / self.gross_loss
 
     def to_dict(self) -> dict:
+        losing_closing_fills = self.closing_fills - self.winning_closing_fills
         return {
             "source": self.source,
             "analyst": self.analyst,
             "asset_class": self.asset_class,
             "realized_pnl": self.realized_pnl,
+            # TR-09 (provider scorecard "average win/loss"): these two were
+            # already tracked on this dataclass (accumulated in
+            # `compute_provider_value` above) but never projected out of
+            # `to_dict` -- exposing them lets a caller compute a real
+            # avg_win/avg_loss (gross_profit / winning_closing_fills,
+            # gross_loss / losing_closing_fills) without back-solving them
+            # imprecisely from win_rate/profit_factor/realized_pnl alone.
+            "gross_profit": self.gross_profit,
+            "gross_loss": self.gross_loss,
             "closing_fills": self.closing_fills,
             "winning_closing_fills": self.winning_closing_fills,
+            "losing_closing_fills": losing_closing_fills,
             "win_rate": self.win_rate,
             "profit_factor": self.profit_factor,
             "entries_opened": self.entries_opened,

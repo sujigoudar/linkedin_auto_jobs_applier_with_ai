@@ -60,9 +60,13 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+import uuid
 from collections import defaultdict
+from dataclasses import dataclass
 from datetime import datetime, timezone
+from typing import Any
 
+from app import command_ledger
 from app.brokers.base import BrokerAdapter
 from app.capital_allocator import CapitalAllocator
 from app.lifecycle.close_arbiter import CloseArbiter
@@ -79,9 +83,89 @@ from app.lifecycle.models import (
     TrailingPolicy,
     TransferPhase,
 )
-from app.models import AssetClass, DestinationAccount, OrderResult, OrderStatus, Signal, Side
+from app.models import (
+    AssetClass,
+    CommandLedgerEntry,
+    CommandType,
+    DestinationAccount,
+    OrderResult,
+    OrderStatus,
+    Signal,
+    Side,
+    UncertaintyState,
+)
+from app.writer_lease import NullLeaseGuard, WriterLeaseGuard
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class ReductionPlan:
+    """The real pre-order-submission planning `request_exit` computes for a
+    reduction, BEFORE any broker I/O -- extracted into its own pure
+    function (`_compute_reduction_plan`) so a read-only preview (see
+    `PositionLifecycleManager.preview_reduction`) can call the exact same
+    computation `request_exit` itself uses instead of a second,
+    independently maintained copy that could drift."""
+
+    requested_quantity: float
+    owned_before: float
+    available_before: float
+    remaining_after_request: float
+    had_stop: bool
+    stop_desired_price: float | None
+    can_amend_stop_in_place: bool
+
+
+def _compute_reduction_plan(
+    tx: Any, lifecycle: "PositionLifecycle", broker: BrokerAdapter | None, quantity: float
+) -> ReductionPlan:
+    """Pure (no I/O, no mutation): exactly the fields `request_exit` itself
+    derives from `tx`/`lifecycle`/`broker` before it ever calls
+    `broker.replace_stop_quantity`/`cancel_order`/`place_order`. Called from
+    inside `request_exit` (with a live, lock-held `tx`) AND from
+    `preview_reduction` (with a read-only `tx` obtained the same way, via
+    `CloseArbiter.transition`, but never committing a reservation) -- see
+    each caller."""
+    requested = min(quantity, tx.available)
+    had_stop = lifecycle.stop.broker_order_id is not None
+    remaining_after_request = tx.owned - requested
+    can_amend_in_place = (
+        had_stop
+        and remaining_after_request > 0
+        and lifecycle.stop.desired_price is not None
+        and broker is not None
+        and broker.has_replace_stop_capability
+    )
+    return ReductionPlan(
+        requested_quantity=requested,
+        owned_before=tx.owned,
+        available_before=tx.available,
+        remaining_after_request=remaining_after_request,
+        had_stop=had_stop,
+        stop_desired_price=lifecycle.stop.desired_price,
+        can_amend_stop_in_place=can_amend_in_place,
+    )
+
+
+def _compute_trailing_candidate(
+    trailing: TrailingPolicy, current_desired_price: float | None, side: Side, price: float
+) -> tuple[float, bool]:
+    """Pure (no I/O, no mutation): exactly the candidate-floor/`improved`
+    computation `_update_trailing` itself derives before deciding whether to
+    actually move the stop. Extracted so `preview_stop_change` can call the
+    exact same computation `_update_trailing` uses instead of a second,
+    independently maintained copy that could drift -- see each caller."""
+    existing = [v for v in (trailing.floor_price, current_desired_price) if v is not None]
+    if side == Side.BUY:
+        current_best = max(existing) if existing else None
+        candidate_floor = price - trailing.trail_distance
+        improved = current_best is None or candidate_floor > current_best
+    else:
+        current_best = min(existing) if existing else None
+        candidate_floor = price + trailing.trail_distance
+        improved = current_best is None or candidate_floor < current_best
+    return candidate_floor, improved
 
 
 class PositionLifecycleManager:
@@ -106,6 +190,19 @@ class PositionLifecycleManager:
         # wired in) is a safe no-op: reservations then just aren't
         # released here, same as before this fix existed.
         self.capital_allocator: CapitalAllocator | None = None
+        # Cross-process/cross-host single-writer fencing (app/writer_lease.py,
+        # docs/FAILOVER.md) -- set by app/engine.py's Engine.__init__ to the
+        # same guard it holds (this manager is often constructed first, by
+        # app/main.py, before that exists), same "wired in after
+        # construction, None-safe default" convention as capital_allocator
+        # above. Checked at the top of every entry point here that can
+        # reach a broker write, INCLUDING the ones driven by background
+        # loops (app/reconciliation.py's retry_unprotected_positions/
+        # resolve_pending_entry/resolve_pending_exit calls,
+        # app/price_monitor's on_price_update) rather than only a live
+        # signal/close call -- those never pass through app/engine.py's
+        # own top-level checks at all.
+        self.lease_guard: WriterLeaseGuard | NullLeaseGuard = NullLeaseGuard()
 
     def get_lifecycle(self, account_id: str, symbol: str) -> PositionLifecycle | None:
         return self._lifecycles.get((account_id, symbol))
@@ -127,6 +224,7 @@ class PositionLifecycleManager:
         periodic retry rather than depending on unrelated future activity.
         Safe to call repeatedly: an already-protected lifecycle, or one
         deferring to an unresolved exit, is a no-op."""
+        self.lease_guard.require_active()
         retried = 0
         for lifecycle in list(self._lifecycles.values()):
             if lifecycle.closed or lifecycle.confirmed_owned_quantity <= 0:
@@ -211,6 +309,145 @@ class PositionLifecycleManager:
             for lifecycle in self._lifecycles.values()
             if lifecycle.pending_entry is not None and not lifecycle.pending_entry.remainder_resolved
         ]
+
+    def get_outstanding_possible_fill(self, account_id: str) -> dict[str, float]:
+        """The managed-lifecycle counterpart of `SignalStore.get_outstanding_possible_fill`
+        (see that method's docstring for the shared contract) — per-symbol
+        net signed quantity that could STILL be confirmed by the broker for
+        this account's open managed positions, from either an unresolved
+        entry (`PendingEntry.unresolved_remainder`) or an unresolved exit
+        (`PendingExit.unresolved_remainder`).
+
+        Sign convention: a BUY-side unresolved entry contributes a POSITIVE
+        amount (more long exposure could still land); a SELL-side unresolved
+        entry contributes NEGATIVE. An unresolved EXIT contributes the
+        OPPOSITE sign of its own side (a still-possible SELL exit reduces
+        long exposure if it lands, so it contributes negative for a
+        long/BUY-side position, and vice versa) — the same "what could this
+        do to net exposure if it lands" reasoning
+        `SignalStore.get_outstanding_possible_fill` uses for the plain path.
+        A symbol with nothing unresolved is simply absent from the result
+        (never a fabricated 0.0 entry) — callers should treat a missing key
+        as zero.
+
+        This is READ-ONLY: it never mutates `PendingEntry`/`PendingExit`, and
+        it does not include anything already reflected in
+        `confirmed_owned_quantity` (that part is no longer "possible", it's
+        already actual — see `PositionLifecycle.confirmed_owned_quantity`,
+        this manager's own equivalent of `actual_remaining_ownership`)."""
+        outstanding: dict[str, float] = {}
+        for lifecycle in self._lifecycles.values():
+            if lifecycle.plan.account_id != account_id or lifecycle.closed:
+                continue
+            symbol = lifecycle.plan.symbol
+            delta = 0.0
+            entry = lifecycle.pending_entry
+            if entry is not None:
+                remainder = entry.unresolved_remainder
+                delta += remainder if lifecycle.plan.side == Side.BUY else -remainder
+            exit_ = lifecycle.pending_exit
+            if exit_ is not None:
+                remainder = exit_.unresolved_remainder
+                # The exit sells in the direction opposite the position's
+                # own side, so a possible exit fill moves net exposure the
+                # opposite way an entry fill would.
+                delta += -remainder if lifecycle.plan.side == Side.BUY else remainder
+            if delta:
+                outstanding[symbol] = outstanding.get(symbol, 0.0) + delta
+        return outstanding
+
+    async def preview_reduction(self, account: DestinationAccount, symbol: str, quantity: float) -> dict:
+        """TR-03-A01: read-only dry run of `request_exit`'s pre-order-
+        submission planning for a hypothetical partial reduction of
+        `quantity` shares -- calls `_compute_reduction_plan`, the exact same
+        pure function `request_exit` itself calls, inside the same
+        `CloseArbiter.transition` lock (for a read consistent with any
+        concurrently in-flight real exit) but NEVER reserves anything and
+        NEVER calls `broker.replace_stop_quantity`/`cancel_order`/
+        `place_order` -- no real order is placed, amended, or cancelled by
+        this call. Returns `{"supported": False, "reason": ...}` for every
+        case `request_exit` itself would refuse outright (no lifecycle,
+        halted, a prior exit still unresolved, nothing available to sell) --
+        the same honest refusal reasons that method returns, not a
+        fabricated preview."""
+        broker = self.brokers.get(account.broker)
+        async with self.arbiter.transition(account.account_id, symbol) as tx:
+            lifecycle = self._lifecycles.get((account.account_id, symbol))
+            if lifecycle is None or lifecycle.closed:
+                return {"supported": False, "reason": "no active managed lifecycle for this position"}
+            if tx.is_halted:
+                return {"supported": False, "reason": f"halted: {tx.halt_reason}"}
+            if lifecycle.pending_exit is not None and not lifecycle.pending_exit.remainder_resolved:
+                return {
+                    "supported": False,
+                    "reason": (
+                        f"a prior {lifecycle.pending_exit.source or 'exit'} order "
+                        f"({lifecycle.pending_exit.broker_order_id}) for this position hasn't resolved "
+                        "yet -- a real request_exit call would refuse a second exit too"
+                    ),
+                }
+            plan = _compute_reduction_plan(tx, lifecycle, broker, quantity)
+            if plan.requested_quantity <= 0:
+                return {"supported": False, "reason": "no shares available to sell"}
+            if plan.had_stop and plan.remaining_after_request > 0:
+                stop_note = (
+                    "existing protective stop would be amended down to the remaining quantity, at the same price, "
+                    "in place (no moment of zero coverage)"
+                    if plan.can_amend_stop_in_place
+                    else "existing protective stop would be cancelled and a replacement submitted at the same price "
+                    "sized to the remaining quantity (this broker adapter has no in-place amend capability)"
+                )
+            elif plan.had_stop:
+                stop_note = "this reduction would fully close the position -- the existing stop would be cancelled with nothing to replace it"
+            else:
+                stop_note = "no existing protective stop on this position to adjust"
+            return {
+                "supported": True,
+                "requested_quantity": plan.requested_quantity,
+                "owned_before": plan.owned_before,
+                "available_before": plan.available_before,
+                "remaining_after_request": plan.remaining_after_request,
+                "had_stop": plan.had_stop,
+                "stop_desired_price": plan.stop_desired_price,
+                "can_amend_stop_in_place": plan.can_amend_stop_in_place,
+                "stop_note": stop_note,
+            }
+
+    def preview_stop_change(self, account_id: str, symbol: str, price: float) -> dict:
+        """TR-03-A02: read-only preview of what `_update_trailing`'s real
+        trailing-stop computation (`_compute_trailing_candidate`, the exact
+        function it itself calls) would produce for this position at a
+        hypothetical market `price` -- never submits/replaces any real stop
+        order, never mutates `trailing.floor_price`/`stop.desired_price`.
+        Only covers an ACTIVE trailing policy -- a TIGHTEN_STOP target is
+        evaluated only against a live price tick inside `on_price_update`
+        and has no separable pure formula to preview here (it just sets
+        `desired_price` to the target's own fixed `trigger_price`, never
+        loosening -- see `_tighten_stop_to`), so that case is left for the
+        caller to disclose honestly rather than faked."""
+        lifecycle = self._lifecycles.get((account_id, symbol))
+        if lifecycle is None or lifecycle.closed:
+            return {"supported": False, "reason": "no active managed lifecycle for this position"}
+        trailing = lifecycle.plan.trailing
+        if trailing is None or not trailing.active:
+            return {
+                "supported": False,
+                "reason": (
+                    "no ACTIVE trailing-stop policy on this position -- this preview only covers "
+                    "_update_trailing's real computation, which only ever runs once a trailing policy is active"
+                ),
+            }
+        candidate_floor, improved = _compute_trailing_candidate(
+            trailing, lifecycle.stop.desired_price, lifecycle.plan.side, price
+        )
+        return {
+            "supported": True,
+            "hypothetical_price": price,
+            "current_desired_stop_price": lifecycle.stop.desired_price,
+            "trail_distance": trailing.trail_distance,
+            "candidate_stop_price": candidate_floor,
+            "would_change": improved,
+        }
 
     def restore_from_store(self) -> None:
         """Rebuild in-memory lifecycles + arbiter ledgers from persisted
@@ -427,6 +664,7 @@ class PositionLifecycleManager:
         stay honestly unknown (None) rather than assumed to be 0. Only sets
         it once — a repeated/resumed call for an already-priced lifecycle
         never overwrites the original entry price."""
+        self.lease_guard.require_active()
         lifecycle = self._lifecycles[(account.account_id, symbol)]
         broker = self.brokers.get(account.broker)
 
@@ -516,6 +754,7 @@ class PositionLifecycleManager:
         stale checkpoint at the same time (see the F07 regression test,
         which delivers two identical observations while the first stop
         request is still in flight)."""
+        self.lease_guard.require_active()
         lock = self._pending_entry_locks[(account.account_id, symbol)]
         async with lock:
             lifecycle = self._lifecycles.get((account.account_id, symbol))
@@ -681,6 +920,14 @@ class PositionLifecycleManager:
         if self.arbiter.is_halted(account.account_id, symbol):
             return []
 
+        # Cross-process/cross-host fencing (app/writer_lease.py): checked
+        # here, after the honest price/MAE/MFE observation above (never
+        # gated -- see this method's own docstring) but before anything
+        # below that can reach a broker write (time-exit close, a target
+        # firing, tighten-stop, trailing) -- a fenced-out process must
+        # keep observing price for its own records, but never act on it.
+        self.lease_guard.require_active()
+
         if await self._consume_expired_time_exit(lifecycle):
             return []
 
@@ -752,6 +999,7 @@ class PositionLifecycleManager:
         trailing, a provider EXIT signal, a time exit, an emergency exit).
         Performs the stop-resize transition described in this module's
         docstring. Never sells more than `CloseArbiter` says is available."""
+        self.lease_guard.require_active()
         broker = self.brokers.get(account.broker)
         if broker is None:
             return OrderResult(account_id=account.account_id, status=OrderStatus.ERROR, signal_id="", message=f"no broker adapter registered for '{account.broker}'")
@@ -780,19 +1028,15 @@ class PositionLifecycleManager:
                     ),
                 )
 
-            requested = min(quantity, tx.available)
+            plan = _compute_reduction_plan(tx, lifecycle, broker, quantity)
+            requested = plan.requested_quantity
             if requested <= 0:
                 return OrderResult(account_id=account.account_id, status=OrderStatus.REJECTED, signal_id="", message="no shares available to sell")
 
-            had_stop = lifecycle.stop.broker_order_id is not None
-            remaining_after_request = tx.owned - requested
+            had_stop = plan.had_stop
+            remaining_after_request = plan.remaining_after_request
             amended_stop = False
-            if (
-                had_stop
-                and remaining_after_request > 0
-                and lifecycle.stop.desired_price is not None
-                and broker.has_replace_stop_capability
-            ):
+            if plan.can_amend_stop_in_place:
                 # PRO-06: a partial reduce (a target selling a fraction of the
                 # position) used to ALWAYS cancel the entire existing stop
                 # outright, even on a venue that can amend a resting order's
@@ -804,8 +1048,14 @@ class PositionLifecycleManager:
                 # moment with zero coverage, only the shares actually being
                 # sold are freed.
                 assert lifecycle.stop.broker_order_id is not None  # had_stop guarantees this
-                replaced = await broker.replace_stop_quantity(
-                    account, lifecycle.stop.broker_order_id, remaining_after_request, lifecycle.stop.desired_price
+                replaced = await self._ledgered_replace_stop_quantity(
+                    broker,
+                    account,
+                    symbol,
+                    lifecycle.stop.broker_order_id,
+                    remaining_after_request,
+                    lifecycle.stop.desired_price,
+                    source=source,
                 )
                 if replaced is not None and replaced.status not in (OrderStatus.ERROR, OrderStatus.REJECTED):
                     if replaced.broker_order_id:
@@ -815,7 +1065,9 @@ class PositionLifecycleManager:
 
             if had_stop and not amended_stop:
                 assert lifecycle.stop.broker_order_id is not None  # had_stop guarantees this
-                cancelled = await broker.cancel_order(account, lifecycle.stop.broker_order_id)
+                cancelled = await self._ledgered_cancel_order(
+                    broker, account, symbol, lifecycle.stop.broker_order_id, source=source
+                )
                 if not cancelled:
                     # Could mean "not supported," or "the stop may have already filled" — either
                     # way, proceeding could oversell, so this exit is refused rather than guessed at.
@@ -920,6 +1172,7 @@ class PositionLifecycleManager:
         so nothing else can claim those shares (see `request_exit`'s
         docstring for why the design's worked partial-fill example -- 8 of
         15 confirmed, 7 still open -- restores against 54, not 47)."""
+        self.lease_guard.require_active()
         broker = self.brokers.get(account.broker)
         async with self.arbiter.transition(account.account_id, symbol) as tx:
             lifecycle = self._lifecycles.get((account.account_id, symbol))
@@ -1030,7 +1283,63 @@ class PositionLifecycleManager:
             # close/flatten) goes through, rather than every caller having
             # to know this id needs saving.
             self.store.save_signal(exit_signal)
-        return await broker.place_order(exit_signal, account, quantity, lifecycle.plan.symbol)
+
+        # P0-2: pre-effect durable command-ledger intent for this exit --
+        # `_submit_exit_order` is the single place every request_exit-driven
+        # submission (a logical target, trailing, a provider EXIT signal, a
+        # time exit, manual close/flatten) funnels through, so wiring the
+        # ledger here (rather than at every individual caller) covers all
+        # of them. `exit_signal.id` is fresh every call (there is no
+        # caller-supplied idempotency token threaded this deep through
+        # `request_exit`'s own reservation/stop-resize transition above --
+        # a documented, honest gap, not a silent one) so this row's
+        # `idempotency_key` is a best-effort identity built from this
+        # exit's own real parameters, not a value a genuine external retry
+        # would reliably reproduce; `CloseArbiter`'s own `pending_exit`
+        # check (see `request_exit`, just above this call) is what
+        # actually prevents a concurrent duplicate exit for the same
+        # position today. `command_type` distinguishes a dashboard-driven
+        # flatten from every other exit reason (see app/engine.py's
+        # `close_position`, the only caller that passes a "flatten"-tagged
+        # `reason`).
+        command_type = CommandType.FLATTEN if "flatten" in reason.lower() else CommandType.CLOSE
+        ledger_key = None
+        if self.store is not None:
+            ledger_key = f"{command_type.value}:{account.account_id}:{lifecycle.plan.symbol}:{exit_signal.id}"
+            ledger_fingerprint = command_ledger.compute_fingerprint(
+                {
+                    "command_type": command_type.value,
+                    "account_id": account.account_id,
+                    "symbol": lifecycle.plan.symbol,
+                    "side": exit_signal.side.value,
+                    "quantity": quantity,
+                    "reason": reason,
+                    "exit_signal_id": exit_signal.id,
+                }
+            )
+            self.store.open_command_ledger_entry(
+                idempotency_key=ledger_key,
+                command_type=command_type,
+                account_id=account.account_id,
+                environment=command_ledger.current_environment(),
+                request_fingerprint=ledger_fingerprint,
+            )
+        try:
+            result = await broker.place_order(exit_signal, account, quantity, lifecycle.plan.symbol)
+        except Exception as exc:
+            if ledger_key is not None and self.store is not None:
+                self.store.mark_command_ledger_outcome(
+                    ledger_key,
+                    uncertainty_state=UncertaintyState.UNKNOWN_AMBIGUOUS,
+                    terminal_evidence=command_ledger.ambiguous_evidence_for_exception(exc),
+                )
+            raise
+        if ledger_key is not None and self.store is not None:
+            outcome_state, outcome_remote, outcome_evidence = command_ledger.classify_order_result(result)
+            self.store.mark_command_ledger_outcome(
+                ledger_key, uncertainty_state=outcome_state, remote_identifiers=outcome_remote, terminal_evidence=outcome_evidence
+            )
+        return result
 
     async def _restore_stop_coverage(
         self,
@@ -1053,8 +1362,14 @@ class PositionLifecycleManager:
         capability) is a fresh stop actually placed."""
         assert lifecycle.stop.desired_price is not None  # both call sites check this first
         if stop_amended and lifecycle.stop.broker_order_id:
-            replaced = await broker.replace_stop_quantity(
-                account, lifecycle.stop.broker_order_id, remaining, lifecycle.stop.desired_price
+            replaced = await self._ledgered_replace_stop_quantity(
+                broker,
+                account,
+                lifecycle.plan.symbol,
+                lifecycle.stop.broker_order_id,
+                remaining,
+                lifecycle.stop.desired_price,
+                source=source,
             )
             if replaced is not None and replaced.status not in (OrderStatus.ERROR, OrderStatus.REJECTED):
                 if replaced.broker_order_id:
@@ -1092,7 +1407,68 @@ class PositionLifecycleManager:
         # attempt ends up emitting (None for a true initial placement).
         previous_confirmed_price = lifecycle.stop.broker_confirmed_price
         lifecycle.stop.status = ProtectionStatus.STOP_PENDING
-        result = await broker.place_protective_stop(account, lifecycle.plan.symbol, quantity, price, lifecycle.exit_side)
+
+        # P0-2: pre-effect durable command-ledger intent for this stop
+        # placement/re-placement -- `_place_stop_locked` is the single real
+        # `place_protective_stop` call site in this module (both the
+        # initial post-fill placement and the cancel-then-resubmit
+        # fallback funnel through here). Unlike the entry/close paths in
+        # app/engine.py (which dedup on a real, caller-supplied signal id),
+        # this call site is ALSO this module's own deliberate-retry path
+        # (see `retry_unprotected_positions`, which resubmits the exact
+        # same account/symbol/quantity/price after an earlier REJECTED/
+        # unprotected outcome, by design) -- a key built only from those
+        # request parameters would wrongly treat a legitimate retry as a
+        # duplicate of the failed first attempt and either short-circuit it
+        # or raise `CommandFingerprintMismatch` the moment `source` differs
+        # between the two. So `idempotency_key` here includes a fresh
+        # per-call nonce: every call to this method gets its own ledger
+        # row (a full, honest pre-effect/outcome audit trail of every
+        # attempt), never silently deduped against a previous one. See
+        # `_submit_exit_order`'s identical, already-documented gap for the
+        # same reasoning applied to a close/flatten exit.
+        ledger_key = None
+        if self.store is not None:
+            ledger_key = f"stop_change:{account.account_id}:{lifecycle.plan.symbol}:{quantity}:{price}:{uuid.uuid4().hex[:12]}"
+            ledger_fingerprint = command_ledger.compute_fingerprint(
+                {
+                    "command_type": "stop_change",
+                    "account_id": account.account_id,
+                    "symbol": lifecycle.plan.symbol,
+                    "quantity": quantity,
+                    "price": price,
+                    "exit_side": lifecycle.exit_side.value,
+                    "source": source,
+                }
+            )
+            ledger_entry = self.store.open_command_ledger_entry(
+                idempotency_key=ledger_key,
+                command_type=CommandType.STOP_CHANGE,
+                account_id=account.account_id,
+                environment=command_ledger.current_environment(),
+                request_fingerprint=ledger_fingerprint,
+            )
+            if command_ledger.is_duplicate_submission(ledger_entry.uncertainty_state):
+                logger.info(
+                    "duplicate stop_change command idempotency_key=%s -- not resubmitting", ledger_key
+                )
+                return
+
+        try:
+            result = await broker.place_protective_stop(account, lifecycle.plan.symbol, quantity, price, lifecycle.exit_side)
+        except Exception as exc:
+            if ledger_key is not None and self.store is not None:
+                self.store.mark_command_ledger_outcome(
+                    ledger_key,
+                    uncertainty_state=UncertaintyState.UNKNOWN_AMBIGUOUS,
+                    terminal_evidence=command_ledger.ambiguous_evidence_for_exception(exc),
+                )
+            raise
+        if ledger_key is not None and self.store is not None:
+            outcome_state, outcome_remote, outcome_evidence = command_ledger.classify_optional_order_result(result)
+            self.store.mark_command_ledger_outcome(
+                ledger_key, uncertainty_state=outcome_state, remote_identifiers=outcome_remote, terminal_evidence=outcome_evidence
+            )
         if result is None or result.status in (OrderStatus.ERROR, OrderStatus.REJECTED):
             # REJECTED is not a working protective order any more than ERROR
             # is — both mean nothing is actually resting at the broker; only
@@ -1172,6 +1548,122 @@ class PositionLifecycleManager:
             source=source,
         )
 
+    async def _ledgered_replace_stop_quantity(
+        self,
+        broker: BrokerAdapter,
+        account: DestinationAccount,
+        symbol: str,
+        broker_order_id: str,
+        new_quantity: float,
+        new_price: float | None,
+        *,
+        source: str,
+    ) -> OrderResult | None:
+        """P0-2: the one real `broker.replace_stop_quantity` call, wrapped
+        with a pre-effect command_ledger entry and outcome recording --
+        used by every one of this module's 3 real call sites (the
+        can-amend-in-place branch of `request_exit`'s own stop-resize
+        transition, `_restore_stop_coverage`, and `_replace_stop_price`) so
+        the ledger wiring lives in one place instead of being repeated at
+        each. Like `_place_stop_locked`'s identical note: this module can
+        legitimately retry the SAME (broker_order_id, new_quantity,
+        new_price) replace after an earlier failed attempt (e.g.
+        `retry_unprotected_positions`), so `idempotency_key` includes a
+        fresh per-call nonce -- every call gets its own row rather than
+        risking a false duplicate/`CommandFingerprintMismatch` against an
+        earlier attempt's differing `source`."""
+        ledger_key = None
+        if self.store is not None:
+            ledger_key = f"replace:{account.account_id}:{symbol}:{broker_order_id}:{new_quantity}:{new_price}:{uuid.uuid4().hex[:12]}"
+            fingerprint = command_ledger.compute_fingerprint(
+                {
+                    "command_type": "replace",
+                    "account_id": account.account_id,
+                    "symbol": symbol,
+                    "broker_order_id": broker_order_id,
+                    "new_quantity": new_quantity,
+                    "new_price": new_price,
+                    "source": source,
+                }
+            )
+            entry = self.store.open_command_ledger_entry(
+                idempotency_key=ledger_key,
+                command_type=CommandType.REPLACE,
+                account_id=account.account_id,
+                environment=command_ledger.current_environment(),
+                request_fingerprint=fingerprint,
+                expected_revision=broker_order_id,
+            )
+            if command_ledger.is_duplicate_submission(entry.uncertainty_state):
+                logger.info("duplicate replace command idempotency_key=%s -- replaying tracked state", ledger_key)
+                return _order_result_from_ledger_entry(account.account_id, entry)
+        try:
+            result = await broker.replace_stop_quantity(account, broker_order_id, new_quantity, new_price)
+        except Exception as exc:
+            if ledger_key is not None and self.store is not None:
+                self.store.mark_command_ledger_outcome(
+                    ledger_key,
+                    uncertainty_state=UncertaintyState.UNKNOWN_AMBIGUOUS,
+                    terminal_evidence=command_ledger.ambiguous_evidence_for_exception(exc),
+                )
+            raise
+        if ledger_key is not None and self.store is not None:
+            outcome_state, outcome_remote, outcome_evidence = command_ledger.classify_optional_order_result(result)
+            self.store.mark_command_ledger_outcome(
+                ledger_key, uncertainty_state=outcome_state, remote_identifiers=outcome_remote, terminal_evidence=outcome_evidence
+            )
+        return result
+
+    async def _ledgered_cancel_order(
+        self, broker: BrokerAdapter, account: DestinationAccount, symbol: str, broker_order_id: str, *, source: str
+    ) -> bool:
+        """P0-2: the one real `broker.cancel_order` call, wrapped with a
+        pre-effect command_ledger entry and outcome recording -- used by
+        this module's 2 real call sites (the cancel-then-resubmit fallback
+        in `request_exit` and in `_replace_stop_price`). Same per-call
+        nonce reasoning as `_ledgered_replace_stop_quantity`/
+        `_place_stop_locked`: this module can legitimately re-attempt
+        cancelling the same broker_order_id from a different `source`."""
+        ledger_key = None
+        if self.store is not None:
+            ledger_key = f"cancel:{account.account_id}:{symbol}:{broker_order_id}:{uuid.uuid4().hex[:12]}"
+            fingerprint = command_ledger.compute_fingerprint(
+                {
+                    "command_type": "cancel",
+                    "account_id": account.account_id,
+                    "symbol": symbol,
+                    "broker_order_id": broker_order_id,
+                    "source": source,
+                }
+            )
+            entry = self.store.open_command_ledger_entry(
+                idempotency_key=ledger_key,
+                command_type=CommandType.CANCEL,
+                account_id=account.account_id,
+                environment=command_ledger.current_environment(),
+                request_fingerprint=fingerprint,
+                expected_revision=broker_order_id,
+            )
+            if command_ledger.is_duplicate_submission(entry.uncertainty_state):
+                logger.info("duplicate cancel command idempotency_key=%s -- replaying tracked state", ledger_key)
+                return entry.uncertainty_state == UncertaintyState.CONFIRMED
+        try:
+            cancelled = await broker.cancel_order(account, broker_order_id)
+        except Exception as exc:
+            if ledger_key is not None and self.store is not None:
+                self.store.mark_command_ledger_outcome(
+                    ledger_key,
+                    uncertainty_state=UncertaintyState.UNKNOWN_AMBIGUOUS,
+                    terminal_evidence=command_ledger.ambiguous_evidence_for_exception(exc),
+                )
+            raise
+        if ledger_key is not None and self.store is not None:
+            outcome_state, outcome_evidence = command_ledger.classify_cancel_result(cancelled)
+            self.store.mark_command_ledger_outcome(
+                ledger_key, uncertainty_state=outcome_state, terminal_evidence=outcome_evidence
+            )
+        return cancelled
+
     async def _tighten_stop_to(self, lifecycle: PositionLifecycle, account: DestinationAccount, price: float) -> None:
         current = lifecycle.stop.desired_price
         if current is not None:
@@ -1195,15 +1687,9 @@ class PositionLifecycleManager:
         never just one or the other."""
         trailing = lifecycle.plan.trailing
         assert trailing is not None  # only caller (on_price_update) checks this first
-        existing = [v for v in (trailing.floor_price, lifecycle.stop.desired_price) if v is not None]
-        if lifecycle.plan.side == Side.BUY:
-            current_best = max(existing) if existing else None
-            candidate_floor = price - trailing.trail_distance
-            improved = current_best is None or candidate_floor > current_best
-        else:
-            current_best = min(existing) if existing else None
-            candidate_floor = price + trailing.trail_distance
-            improved = current_best is None or candidate_floor < current_best
+        candidate_floor, improved = _compute_trailing_candidate(
+            trailing, lifecycle.stop.desired_price, lifecycle.plan.side, price
+        )
 
         if not improved:
             return
@@ -1249,8 +1735,14 @@ class PositionLifecycleManager:
                 return
 
             if lifecycle.stop.broker_order_id:
-                replaced = await broker.replace_stop_quantity(
-                    account, lifecycle.stop.broker_order_id, quantity, lifecycle.stop.desired_price
+                replaced = await self._ledgered_replace_stop_quantity(
+                    broker,
+                    account,
+                    lifecycle.plan.symbol,
+                    lifecycle.stop.broker_order_id,
+                    quantity,
+                    lifecycle.stop.desired_price,
+                    source=source,
                 )
                 if replaced is not None and replaced.status in (OrderStatus.ERROR, OrderStatus.REJECTED):
                     # The broker attempted the replace and told us it did NOT
@@ -1308,7 +1800,9 @@ class PositionLifecycleManager:
                 # confirmed, the old stop might have just filled: design section 8's rule is
                 # "the old working stop remains meaningful until actual broker evidence says
                 # otherwise," so this leaves it alone rather than guessing.
-                cancelled = await broker.cancel_order(account, lifecycle.stop.broker_order_id)
+                cancelled = await self._ledgered_cancel_order(
+                    broker, account, lifecycle.plan.symbol, lifecycle.stop.broker_order_id, source=source
+                )
                 if not cancelled:
                     return
                 lifecycle.stop.broker_order_id = None
@@ -1317,6 +1811,34 @@ class PositionLifecycleManager:
                 lifecycle, account, broker, quantity, lifecycle.stop.desired_price, source=source
             )
         self._persist(lifecycle)
+
+
+def _order_result_from_ledger_entry(account_id: str, entry: "CommandLedgerEntry") -> OrderResult:
+    """P0-2: reconstruct a synthetic `OrderResult` from a duplicate
+    command_ledger entry's own tracked state, for a caller (see
+    `_ledgered_replace_stop_quantity`) that must return something in this
+    shape without calling the broker again. Maps `UncertaintyState` to the
+    closest honest `OrderStatus`: CONFIRMED/SUBMITTED_UNCONFIRMED both
+    report as PENDING (something real is/was resting, whether the row's
+    own last update knows the exact broker_order_id or not -- a caller
+    branching on `status not in (ERROR, REJECTED)` treats this the same as
+    the original successful replace did); REJECTED_CONFIRMED reports
+    REJECTED; UNKNOWN_AMBIGUOUS reports ERROR (the honest "don't trust
+    this as a success" signal), never fabricated as a confirmed success."""
+    status = {
+        UncertaintyState.CONFIRMED: OrderStatus.PENDING,
+        UncertaintyState.SUBMITTED_UNCONFIRMED: OrderStatus.PENDING,
+        UncertaintyState.REJECTED_CONFIRMED: OrderStatus.REJECTED,
+        UncertaintyState.UNKNOWN_AMBIGUOUS: OrderStatus.ERROR,
+        UncertaintyState.PENDING_SUBMISSION: OrderStatus.ERROR,
+    }[entry.uncertainty_state]
+    return OrderResult(
+        account_id=account_id,
+        status=status,
+        signal_id="",
+        broker_order_id=entry.remote_identifiers.get("broker_order_id"),
+        message=f"duplicate command (idempotency_key={entry.idempotency_key}); tracked state={entry.uncertainty_state.value}",
+    )
 
 
 # --- state (de)serialization, for PositionLifecycleManager's store-backed persist/restore ---
@@ -1342,6 +1864,7 @@ def _lifecycle_to_state(lifecycle: PositionLifecycle, ledger: dict) -> dict:
             "asset_class": plan.asset_class.value,
             "broker": plan.broker,
             "initial_stop": plan.initial_stop,
+            "entry_signal_id": plan.entry_signal_id,
             "targets": [
                 {
                     "trigger_price": t.trigger_price,
@@ -1408,6 +1931,7 @@ def _lifecycle_from_state(row: dict) -> PositionLifecycle:
         asset_class=AssetClass(plan_row["asset_class"]),
         broker=plan_row.get("broker", ""),
         initial_stop=plan_row.get("initial_stop"),
+        entry_signal_id=plan_row.get("entry_signal_id", ""),
         targets=[
             Target(
                 trigger_price=t["trigger_price"],

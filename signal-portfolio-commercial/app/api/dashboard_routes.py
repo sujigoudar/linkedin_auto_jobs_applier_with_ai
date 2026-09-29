@@ -185,11 +185,12 @@ what is and is not implemented yet.
 """
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request, Response
 from fastapi.responses import RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import select
@@ -197,7 +198,7 @@ from sqlalchemy.orm import Session
 
 from app import config
 from app.api.dependencies import SESSION_COOKIE_NAME, get_current_scope, get_db_session
-from app.db import set_tenant_scope
+from app.db import set_current_user_scope, set_tenant_scope
 from app.models.product import ProductLifecycleState, ServiceMode
 from app.models.tenancy import Membership, MembershipRole
 from app.services.auth import TenantScope
@@ -218,6 +219,7 @@ from app.services.staff_access import (
     list_staff_memberships,
     revoke_staff_member,
 )
+from app.services.token_revocation import revoke_all_tokens_for_user
 from app.services.api_key import (
     ApiKeyNotFoundError,
     InvalidApiKeyRequestError,
@@ -238,6 +240,7 @@ from app.services.content_document import (
     save_content_draft,
 )
 from app.services.audit_log import append_audit_event, get_object_timeline, list_audit_events
+from app.services.evidence_manifest import generate_evidence_manifest
 from app.services.customer_support_view import get_customer_support_record, list_customers
 from app.services.managed_program import (
     InvalidManagedProgramError,
@@ -535,6 +538,7 @@ def source_coverage_endpoint(
                 "disposition": row.disposition,
                 "parked_reason": row.parked_reason,
                 "ledger_entry_id": row.ledger_entry_id,
+                "routing_outcome": row.routing_outcome,
             }
             for row in report.rows
         ],
@@ -1523,6 +1527,29 @@ def revoke_staff_page(
     return RedirectResponse(url="/ops/access", status_code=303)
 
 
+@router.post("/ops/access/{user_id}/revoke-api-tokens")
+def revoke_staff_api_tokens_page(
+    user_id: str,
+    request: Request,
+    scope: TenantScope = Depends(get_current_scope),
+    session: Session = Depends(get_db_session),
+):
+    """AD-16's own "Session audit" panel -- resolves that panel's own
+    previously-disclosed gap ("only cookie-based web sessions can be
+    explicitly revoked ... today"): "log out everywhere" for a staff
+    member's Bearer-token JWTs, denylisting every currently-active `jti`
+    this build has recorded issuing for `user_id` in this tenant
+    (`app/services/token_revocation.py`). Owner-only, same guard as
+    every other action on this page -- unlike `revoke_staff_member`,
+    this never touches the membership row itself, so it's safe to call
+    on the owner's own account too (e.g. after a suspected compromise)."""
+    _require_staff_access(scope)
+    set_tenant_scope(session, scope.tenant_id)
+    revoke_all_tokens_for_user(session, tenant_id=scope.tenant_id, user_id=user_id, acting_user_id=scope.user_id)
+    session.commit()
+    return RedirectResponse(url="/ops/access", status_code=303)
+
+
 _ALL_SUPPORT_CASE_CATEGORIES = ["billing", "delivery", "connection", "performance", "safety", "access"]
 
 
@@ -2285,7 +2312,46 @@ def audit_log_page(
             "actor_user_id": actor_user_id or "",
             "object_id": object_id or "",
             "action": action or "",
+            "can_export_evidence_manifest": is_allowed(scope.role, "export_evidence_manifest"),
         },
+    )
+
+
+@router.post("/ops/audit/evidence-manifest")
+def export_evidence_manifest_page(
+    scope: TenantScope = Depends(get_current_scope),
+    session: Session = Depends(get_db_session),
+    actor_user_id: str | None = Form(None),
+    object_id: str | None = Form(None),
+    action: str | None = Form(None),
+):
+    """AD-18 "Audit log and release evidence" -- synchronous evidence
+    manifest export. See app/services/evidence_manifest.py's own
+    docstring for the manifest format and hash approach; this route
+    only applies the same actor/object_id/action filter the search
+    panel above already supports and hands back the real, bounded
+    bundle as a downloadable JSON file."""
+    try:
+        require_permission(scope.role, "export_evidence_manifest")
+    except PermissionDenied as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+    set_tenant_scope(session, scope.tenant_id)
+    manifest = generate_evidence_manifest(
+        session,
+        tenant_id=scope.tenant_id,
+        generated_by_actor_user_id=scope.user_id,
+        actor_user_id=actor_user_id or None,
+        object_id=object_id or None,
+        action=action or None,
+    )
+    session.commit()
+
+    filename = f"evidence-manifest-{manifest.generated_at.strftime('%Y%m%dT%H%M%SZ')}.json"
+    return Response(
+        content=json.dumps(manifest.to_dict(), indent=2, sort_keys=True),
+        media_type="application/json",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 
 
@@ -2718,6 +2784,7 @@ def display_preferences_page(
     scope: TenantScope = Depends(get_current_scope),
     session: Session = Depends(get_db_session),
     error: str | None = None,
+    revoked_token_count: int | None = None,
 ):
     """CU-13 "Profile, security and display preferences" -- see this
     route module's own docstring above for what is and is not
@@ -2734,6 +2801,7 @@ def display_preferences_page(
             "all_densities": _ALL_DISPLAY_DENSITIES,
             "all_reduce_motion_values": _ALL_REDUCE_MOTION_VALUES,
             "error": error,
+            "revoked_token_count": revoked_token_count,
         },
     )
 
@@ -2778,11 +2846,35 @@ def save_display_preferences_page(
                 "all_densities": _ALL_DISPLAY_DENSITIES,
                 "all_reduce_motion_values": _ALL_REDUCE_MOTION_VALUES,
                 "error": str(exc),
+                "revoked_token_count": None,
             },
             status_code=400,
         )
     session.commit()
     return RedirectResponse(url="/app/settings", status_code=303)
+
+
+@router.post("/app/settings/revoke-api-tokens")
+def revoke_own_api_tokens_page(
+    scope: TenantScope = Depends(get_current_scope),
+    session: Session = Depends(get_db_session),
+):
+    """CU-13's own "Sessions/security" panel -- resolves this page's
+    own previously-disclosed "there is no session store in this build
+    ... Revoke session is not implemented" gap for the Bearer-token JWT
+    side: "log out everywhere" for the caller's own account, denylisting
+    every currently-active `jti` this build has recorded issuing for
+    them (`app/services/token_revocation.py`). Works the same whether
+    the caller reached this page via the cookie session (the common
+    case -- that cookie session itself is untouched, only Bearer JWTs
+    are affected) or a Bearer token directly."""
+    _require_display_preferences(scope)
+    set_tenant_scope(session, scope.tenant_id)
+    revoked_count = revoke_all_tokens_for_user(
+        session, tenant_id=scope.tenant_id, user_id=scope.user_id, acting_user_id=scope.user_id
+    )
+    session.commit()
+    return RedirectResponse(url=f"/app/settings?revoked_token_count={revoked_count}", status_code=303)
 
 
 def _require_managed_operations(scope: TenantScope) -> None:
@@ -3105,6 +3197,9 @@ def cancel_copy_mandate_page(
 # it).
 
 
+CSRF_COOKIE_NAME = "cp_csrf"
+
+
 def _set_session_cookie(request: Request, response, session_id: str) -> None:
     # SEC-05 (same reasoning as signal-copier's own app/main.py login
     # route): `request.url.scheme` alone is wrong behind a TLS-
@@ -3112,6 +3207,25 @@ def _set_session_cookie(request: Request, response, session_id: str) -> None:
     # operator override for that deployment.
     response.set_cookie(
         SESSION_COOKIE_NAME, session_id, httponly=True, samesite="strict", path="/",
+        secure=request.url.scheme == "https" or config.FORCE_SECURE_COOKIES,
+    )
+
+
+def _set_csrf_cookie(request: Request, response, csrf_token: str) -> None:
+    """The other half of the CSRF fix documented in
+    app/api/dependencies.py's own `get_current_scope` docstring:
+    `create_web_session`'s own returned `csrf_token` used to be minted
+    and immediately discarded -- never delivered to the browser at all,
+    so every cookie-authenticated form POST was unconditionally rejected
+    with 403. Deliberately NOT `httponly` (unlike the session cookie
+    itself): `_base.html`'s own injection script reads this cookie via
+    `document.cookie` to fill in each form's hidden `csrf_token` field --
+    an httponly cookie would be invisible to that script. This is still
+    real CSRF protection: the attack this defends against is a
+    cross-site form auto-submitting the browser's session cookie, not a
+    same-site script reading its own site's own non-httponly cookie."""
+    response.set_cookie(
+        CSRF_COOKIE_NAME, csrf_token, httponly=False, samesite="strict", path="/",
         secure=request.url.scheme == "https" or config.FORCE_SECURE_COOKIES,
     )
 
@@ -3137,6 +3251,15 @@ def sign_in_submit(
             request, "id01_auth.html", {"error": "Incorrect email or password.", "notice": None}, status_code=401
         )
 
+    # ADR-0009: no `app.tenant_id` scope exists yet at this point in the
+    # flow -- that's exactly what this lookup is trying to discover --
+    # so under real FORCE ROW LEVEL SECURITY the generic `tenant_isolation`
+    # policy alone can never satisfy it (same bootstrap chicken-and-egg
+    # shape ADR-0002 already solved for relay_role). `set_current_user_scope`
+    # sets the ONE additional, narrow, SELECT-only `membership_self_lookup`
+    # policy's session variable, scoped to this caller's own user_id and
+    # nothing else, just long enough to find their own row.
+    set_current_user_scope(session, user.user_id)
     membership = session.execute(
         select(Membership).where(Membership.user_id == user.user_id)
     ).scalars().first()
@@ -3145,12 +3268,18 @@ def sign_in_submit(
             request, "id01_auth.html", {"error": "This identity has no tenant membership.", "notice": None}, status_code=403
         )
 
-    session_id, _csrf_token = create_web_session(
+    # Now that the tenant is known, scope the session to it for real
+    # (ADR-0001) -- `create_web_session` below writes a real "login"
+    # AuditEvent for this tenant, which itself needs `app.tenant_id` set
+    # to pass the ordinary `tenant_isolation` WITH CHECK on INSERT.
+    set_tenant_scope(session, membership.tenant_id)
+    session_id, csrf_token = create_web_session(
         session, user_id=user.user_id, tenant_id=membership.tenant_id, role=membership.role
     )
     safe_return_route = return_route if return_route.startswith("/") else "/app"
     response = RedirectResponse(url=safe_return_route, status_code=303)
     _set_session_cookie(request, response, session_id)
+    _set_csrf_cookie(request, response, csrf_token)
     return response
 
 
@@ -3203,15 +3332,20 @@ def verify_email_page(request: Request, token: str | None = None, pending: str |
             status_code=400,
         )
 
+    # See the matching comment in `sign_in_submit` above -- ADR-0009.
+    set_current_user_scope(session, user.user_id)
     membership = session.execute(
         select(Membership).where(Membership.user_id == user.user_id)
     ).scalars().first()
     if membership is None:
         return templates.TemplateResponse(request, "id02_verify.html", {"state": "verified_no_membership", "verify_url": None, "error": None})
 
-    session_id, _csrf_token = create_web_session(session, user_id=user.user_id, tenant_id=membership.tenant_id, role=membership.role)
+    # See the matching comment in `sign_in_submit` above -- ADR-0009/ADR-0001.
+    set_tenant_scope(session, membership.tenant_id)
+    session_id, csrf_token = create_web_session(session, user_id=user.user_id, tenant_id=membership.tenant_id, role=membership.role)
     response = templates.TemplateResponse(request, "id02_verify.html", {"state": "verified", "verify_url": None, "error": None})
     _set_session_cookie(request, response, session_id)
+    _set_csrf_cookie(request, response, csrf_token)
     return response
 
 
@@ -3261,6 +3395,7 @@ def logout_submit(request: Request, session: Session = Depends(get_db_session)):
         delete_web_session(session, session_id=session_id)
     response = RedirectResponse(url="/auth", status_code=303)
     response.delete_cookie(SESSION_COOKIE_NAME, path="/")
+    response.delete_cookie(CSRF_COOKIE_NAME, path="/")
     return response
 
 

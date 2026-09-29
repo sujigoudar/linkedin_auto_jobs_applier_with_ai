@@ -7,8 +7,9 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import uuid
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterator
 
@@ -16,10 +17,25 @@ from alembic import command  # type: ignore[attr-defined]  # real, working impor
 from alembic.config import Config as AlembicConfig
 from alembic.script import ScriptDirectory
 
-from app.models import OrderResult, Side, Signal
+from app.models import (
+    TERMINAL_UNCERTAINTY_STATES,
+    CommandLedgerEntry,
+    CommandType,
+    OrderResult,
+    Side,
+    Signal,
+    UncertaintyState,
+)
+from app.writer_lease import LeaseStillValidError, WriterLeaseHeldByAnotherSiteError, WriterLeaseRecord
 from signal_platform_contracts import EventEnvelope
 
 _ALEMBIC_DIR = Path(__file__).resolve().parent.parent / "alembic"
+
+#: AUD-01: private sentinel distinguishing "this call has no new value for
+#: this quantity column, leave whatever's stored" from an explicit `None`
+#: ("this call knows the real value is genuinely unknown") -- see
+#: `SignalStore._update_order_status_locked`'s docstring.
+_UNSET = object()
 
 
 def _alembic_config(db_path: Path) -> AlembicConfig:
@@ -95,15 +111,100 @@ CREATE TABLE IF NOT EXISTS orders (
     -- that releases it once this row's status is confirmed terminal. NULL
     -- for every other order (nothing to release).
     reserved_notional REAL,
+    -- DB-0X (order purpose/family): WHY this order was placed, set at the
+    -- exact call site that decided to place it (never inferred later from
+    -- side/status, which can't distinguish e.g. an entry from a close on
+    -- the same symbol/side) -- see app/engine.py's own call sites into
+    -- SignalStore.save_order_result. One of a small, real set: 'entry' (a
+    -- fresh position-opening order, from a BUY/SELL signal) or 'close' (a
+    -- position-reducing order, from a CLOSE signal or a manual
+    -- flatten/exit). 'protective_stop'/'stop_revision'/'target' are
+    -- reserved names for the same concept applied to a managed-lifecycle
+    -- position's stop/target orders -- but those are tracked in
+    -- `stop_target_events` (see that table's own comment), never as a row
+    -- in THIS table on this branch, so no call site populates them today;
+    -- adding a row here for them, instead of just reserving the name,
+    -- would be new order-persistence behavior this pass deliberately
+    -- doesn't take on. NULL for any order row saved before this column
+    -- existed (a real, pre-existing deployment's history) -- never
+    -- backfilled with a guess.
+    purpose TEXT,
+    -- DB-0X: an id shared by every order belonging to the SAME position
+    -- episode, so a caller (or a later report) can group an entry with its
+    -- eventual close without re-deriving that link from timing/quantity
+    -- heuristics. For an 'entry' order this is simply that entry's own
+    -- originating `signals.id` (== this row's own `signal_id` -- kept as a
+    -- separate column anyway so a future family can span more than one
+    -- signal without redefining `signal_id`'s own meaning). For a managed-
+    -- lifecycle 'close' this is the SAME value as its position's entry
+    -- order (see app/lifecycle/models.py's `PositionPlan.entry_signal_id`,
+    -- persisted for exactly this) -- a real, durable link this codebase
+    -- already had the data for. For a PLAIN (non-managed_lifecycle)
+    -- account's close, NULL: a plain position has no tracked lifecycle
+    -- object linking it back to whichever single or accumulated entry
+    -- fill(s) produced it (see app/engine.py's `_resolve_and_submit_
+    -- plain_close`), so there is no real family id to report -- an honest
+    -- gap, not a fabricated one.
+    family_id TEXT,
+    -- AUD-01 (this pass): the distinct-field quantity model replacing the
+    -- old "optimistically apply the requested quantity to positions while
+    -- an async broker's order is still PENDING" behavior (see
+    -- app/engine.py's module docstring history / git blame on this
+    -- comment for exactly what that was). `requested_quantity` above is
+    -- what was asked for; these three, together with `positions
+    -- .net_quantity` (== `actual_remaining_ownership` by contract from
+    -- this pass on -- see that table's own comment), are the rest of the
+    -- model. All three are nullable: NULL means "this row predates this
+    -- migration" (a real, pre-existing deployment's history — never
+    -- backfilled with a guess) or "this call site hasn't been updated to
+    -- populate it" (e.g. a REJECTED/ERROR result with nothing to report),
+    -- never a fabricated 0.0 standing in for genuinely unknown.
+    --
+    -- `confirmed_cumulative_fill`: the broker's own reported cumulative
+    -- filled quantity for this order, exactly as given (`result
+    -- .filled_quantity`) -- never guessed, never defaulted to the
+    -- requested quantity. NULL means the broker has not confirmed
+    -- anything yet for this specific PENDING order.
+    --
+    -- `applied_execution_delta`: the actual signed-by-side quantity this
+    -- exact save applied to `positions.net_quantity` (via `record_fill`),
+    -- if anything. 0.0 (not NULL) is a genuine, known fact -- "this save
+    -- confirmed nothing new and touched the position not at all" (e.g. a
+    -- still-PENDING order with no confirmed fill yet) -- distinct from
+    -- NULL ("this row predates the field / never applicable").
+    --
+    -- `outstanding_possible_fill`: `requested_quantity -
+    -- confirmed_cumulative_fill` at the moment this row was written --
+    -- the quantity that could STILL be confirmed by the broker and must
+    -- be treated as uncertain exposure, not zero, while this order
+    -- remains PENDING. 0.0 once the order reaches a terminal status
+    -- (FILLED/REJECTED/ERROR -- nothing more can possibly fill). See
+    -- `SignalStore.get_outstanding_possible_fill`'s docstring for the
+    -- live, queryable aggregate other code (the capital allocator, the
+    -- position-detail UI) should call instead of reading this column
+    -- directly off one row.
+    confirmed_cumulative_fill REAL,
+    applied_execution_delta REAL,
+    outstanding_possible_fill REAL,
     FOREIGN KEY (signal_id) REFERENCES signals (id)
 );
 
 -- Net position per (account, symbol), maintained by the engine so a
 -- 'close' signal knows what to close. Positive = net long, negative = net
 -- short, zero = flat. This is this service's own record of what it has
--- sent, not a live read of the broker's actual position — see
--- app/engine.py's docstring for the accuracy caveat on brokers that report
--- PENDING rather than a confirmed fill.
+-- sent, not a live read of the broker's actual position.
+--
+-- AUD-01 (this pass): `net_quantity` IS `actual_remaining_ownership` by
+-- contract from this pass on -- it is updated ONLY from a broker-confirmed
+-- fill (`record_fill` called with a real `confirmed_cumulative_fill`-
+-- derived delta, never from a PENDING order's merely-requested quantity).
+-- A broker that reports PENDING rather than a synchronous confirmed fill
+-- (SignalStack, Alpaca, IBKR, NinjaTrader, Rithmic) leaves this column
+-- UNCHANGED until app/reconciliation.py (or a synchronous partial-fill
+-- report alongside PENDING) confirms a real quantity -- see
+-- app/engine.py's module docstring and `orders.outstanding_possible_fill`/
+-- `SignalStore.get_outstanding_possible_fill` for where that unconfirmed,
+-- still-possible exposure is tracked and surfaced instead.
 CREATE TABLE IF NOT EXISTS positions (
     account_id TEXT NOT NULL,
     symbol TEXT NOT NULL,
@@ -140,7 +241,20 @@ CREATE TABLE IF NOT EXISTS config_accounts (
     symbol_map TEXT NOT NULL DEFAULT '{}',
     enabled INTEGER NOT NULL DEFAULT 1,
     managed_lifecycle INTEGER NOT NULL DEFAULT 0,
-    max_notional_exposure REAL
+    max_notional_exposure REAL,
+    risk_percent_of_equity REAL,
+    -- P0-5: explicit, persisted management-recipe declaration (see
+    -- app/models.py's ManagementRecipe) and a simple free-form
+    -- qualification label -- both additive, both NULLable so an
+    -- existing row is honestly "not yet declared" until read back
+    -- through app/routing.py's *_from_store loader (which fills
+    -- management_recipe from managed_lifecycle the same way
+    -- DestinationAccount.__post_init__ does for a fresh construction).
+    management_recipe TEXT,
+    qualification_level TEXT,
+    -- P0-5: off-by-default exclusive-writer-qualified assertion -- see
+    -- DestinationAccount.exclusive_writer_qualified's own docstring.
+    exclusive_writer_qualified INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS config_routing_rules (
@@ -253,6 +367,26 @@ CREATE TABLE IF NOT EXISTS close_claims (
     symbol TEXT NOT NULL,
     claimed_at TEXT NOT NULL,
     PRIMARY KEY (account_id, symbol)
+);
+
+-- Cross-process/cross-host single-writer fencing (see app/writer_lease.py
+-- and docs/FAILOVER.md). A single row (id=1): whichever site/process last
+-- acquired or was explicitly promoted holds the CURRENT `fencing_token`.
+-- The token only ever increases (see `promote_writer_lease` /
+-- `acquire_or_reacquire_writer_lease`) -- a process whose in-memory token
+-- no longer matches this row's is fenced out immediately, on its very
+-- next command-execution check, regardless of whether `expires_at` would
+-- otherwise still look unexpired to it. This is an additional, automatic
+-- guard on top of (never a replacement for) deploy/RUNBOOK.md's manual
+-- confirmation that a prior writer's host is actually stopped.
+CREATE TABLE IF NOT EXISTS writer_lease (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    fencing_token INTEGER NOT NULL,
+    site_id TEXT NOT NULL,
+    holder_id TEXT NOT NULL,
+    acquired_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    renewed_at TEXT NOT NULL
 );
 
 -- EXE-10: `seed_from_yaml_if_empty` (app/config_admin.py) used to treat an
@@ -399,8 +533,237 @@ CREATE TABLE IF NOT EXISTS stop_target_events (
 CREATE INDEX IF NOT EXISTS idx_stop_target_events_account_symbol_at
     ON stop_target_events (account_id, symbol, at);
 
+-- TR-15: real, durable persistence for a completed POST /backtest replay --
+-- see app/backtest/replay.py's BacktestEngine / app/main.py's run_backtest
+-- for what actually produces every field stored here. Brand-new table, so
+-- CREATE TABLE IF NOT EXISTS alone is backfill-safe for a pre-existing
+-- on-disk database that predates this table (no _COLUMN_MIGRATIONS entry
+-- needed -- those are only for adding a column to an already-existing
+-- table).
+--
+-- `config_hash` is a real SHA-256 over the exact replay inputs (source,
+-- symbol filter, period, max_hold_days, cost-stress params, and a
+-- content fingerprint of every CSV file actually used -- not just its
+-- path, since the same path can hold different bars across runs) -- see
+-- app/main.py's `compute_backtest_config_hash`. Two runs sharing a hash
+-- really did replay the identical inputs; two runs that differ in ANY of
+-- those real inputs get different hashes, which is what makes the
+-- configuration-comparison view (Current policy vs candidate A vs
+-- candidate B) trustworthy rather than coincidental.
+--
+-- `request_json`/`summary_json`/`trades_json` are the exact real
+-- BacktestRequest and BacktestReport.summary()/trades this run actually
+-- produced (the same shapes POST /backtest already returned inline before
+-- this table existed) -- never re-derived or approximated after the fact.
+CREATE TABLE IF NOT EXISTS backtest_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    config_hash TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    request_json TEXT NOT NULL,
+    summary_json TEXT NOT NULL,
+    trades_json TEXT NOT NULL,
+    stressed_summary_json TEXT,
+    cost_stress_note TEXT,
+    capital_contention_json TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_backtest_runs_created_at ON backtest_runs (created_at);
+CREATE INDEX IF NOT EXISTS idx_backtest_runs_config_hash ON backtest_runs (config_hash);
+
+-- TR-02 Saved views: a real, persisted named filter set for a routed
+-- screen -- see app/static/views/tr02.js's module docstring for the exact
+-- gap this closes (that screen's "Saved views" panel previously disclosed
+-- "not implemented in this build").
+--
+-- This engine is single-owner (one OWNER_PASSWORD, no per-user accounts
+-- anywhere in this schema -- see config_accounts/sessions), so there is no
+-- real per-user scoping column to add; `name` alone is the real identity
+-- a saved view is looked up/overwritten by, enforced UNIQUE so two saves
+-- under the same name can never silently coexist as ambiguous rows.
+--
+-- `screen` identifies which routed view (`Router.register`'s own route
+-- key, e.g. "positions" for TR-02's `#/trade/positions`) this view's
+-- filters apply to -- a plain TEXT column (not an enum/FK) so a future
+-- screen can start writing its own rows here without a schema change,
+-- while `idx_saved_views_screen` keeps a per-screen listing real-time
+-- cheap.
+--
+-- `filters_json` is the exact, real client-side filter-control state TR-02
+-- (or a future screen) actually had selected at save time -- this
+-- codebase has no server-side query-param filtering for positions yet
+-- (see tr02.js's own scope-controls note), so this is honestly a
+-- CLIENT-side filter-state blob, applied by the view after fetching its
+-- normal full snapshot -- never a server-side query it silently implies
+-- exists.
+CREATE TABLE IF NOT EXISTS saved_views (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,
+    screen TEXT NOT NULL,
+    filters_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_saved_views_screen ON saved_views (screen);
+
+-- P0-4: a durable record of app/capital_allocator.py's provisional
+-- notional reservation, written BEFORE the broker call it's gating even
+-- starts (see CapitalAllocator.admit) -- not after, the way
+-- `orders.reserved_notional` already is (that column is only ever set by
+-- `save_order_result`, which only runs once the broker call has already
+-- returned). The gap this closes: a remote broker can accept an order
+-- and this process can still die before `save_order_result` ever
+-- commits, and `orders.reserved_notional`'s own release accounting (see
+-- app/reconciliation.py's `_correct_position`) has no row to work with
+-- at all in that case. A row here is written the instant admission
+-- succeeds, independent of whether the order row that follows ever gets
+-- written. `resolved_at IS NULL` means "still an uncertain external
+-- effect" -- released only once this exact admission's outcome is
+-- confirmed terminal (REJECTED/ERROR/FILLED, or a PENDING with nothing
+-- left to ever poll) at the same call sites that already call
+-- `CapitalAllocator.release` (see `resolve_one_capital_reservation`).
+-- `CapitalAllocator.__init__` sums every still-unresolved row here, per
+-- account, to rebuild its in-memory ledger on startup -- a restart must
+-- not start from "no in-flight admissions to lose": an order the broker
+-- already accepted before the crash stays reserved (uncertain) until
+-- reconciliation independently confirms its outcome, never silently
+-- forgotten.
+--
+-- NOTE for whoever lands P0-2's `command_ledger` table: this table's
+-- `id` is a reservation-local uuid, not that ledger's own command/intent
+-- id, because `command_ledger` wasn't on this branch yet when this was
+-- written. Once it lands, consider having `CapitalAllocator.admit` take
+-- and store the real command/intent id here instead of minting its own,
+-- so a reservation and its originating command share one identifier
+-- end-to-end -- this table's `signal_id` column is a good anchor for
+-- that reconciliation (both should already agree on the same signal).
+CREATE TABLE IF NOT EXISTS capital_reservations (
+    id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL,
+    notional REAL NOT NULL,
+    signal_id TEXT,
+    created_at TEXT NOT NULL,
+    resolved_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_capital_reservations_account_unresolved
+    ON capital_reservations (account_id) WHERE resolved_at IS NULL;
+
+-- Live qualification state, per EXACT execution route -- see
+-- app/qualification.py's module docstring for what this is and why it is
+-- deliberately separate from app/brokers/base.py's implementation-derived
+-- capability introspection. A route is the tuple (adapter_type, route_key,
+-- asset_class, product_type): `adapter_type` is the registered adapter's
+-- own `.name` (e.g. "ccxt", "alpaca", "signalstack" -- shared by every
+-- instance of that adapter class), `route_key` is the exact account/venue
+-- variant this row is about (e.g. "ccxt_binance_spot" vs
+-- "ccxt_binance_perp" -- these are DIFFERENT routes even though both run
+-- through the identical CCXTBroker class), `asset_class` is one of
+-- app/models.py's AssetClass values, and `product_type` is a free-text
+-- refinement distinguishing routes that share the same asset_class but are
+-- genuinely different products (spot vs perpetual on the same crypto
+-- exchange, cash vs margin equities, etc).
+--
+-- Rows are APPEND-ONLY, one per (route, state) ever achieved -- never
+-- updated to a different state and never deleted by any code path in this
+-- build (an operator re-recording an already-achieved state updates that
+-- SAME row's recorded_at/recorded_by/notes via the UNIQUE constraint's
+-- upsert, not a new logical fact). This durable history is what lets the
+-- ladder-prerequisite check in `SignalStore.record_route_qualification`
+-- work at all (it recomputes "every state already achieved for this exact
+-- route" from these rows every time) and is what TR-07/TR-08 render
+-- alongside the engineering capability matrix, never replacing it.
+CREATE TABLE IF NOT EXISTS route_qualifications (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    adapter_type TEXT NOT NULL,
+    route_key TEXT NOT NULL,
+    asset_class TEXT NOT NULL,
+    product_type TEXT NOT NULL,
+    state TEXT NOT NULL,
+    recorded_at TEXT NOT NULL,
+    recorded_by TEXT NOT NULL,
+    notes TEXT,
+    UNIQUE(adapter_type, route_key, asset_class, product_type, state)
+);
+
+CREATE INDEX IF NOT EXISTS idx_route_qualifications_route
+    ON route_qualifications (adapter_type, route_key, asset_class, product_type);
+
+-- P0-2 (external release audit, "one durable command ledger"): the
+-- pre-effect durable ledger for EVERY real financial command this service
+-- submits to a broker -- entry, close, stop_change (initial/re-placed
+-- protective stop), replace (an in-place broker amend of a resting stop),
+-- cancel, and flatten. See app/command_ledger.py's module docstring for
+-- the full contract and app/models.py's `CommandType`/`UncertaintyState`
+-- for the real, closed sets of values `command_type`/`uncertainty_state`
+-- take. `target_change` is a reserved value in the enum with no writer on
+-- this branch -- see `CommandType`'s own docstring for why.
+--
+-- The whole point of this table is ORDERING: a row here is written and
+-- COMMITTED before the broker call it describes is ever made (see every
+-- real call site in app/engine.py / app/lifecycle/manager.py) -- never
+-- after. `created_at` is that pre-effect instant. A process killed between
+-- this commit and the broker call still leaves a real, durable
+-- `pending_submission` row for a restart to find (see
+-- SignalStore.list_unresolved_command_ledger_entries) -- the exact
+-- "PENDING result without a broker order ID is an acknowledged exposure
+-- gap" scenario the audit names, now visible instead of silently lost.
+--
+-- `idempotency_key` is UNIQUE: a retried/duplicated call with the SAME key
+-- never submits a second broker order (see
+-- SignalStore.open_command_ledger_entry) -- it either replays the
+-- existing row's tracked state (matching `request_fingerprint`) or is
+-- rejected outright (a different fingerprint under the same key is a
+-- caller bug, never silently allowed through).
+--
+-- `request_fingerprint` is a deterministic hash over the exact request
+-- parameters (see app/command_ledger.py's `compute_fingerprint`) -- what
+-- distinguishes "this is really the same command, retried" from "this
+-- reused an old key for a genuinely different command."
+--
+-- `expected_revision` is an optional optimistic-concurrency token (e.g. a
+-- broker-reported order/position revision a `replace`/`cancel` was issued
+-- against) -- NULL wherever the command has no such precondition (e.g. a
+-- fresh `entry`, which has nothing to be optimistic-concurrent against).
+--
+-- `remote_identifiers` and `terminal_evidence` are both JSON objects
+-- (never NULL -- '{}' when nothing is known yet): the former holds
+-- whatever broker order id(s) become known once the broker responds
+-- (never fabricated before then); the latter holds whatever REAL evidence
+-- resolved this row to a terminal state -- a broker fill confirmation, a
+-- confirmed rejection, a reconciliation match, or (for the ambiguous case)
+-- the exception/response that made the outcome genuinely unknown. Both are
+-- read with `json.loads`, so a row's on-disk value is always valid JSON --
+-- see SignalStore's own read/write helpers, the only code that ever
+-- touches this column.
+--
+-- `resolved_at` is NULL for every unresolved row (`pending_submission`,
+-- `submitted_unconfirmed`, `unknown_ambiguous`) and set exactly once, at
+-- the moment `uncertainty_state` is written as `confirmed` or
+-- `rejected_confirmed` -- see app/models.py's `TERMINAL_UNCERTAINTY_STATES`.
+CREATE TABLE IF NOT EXISTS command_ledger (
+    id TEXT PRIMARY KEY,
+    intent_id TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL UNIQUE,
+    command_type TEXT NOT NULL,
+    account_id TEXT NOT NULL,
+    environment TEXT NOT NULL,
+    expected_revision TEXT,
+    request_fingerprint TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    remote_identifiers TEXT NOT NULL DEFAULT '{}',
+    uncertainty_state TEXT NOT NULL,
+    terminal_evidence TEXT NOT NULL DEFAULT '{}',
+    resolved_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_command_ledger_account_id ON command_ledger (account_id);
+CREATE INDEX IF NOT EXISTS idx_command_ledger_created_at ON command_ledger (created_at);
+CREATE INDEX IF NOT EXISTS idx_command_ledger_unresolved ON command_ledger (resolved_at) WHERE resolved_at IS NULL;
+
 CREATE INDEX IF NOT EXISTS idx_orders_executed_at ON orders (executed_at);
 CREATE INDEX IF NOT EXISTS idx_orders_account_id ON orders (account_id);
+CREATE INDEX IF NOT EXISTS idx_orders_signal_id ON orders (signal_id);
+CREATE INDEX IF NOT EXISTS idx_orders_status ON orders (status);
 CREATE INDEX IF NOT EXISTS idx_signals_received_at ON signals (received_at);
 CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions (expires_at);
 CREATE INDEX IF NOT EXISTS idx_export_events_undelivered ON export_events (source_stream, export_sequence) WHERE delivered_at IS NULL;
@@ -420,8 +783,29 @@ _COLUMN_MIGRATIONS = [
     ("sessions", "credential_epoch", "TEXT"),
     ("idempotency_records", "fingerprint", "TEXT"),
     ("config_accounts", "max_notional_exposure", "REAL"),
+    ("config_accounts", "risk_percent_of_equity", "REAL"),
     ("orders", "submitted_at", "TEXT"),
     ("orders", "protection_confirmed_at", "TEXT"),
+    ("orders", "purpose", "TEXT"),
+    ("orders", "family_id", "TEXT"),
+    # E02 (bounded, history-import workflow): NULL for every live-received
+    # signal (this codebase's only other signal-creation path); a batch
+    # label for one created by the owner-gated batch-classify-and-import
+    # review workflow -- see Signal.import_batch's docstring in
+    # app/models.py for why this is the one field added for it.
+    ("signals", "import_batch", "TEXT"),
+    ("backtest_runs", "capital_contention_json", "TEXT"),
+    # AUD-01 (this pass): the distinct-field quantity model -- see the
+    # `orders` table's own SCHEMA comment above for exactly what each
+    # column means and why all three are nullable.
+    ("orders", "confirmed_cumulative_fill", "REAL"),
+    ("orders", "applied_execution_delta", "REAL"),
+    ("orders", "outstanding_possible_fill", "REAL"),
+    # P0-5: additive for a pre-existing config_accounts table -- see this
+    # table's own CREATE TABLE comment above.
+    ("config_accounts", "management_recipe", "TEXT"),
+    ("config_accounts", "qualification_level", "TEXT"),
+    ("config_accounts", "exclusive_writer_qualified", "INTEGER NOT NULL DEFAULT 0"),
 ]
 
 
@@ -493,8 +877,8 @@ class SignalStore:
             conn.execute(
                 """INSERT OR REPLACE INTO signals
                    (id, source, symbol, side, asset_class, quantity, price, stop_loss, take_profit,
-                    analyst, received_at, raw)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    analyst, received_at, raw, import_batch)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     signal.id,
                     signal.source,
@@ -508,6 +892,7 @@ class SignalStore:
                     signal.analyst,
                     signal.received_at.isoformat(),
                     json.dumps(signal.raw),
+                    signal.import_batch,
                 ),
             )
 
@@ -520,10 +905,15 @@ class SignalStore:
         side: Side | None = None,
         requested_quantity: float | None = None,
         applied_quantity: float | None = None,
+        confirmed_cumulative_fill: float | None = None,
+        applied_execution_delta: float | None = None,
+        outstanding_possible_fill: float | None = None,
         reserved_notional: float | None = None,
         export_envelope: EventEnvelope | None = None,
         submitted_at: datetime | None = None,
         protection_confirmed_at: datetime | None = None,
+        purpose: str | None = None,
+        family_id: str | None = None,
     ) -> int:
         """Persist an order result and return its row id.
 
@@ -556,26 +946,55 @@ class SignalStore:
         Side.CLOSE).
 
         `applied_quantity` is what the caller actually applied to the
-        tracked position (`SignalStore.positions`) for this order, if
-        anything — pass it whenever `record_fill`/`adjust_position` was
-        called alongside this save. It is NOT always `result.filled_quantity`:
-        a broker reporting PENDING with `filled_quantity=None` still gets an
-        optimistic quantity applied to the tracked position (the requested
-        quantity, per the "protect first" design), and that applied amount,
-        not the broker's still-unconfirmed `None`, is what
-        app/reconciliation.py's `_correct_position` must use as its baseline
-        when the real fill is confirmed later — otherwise it corrects
-        against a baseline of 0 and adds the confirmed quantity a second
-        time on top of what was already applied (a real, confirmed bug this
-        parameter exists to close). Omit this for calls that never touched
+        tracked position (`SignalStore.positions.net_quantity`, i.e.
+        `actual_remaining_ownership` — see that table's own SCHEMA comment)
+        for this order, if anything — pass it whenever `record_fill` was
+        called alongside this save, so this row's stored `filled_quantity`
+        matches what the position ledger actually did. It is NEVER an
+        optimistic guess from this pass on (AUD-01): a PENDING order with
+        no confirmed fill yet (`result.filled_quantity is None`) must pass
+        `applied_quantity=None` (or omit it) here too, matching the fact
+        that `record_fill` was correctly NOT called for it — see
+        app/engine.py's call sites. Omit this for calls that never touched
         the tracked position (REJECTED/ERROR results, or a save with no
         `symbol`/`side` at all).
+
+        `confirmed_cumulative_fill` / `applied_execution_delta` /
+        `outstanding_possible_fill` (AUD-01, the distinct-field quantity
+        model this pass introduces to replace the old optimistic-PENDING
+        behavior — see `orders`'s own SCHEMA comment in this module for
+        the full contract each column implies):
+
+        - `confirmed_cumulative_fill`: pass exactly `result.filled_quantity`
+          as reported by the broker for this specific save (never a
+          fallback to `requested_quantity`). `None` when the broker hasn't
+          confirmed anything yet for this order.
+        - `applied_execution_delta`: pass exactly what this save applied to
+          `positions.net_quantity` (i.e. exactly `applied_quantity`,
+          signed the same way `record_fill`'s own `side` argument implies).
+          `0.0` (not `None`) when this save genuinely applied nothing —
+          e.g. a still-PENDING order with nothing confirmed yet. `None`
+          only for a caller that hasn't been updated to pass it.
+        - `outstanding_possible_fill`: pass `requested_quantity -
+          (confirmed_cumulative_fill or 0.0)` while `result.status` is
+          PENDING (the quantity that could still be confirmed later, and
+          must be treated as uncertain exposure — see
+          `get_outstanding_possible_fill`), or `0.0` once the order is
+          terminal (FILLED/REJECTED/ERROR — nothing more can fill). `None`
+          for a caller that hasn't been updated to pass it.
 
         `submitted_at`/`protection_confirmed_at` (PU-A2): real multi-stage
         execution-latency timestamps -- see app/execution_quality.py's
         module docstring for what each one is and isn't. Both `None` (never
         a fabricated fallback) when the caller never reached that stage --
         see app/engine.py's own call sites for exactly when each is set.
+
+        `purpose`/`family_id` (DB-0X, order purpose/family): see this
+        table's own SCHEMA comment in this module for exactly what each
+        value means and the real, disclosed gap for a plain account's
+        close. Both `None` for a caller that hasn't been updated to pass
+        them (or a genuinely unclassifiable row) -- never guessed from
+        `side`/`status` after the fact.
         """
         stored_filled_quantity = applied_quantity if applied_quantity is not None else result.filled_quantity
         with self._connect() as conn:
@@ -583,8 +1002,9 @@ class SignalStore:
                 """INSERT INTO orders
                    (account_id, broker, symbol, side, requested_quantity, signal_id, status,
                     broker_order_id, filled_quantity, filled_price, message, executed_at, reserved_notional,
-                    submitted_at, protection_confirmed_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    submitted_at, protection_confirmed_at, purpose, family_id,
+                    confirmed_cumulative_fill, applied_execution_delta, outstanding_possible_fill)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     result.account_id,
                     broker,
@@ -601,6 +1021,11 @@ class SignalStore:
                     reserved_notional,
                     submitted_at.isoformat() if submitted_at else None,
                     protection_confirmed_at.isoformat() if protection_confirmed_at else None,
+                    purpose,
+                    family_id,
+                    confirmed_cumulative_fill,
+                    applied_execution_delta,
+                    outstanding_possible_fill,
                 ),
             )
             if export_envelope is not None:
@@ -687,6 +1112,113 @@ class SignalStore:
                 [(datetime.now(timezone.utc).isoformat(), event_id) for event_id in event_ids],
             )
 
+    def export_outbox_backlog(self) -> tuple[int, int]:
+        """INT-040: a real, live measurement of the undelivered export
+        outbox backlog -- the storage-ceiling/alerting policy this
+        supports needs a genuine number, never a fabricated or estimated
+        one. Returns `(row_count, total_bytes)`:
+
+        - `row_count` is a real `COUNT(*)` over rows not yet marked
+          delivered.
+        - `total_bytes` is the real `SUM(LENGTH(envelope_json))` already
+          stored for those exact rows -- the precise serialized size of
+          every envelope this producer has appended but has not yet had
+          the commercial platform acknowledge as delivered.
+
+        Deliberately NOT this whole database file's own on-disk size
+        (`os.path.getsize(DATABASE_PATH)`): that file also holds every
+        other table this module defines (`orders`, `position_excursions`,
+        `stop_target_events`, `backtest_runs`, `account_equity_snapshots`,
+        ...), so its size conflates their own, unrelated growth with
+        outbox pressure -- a large `backtest_runs` history could trip a
+        file-size ceiling with zero undelivered financial evidence at
+        risk, or a genuinely large outbox backlog could stay hidden
+        inside an otherwise-small file right after a fresh VACUUM. Summing
+        the real serialized length of exactly the rows a storage-pressure
+        incident would be tempted to prune is the actionable number: it
+        is exactly what would be discarded if a disk-pressure response
+        ever (wrongly) truncated this table.
+
+        `(0, 0)` for an empty backlog -- always a real, completed query,
+        never `None`."""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*), COALESCE(SUM(LENGTH(envelope_json)), 0) "
+                "FROM export_events WHERE delivered_at IS NULL"
+            ).fetchone()
+        return (row[0], row[1])
+
+    def create_capital_reservation(
+        self, reservation_id: str, account_id: str, notional: float, signal_id: str | None = None
+    ) -> None:
+        """P0-4: durably record a app/capital_allocator.py provisional
+        reservation the INSTANT it's admitted -- called from inside
+        `CapitalAllocator.admit`, before the broker call it's gating ever
+        starts (see this table's own SCHEMA comment for exactly why that
+        ordering is the point). `reservation_id` is minted by the caller
+        (a uuid4) so it can later resolve this exact row without a
+        round-trip; `signal_id` is best-effort context for a human
+        reading the table, never required for correctness."""
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO capital_reservations (id, account_id, notional, signal_id, created_at, resolved_at) "
+                "VALUES (?, ?, ?, ?, ?, NULL)",
+                (reservation_id, account_id, notional, signal_id, datetime.now(timezone.utc).isoformat()),
+            )
+
+    def resolve_one_capital_reservation(self, account_id: str, reservation_id: str | None, notional: float) -> None:
+        """Mark one durable reservation resolved -- called everywhere
+        `CapitalAllocator.release` already is, so a row here goes
+        unresolved for exactly as long as `_pending`'s own in-memory
+        figure would have carried it. Prefers `reservation_id` (an exact,
+        unambiguous match) when the caller has one; falls back to
+        matching any one still-unresolved row for this account with this
+        exact notional when it doesn't (a caller that only ever had the
+        notional value, e.g. `CapitalAllocator.release`'s own pre-existing
+        signature, which every call site already uses without a
+        reservation id) -- which specific row of several identical-amount
+        duplicates gets marked resolved doesn't matter, since the
+        invariant this supports is only ever a per-account SUM. A
+        `notional` of 0.0 never had a row to begin with (`admit` only
+        inserts one for a real, non-zero reservation) so this is a safe
+        no-op for it."""
+        if not notional:
+            return
+        with self._connect() as conn:
+            if reservation_id is not None:
+                conn.execute(
+                    "UPDATE capital_reservations SET resolved_at = ? WHERE id = ? AND resolved_at IS NULL",
+                    (datetime.now(timezone.utc).isoformat(), reservation_id),
+                )
+                return
+            row = conn.execute(
+                "SELECT id FROM capital_reservations WHERE account_id = ? AND notional = ? AND resolved_at IS NULL "
+                "LIMIT 1",
+                (account_id, notional),
+            ).fetchone()
+            if row is None:
+                return
+            conn.execute(
+                "UPDATE capital_reservations SET resolved_at = ? WHERE id = ?",
+                (datetime.now(timezone.utc).isoformat(), row[0]),
+            )
+
+    def sum_unresolved_capital_reservations(self) -> dict[str, float]:
+        """Every account's real, currently-outstanding durable reservation
+        total (SUM of `capital_reservations.notional` where
+        `resolved_at IS NULL`) -- what `CapitalAllocator.__init__` reloads
+        at startup to reconstruct its in-memory `_pending` ledger, so a
+        restart resumes with exactly the reservations a crash could have
+        left uncertain, never a clean slate. An account with no
+        unresolved rows is simply absent from the returned dict (the
+        caller's own `defaultdict(float)` already treats that as 0.0)."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT account_id, SUM(notional) FROM capital_reservations "
+                "WHERE resolved_at IS NULL GROUP BY account_id"
+            ).fetchall()
+        return {r[0]: r[1] for r in rows}
+
     def list_pending_orders(self) -> list[dict]:
         """Orders still PENDING with a broker_order_id to re-check (see
         app/reconciliation.py). Joined to this order's originating signal
@@ -725,26 +1257,75 @@ class SignalStore:
             for r in rows
         ]
 
-    def update_order_status(self, order_row_id: int, result: OrderResult) -> None:
+    def update_order_status(
+        self,
+        order_row_id: int,
+        result: OrderResult,
+        *,
+        confirmed_cumulative_fill: float | None = _UNSET,  # type: ignore[assignment]
+        applied_execution_delta: float | None = _UNSET,  # type: ignore[assignment]
+        outstanding_possible_fill: float | None = _UNSET,  # type: ignore[assignment]
+    ) -> None:
         with self._connect() as conn:
-            self._update_order_status_locked(conn, order_row_id, result)
-
-    def _update_order_status_locked(self, conn: sqlite3.Connection, order_row_id: int, result: OrderResult) -> None:
-        conn.execute(
-            """UPDATE orders SET status = ?, filled_quantity = ?, filled_price = ?,
-                      message = ?, executed_at = ? WHERE id = ?""",
-            (
-                result.status.value,
-                result.filled_quantity,
-                result.filled_price,
-                result.message,
-                result.executed_at.isoformat(),
+            self._update_order_status_locked(
+                conn,
                 order_row_id,
-            ),
-        )
+                result,
+                confirmed_cumulative_fill=confirmed_cumulative_fill,
+                applied_execution_delta=applied_execution_delta,
+                outstanding_possible_fill=outstanding_possible_fill,
+            )
+
+    def _update_order_status_locked(
+        self,
+        conn: sqlite3.Connection,
+        order_row_id: int,
+        result: OrderResult,
+        *,
+        confirmed_cumulative_fill: float | None = _UNSET,  # type: ignore[assignment]
+        applied_execution_delta: float | None = _UNSET,  # type: ignore[assignment]
+        outstanding_possible_fill: float | None = _UNSET,  # type: ignore[assignment]
+    ) -> None:
+        """`confirmed_cumulative_fill`/`applied_execution_delta`/
+        `outstanding_possible_fill` (AUD-01) each default to the private
+        `_UNSET` sentinel, meaning "this call has nothing new to report for
+        this column -- leave whatever was already stored." Passing an
+        explicit value (including `None`, e.g. a genuinely-unknown
+        confirmed fill) overwrites it. This is deliberately NOT the same as
+        defaulting to `None`: an ordinary status/price/message update (the
+        original, pre-AUD-01 shape of this method) must never silently
+        blank out a quantity column a previous, more-informative call
+        already set."""
+        columns = ["status = ?", "filled_quantity = ?", "filled_price = ?", "message = ?", "executed_at = ?"]
+        params: list[object] = [
+            result.status.value,
+            result.filled_quantity,
+            result.filled_price,
+            result.message,
+            result.executed_at.isoformat(),
+        ]
+        for column_name, value in (
+            ("confirmed_cumulative_fill", confirmed_cumulative_fill),
+            ("applied_execution_delta", applied_execution_delta),
+            ("outstanding_possible_fill", outstanding_possible_fill),
+        ):
+            if value is not _UNSET:
+                columns.append(f"{column_name} = ?")
+                params.append(value)
+        params.append(order_row_id)
+        conn.execute(f"UPDATE orders SET {', '.join(columns)} WHERE id = ?", params)
 
     def correct_position_and_update_order_status(
-        self, order_row_id: int, account_id: str, symbol: str, signed_delta: float, result: OrderResult
+        self,
+        order_row_id: int,
+        account_id: str,
+        symbol: str,
+        signed_delta: float,
+        result: OrderResult,
+        *,
+        confirmed_cumulative_fill: float | None = _UNSET,  # type: ignore[assignment]
+        applied_execution_delta: float | None = _UNSET,  # type: ignore[assignment]
+        outstanding_possible_fill: float | None = _UNSET,  # type: ignore[assignment]
     ) -> float:
         """Apply a reconciliation correction to `positions` and mark this
         order row's terminal status in ONE local transaction (EXE-03: these
@@ -755,7 +1336,18 @@ class SignalStore:
         it a SECOND time on top of the first). `signed_delta` may be 0.0
         (no position change, e.g. a straight terminal-status confirmation)
         -- the order row is still updated in the same call so it's never
-        re-processed."""
+        re-processed.
+
+        `confirmed_cumulative_fill`/`applied_execution_delta`/
+        `outstanding_possible_fill` (AUD-01): see `_update_order_status_locked`'s
+        docstring for the `_UNSET`-sentinel contract shared with
+        `update_order_status`. `signed_delta` IS this call's
+        `applied_execution_delta` by definition (the exact quantity just
+        applied to `positions.net_quantity`, i.e.
+        `actual_remaining_ownership`) — a caller (`OrderReconciler
+        ._correct_position`) that already computed `signed_delta` should
+        normally also pass it as `applied_execution_delta` for the stored
+        row to agree with what this method actually did to the position."""
         with self._connect() as conn:
             current = conn.execute(
                 "SELECT net_quantity FROM positions WHERE account_id = ? AND symbol = ?",
@@ -770,7 +1362,14 @@ class SignalStore:
                        DO UPDATE SET net_quantity = excluded.net_quantity, updated_at = excluded.updated_at""",
                     (account_id, symbol, new_quantity, datetime.now(timezone.utc).isoformat()),
                 )
-            self._update_order_status_locked(conn, order_row_id, result)
+            self._update_order_status_locked(
+                conn,
+                order_row_id,
+                result,
+                confirmed_cumulative_fill=confirmed_cumulative_fill,
+                applied_execution_delta=applied_execution_delta,
+                outstanding_possible_fill=outstanding_possible_fill,
+            )
         return new_quantity
 
     def get_position(self, account_id: str, symbol: str) -> float:
@@ -780,6 +1379,61 @@ class SignalStore:
                 (account_id, symbol),
             ).fetchone()
         return row[0] if row else 0.0
+
+    def get_outstanding_possible_fill(self, account_id: str) -> dict[str, float]:
+        """AUD-01: the plain-account (non-managed_lifecycle) counterpart of
+        `PositionLifecycleManager.get_outstanding_possible_fill` — the
+        contract every downstream reader (in particular
+        app/capital_allocator.py's capital allocator, and any position-
+        detail UI) should call for "how much MORE could this account's
+        tracked position still move, from orders the broker hasn't finished
+        confirming."
+
+        Returns `{symbol: net_signed_outstanding_possible_fill}` for every
+        symbol with at least one currently-PENDING order on this account —
+        a symbol with nothing pending is simply absent (never a fabricated
+        0.0 entry); callers should treat a missing key as zero, exactly
+        like `PositionLifecycleManager.get_outstanding_possible_fill`.
+
+        For each pending order, its own contribution is `requested_quantity
+        - COALESCE(confirmed_cumulative_fill, 0)` — the quantity that could
+        still be confirmed — signed by that order's own `side` (BUY
+        positive, SELL negative: what it would do to net exposure if it
+        lands), then summed per symbol across every pending order. This is
+        DISTINCT from `actual_remaining_ownership` (`positions.net_quantity`,
+        read via `get_position`): that column only ever reflects a
+        CONFIRMED fill (see this table's own SCHEMA comment and
+        app/engine.py's PENDING-order handling) and this method's result is
+        never folded into it — the two are meant to be read together, not
+        merged into one number, so a caller can see both "what's actually
+        owned" and "what could still change" without one masking the
+        other.
+
+        Only orders with a real `broker_order_id` are included (mirrors
+        `list_pending_orders`'s own filter): a PENDING order with no
+        broker_order_id at all (a lost/ambiguous response — see
+        app/engine.py's exception-handling branches) is never polled to a
+        terminal state by app/reconciliation.py either, so it has no
+        `confirmed_cumulative_fill` this method could use here — excluding
+        it here is the same "don't guess, disclose the gap elsewhere"
+        choice as everywhere else in this pass, not a silent undercount of
+        a case this method could otherwise resolve."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT symbol, side, requested_quantity, confirmed_cumulative_fill
+                   FROM orders
+                   WHERE account_id = ? AND status = 'pending' AND broker_order_id IS NOT NULL
+                         AND symbol IS NOT NULL AND side IS NOT NULL AND requested_quantity IS NOT NULL""",
+                (account_id,),
+            ).fetchall()
+        outstanding: dict[str, float] = {}
+        for symbol, side, requested_quantity, confirmed_cumulative_fill in rows:
+            remainder = requested_quantity - (confirmed_cumulative_fill or 0.0)
+            if remainder <= 0:
+                continue
+            signed = remainder if side == Side.BUY.value else -remainder
+            outstanding[symbol] = outstanding.get(symbol, 0.0) + signed
+        return outstanding
 
     def record_fill(
         self, account_id: str, symbol: str, side: Side, quantity: float, *, lifecycle_state: dict | None = None
@@ -850,7 +1504,7 @@ class SignalStore:
         with self._connect() as conn:
             rows = conn.execute(
                 """SELECT id, source, symbol, side, asset_class, quantity, price, received_at, analyst,
-                          stop_loss, take_profit, raw
+                          stop_loss, take_profit, raw, import_batch
                    FROM signals ORDER BY received_at DESC LIMIT ?""",
                 (limit,),
             ).fetchall()
@@ -885,6 +1539,11 @@ class SignalStore:
                 "stop_loss": r[9],
                 "take_profit": r[10],
                 "raw": json.loads(r[11]) if r[11] else {},
+                # E02 (bounded, history-import workflow): None for a
+                # live-received signal, a batch label for one created by
+                # POST /sources/{source}/import-signals -- see
+                # Signal.import_batch's docstring in app/models.py.
+                "import_batch": r[12],
             }
             for r in rows
         ]
@@ -1167,6 +1826,371 @@ class SignalStore:
                 "DELETE FROM close_claims WHERE account_id = ? AND symbol = ?", (account_id, symbol)
             )
 
+    # --- P0-2: command_ledger -- the pre-effect durable command ledger.
+    # See app/db.py's own `command_ledger` SCHEMA comment for the table's
+    # full contract and app/command_ledger.py for the real call sites that
+    # use these three methods.
+
+    def open_command_ledger_entry(
+        self,
+        *,
+        idempotency_key: str,
+        command_type: "CommandType",
+        account_id: str,
+        environment: str,
+        request_fingerprint: str,
+        expected_revision: str | None = None,
+        intent_id: str | None = None,
+    ) -> "CommandLedgerEntry":
+        """Write the PRE-EFFECT durable intent row and COMMIT it -- the
+        caller must call this, and see it return, BEFORE making the actual
+        broker call it describes. Never call this after the broker call;
+        that would defeat the entire point (see the `command_ledger`
+        table's own schema comment on why ordering is load-bearing here).
+
+        Idempotency (this is the real dedup boundary, not `orders`' own
+        best-effort in-memory locks):
+          - A brand-new `idempotency_key` inserts a fresh row with
+            `uncertainty_state=PENDING_SUBMISSION` and returns it. The
+            caller proceeds to call the broker.
+          - The SAME `idempotency_key` arriving again BEFORE the first
+            call resolved (or after it resolved -- either way) with a
+            MATCHING `request_fingerprint` returns the EXISTING row
+            unchanged, never inserting a second one. The caller must NOT
+            call the broker again -- it already has this row's tracked
+            `uncertainty_state`/`remote_identifiers` to act on (replay,
+            not resubmit).
+          - The same `idempotency_key` with a DIFFERENT
+            `request_fingerprint` is a caller bug (a genuinely different
+            command reusing an old key) -- raises `CommandFingerprintMismatch`
+            rather than silently allowing it through (fail closed on
+            ambiguity, same posture as EXE-11's HTTP-level idempotency
+            check in app/main.py).
+        """
+        from app.command_ledger import CommandFingerprintMismatch
+
+        row_id = str(uuid.uuid4())
+        resolved_intent_id = intent_id or row_id
+        now = datetime.now(timezone.utc)
+        with self._connect() as conn:
+            try:
+                conn.execute(
+                    """INSERT INTO command_ledger
+                       (id, intent_id, idempotency_key, command_type, account_id, environment,
+                        expected_revision, request_fingerprint, created_at, remote_identifiers,
+                        uncertainty_state, terminal_evidence, resolved_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '{}', ?, '{}', NULL)""",
+                    (
+                        row_id,
+                        resolved_intent_id,
+                        idempotency_key,
+                        command_type.value,
+                        account_id,
+                        environment,
+                        expected_revision,
+                        request_fingerprint,
+                        now.isoformat(),
+                        UncertaintyState.PENDING_SUBMISSION.value,
+                    ),
+                )
+            except sqlite3.IntegrityError:
+                pass  # idempotency_key already exists -- fall through to read it back below.
+            else:
+                return self._command_ledger_row_to_entry(
+                    (
+                        row_id,
+                        resolved_intent_id,
+                        idempotency_key,
+                        command_type.value,
+                        account_id,
+                        environment,
+                        expected_revision,
+                        request_fingerprint,
+                        now.isoformat(),
+                        "{}",
+                        UncertaintyState.PENDING_SUBMISSION.value,
+                        "{}",
+                        None,
+                    )
+                )
+            existing_row = conn.execute(
+                """SELECT id, intent_id, idempotency_key, command_type, account_id, environment,
+                          expected_revision, request_fingerprint, created_at, remote_identifiers,
+                          uncertainty_state, terminal_evidence, resolved_at
+                   FROM command_ledger WHERE idempotency_key = ?""",
+                (idempotency_key,),
+            ).fetchone()
+        assert existing_row is not None  # the IntegrityError above guarantees this row now exists
+        existing = self._command_ledger_row_to_entry(existing_row)
+        if existing.request_fingerprint != request_fingerprint:
+            raise CommandFingerprintMismatch(
+                f"idempotency_key '{idempotency_key}' was already used for a different command "
+                f"(fingerprint {existing.request_fingerprint!r} != {request_fingerprint!r}) -- "
+                "refusing to reuse it for a different request rather than silently allowing it through"
+            )
+        return existing
+
+    def mark_command_ledger_outcome(
+        self,
+        idempotency_key: str,
+        *,
+        uncertainty_state: "UncertaintyState",
+        remote_identifiers: dict | None = None,
+        terminal_evidence: dict | None = None,
+    ) -> None:
+        """Update a command_ledger row's tracked outcome after the broker
+        call this row's own pre-effect intent describes has returned (or
+        raised). `resolved_at` is set (once, now) iff `uncertainty_state`
+        is one of `app.models.TERMINAL_UNCERTAINTY_STATES` -- every other
+        state (including `unknown_ambiguous`) leaves it NULL, so this row
+        keeps showing up in `list_unresolved_command_ledger_entries` until
+        something with real evidence (a reconciliation match, a later
+        broker poll) resolves it. `remote_identifiers`/`terminal_evidence`
+        are merged into the existing JSON dict (never replace wholesale),
+        so an earlier partial write (e.g. `submitted_unconfirmed` recording
+        just a broker_order_id) isn't lost when a later call adds
+        `terminal_evidence` on confirmation."""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT remote_identifiers, terminal_evidence FROM command_ledger WHERE idempotency_key = ?",
+                (idempotency_key,),
+            ).fetchone()
+            if row is None:
+                # Never happens on a real call site (every caller marks an
+                # outcome only for a key it just opened), but a row that
+                # vanished between open and mark is worth failing loudly on
+                # rather than silently no-opping over.
+                raise KeyError(f"no command_ledger row for idempotency_key '{idempotency_key}'")
+            merged_remote = json.loads(row[0])
+            merged_remote.update(remote_identifiers or {})
+            merged_evidence = json.loads(row[1])
+            merged_evidence.update(terminal_evidence or {})
+            resolved_at = (
+                datetime.now(timezone.utc).isoformat() if uncertainty_state in TERMINAL_UNCERTAINTY_STATES else None
+            )
+            conn.execute(
+                """UPDATE command_ledger
+                   SET uncertainty_state = ?, remote_identifiers = ?, terminal_evidence = ?, resolved_at = ?
+                   WHERE idempotency_key = ?""",
+                (
+                    uncertainty_state.value,
+                    json.dumps(merged_remote),
+                    json.dumps(merged_evidence),
+                    resolved_at,
+                    idempotency_key,
+                ),
+            )
+
+    def get_command_ledger_entry(self, idempotency_key: str) -> "CommandLedgerEntry | None":
+        with self._connect() as conn:
+            row = conn.execute(
+                """SELECT id, intent_id, idempotency_key, command_type, account_id, environment,
+                          expected_revision, request_fingerprint, created_at, remote_identifiers,
+                          uncertainty_state, terminal_evidence, resolved_at
+                   FROM command_ledger WHERE idempotency_key = ?""",
+                (idempotency_key,),
+            ).fetchone()
+        return self._command_ledger_row_to_entry(row) if row is not None else None
+
+    def list_unresolved_command_ledger_entries(self, account_id: str | None = None) -> list["CommandLedgerEntry"]:
+        """Contract depended on by a sibling agent (P0-4, restart-survivable
+        capital reservations): the durable source of truth for
+        reconstructing in-flight broker commands after a restart.
+
+        Returns every `command_ledger` row whose `uncertainty_state` is
+        NOT in `app.models.TERMINAL_UNCERTAINTY_STATES` -- i.e.
+        `pending_submission`, `submitted_unconfirmed`, or
+        `unknown_ambiguous` -- ordered by `created_at` ascending (oldest
+        first, the order those commands were actually issued in, so a
+        recovery replay processes them in the same order they happened).
+        Optionally filtered to one `account_id`; omit (or pass `None`) for
+        every account.
+
+        Each `CommandLedgerEntry` in the result carries: `id`, `intent_id`,
+        `idempotency_key`, `command_type`, `account_id`, `environment`,
+        `expected_revision` (`None` if not applicable to that command),
+        `request_fingerprint`, `created_at` (the real PRE-EFFECT instant --
+        this row was committed before the broker was ever called),
+        `remote_identifiers` (a `dict`, `{}` if no broker order id is known
+        yet -- this IS the "acknowledged exposure gap" case the audit
+        names when `command_type` implies risk was taken but this dict is
+        still empty), `uncertainty_state`, `terminal_evidence` (a `dict`,
+        `{}` for every unresolved row by construction), and `resolved_at`
+        (always `None` for a row in this result set).
+
+        A caller reconstructing in-flight state after a restart MUST treat
+        every returned row as "broker outcome unknown as of process
+        death/last update" and reconcile it against the broker's own
+        order/position state (or wait for app/reconciliation.py's own
+        pending-order polling to resolve it) rather than assuming either
+        success or failure. This method itself does no reconciliation --
+        it only exposes what's durably known.
+        """
+        query = """SELECT id, intent_id, idempotency_key, command_type, account_id, environment,
+                          expected_revision, request_fingerprint, created_at, remote_identifiers,
+                          uncertainty_state, terminal_evidence, resolved_at
+                   FROM command_ledger WHERE resolved_at IS NULL"""
+        params: tuple = ()
+        if account_id is not None:
+            query += " AND account_id = ?"
+            params = (account_id,)
+        query += " ORDER BY created_at ASC"
+        with self._connect() as conn:
+            rows = conn.execute(query, params).fetchall()
+        return [self._command_ledger_row_to_entry(r) for r in rows]
+
+    @staticmethod
+    def _command_ledger_row_to_entry(row: tuple) -> "CommandLedgerEntry":
+        return CommandLedgerEntry(
+            id=row[0],
+            intent_id=row[1],
+            idempotency_key=row[2],
+            command_type=CommandType(row[3]),
+            account_id=row[4],
+            environment=row[5],
+            expected_revision=row[6],
+            request_fingerprint=row[7],
+            created_at=datetime.fromisoformat(row[8]),
+            remote_identifiers=json.loads(row[9]),
+            uncertainty_state=UncertaintyState(row[10]),
+            terminal_evidence=json.loads(row[11]),
+            resolved_at=datetime.fromisoformat(row[12]) if row[12] else None,
+        )
+
+    # --- Writer lease / fencing (app/writer_lease.py, docs/FAILOVER.md) ---
+
+    @staticmethod
+    def _writer_lease_row_to_record(row) -> WriterLeaseRecord:
+        return WriterLeaseRecord(
+            fencing_token=row[0],
+            site_id=row[1],
+            holder_id=row[2],
+            acquired_at=datetime.fromisoformat(row[3]),
+            expires_at=datetime.fromisoformat(row[4]),
+            renewed_at=datetime.fromisoformat(row[5]),
+        )
+
+    def get_writer_lease(self) -> WriterLeaseRecord | None:
+        """A read-only snapshot of the current lease row -- used both by
+        `WriterLeaseGuard.require_active()` (the per-command fencing
+        check) and by anything reporting status (`GET /health`,
+        `app/promote_cli.py`'s own preview)."""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT fencing_token, site_id, holder_id, acquired_at, expires_at, renewed_at "
+                "FROM writer_lease WHERE id = 1"
+            ).fetchone()
+        return self._writer_lease_row_to_record(row) if row is not None else None
+
+    def acquire_or_reacquire_writer_lease(
+        self, site_id: str, holder_id: str, lease_seconds: float, *, now: datetime | None = None
+    ) -> WriterLeaseRecord:
+        """Called once at startup by the ACTIVE (non-`STANDBY_MODE`)
+        process only (see `app/main.py`'s `lifespan`) -- never by a
+        standby. Three cases:
+
+        - No lease row exists yet (true first boot of this database):
+          claims fencing_token=1 for this site.
+        - A lease row exists for THIS SAME `site_id`: this is the one
+          configured active site restarting (a crash, a deploy, systemd
+          restarting the unit) -- not a failover. Reacquired
+          automatically, still bumping the fencing token so any zombie
+          instance of the previous process (e.g. a hung request that
+          never noticed the restart) is fenced too.
+        - A lease row exists for a DIFFERENT `site_id`: raises
+          `WriterLeaseHeldByAnotherSiteError`, unconditionally --
+          including when that lease already looks expired. Automatic
+          cross-site takeover is exactly the "second host trades merely
+          because the first heartbeat disappeared" failure mode this
+          module exists to close; the only way a different site ever
+          becomes the writer is the explicit `app/promote_cli.py`
+          action.
+        """
+        now = now or datetime.now(timezone.utc)
+        expires = now + timedelta(seconds=lease_seconds)
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT fencing_token, site_id, holder_id, acquired_at, expires_at, renewed_at "
+                "FROM writer_lease WHERE id = 1"
+            ).fetchone()
+            if row is None:
+                new_token = 1
+            else:
+                existing = self._writer_lease_row_to_record(row)
+                if existing.site_id != site_id:
+                    raise WriterLeaseHeldByAnotherSiteError(
+                        f"writer lease is held by site={existing.site_id!r} (token={existing.fencing_token}, "
+                        f"expires_at={existing.expires_at.isoformat()}) -- site={site_id!r} may not acquire it "
+                        "automatically; use app/promote_cli.py for a deliberate takeover"
+                    )
+                new_token = existing.fencing_token + 1
+            conn.execute(
+                "INSERT OR REPLACE INTO writer_lease "
+                "(id, fencing_token, site_id, holder_id, acquired_at, expires_at, renewed_at) "
+                "VALUES (1, ?, ?, ?, ?, ?, ?)",
+                (new_token, site_id, holder_id, now.isoformat(), expires.isoformat(), now.isoformat()),
+            )
+        return WriterLeaseRecord(new_token, site_id, holder_id, now, expires, now)
+
+    def renew_writer_lease(self, holder_id: str, fencing_token: int, lease_seconds: float, *, now: datetime | None = None) -> bool:
+        """Heartbeat: extends `expires_at` for the CURRENT holder/token
+        only. Returns False (never raises) when this holder/token is no
+        longer current -- `WriterLeaseGuard.renew()` turns that into a
+        `FencedOutError`."""
+        now = now or datetime.now(timezone.utc)
+        expires = now + timedelta(seconds=lease_seconds)
+        with self._connect() as conn:
+            cur = conn.execute(
+                "UPDATE writer_lease SET expires_at = ?, renewed_at = ? "
+                "WHERE id = 1 AND holder_id = ? AND fencing_token = ?",
+                (expires.isoformat(), now.isoformat(), holder_id, fencing_token),
+            )
+        return cur.rowcount > 0
+
+    def promote_writer_lease(
+        self, new_site_id: str, new_holder_id: str, lease_seconds: float, *, now: datetime | None = None
+    ) -> WriterLeaseRecord:
+        """The ONLY way a different site ever becomes the writer (or the
+        way the very first lease is created, if none exists yet) --
+        called exclusively from `app/promote_cli.py`'s deliberate,
+        human-run promotion command, never automatically. Verifies the
+        existing lease (if any) is genuinely expired -- `expires_at` in
+        the past as of `now` -- and raises `LeaseStillValidError`
+        otherwise, refusing to issue a new token over a possibly-live
+        writer. This one automated check (an expiry timestamp) is
+        explicitly NOT a substitute for deploy/RUNBOOK.md's manual
+        confirmation that the prior writer's host is actually stopped or
+        its brokerage credentials revoked -- see docs/FAILOVER.md; the
+        caller (`app/promote_cli.py`) is responsible for gating this call
+        behind that confirmation."""
+        now = now or datetime.now(timezone.utc)
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT fencing_token, site_id, holder_id, acquired_at, expires_at, renewed_at "
+                "FROM writer_lease WHERE id = 1"
+            ).fetchone()
+            if row is None:
+                new_token = 1
+            else:
+                existing = self._writer_lease_row_to_record(row)
+                if not existing.is_expired(now=now):
+                    raise LeaseStillValidError(
+                        f"current writer lease (site={existing.site_id!r}, token={existing.fencing_token}) "
+                        f"does not expire until {existing.expires_at.isoformat()} -- refusing to promote over "
+                        "a possibly-live writer"
+                    )
+                new_token = existing.fencing_token + 1
+            expires = now + timedelta(seconds=lease_seconds)
+            conn.execute(
+                "INSERT OR REPLACE INTO writer_lease "
+                "(id, fencing_token, site_id, holder_id, acquired_at, expires_at, renewed_at) "
+                "VALUES (1, ?, ?, ?, ?, ?, ?)",
+                (new_token, new_site_id, new_holder_id, now.isoformat(), expires.isoformat(), now.isoformat()),
+            )
+        return WriterLeaseRecord(new_token, new_site_id, new_holder_id, now, expires, now)
+
     # --- Live-editable config: accounts, routing rules, providers/analysts ---
     # See app/main.py's CRUD endpoints and app/routing.py's/app/providers.py's
     # `*_from_store` loaders — this is what makes account/routing/provider
@@ -1176,7 +2200,9 @@ class SignalStore:
         with self._connect() as conn:
             rows = conn.execute(
                 """SELECT account_id, broker, multiplier, fixed_quantity, symbol_map, enabled,
-                          managed_lifecycle, max_notional_exposure FROM config_accounts ORDER BY account_id"""
+                          managed_lifecycle, max_notional_exposure, risk_percent_of_equity,
+                          management_recipe, qualification_level, exclusive_writer_qualified
+                   FROM config_accounts ORDER BY account_id"""
             ).fetchall()
         return [
             {
@@ -1188,6 +2214,16 @@ class SignalStore:
                 "enabled": bool(r[5]),
                 "managed_lifecycle": bool(r[6]),
                 "max_notional_exposure": r[7],
+                "risk_percent_of_equity": r[8],
+                # P0-5: a row written before this migration (or one whose
+                # caller never passed management_recipe explicitly) has
+                # NULL here -- fall back to the same managed_lifecycle
+                # -> recipe mapping DestinationAccount.__post_init__ uses,
+                # rather than surface a raw NULL to a caller that expects
+                # a real declared value.
+                "management_recipe": r[9] or ("full_managed_lifecycle" if r[6] else "plain_unmanaged"),
+                "qualification_level": r[10],
+                "exclusive_writer_qualified": bool(r[11]),
             }
             for r in rows
         ]
@@ -1202,18 +2238,27 @@ class SignalStore:
         enabled: bool = True,
         managed_lifecycle: bool = False,
         max_notional_exposure: float | None = None,
+        risk_percent_of_equity: float | None = None,
+        management_recipe: str | None = None,
+        qualification_level: str | None = None,
+        exclusive_writer_qualified: bool = False,
     ) -> None:
         with self._connect() as conn:
             conn.execute(
                 """INSERT INTO config_accounts
                    (account_id, broker, multiplier, fixed_quantity, symbol_map, enabled, managed_lifecycle,
-                    max_notional_exposure)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    max_notional_exposure, risk_percent_of_equity, management_recipe, qualification_level,
+                    exclusive_writer_qualified)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT (account_id) DO UPDATE SET
                      broker = excluded.broker, multiplier = excluded.multiplier,
                      fixed_quantity = excluded.fixed_quantity, symbol_map = excluded.symbol_map,
                      enabled = excluded.enabled, managed_lifecycle = excluded.managed_lifecycle,
-                     max_notional_exposure = excluded.max_notional_exposure""",
+                     max_notional_exposure = excluded.max_notional_exposure,
+                     risk_percent_of_equity = excluded.risk_percent_of_equity,
+                     management_recipe = excluded.management_recipe,
+                     qualification_level = excluded.qualification_level,
+                     exclusive_writer_qualified = excluded.exclusive_writer_qualified""",
                 (
                     account_id,
                     broker,
@@ -1223,6 +2268,15 @@ class SignalStore:
                     int(enabled),
                     int(managed_lifecycle),
                     max_notional_exposure,
+                    risk_percent_of_equity,
+                    # P0-5: honor an explicit caller value; otherwise persist
+                    # the same managed_lifecycle-derived default
+                    # DestinationAccount.__post_init__ would -- this is what
+                    # makes the field a real, non-NULL declaration on write,
+                    # not just on read.
+                    management_recipe or ("full_managed_lifecycle" if managed_lifecycle else "plain_unmanaged"),
+                    qualification_level,
+                    int(exclusive_writer_qualified),
                 ),
             )
 
@@ -1625,6 +2679,326 @@ class SignalStore:
             for r in rows
         ]
 
+    def save_backtest_run(
+        self,
+        *,
+        config_hash: str,
+        created_at: datetime,
+        request: dict,
+        summary: dict,
+        trades: list[dict],
+        stressed_summary: dict | None = None,
+        cost_stress_note: str | None = None,
+        capital_contention: dict | None = None,
+    ) -> int:
+        """TR-15: persist one completed POST /backtest replay -- the exact
+        real request/summary/trades that endpoint already computes, never
+        re-derived. Always an append (never an upsert): each run is its own
+        real, reproducible record, even if a later run shares the same
+        `config_hash` (a genuine repeat of the identical inputs) -- run
+        history is a durable log, not a "latest result per config" cache.
+
+        `capital_contention` is the real
+        `app/backtest/replay.py`'s `CapitalContentionReport` this run
+        computed (as a dict), covering B7's real cross-signal
+        capital-sharing overlay -- `None` only for a run persisted before
+        this field existed (a pre-existing on-disk database backfilled via
+        `_COLUMN_MIGRATIONS`), never a fabricated placeholder."""
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """INSERT INTO backtest_runs
+                   (config_hash, created_at, request_json, summary_json, trades_json,
+                    stressed_summary_json, cost_stress_note, capital_contention_json)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    config_hash,
+                    created_at.isoformat(),
+                    json.dumps(request),
+                    json.dumps(summary),
+                    json.dumps(trades),
+                    json.dumps(stressed_summary) if stressed_summary is not None else None,
+                    cost_stress_note,
+                    json.dumps(capital_contention) if capital_contention is not None else None,
+                ),
+            )
+            # lastrowid is None only for a statement that isn't a rowid-table
+            # INSERT -- see save_order_result's identical comment.
+            assert cursor.lastrowid is not None
+            return cursor.lastrowid
+
+    def list_backtest_runs(self, *, limit: int = 50) -> list[dict]:
+        """Every persisted run's real identity/summary (id, config_hash,
+        created_at, the real request that produced it, and its real
+        summary metrics) -- most recent first. Trades are deliberately
+        omitted here (that's a potentially large payload); fetch
+        `get_backtest_run` for the full per-trade detail."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT id, config_hash, created_at, request_json, summary_json,
+                          stressed_summary_json, cost_stress_note, capital_contention_json
+                   FROM backtest_runs
+                   ORDER BY created_at DESC, id DESC
+                   LIMIT ?""",
+                (limit,),
+            ).fetchall()
+        return [
+            {
+                "id": r[0],
+                "config_hash": r[1],
+                "created_at": r[2],
+                "request": json.loads(r[3]),
+                "summary": json.loads(r[4]),
+                "stressed_summary": json.loads(r[5]) if r[5] else None,
+                "cost_stress_note": r[6],
+                "capital_contention": json.loads(r[7]) if r[7] else None,
+            }
+            for r in rows
+        ]
+
+    def get_backtest_run(self, run_id: int) -> dict | None:
+        """This one persisted run's full real detail, including every
+        replayed trade -- `None` (never a fabricated empty run) if no run
+        with this id was ever persisted."""
+        with self._connect() as conn:
+            row = conn.execute(
+                """SELECT id, config_hash, created_at, request_json, summary_json, trades_json,
+                          stressed_summary_json, cost_stress_note, capital_contention_json
+                   FROM backtest_runs WHERE id = ?""",
+                (run_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "id": row[0],
+            "config_hash": row[1],
+            "created_at": row[2],
+            "request": json.loads(row[3]),
+            "summary": json.loads(row[4]),
+            "trades": json.loads(row[5]),
+            "stressed_summary": json.loads(row[6]) if row[6] else None,
+            "cost_stress_note": row[7],
+            "capital_contention": json.loads(row[8]) if row[8] else None,
+        }
+
+    def save_saved_view(self, *, name: str, screen: str, filters: dict, created_at: datetime) -> int:
+        """Persist one real named filter set. `name` is UNIQUE at the
+        schema level -- a caller trying to reuse an existing name gets a
+        real `sqlite3.IntegrityError` (app/main.py turns that into a 409),
+        never a silent overwrite."""
+        with self._connect() as conn:
+            cursor = conn.execute(
+                "INSERT INTO saved_views (name, screen, filters_json, created_at) VALUES (?, ?, ?, ?)",
+                (name, screen, json.dumps(filters), created_at.isoformat()),
+            )
+            assert cursor.lastrowid is not None
+            return cursor.lastrowid
+
+    def list_saved_views(self, *, screen: str | None = None) -> list[dict]:
+        """Every persisted saved view, optionally narrowed to one screen --
+        most recently created first."""
+        query = "SELECT id, name, screen, filters_json, created_at FROM saved_views"
+        params: list = []
+        if screen is not None:
+            query += " WHERE screen = ?"
+            params.append(screen)
+        query += " ORDER BY created_at DESC, id DESC"
+        with self._connect() as conn:
+            rows = conn.execute(query, params).fetchall()
+        return [
+            {
+                "id": r[0],
+                "name": r[1],
+                "screen": r[2],
+                "filters": json.loads(r[3]),
+                "created_at": r[4],
+            }
+            for r in rows
+        ]
+
+    def delete_saved_view(self, view_id: int) -> bool:
+        """Deletes one saved view by id. Returns whether a row actually
+        existed to delete (app/main.py turns a `False` into a real 404
+        rather than a silently-successful no-op)."""
+        with self._connect() as conn:
+            cursor = conn.execute("DELETE FROM saved_views WHERE id = ?", (view_id,))
+            return cursor.rowcount > 0
+
+    # --- Live qualification (app/qualification.py) ---------------------
+
+    def _achieved_qualification_states(
+        self, conn: sqlite3.Connection, *, adapter_type: str, route_key: str, asset_class: str, product_type: str
+    ) -> "set":
+        from app.qualification import QualificationState
+
+        rows = conn.execute(
+            "SELECT DISTINCT state FROM route_qualifications "
+            "WHERE adapter_type = ? AND route_key = ? AND asset_class = ? AND product_type = ?",
+            (adapter_type, route_key, asset_class, product_type),
+        ).fetchall()
+        achieved = set()
+        for (state_value,) in rows:
+            try:
+                achieved.add(QualificationState(state_value))
+            except ValueError:  # pragma: no cover - schema only ever stores valid values via this path
+                continue
+        return achieved
+
+    def record_route_qualification(
+        self,
+        *,
+        adapter_type: str,
+        route_key: str,
+        asset_class: str,
+        product_type: str,
+        state: str,
+        supports_feedback: bool,
+        recorded_by: str,
+        notes: str | None = None,
+        recorded_at: datetime | None = None,
+    ) -> dict:
+        """Record ONE state achieved for ONE exact route. Fails closed --
+        raises `app.qualification.QualificationError` (never silently
+        drops, downgrades, or reorders the request) when:
+
+        1. `state` isn't a real `QualificationState` value.
+        2. Any prerequisite rung below `state` on the ladder has not
+           already been recorded for this SAME (adapter_type, route_key,
+           asset_class, product_type) tuple -- see
+           `app.qualification.missing_prerequisites`. A route that was
+           never `authenticated` cannot jump straight to `venue_tested`.
+        3. `state` is at or above `app.qualification.
+           FEEDBACK_DEPENDENT_FLOOR` (account_entitled and everything
+           above it) and the caller asserts `supports_feedback=False` --
+           the caller (app/main.py) computes this from the REAL,
+           currently-registered adapter's
+           `has_account_order_position_feedback`, but this check is
+           enforced here, at the persistence layer, so it can't be
+           bypassed by any caller of this method (including a test or a
+           future endpoint) that doesn't go through that resolution.
+           `supports_feedback` defaults to nothing -- callers must pass it
+           explicitly, so an unknown/unverified adapter fails closed
+           rather than silently being allowed through.
+
+        Re-recording a state that's already achieved for this route is an
+        idempotent update (new recorded_at/recorded_by/notes on the same
+        row, via the schema's UNIQUE constraint) -- it never re-runs the
+        prerequisite check against itself.
+        """
+        from app.qualification import QualificationError, parse_state, missing_prerequisites, requires_feedback
+
+        parsed_state = parse_state(state)
+        if not adapter_type or not route_key or not asset_class or not product_type:
+            raise QualificationError(
+                "adapter_type, route_key, asset_class and product_type are all required to identify an exact route"
+            )
+
+        when = (recorded_at or datetime.now(timezone.utc)).isoformat()
+
+        with self._connect() as conn:
+            achieved = self._achieved_qualification_states(
+                conn, adapter_type=adapter_type, route_key=route_key, asset_class=asset_class, product_type=product_type
+            )
+            if parsed_state not in achieved:
+                missing = missing_prerequisites(parsed_state, achieved)
+                if missing:
+                    raise QualificationError(
+                        f"cannot record '{parsed_state.value}' for route "
+                        f"({adapter_type}/{route_key}/{asset_class}/{product_type}): "
+                        f"missing prerequisite state(s) {[m.value for m in missing]} -- "
+                        "the qualification ladder must be achieved in order"
+                    )
+                if requires_feedback(parsed_state) and not supports_feedback:
+                    raise QualificationError(
+                        f"cannot record '{parsed_state.value}' for route "
+                        f"({adapter_type}/{route_key}/{asset_class}/{product_type}): "
+                        f"adapter '{adapter_type}' has no real order-status, position-readback, or "
+                        "balance-readback implementation (has_account_order_position_feedback is False) -- "
+                        "there is no genuine feedback channel to verify this state with, so it structurally "
+                        "cannot be claimed for any route on this adapter, regardless of operator intent"
+                    )
+
+            conn.execute(
+                """
+                INSERT INTO route_qualifications
+                    (adapter_type, route_key, asset_class, product_type, state, recorded_at, recorded_by, notes)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(adapter_type, route_key, asset_class, product_type, state)
+                DO UPDATE SET recorded_at = excluded.recorded_at, recorded_by = excluded.recorded_by, notes = excluded.notes
+                """,
+                (adapter_type, route_key, asset_class, product_type, parsed_state.value, when, recorded_by, notes),
+            )
+
+        return {
+            "adapter_type": adapter_type,
+            "route_key": route_key,
+            "asset_class": asset_class,
+            "product_type": product_type,
+            "state": parsed_state.value,
+            "recorded_at": when,
+            "recorded_by": recorded_by,
+            "notes": notes,
+        }
+
+    def list_route_qualifications(
+        self, *, adapter_type: str | None = None, route_key: str | None = None
+    ) -> list[dict]:
+        """Every route that has at least one recorded qualification event,
+        grouped into one summary per route: its full achieved-state
+        history (oldest first) plus `current_state`, the HIGHEST rung on
+        the ladder actually achieved (never the most-recently-recorded row
+        -- an operator recording `configured` again after `venue_tested`
+        was already achieved must not regress what's shown as current)."""
+        from app.qualification import QualificationState, state_index
+
+        query = (
+            "SELECT adapter_type, route_key, asset_class, product_type, state, recorded_at, recorded_by, notes "
+            "FROM route_qualifications"
+        )
+        clauses = []
+        params: list = []
+        if adapter_type is not None:
+            clauses.append("adapter_type = ?")
+            params.append(adapter_type)
+        if route_key is not None:
+            clauses.append("route_key = ?")
+            params.append(route_key)
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        query += " ORDER BY adapter_type, route_key, asset_class, product_type, recorded_at"
+
+        with self._connect() as conn:
+            rows = conn.execute(query, params).fetchall()
+
+        routes: dict[tuple, dict] = {}
+        for r in rows:
+            key = (r[0], r[1], r[2], r[3])
+            route = routes.setdefault(
+                key,
+                {
+                    "adapter_type": r[0],
+                    "route_key": r[1],
+                    "asset_class": r[2],
+                    "product_type": r[3],
+                    "events": [],
+                },
+            )
+            route["events"].append(
+                {"state": r[4], "recorded_at": r[5], "recorded_by": r[6], "notes": r[7]}
+            )
+
+        result = []
+        for route in routes.values():
+            try:
+                highest = max(
+                    (QualificationState(e["state"]) for e in route["events"]),
+                    key=state_index,
+                )
+                route["current_state"] = highest.value
+            except ValueError:  # pragma: no cover - schema only ever stores valid values via this path
+                route["current_state"] = None
+            result.append(route)
+        return result
+
     def list_orders_for_signal(self, signal_id: str) -> list[dict]:
         """Every order already recorded against this exact signal id — what
         SIG-01's engine-level dedup checks before routing/submitting a
@@ -1715,7 +3089,8 @@ class SignalStore:
 
     def list_recent_orders(self, limit: int = 50, account_id: str | None = None) -> list[dict]:
         query = """SELECT id, account_id, broker, symbol, side, requested_quantity, signal_id,
-                          status, broker_order_id, filled_quantity, filled_price, message, executed_at
+                          status, broker_order_id, filled_quantity, filled_price, message, executed_at,
+                          purpose, family_id
                    FROM orders"""
         params: list = []
         if account_id:
@@ -1741,6 +3116,11 @@ class SignalStore:
                 "filled_price": r[10],
                 "message": r[11],
                 "executed_at": r[12],
+                # DB-0X: NULL (never fabricated) for any order row saved
+                # before these two columns existed -- see this table's own
+                # SCHEMA comment for exactly what each real value means.
+                "purpose": r[13],
+                "family_id": r[14],
             }
             for r in rows
         ]

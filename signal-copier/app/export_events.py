@@ -44,6 +44,7 @@ from signal_platform_contracts import (
     ExecutionAppliedPayload,
     InstrumentIdentity,
     PrivateAccountIdentity,
+    RoutingAdmissionOutcomePayload,
     SourceIdentity,
     SourceReceiptPayload,
     build_subject,
@@ -72,6 +73,16 @@ def _resolve_currency(symbol: str) -> str:
     if "/" in symbol:
         return symbol.split("/")[-1].upper()
     return "USD"
+
+
+def source_receipt_event_id(signal_id: str) -> str:
+    """The one real identity a `ROUTING_ADMISSION_OUTCOME` correlates
+    back to -- shared by `build_source_receipt_envelope` (which assigns
+    it as that receipt's own `event_id`) and
+    `build_routing_admission_outcome_envelope` (which carries it as
+    `RoutingAdmissionOutcomePayload.originating_source_event_id`), so the
+    two are never allowed to drift out of the same format independently."""
+    return f"source-receipt:{signal_id}"
 
 
 def build_execution_applied_envelope(
@@ -205,13 +216,90 @@ def build_source_receipt_envelope(
 
     return EventEnvelope(
         event_type=EventType.SOURCE_RECEIPT,
-        event_id=f"source-receipt:{signal.id}",
+        event_id=source_receipt_event_id(signal.id),
         producer_id=producer_id,
         source_stream=source_stream,
         export_sequence=export_sequence,
         subject=build_subject(source=source_identity, instrument=instrument),
         event_time=signal.received_at,
         effective_time=signal.received_at,
+        availability_time=now,
+        receipt_time=now,
+        environment=environment,
+        evidence_class=evidence_class,
+        payload_hash=compute_payload_hash(payload_dict),
+        payload=payload_dict,
+    )
+
+
+def build_routing_admission_outcome_envelope(
+    signal: Signal,
+    *,
+    outcome: str,
+    source_stream: str,
+    export_sequence: int,
+    producer_id: str,
+    evidence_class: EvidenceClass,
+    environment: Environment,
+    account: DestinationAccount | None = None,
+    broker: str | None = None,
+    order_status: OrderStatus | None = None,
+    message: str | None = None,
+) -> EventEnvelope | None:
+    """INT-027 "All permitted source outcomes reach research": the real
+    routing/admission/fill outcome for this signal's own SOURCE_RECEIPT
+    (see `source_receipt_event_id`), exported as a SEPARATE, correlated
+    follow-up event -- never a change to the receipt's own unconditional,
+    before-routing export timing (app/engine.py's `_export_source_receipt`
+    docstring: that property is itself load-bearing for other acceptance
+    rows and must not be weakened or delayed).
+
+    Returns `None` for a `Side.CLOSE` signal, for the identical reason
+    `build_source_receipt_envelope` does: no SOURCE_RECEIPT was ever
+    exported for a CLOSE (its real direction isn't a property of the
+    recommendation itself), so there is nothing real for this outcome to
+    correlate back to.
+
+    `account`/`broker` are `None` exactly when no destination account was
+    ever reached (`outcome="not_routed"`) or a provider/analyst override
+    skipped this entry before any order was attempted
+    (`outcome="disabled_by_settings"`) -- never fabricated. `order_status`
+    is the real, underlying `OrderStatus` when an order was actually
+    attempted, `None` otherwise. `message` is the engine's own real
+    rejection/error text, carried verbatim when one exists."""
+    if signal.side == Side.CLOSE:
+        return None
+
+    source_identity = SourceIdentity(
+        source_provider_id=signal.source,
+        analyst_id=signal.analyst,
+        parser_version=_UNVERSIONED_PARSER,
+        source_event_id=signal.id,
+    )
+    account_identity = PrivateAccountIdentity(account_id=account.account_id) if account is not None else None
+    payload = RoutingAdmissionOutcomePayload(
+        originating_source_event_id=source_receipt_event_id(signal.id),
+        outcome=outcome,
+        account=account_identity,
+        broker=broker,
+        order_status=None if order_status is None else order_status.value,
+        message=message,
+    )
+    payload_dict = payload.model_dump(mode="json")
+    now = datetime.now(timezone.utc)
+    subject_clusters: dict[str, object] = {"source": source_identity}
+    if account_identity is not None:
+        subject_clusters["account"] = account_identity
+
+    return EventEnvelope(
+        event_type=EventType.ROUTING_ADMISSION_OUTCOME,
+        event_id=f"routing-outcome:{signal.id}:{account.account_id if account is not None else 'unrouted'}",
+        producer_id=producer_id,
+        source_stream=source_stream,
+        export_sequence=export_sequence,
+        subject=build_subject(**subject_clusters),
+        event_time=now,
+        effective_time=now,
         availability_time=now,
         receipt_time=now,
         environment=environment,

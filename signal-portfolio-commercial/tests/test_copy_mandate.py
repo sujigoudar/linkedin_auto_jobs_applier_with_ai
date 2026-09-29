@@ -1,8 +1,12 @@
 """CU-09 "Copy setup and mandate wizard" / CU-10 "Pause copying and
 position handoff" -- app/services/copy_mandate.py's own tests. Real
 Postgres, real tenant-scoped session."""
+from datetime import datetime, timedelta, timezone
+
 import pytest
 
+from app.models.billing import ProductTier, Subscription, SubscriptionState
+from app.models.eligibility import CustomerType, EligibilityAssessment
 from app.models.product import Product, ProductLifecycleState
 from app.models.tenancy import Membership, MembershipRole, Tenant, UserIdentity
 from app.services.copy_mandate import (
@@ -13,18 +17,65 @@ from app.services.copy_mandate import (
     get_own_copy_mandate,
     list_own_copy_mandates,
 )
+from app.services.notification_preferences import save_notification_preferences
 from app.services.platform_connection import create_platform_connection
 from app.services.portfolio_selection import create_portfolio_selection
 
 
-def _seed_membership(db_session, *, tenant_id="tenant-a", user_id="user-a"):
+def _seed_membership(db_session, *, tenant_id="tenant-a", user_id="user-a", onboarded=True):
+    """`onboarded=True` (the default, matching every pre-existing test's
+    own assumption that a customer here may draft a mandate) also seeds
+    every real signal `app/services/onboarding_progress.py` reads --
+    email verified, eligibility facts confirmed, an authorizing
+    subscription and saved alert preferences -- so this fixture's
+    customers reach `ALERT_PREFERENCES_SET` exactly the way a real
+    customer would, never via a stage column set directly."""
     if db_session.get(Tenant, tenant_id) is None:
         db_session.add(Tenant(tenant_id=tenant_id, display_name="Tenant", environment="LOCAL_SIM"))
         db_session.flush()
-    db_session.add(UserIdentity(user_id=user_id, email=f"{user_id}@example.com"))
+    email_verified_at = datetime.now(timezone.utc) if onboarded else None
+    db_session.add(UserIdentity(user_id=user_id, email=f"{user_id}@example.com", email_verified_at=email_verified_at))
     db_session.flush()
     db_session.add(Membership(tenant_id=tenant_id, user_id=user_id, role=MembershipRole.CUSTOMER))
     db_session.commit()
+
+    if onboarded:
+        db_session.add(
+            EligibilityAssessment(
+                tenant_id=tenant_id,
+                user_id=user_id,
+                residence_country="US",
+                tax_residence=["US"],
+                customer_type=CustomerType.INDIVIDUAL,
+                requested_service_modes=["copying"],
+                document_versions=["v1"],
+                facts_confirmed=True,
+            )
+        )
+        db_session.add(
+            Subscription(
+                tenant_id=tenant_id,
+                tier=ProductTier.PORTFOLIOS_THREE,
+                state=SubscriptionState.ACTIVE_PAID,
+                price_cents=9900,
+                currency="usd",
+                current_period_end=datetime.now(timezone.utc) + timedelta(days=30),
+            )
+        )
+        db_session.commit()
+        save_notification_preferences(
+            db_session,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            email=f"{user_id}@example.com",
+            webhook_endpoint_id=None,
+            categories=["safety"],
+            timezone_name="UTC",
+            quiet_start=None,
+            quiet_end=None,
+            marketing_consent=False,
+        )
+        db_session.commit()
 
 
 def _published_product(db_session, *, tenant_id="tenant-a", slug="mandate-product"):

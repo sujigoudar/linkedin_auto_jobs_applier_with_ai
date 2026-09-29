@@ -40,5 +40,37 @@
   <main>
     {% block content %}{% endblock %}
   </main>
+  <script>
+    // app/api/dependencies.py's own get_current_scope requires a
+    // csrf_token matching the caller's own web session (ID-01's cookie
+    // auth) on every non-GET request -- the ONE place that token is
+    // ever readable is the non-httponly "cp_csrf" cookie
+    // app/api/dashboard_routes.py's _set_csrf_cookie sets right after
+    // sign-in/verify. This app has no other JavaScript anywhere; this
+    // is the single, central place (every real page extends this file)
+    // that fills a hidden field back into every real
+    // <form method="post"> so a plain server-rendered form submit still
+    // carries it -- no per-template change needed, and a page with no
+    // cp_csrf cookie yet (never signed in) simply submits an empty
+    // field, which get_current_scope still correctly rejects.
+    (function () {
+      function readCookie(name) {
+        var match = document.cookie.match(new RegExp('(?:^|; )' + name + '=([^;]*)'));
+        return match ? decodeURIComponent(match[1]) : '';
+      }
+      var token = readCookie('cp_csrf');
+      if (!token) return;
+      document.querySelectorAll('form[method="post" i]').forEach(function (form) {
+        var field = form.querySelector('input[name="csrf_token"]');
+        if (!field) {
+          field = document.createElement('input');
+          field.type = 'hidden';
+          field.name = 'csrf_token';
+          form.appendChild(field);
+        }
+        field.value = token;
+      });
+    })();
+  </script>
 </body>
 </html>

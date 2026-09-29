@@ -64,10 +64,18 @@
 </div>
 {% endif %}
 
+{% if can_export_evidence_manifest %}
 <div class="panel">
   <h2>Evidence manifest</h2>
-  <p><span class="badge badge-unknown">UNSUPPORTED</span> -- no evidence-bundling model exists in this build.</p>
+  <p>Export the events matching the filters above (leave blank for all events) as a verbatim, hash-stamped JSON bundle.</p>
+  <form method="post" action="/ops/audit/evidence-manifest">
+    <input type="hidden" name="actor_user_id" value="{{ actor_user_id }}">
+    <input type="hidden" name="object_id" value="{{ object_id }}">
+    <input type="hidden" name="action" value="{{ action }}">
+    <p><button type="submit">Export evidence manifest</button></p>
+  </form>
 </div>
+{% endif %}
 
 <div class="panel">
   <h2>Export queue</h2>

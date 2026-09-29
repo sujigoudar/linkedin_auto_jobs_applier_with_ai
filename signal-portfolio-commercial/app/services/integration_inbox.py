@@ -60,6 +60,7 @@ from signal_platform_contracts import (
     ExecutionAppliedPayload,
     FeePayload,
     PositionSnapshotPayload,
+    RoutingAdmissionOutcomePayload,
     SourceReceiptPayload,
 )
 
@@ -84,6 +85,7 @@ _SUPPORTED_SCHEMA_VERSIONS = frozenset({CONTRACT_SCHEMA_VERSION})
 PARKED_REASON_UNSUPPORTED_SCHEMA_VERSION = "unsupported_schema_version"
 PARKED_REASON_UNIMPLEMENTED_EVENT_TYPE = "unimplemented_event_type"
 PARKED_REASON_FEE_TARGET_NOT_FOUND = "fee_target_not_found"
+PARKED_REASON_ROUTING_OUTCOME_TARGET_NOT_FOUND = "routing_outcome_target_not_found"
 PARKED_REASON_GENERATION_ROLLBACK_DETECTED = "generation_rollback_detected"
 PARKED_REASON_NEW_GENERATION_REQUIRES_BOOTSTRAP = "new_generation_requires_bootstrap"
 PARKED_REASON_MANIFEST_METADATA_MISMATCH = "manifest_metadata_mismatch"
@@ -373,6 +375,32 @@ def _apply_projection(session: Session, inbox_event: InboxEvent, envelope: Event
             fee=payload.fee,
         )
         inbox_event.ledger_entry_id = correction.entry_id
+        inbox_event.applied_at = datetime.now(timezone.utc)
+    elif envelope.event_type == EventType.ROUTING_ADMISSION_OUTCOME:
+        # INT-027 "All permitted source outcomes reach research": the
+        # real routing/admission/fill outcome for a SOURCE_RECEIPT
+        # already applied earlier -- correlates by
+        # `originating_source_event_id`, which IS that receipt's own
+        # `InboxEvent.event_id` (the receipt needs no separate
+        # correlation-key column the way EXECUTION_APPLIED/FEE do,
+        # since its own primary key already serves that role). Mirrors
+        # FEE's own late-arriving-correlated-update idiom: if the
+        # target receipt hasn't been received/applied yet, park rather
+        # than fabricate or drop it -- same honest "waiting" posture as
+        # `PARKED_REASON_FEE_TARGET_NOT_FOUND`. In practice this should
+        # be unreachable in the ordinary flow: both event types share
+        # the SAME source_stream, so this event's own (necessarily
+        # higher) export_sequence can never be applied before its own
+        # receipt's lower one already has been -- kept as a real,
+        # checked defense anyway, not an assumption.
+        payload = RoutingAdmissionOutcomePayload.model_validate(envelope.payload)
+        source_row = session.get(InboxEvent, payload.originating_source_event_id)
+        if source_row is None or source_row.applied_at is None:
+            inbox_event.parked_reason = (
+                f"{PARKED_REASON_ROUTING_OUTCOME_TARGET_NOT_FOUND}:{payload.originating_source_event_id}"
+            )
+            return
+        source_row.routing_outcome = payload.outcome
         inbox_event.applied_at = datetime.now(timezone.utc)
     else:
         # Every other EventType has no implemented payload yet (see

@@ -234,12 +234,29 @@ async def test_tr03_mae_mfe_chart_matches_real_seeded_position_data(live_server_
             )
             assert chart_data == [[100.0, 112.0], [95.0, 100.0]]
 
-            # Real price/stop timeline enrichment: the same real
-            # highest/lowest markers, with their real timestamps, appear
-            # as additive annotations alongside the order journal.
-            timeline_text = await page.inner_text("#tr03-p03")
-            assert "Highest price reached" in timeline_text
-            assert "Lowest price reached" in timeline_text
+            # 2026-09 redesign: TR-03's centerpiece price chart now plots
+            # this same real entry fill and the real STOP_PLACED event
+            # (stop_loss=90.0) directly -- superseding the old duplicate
+            # highest/lowest annotation table this test used to assert
+            # against here (removed as a deliberate de-duplication; the
+            # MAE/MFE panel above already covers those two real extremes).
+            await page.wait_for_selector("#tr03-price-chart", timeout=5000)
+            price_chart_data = await page.evaluate(
+                "() => { const c = Chart.getChart(document.getElementById('tr03-price-chart')); "
+                "return c ? c.data.datasets.map((d) => ({label: d.label, data: d.data})) : null; }"
+            )
+            assert price_chart_data is not None
+            entry_dataset = next(d for d in price_chart_data if d["label"] == "Entry execution")
+            assert entry_dataset["data"][0]["y"] == 100.0
+            stop_dataset = next(d for d in price_chart_data if d["label"] == "Stop placed (initial)")
+            assert stop_dataset["data"][0]["y"] == 90.0
+
+            # Real, honest gaps: this position has no STOP_TIGHTENED or
+            # TARGET_HIT event, so those series must be a capability-state,
+            # never a fabricated empty/flat line.
+            gaps_text = await page.text_content("#tr03-chart-gaps")
+            assert "No real STOP_TIGHTENED event" in gaps_text
+            assert "No real TARGET_HIT event" in gaps_text
         finally:
             await browser.close()
 
@@ -297,7 +314,10 @@ async def test_tr03_mae_mfe_panel_shows_honest_gap_for_a_plain_unmanaged_positio
                 )
 
             await wait_settled("#tr03-p07")
-            panel_text = await page.inner_text("#tr03-p07")
+            # `text_content` (not `inner_text`) -- see this file's other
+            # test for why: Components.renderCapabilityState puts this
+            # reason behind a collapsed <details>.
+            panel_text = await page.text_content("#tr03-p07")
             assert "only exists for managed-lifecycle positions" in panel_text
             assert await page.query_selector("#tr03-maemfe-chart") is None
         finally:

@@ -74,7 +74,14 @@ def _portfolio_version(session, portfolio_version_id, sleeve_ids):
     session.add(pv)
     session.flush()
     for sleeve_id in sleeve_ids:
-        session.add(PortfolioVersionSleeve(portfolio_version_id=portfolio_version_id, sleeve_id=sleeve_id, weight=Decimal("0.85")))
+        session.add(
+            PortfolioVersionSleeve(
+                portfolio_version_id=portfolio_version_id,
+                sleeve_id=sleeve_id,
+                weight=Decimal("0.85"),
+                tenant_id="tenant-a",
+            )
+        )
 
 
 def _subscription(state=SubscriptionState.ACTIVE_PAID):
@@ -91,6 +98,7 @@ def _subscription(state=SubscriptionState.ACTIVE_PAID):
 def _intent(**overrides) -> PublicationIntent:
     now = datetime.now(timezone.utc)
     defaults = dict(
+        tenant_id="tenant-a",
         environment=Environment.LOCAL_SIM,
         portfolio_version_id="pv-1",
         episode_id="ep-1",

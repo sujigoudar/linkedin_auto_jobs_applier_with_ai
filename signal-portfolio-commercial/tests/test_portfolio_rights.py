@@ -66,7 +66,11 @@ def _portfolio_version(session, portfolio_version_id, sleeve_ids):
     session.flush()
     weight = (Decimal(1) - pv.cash_weight) / Decimal(len(sleeve_ids)) if sleeve_ids else Decimal(0)
     for sleeve_id in sleeve_ids:
-        session.add(PortfolioVersionSleeve(portfolio_version_id=portfolio_version_id, sleeve_id=sleeve_id, weight=weight))
+        session.add(
+            PortfolioVersionSleeve(
+                portfolio_version_id=portfolio_version_id, sleeve_id=sleeve_id, weight=weight, tenant_id="tenant-a"
+            )
+        )
     return pv
 
 
@@ -150,7 +154,11 @@ def test_referencing_a_nonexistent_sleeve_is_denied(db_session):
     # the FK itself protects this invariant.
     from sqlalchemy.exc import IntegrityError
 
-    db_session.add(PortfolioVersionSleeve(portfolio_version_id="pv-2", sleeve_id="does-not-exist", weight=Decimal("1")))
+    db_session.add(
+        PortfolioVersionSleeve(
+            portfolio_version_id="pv-2", sleeve_id="does-not-exist", weight=Decimal("1"), tenant_id="tenant-a"
+        )
+    )
     try:
         db_session.flush()
         raise AssertionError("expected the FK to reject a membership row for a nonexistent sleeve")

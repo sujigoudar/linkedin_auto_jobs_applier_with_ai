@@ -149,6 +149,21 @@ class InboxEvent(Base):
     snapshot_page_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     snapshot_cutoff_sequence: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
+    #: INT-027 "All permitted source outcomes reach research": set ONLY on
+    #: a `SOURCE_RECEIPT` row, once a real, later, correlated
+    #: `ROUTING_ADMISSION_OUTCOME` event for the SAME signal has been
+    #: applied -- the real routing/admission/fill outcome signal-copier's
+    #: own `app/engine.py` reached for it (one of
+    #: `signal_platform_contracts.payloads._KNOWN_ROUTING_OUTCOMES`, e.g.
+    #: "admitted_filled", "rejected", "not_routed" -- see that tuple's own
+    #: comment for exactly which INT-027-requested categories this build
+    #: can and cannot produce). `None` until that follow-up event arrives
+    #: and applies -- never guessed from this row's own disposition alone
+    #: (app/services/source_coverage.py's own module docstring used to
+    #: name this exact gap before this column existed). NULL for every
+    #: non-`SOURCE_RECEIPT` row.
+    routing_outcome: Mapped[str | None] = mapped_column(String, nullable=True)
+
     __table_args__ = (
         #: Scoped to (source_stream, producer_generation, export_sequence)
         #: -- NOT (source_stream, export_sequence) alone -- because

@@ -1,27 +1,31 @@
 """End-to-end tests (through the real engine/reconciler path, not a
-hand-constructed shortcut) for two confirmed bugs in how a PENDING order's
-optimistic effect gets reconciled against its later-confirmed outcome:
+hand-constructed shortcut) for how a PENDING order's tracked position
+effect gets reconciled against its later-confirmed outcome.
 
-1. Plain accounts: `SignalCopierEngine` applied an optimistic quantity to
-   `SignalStore.positions` (via `record_fill`) but persisted the *broker's*
-   raw `filled_quantity` (often `None` for a genuine PENDING response) into
-   the `orders` row. `OrderReconciler._correct_position` then used that
-   `None` (read back as 0.0) as its baseline, so confirming the real fill
-   later added the confirmed quantity a SECOND time on top of what was
-   already optimistically applied -- a real double-count, not merely a
-   theoretical one (see the deliberately-broken run this file's git history
-   would show if `applied_quantity` were removed from
-   `SignalStore.save_order_result`'s call sites in app/engine.py).
+AUD-01 (this pass): plain accounts used to apply an OPTIMISTIC quantity to
+`SignalStore.positions` (via `record_fill`) at placement time -- the full
+requested quantity, guessed before the broker confirmed anything -- while
+persisting the broker's raw `filled_quantity` (often `None` for a genuine
+PENDING response) into the `orders` row. That is no longer this codebase's
+behavior: `SignalCopierEngine` now leaves `positions.net_quantity` (i.e.
+`actual_remaining_ownership`) UNCHANGED for a PENDING order with nothing
+confirmed yet, and tracks the full requested quantity only as
+`outstanding_possible_fill` -- genuine uncertain exposure, never applied to
+the position. `OrderReconciler._correct_position` still applies the
+confirmed delta once the broker's real answer is known; with nothing
+optimistically pre-applied, that delta is simply the full confirmed
+quantity (not a "true-up" of an inflated guess) -- see this file's own
+tests below for the corrected shape of "not double-counted" and "trues up
+correctly."
 
-2. Managed-lifecycle accounts: a PENDING entry called `record_fill` with
-   the FULL requested quantity but never called `on_entry_fill`, so the
-   position was recorded as owned while genuinely having NO protective
-   stop -- and nothing ever resolved that gap. `PendingEntry` +
-   `PositionLifecycleManager.register_pending_entry`/`resolve_pending_entry`
-   (mirroring the existing `PendingExit` machinery) close it: the
-   optimistic guess isn't applied until the broker's real answer is known,
-   and only then is the CONFIRMED quantity (which may be less than
-   requested) protected.
+Managed-lifecycle accounts: a PENDING entry called `record_fill` with the
+FULL requested quantity but never called `on_entry_fill`, so the position
+was recorded as owned while genuinely having NO protective stop -- and
+nothing ever resolved that gap. `PendingEntry` +
+`PositionLifecycleManager.register_pending_entry`/`resolve_pending_entry`
+(mirroring the existing `PendingExit` machinery) close it: the optimistic
+guess isn't applied until the broker's real answer is known, and only then
+is the CONFIRMED quantity (which may be less than requested) protected.
 """
 import pytest
 
@@ -88,21 +92,27 @@ async def test_plain_account_pending_entry_confirmed_at_same_quantity_is_not_dou
 
     await engine.handle_signal(Signal(source="tv", symbol="AAPL", side=Side.BUY, quantity=10.0))
 
-    assert store.get_position("acct1", "AAPL") == 10.0  # optimistic
+    # AUD-01: nothing confirmed yet -- actual_remaining_ownership must not
+    # move for a merely-PENDING order.
+    assert store.get_position("acct1", "AAPL") == 0.0
     pending_rows = store.list_pending_orders()
     assert len(pending_rows) == 1
-    # The critical assertion: the stored row's filled_quantity must reflect
-    # what was actually APPLIED (10.0), not the broker's raw None.
-    assert pending_rows[0]["filled_quantity"] == 10.0
+    # The stored row's filled_quantity must reflect what was actually
+    # APPLIED (nothing -- None), not an optimistic guess.
+    assert pending_rows[0]["filled_quantity"] is None
+    # The full requested quantity is tracked as outstanding_possible_fill.
+    assert store.get_outstanding_possible_fill("acct1") == {"AAPL": 10.0}
 
     broker.script_terminal_result("order-1", status=OrderStatus.FILLED, filled_quantity=10.0)
     reconciler = OrderReconciler(store, {"paper": broker})
     corrected = await reconciler.reconcile_once()
 
     assert corrected == 1
-    # Must stay at 10.0 -- the confirmed 10.0 must NOT be added on top of the
-    # already-applied optimistic 10.0 (which would wrongly produce 20.0).
+    # The confirmed fill is applied exactly once, from a zero baseline (no
+    # optimistic pre-application to double up on).
     assert store.get_position("acct1", "AAPL") == 10.0
+    # And the outstanding exposure clears now that the order is terminal.
+    assert store.get_outstanding_possible_fill("acct1") == {}
 
 
 @pytest.mark.asyncio
@@ -113,14 +123,16 @@ async def test_plain_account_pending_entry_confirmed_at_lower_quantity_trues_up_
     engine = SignalCopierEngine(routing=routing, brokers={"paper": broker}, store=store)
 
     await engine.handle_signal(Signal(source="tv", symbol="AAPL", side=Side.BUY, quantity=10.0))
-    assert store.get_position("acct1", "AAPL") == 10.0  # optimistic guess
+    # AUD-01: nothing confirmed yet -- position stays flat, not an
+    # optimistic 10.0 guess.
+    assert store.get_position("acct1", "AAPL") == 0.0
 
     broker.script_terminal_result("order-1", status=OrderStatus.FILLED, filled_quantity=6.0)
     reconciler = OrderReconciler(store, {"paper": broker})
     await reconciler.reconcile_once()
 
-    # Only actually filled 6 of the requested 10 -- position must true up to
-    # 6.0, not stay at 10.0 and not become 16.0.
+    # Only actually filled 6 of the requested 10 -- position must land at
+    # exactly the confirmed 6.0 (applied once, from a zero baseline).
     assert store.get_position("acct1", "AAPL") == 6.0
 
 

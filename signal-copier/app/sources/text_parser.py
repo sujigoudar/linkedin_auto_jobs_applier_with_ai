@@ -32,14 +32,30 @@ _SIDE_ALIASES = {
     "exit": Side.CLOSE,
 }
 
+#: SIG-XX (this pass): a bare `-?\d+(?:\.\d+)?` stops matching at the first
+#: character it doesn't recognize -- for "1,000" that means it captures
+#: only "1" and leaves ",000" dangling in the surrounding text, unmatched
+#: and silently discarded. That isn't "1,000" parsed as one lot, it's a
+#: 1000x undersized (or, if the trader meant a European decimal comma,
+#: differently-wrong) quantity slipping through as a clean PARSED result.
+#: Capture the WHOLE digit run (comma included) so classify_text_signal
+#: can see the comma and refuse the message outright -- a comma inside a
+#: number is inherently ambiguous between a thousands separator ("1,000"
+#: = one thousand) and a decimal separator ("1,5" = one and a half) with
+#: no locale hint anywhere in this free-text grammar, so guessing either
+#: reading risks silently sizing an order 1000x off. Refuse rather than
+#: guess, same as every other ambiguity this parser already declines to
+#: resolve.
+_NUMBER = r"-?\d[\d,]*(?:\.\d+)?"
+
 _PATTERN = re.compile(
     r"""
     (?P<side>buy|sell|long|short|close|exit)\s+
     (?P<symbol>[A-Za-z0-9/.\-]+)
-    (?:\s+(?P<quantity>-?\d+(?:\.\d+)?)\s*(?:lots?|units?|shares?)?)?
-    (?:\s*@\s*(?P<price>-?\d+(?:\.\d+)?))?
-    (?:.*?\bSL[:=]?\s*(?P<sl>-?\d+(?:\.\d+)?))?
-    (?:.*?\bTP[:=]?\s*(?P<tp>-?\d+(?:\.\d+)?))?
+    (?:\s+(?P<quantity>""" + _NUMBER + r""")\s*(?:lots?|units?|shares?)?)?
+    (?:\s*@\s*(?P<price>""" + _NUMBER + r"""))?
+    (?:.*?\bSL[:=]?\s*(?P<sl>""" + _NUMBER + r"""))?
+    (?:.*?\bTP[:=]?\s*(?P<tp>""" + _NUMBER + r"""))?
     """,
     re.IGNORECASE | re.VERBOSE | re.DOTALL,
 )
@@ -235,11 +251,27 @@ def classify_text_signal(
 
     for field in ("quantity", "price", "sl", "tp"):
         raw = match.group(field)
-        if raw is not None and raw.startswith("-"):
+        if raw is not None and (raw.startswith("-") or float(raw.replace(",", "")) == 0):
+            # A quantity, price, or stop/target level of zero (or less) is
+            # never a valid trade instruction -- app/sources/webhook.py's
+            # JSON ingestion path already enforces exactly this ("must be
+            # greater than zero") for the same fields; this text grammar
+            # used to let a literal "0" through as a clean PARSED result
+            # with no such check.
             return MessageDisposition(
                 text=text,
                 outcome=DispositionOutcome.MISSING_DATA,
-                detail=f"'{field}' must not be negative, got {raw!r}",
+                detail=f"'{field}' must be greater than zero, got {raw!r}",
+            )
+        if raw is not None and "," in raw:
+            # A comma inside a number is ambiguous (thousands separator vs.
+            # decimal separator) with no locale hint in free text -- see
+            # _NUMBER's comment above. Refuse instead of guessing which
+            # reading the trader meant.
+            return MessageDisposition(
+                text=text,
+                outcome=DispositionOutcome.MISSING_DATA,
+                detail=f"'{field}' has an ambiguous comma-separated number, got {raw!r}",
             )
 
     side = _SIDE_ALIASES[match.group("side").lower()]

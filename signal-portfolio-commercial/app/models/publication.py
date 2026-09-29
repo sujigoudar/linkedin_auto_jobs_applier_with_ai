@@ -95,6 +95,13 @@ class PublicationIntent(Base):
     )
 
     intent_id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    #: A database-level RLS backstop (ADR-0001), not this table's own
+    #: scoping mechanism -- every query still scopes correctly via an
+    #: inner join through `PortfolioVersion` (which IS tenant-scoped),
+    #: e.g. app/services/publication_admin.py, customer_alerts.py,
+    #: operations_overview.py. Backfilled from that same join path by
+    #: alembic/versions/85f9e0e6c123_publication_intent_and_sleeve_tenant_id.py.
+    tenant_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
     environment: Mapped[Environment] = mapped_column(Enum(Environment, native_enum=False), nullable=False)
     portfolio_version_id: Mapped[str] = mapped_column(String, nullable=False)
     episode_id: Mapped[str] = mapped_column(String, nullable=False)
