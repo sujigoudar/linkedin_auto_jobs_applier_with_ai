@@ -105,16 +105,20 @@ def test_post_qualifications_rejects_ladder_skip(client):
 
 
 def test_post_qualifications_rejects_asset_class_the_adapter_cannot_trade(client):
-    """CCXTBroker declares supported_asset_classes = {crypto} -- an
-    equity route on it must be rejected outright, never recorded."""
+    """AlpacaBroker declares supported_asset_classes = {equity} -- a
+    crypto route on it must be rejected outright, never recorded. Uses
+    Alpaca rather than CCXT here since AlpacaBroker has no optional
+    third-party dependency and is always registered, unlike CCXTBroker
+    (see tests/test_route_qualification.py's own ccxt-specific tests,
+    which use pytest.importorskip("ccxt"))."""
     with client:
         resp = client.post(
             "/qualifications",
             json={
-                "adapter_type": "ccxt",
-                "route_key": "ccxt_binance",
-                "asset_class": "equity",
-                "product_type": "cash_equity",
+                "adapter_type": "alpaca",
+                "route_key": "alpaca_main",
+                "asset_class": "crypto",
+                "product_type": "spot",
                 "state": "implemented",
             },
         )

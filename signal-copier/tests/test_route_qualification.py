@@ -227,5 +227,6 @@ def test_ccxt_broker_class_itself_has_real_feedback_channel_for_the_gate():
     feedback channel (unlike SignalStack) -- account_entitled is reachable
     for a CCXT route once the ladder below it is honestly achieved, which
     is exactly what the previous test exercises with supports_feedback=True."""
+    pytest.importorskip("ccxt")  # optional dependency -- not installed in CI (see requirements.txt)
     broker = CCXTBroker()
     assert broker.has_account_order_position_feedback is True
