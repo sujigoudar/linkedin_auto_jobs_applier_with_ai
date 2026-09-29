@@ -59,6 +59,55 @@
  *     and app/capital_allocator.py's reservations are process-internal,
  *     not surfaced via any GET endpoint -- there is no real utilization
  *     ratio to compute a heatmap cell from.
+ *
+ * Phase B8 (additive, new "Risk" panel -- p09 -- everything above this
+ * point is unchanged Phase B1 content):
+ *   - Rolling volatility / Sharpe-equivalent / Sortino-equivalent / max
+ *     drawdown (+ duration): real, per account, from
+ *     GET /accounts/{id}/statistics (app/statistics.py, Phase A5 --
+ *     already landed, already enforces its own honest minimum-sample
+ *     thresholds). Every field renders "n/a" -- NEVER a fabricated 0 --
+ *     exactly when that endpoint itself returns `null` for that field,
+ *     because the account's real snapshot history is too short. This
+ *     view does not re-implement or second-guess A5's thresholds; it
+ *     only renders whatever the endpoint honestly reports.
+ *   - Sharpe-equivalent / Sortino-equivalent are labeled EXACTLY as A5
+ *     itself labels them (see app/statistics.py's own docstring: implicit
+ *     zero risk-free rate, since this codebase stores no risk-free-rate
+ *     figure anywhere -- never presented as a real "Sharpe ratio").
+ *   - Cross-account correlation: real Pearson correlation per real
+ *     account pair, from GET /accounts/correlation (app/statistics.py's
+ *     `compute_pairwise_correlation`, Phase A5) -- "n/a" when that pair
+ *     has fewer than `MIN_CORRELATION_SAMPLES` real overlapping equity
+ *     snapshots (the endpoint's own honest floor), never a fabricated
+ *     0/NaN-as-zero. Only rendered when 2+ accounts exist (a single
+ *     account has no pair to correlate against).
+ *
+ * Deliberately NOT built in Phase B8 -- two DIFFERENT reasons, worth
+ * telling apart for anyone later deciding whether/how to merge branches:
+ *   - VaR / Expected Shortfall: NO REAL DATA MODEL EXISTS ANYWHERE IN
+ *     THIS CODEBASE for either. Both need a real returns/P&L-delta
+ *     DISTRIBUTION model (a real historical or parametric distribution
+ *     to take a real quantile of) -- this build has only the same raw
+ *     `cumulative_pnl` snapshot series app/statistics.py already exposes
+ *     as mean/stdev, and no VaR/ES computation of any kind anywhere in
+ *     this repo to reuse. Building one from scratch for this panel would
+ *     be inventing a whole new statistical model, not charting an
+ *     existing real figure -- out of scope for an additive dashboard
+ *     slice.
+ *   - Real-time drawdown circuit-breaker state (PAUSE_NEW_ENTRIES /
+ *     REQUIRE_REVIEW) and persisted placement-rate-limit headroom: THESE
+ *     ARE REAL AND ALREADY BUILT, but on a SEPARATE, NOT-YET-MERGED
+ *     branch (`claude/signal-copier-safety-features` --
+ *     app/drawdown_governor.py, app/placement_rate_limiter.py). That
+ *     branch does not exist on this one; `import app.drawdown_governor`
+ *     or `app.placement_rate_limiter` would 404/ImportError here. This is
+ *     a deliberate separate integration decision (see this batch's task
+ *     brief), not a data gap -- do not build a placeholder panel that
+ *     assumes either module's state.
+ *   - Liquidity-risk heatmap: NO REAL DATA MODEL EXISTS ANYWHERE IN THIS
+ *     CODEBASE -- no bid/ask spread, order-book depth, or any other
+ *     liquidity figure is tracked or exposed by any endpoint.
  */
 (function () {
   "use strict";
@@ -73,6 +122,7 @@
       <section class="tr-panel" id="tr01-p06"><h2>Recent activity</h2><div class="tr-panel-body"></div></section>
       <section class="tr-panel" id="tr01-p07"><h2>Open positions</h2><div class="tr-panel-body"></div></section>
       <section class="tr-panel" id="tr01-p08"><h2>Allocation</h2><div class="tr-panel-body"></div></section>
+      <section class="tr-panel" id="tr01-p09"><h2>Risk</h2><div class="tr-panel-body"></div></section>
     `;
   }
 
@@ -130,6 +180,33 @@
     return kept;
   }
 
+  // Renders a statistics field EXACTLY as GET /accounts/{id}/statistics
+  // reports it -- `pill("n/a", "muted")` when the backend itself sent
+  // `null` (insufficient real sample history, per app/statistics.py's own
+  // documented thresholds), NEVER a fabricated 0/"—". This is the
+  // load-bearing rendering rule for the whole Risk panel: no default-to-
+  // zero fallback anywhere below.
+  function statVal(v) {
+    return v === null || v === undefined ? pill("n/a", "muted") : fmtNum(v);
+  }
+
+  // Real wall-clock drawdown duration (seconds -> "Xd Yh Zm"), honoring
+  // the same null-means-unsupported rule as statVal above.
+  function fmtDuration(seconds) {
+    if (seconds === null || seconds === undefined) return pill("n/a", "muted");
+    let s = Math.round(seconds);
+    const days = Math.floor(s / 86400);
+    s -= days * 86400;
+    const hours = Math.floor(s / 3600);
+    s -= hours * 3600;
+    const minutes = Math.floor(s / 60);
+    const parts = [];
+    if (days) parts.push(`${days}d`);
+    if (hours || days) parts.push(`${hours}h`);
+    parts.push(`${minutes}m`);
+    return parts.join(" ");
+  }
+
   const donutCharts = {}; // canvasId -> live Chart.js instance (destroy-and-recreate)
 
   function renderDonut(container, canvasId, entries, colorFn, totalLabel) {
@@ -185,6 +262,7 @@
       activity: ctx.container.querySelector("#tr01-p06 .tr-panel-body"),
       openPositions: ctx.container.querySelector("#tr01-p07 .tr-panel-body"),
       allocation: ctx.container.querySelector("#tr01-p08 .tr-panel-body"),
+      risk2: ctx.container.querySelector("#tr01-p09 .tr-panel-body"),
     };
     for (const el of Object.values(panelEls)) StateMatrix.render(el, { state: "loading" });
 
@@ -420,6 +498,86 @@
         renderDonut(panelEls.allocation, "tr01-donut-assetclass", assetClassEntries, (label) => ASSET_CLASS_COLOR[label] || DONUT_OTHER_COLOR, "open positions");
         renderDonut(panelEls.allocation, "tr01-donut-broker", brokerEntries, (label) => stableColor(brokerColors, label), "open positions");
         renderDonut(panelEls.allocation, "tr01-donut-account", accountEntries, (label) => stableColor(accountColors, label), "open positions");
+      }
+    }
+
+    // --- Risk panel (Phase B8): rolling volatility/Sharpe-equivalent/
+    // Sortino-equivalent/max-drawdown per account (GET
+    // /accounts/{id}/statistics) + cross-account correlation (GET
+    // /accounts/correlation) -- both real, from app/statistics.py (Phase
+    // A5, already landed). Reuses accountsRes, already fetched above. ---
+    if (accountsRes.status === 401 || accountsRes.status === 403) {
+      StateMatrix.render(panelEls.risk2, { state: "denied", deniedCode: accountsRes.status });
+    } else if (!accountsRes.ok) {
+      StateMatrix.render(panelEls.risk2, { state: "error", message: "Could not load accounts." });
+    } else {
+      const accounts = (accountsRes.data && accountsRes.data.accounts) || [];
+      if (!accounts.length) {
+        StateMatrix.render(panelEls.risk2, {
+          state: "empty",
+          emptyMessage: "No brokerage account is configured for this workspace.",
+        });
+      } else {
+        const statsResList = await Promise.all(
+          accounts.map((a) => ctx.fetchJSON(`/accounts/${encodeURIComponent(a.account_id)}/statistics`))
+        );
+        const statsDegraded = statsResList.some((r) => !r.ok);
+
+        const statsRows = accounts.map((a, i) => {
+          const r = statsResList[i];
+          const s = r.ok ? r.data : null;
+          if (!s) {
+            return [`<span class="mono">${escapeHtml(a.account_id)}</span>`, pill("unknown", "muted"), pill("unknown", "muted"), pill("unknown", "muted"), pill("unknown", "muted"), pill("unknown", "muted")];
+          }
+          return [
+            `<span class="mono">${escapeHtml(a.account_id)}</span>`,
+            statVal(s.volatility_pnl_delta),
+            statVal(s.sharpe_equivalent),
+            statVal(s.sortino_equivalent),
+            statVal(s.max_drawdown),
+            fmtDuration(s.max_drawdown_duration_seconds),
+          ];
+        });
+
+        let correlationHtml = "";
+        if (accounts.length >= 2) {
+          const pairs = [];
+          for (let i = 0; i < accounts.length; i++) {
+            for (let j = i + 1; j < accounts.length; j++) {
+              pairs.push([accounts[i].account_id, accounts[j].account_id]);
+            }
+          }
+          const corrResList = await Promise.all(
+            pairs.map(([a, b]) => ctx.fetchJSON(`/accounts/correlation?account_a=${encodeURIComponent(a)}&account_b=${encodeURIComponent(b)}`))
+          );
+          const corrDegraded = corrResList.some((r) => !r.ok);
+          const corrRows = pairs.map(([a, b], i) => {
+            const r = corrResList[i];
+            const c = r.ok ? r.data : null;
+            return [
+              `<span class="mono">${escapeHtml(a)}</span>`,
+              `<span class="mono">${escapeHtml(b)}</span>`,
+              c ? fmtNum(c.sample_count) : pill("unknown", "muted"),
+              c ? statVal(c.correlation) : pill("unknown", "muted"),
+            ];
+          });
+          correlationHtml = `
+            <h3 class="section-note" style="margin-top:16px;">Cross-account correlation</h3>
+            <p class="section-note">Real Pearson correlation of each account pair's real cumulative_pnl snapshot series (GET /accounts/correlation), matched by overlapping capture time. "n/a" when a pair has fewer than the endpoint's own documented minimum overlapping-sample floor -- never a fabricated 0/NaN.</p>
+            ${corrDegraded ? `<p class="tr-unsupported-note">Correlation is degraded for one or more pairs this refresh -- could not reach GET /accounts/correlation.</p>` : ""}
+            <div id="tr01-risk-correlation-wrap">${table(["Account A", "Account B", "Overlapping samples", "Correlation"], corrRows, "No account pairs.")}</div>`;
+        } else {
+          correlationHtml = `<p class="section-note">Cross-account correlation needs at least 2 accounts to form a pair -- only ${accounts.length} account configured.</p>`;
+        }
+
+        StateMatrix.render(panelEls.risk2, {
+          state: "ready",
+          html: `<p class="section-note">Real, per-account statistics from GET /accounts/{id}/statistics (app/statistics.py, Phase A5), computed from this account's real persisted cumulative_pnl snapshot series -- absolute P&amp;L-delta terms, never a percentage return (this codebase has no configured per-account starting-balance/capital figure to divide by). Sharpe-equivalent/Sortino-equivalent use an implicit risk-free rate of 0 (no risk-free-rate figure is stored anywhere in this codebase) and are labeled "equivalent," never a real Sharpe/Sortino ratio. "n/a" means the backend itself returned null because this account's real snapshot history is too short for that statistic -- never a fabricated 0.</p>
+                 ${statsDegraded ? `<p class="tr-unsupported-note">Statistics are degraded for one or more accounts this refresh -- could not reach GET /accounts/{id}/statistics.</p>` : ""}
+                 <div id="tr01-risk-stats-wrap">${table(["Account", "Volatility (P&amp;L delta)", "Sharpe-equivalent", "Sortino-equivalent", "Max drawdown", "Max drawdown duration"], statsRows, "No accounts.")}</div>
+                 ${correlationHtml}
+                 <div class="tr-unsupported-note">Not built here -- Value-at-Risk / Expected Shortfall: no real returns-distribution model exists anywhere in this codebase to take a real quantile of. Risk-limit-utilization / drawdown-circuit-breaker state (PAUSE_NEW_ENTRIES/REQUIRE_REVIEW) and persisted placement-rate-limit headroom: these are real and already built, but on a separate, not-yet-merged branch (app/drawdown_governor.py, app/placement_rate_limiter.py on claude/signal-copier-safety-features) -- not available on this branch. Liquidity-risk heatmap: no real liquidity data (spread, order-book depth) exists anywhere in this codebase.</div>`,
+        });
       }
     }
 
