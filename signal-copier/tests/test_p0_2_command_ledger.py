@@ -296,6 +296,96 @@ def test_ambiguous_broker_exception_lands_the_ledger_row_in_unknown_ambiguous(st
     assert ledger_key in unresolved_keys
 
 
+def test_classify_cancel_result_false_is_unknown_ambiguous_not_rejected():
+    """`BrokerAdapter.cancel_order`'s own docstring: False means "isn't
+    supported or confirmed", which covers both "definitely never
+    cancelled" AND "may have already filled just before the cancel
+    landed" -- classify_cancel_result(False) must stay UNKNOWN_AMBIGUOUS,
+    never REJECTED_CONFIRMED (which would claim more certainty than the
+    broker actually gave) and never CONFIRMED."""
+    state, evidence = command_ledger.classify_cancel_result(False)
+    assert state == UncertaintyState.UNKNOWN_AMBIGUOUS
+    assert evidence == {"broker_status": "cancel_not_confirmed"}
+
+
+def test_classify_cancel_result_true_is_confirmed():
+    state, evidence = command_ledger.classify_cancel_result(True)
+    assert state == UncertaintyState.CONFIRMED
+    assert evidence == {"broker_status": "cancelled"}
+
+
+def test_ledgered_cancel_order_with_an_unconfirmed_cancel_lands_the_ledger_row_in_unknown_ambiguous(store):
+    """End-to-end through the real call site --
+    PositionLifecycleManager._ledgered_cancel_order -- previously entirely
+    untested for the `cancelled=False` outcome (see
+    app/command_ledger.py's own `classify_cancel_result` line coverage):
+    a broker reporting "not confirmed" must leave the command_ledger entry
+    UNKNOWN_AMBIGUOUS, not silently resolved either way."""
+    from app.lifecycle.manager import PositionLifecycleManager
+
+    signal_store, _ = store
+
+    class _UnconfirmedCancelBroker(BrokerAdapter):
+        name = "unconfirmed_cancel"
+
+        async def place_order(self, signal, account, quantity, symbol):
+            raise NotImplementedError
+
+        async def cancel_order(self, account, broker_order_id):
+            return False  # "isn't supported or confirmed"
+
+    broker = _UnconfirmedCancelBroker()
+    manager = PositionLifecycleManager(brokers={"unconfirmed_cancel": broker}, store=signal_store)
+    account = DestinationAccount(account_id="acct1", broker="unconfirmed_cancel")
+
+    cancelled = asyncio.run(
+        manager._ledgered_cancel_order(broker, account, "AAPL", "stop-order-1", source="test")
+    )
+
+    assert cancelled is False
+    unresolved = signal_store.list_unresolved_command_ledger_entries("acct1")
+    matching = [e for e in unresolved if e.idempotency_key.startswith("cancel:acct1:AAPL:stop-order-1:")]
+    assert len(matching) == 1
+    assert matching[0].uncertainty_state == UncertaintyState.UNKNOWN_AMBIGUOUS
+    assert matching[0].terminal_evidence == {"broker_status": "cancel_not_confirmed"}
+    assert matching[0].resolved_at is None  # genuinely unresolved, not a terminal state
+
+
+def test_ledgered_cancel_order_with_a_confirmed_cancel_lands_the_ledger_row_in_confirmed(store):
+    """The complementary, resolved case -- proves the test above isn't
+    just asserting 'always unresolved'."""
+    from app.lifecycle.manager import PositionLifecycleManager
+
+    signal_store, _ = store
+
+    class _ConfirmedCancelBroker(BrokerAdapter):
+        name = "confirmed_cancel"
+
+        async def place_order(self, signal, account, quantity, symbol):
+            raise NotImplementedError
+
+        async def cancel_order(self, account, broker_order_id):
+            return True
+
+    broker = _ConfirmedCancelBroker()
+    manager = PositionLifecycleManager(brokers={"confirmed_cancel": broker}, store=signal_store)
+    account = DestinationAccount(account_id="acct2", broker="confirmed_cancel")
+
+    cancelled = asyncio.run(
+        manager._ledgered_cancel_order(broker, account, "MSFT", "stop-order-2", source="test")
+    )
+
+    assert cancelled is True
+    all_entries_key_prefix = "cancel:acct2:MSFT:stop-order-2:"
+    matching_keys = [
+        e.idempotency_key
+        for e in signal_store.list_unresolved_command_ledger_entries("acct2")
+        if e.idempotency_key.startswith(all_entries_key_prefix)
+    ]
+    # CONFIRMED is terminal -- it must NOT still appear in the unresolved set.
+    assert matching_keys == []
+
+
 def test_entry_command_ledger_confirms_on_a_real_fill(store):
     signal_store, _ = store
     broker = PaperBroker()
