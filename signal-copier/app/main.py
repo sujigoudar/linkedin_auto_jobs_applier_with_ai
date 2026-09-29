@@ -64,7 +64,7 @@ from app.metrics import render_metrics
 from app.errors import SignalValidationError
 from app.lifecycle.manager import PositionLifecycleManager
 from app.lifecycle.models import ProtectionStatus
-from app.models import AccountBalance, AssetClass
+from app.models import AccountBalance, AssetClass, Side, Signal
 from app.pricing import PriceMonitor
 from app.providers import SettingsOverride, load_provider_registry_from_store
 from app.provider_scout import ProviderScout
@@ -78,7 +78,8 @@ from app.services.catalog_fit_sim_auth import (
     StaleCatalogFitSimTimestampError,
     verify_catalog_fit_sim_signature,
 )
-from app.routing import load_routing_config_from_store
+from app.risk import symbol_for_account
+from app.routing import RoutingConfig, RoutingRule, load_routing_config_from_store
 from app.sources.text_parser import classify_batch
 from app.sources.discord import DiscordSource
 from app.sources.mt4_mt5 import MetaApiSource
@@ -1515,6 +1516,291 @@ async def delete_routing_rule(rule_id: int, _owner: dict = Depends(require_owner
     store.delete_config_routing_rule(rule_id)
     _reload_routing_config()
     return {"id": rule_id, "status": "deleted"}
+
+
+class RoutingSimulateRequest(BaseModel):
+    source: str
+    symbol: str
+    side: str = "buy"
+    asset_class: AssetClass = AssetClass.CRYPTO
+    analyst: str | None = None
+    quantity: float | None = None
+    price: float | None = None
+
+
+@app.post("/routing-rules/simulate")
+async def simulate_routing_rules(request: RoutingSimulateRequest, _owner: dict = Depends(require_owner_read)) -> dict:
+    """TR-11 "if this signal arrived now, what would happen" dry run.
+
+    Never ingests a signal (no `store.save_signal`), never places an
+    order, never touches `positions`/`orders`, and leaves the capital
+    allocator's real in-memory reservation ledger exactly as it found it
+    (see the capital_reservation block below) -- same "no side effects"
+    guarantee `POST /sources/{x}/classify-messages` already makes for its
+    own sandbox.
+
+    Every check below reuses the EXACT real function the engine calls at
+    real signal-ingestion time, never a client-side or server-side
+    reimplementation that could drift from it:
+    - rule matching/precedence/dedup: `RoutingConfig.evaluate` (app/
+      routing.py) -- the same code `destinations_for` (and therefore
+      `app/engine.py`'s `_handle_signal`) calls for every real signal.
+    - provider/analyst entry-admission override: `engine._effective_settings`
+      (app/providers.py's `ProviderRegistry.effective_settings`) -- the
+      exact same account->provider->analyst merge a real signal resolves.
+    - broker/asset-class admission: `broker.can_trade_asset_class` -- the
+      same registered broker adapter instance the engine itself holds.
+    - capital reservation: `engine._try_reserve_capital`, the same method
+      `_handle_signal` calls immediately before submitting to the broker,
+      called for real here too (so it reads this account's real confirmed
+      exposure and the real shared `CapitalAllocator`'s real current
+      pending-reservation state) -- but any reservation it makes is
+      released immediately after (`capital_allocator.release`), before
+      this request returns, so this dry run never leaves a phantom
+      reservation behind for a real signal arriving moments later to
+      collide with.
+
+    Deduplication (SIG-01's `handle_signal`-level replay guard, and the
+    webhook route's own `Idempotency-Key`/event-id cache) is deliberately
+    NOT evaluated here -- both are real mechanisms, but both key off a
+    real prior delivery (an existing `signals.id` already processed, or a
+    cache entry for a real previously-seen webhook key/event id) that a
+    hypothetical signal invented for this dry run has no counterpart to.
+    Guessing an answer for it would be worse than admitting there's
+    nothing real to check -- see `deduplication` in the response, a
+    `Components.renderCapabilityState('not_tracked', ...)` case.
+    """
+    try:
+        side = Side(request.side.strip().lower())
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"invalid side '{request.side}' (must be buy, sell or close)")
+
+    include_disabled = side == Side.CLOSE
+    destinations, trace = routing_config.evaluate(request.source, request.symbol, include_disabled=include_disabled)
+
+    # Same real DB row order `_reload_routing_config` populated
+    # `routing_config.rules` from (see app/routing.py's
+    # `load_routing_config_from_store` and this file's own docstring on
+    # "DB insertion/id order") -- zipped by position only to label each
+    # trace entry with its real rule id; the matching decision itself
+    # came entirely from `evaluate` above, never recomputed here.
+    rule_rows = store.list_config_routing_rules()
+    rules_out = []
+    for idx, entry in enumerate(trace):
+        rule = entry["rule"]
+        rule_id = rule_rows[idx]["id"] if idx < len(rule_rows) else None
+        row: dict[str, Any] = {
+            "id": rule_id,
+            "source": rule.source,
+            "destinations": rule.destinations,
+            "symbol_filter": rule.symbol_filter,
+            "matched": entry["matched"],
+        }
+        if entry["matched"]:
+            row["admitted_accounts"] = entry["admitted"]
+            row["deduped_accounts"] = entry["deduped"]
+            row["paused_accounts"] = entry["paused"]
+        else:
+            row["reason"] = entry["reason"]
+        rules_out.append(row)
+
+    synthetic_signal = Signal(
+        source=request.source,
+        symbol=request.symbol,
+        side=side,
+        asset_class=request.asset_class,
+        analyst=request.analyst,
+        quantity=request.quantity,
+        price=request.price,
+    )
+
+    accounts_out = []
+    final_destinations: list[str] = []
+    for account in destinations:
+        effective = engine._effective_settings(synthetic_signal, account)
+        entry_allowed = not (effective.enabled is False and side != Side.CLOSE)
+
+        broker = brokers.get(account.broker)
+        broker_registered = broker is not None
+        asset_class_ok = broker_registered and broker.can_trade_asset_class(request.asset_class)
+
+        capital_check: dict[str, Any]
+        capital_admitted = True
+        if side == Side.CLOSE:
+            capital_check = {
+                "status": "not_applicable",
+                "reason": "capital reservation (E03) only gates new entries -- a CLOSE signal is never admission-gated by it.",
+            }
+        elif account.managed_lifecycle:
+            capital_check = {
+                "status": "not_applicable",
+                "reason": "this account is managed_lifecycle -- the real engine routes its entries through PositionLifecycleManager, which never calls the capital allocator's admission gate at all.",
+            }
+        elif not (entry_allowed and broker_registered and asset_class_ok):
+            capital_check = {
+                "status": "not_applicable",
+                "reason": "this signal is already rejected before the real engine would reach the capital-admission step (see entry_admission/asset_class above).",
+            }
+        elif account.max_notional_exposure is None or request.price is None:
+            capital_check = {
+                "status": "skipped",
+                "reason": "no max_notional_exposure configured for this account, or the hypothetical signal has no price -- the real engine's own _try_reserve_capital skips this check the exact same way (see app/capital_allocator.py).",
+            }
+        else:
+            quantity = account.fixed_quantity if account.fixed_quantity is not None else (
+                (request.quantity if request.quantity is not None else 1.0) * account.multiplier
+            )
+            admitted, notional, rejection = await engine._try_reserve_capital(account, synthetic_signal, quantity)
+            if admitted:
+                # Real admit() really reserved `notional` against the real
+                # shared CapitalAllocator -- release it immediately so this
+                # dry run leaves the real in-memory ledger exactly as it
+                # found it (see this endpoint's own docstring).
+                engine.capital_allocator.release(account.account_id, notional)
+            capital_admitted = admitted
+            capital_check = {
+                "status": "would_admit" if admitted else "would_reject",
+                "requested_notional": notional,
+                "deployed_notional": confirmed_open_notional(store, account.account_id),
+                "reserved_notional": engine.capital_allocator.pending_reservation(account.account_id),
+                "max_notional_exposure": account.max_notional_exposure,
+                "reason": None if admitted else rejection.message if rejection else None,
+            }
+
+        would_receive = entry_allowed and broker_registered and asset_class_ok and capital_admitted
+        if would_receive:
+            final_destinations.append(account.account_id)
+
+        accounts_out.append({
+            "account_id": account.account_id,
+            "broker": account.broker,
+            "symbol_for_account": symbol_for_account(synthetic_signal, account),
+            "entry_admission": {
+                "status": "admitted" if entry_allowed else "rejected",
+                "effective_enabled": effective.enabled,
+                "reason": None if entry_allowed else "disabled at account/provider/analyst level (EXE-10) and this is not a CLOSE signal",
+            },
+            "asset_class_admission": {
+                "status": "admitted" if asset_class_ok else "rejected",
+                "reason": None if broker_registered and asset_class_ok else (
+                    f"no broker adapter registered for '{account.broker}'" if not broker_registered
+                    else f"broker '{account.broker}' cannot trade asset_class='{request.asset_class.value}'"
+                ),
+            },
+            "capital_reservation": capital_check,
+            "would_receive_this_signal": would_receive,
+        })
+
+    return {
+        "signal": {
+            "source": request.source,
+            "symbol": request.symbol,
+            "side": side.value,
+            "asset_class": request.asset_class.value,
+            "analyst": request.analyst,
+            "quantity": request.quantity,
+            "price": request.price,
+        },
+        "rules_evaluated": rules_out,
+        "accounts": accounts_out,
+        "deduplication": {
+            "status": "not_tracked",
+            "reason": (
+                "This engine's real dedup guards (SIG-01's handle_signal replay-by-signal-id, and the "
+                "webhook route's own Idempotency-Key/event-id response cache) both key off a real prior "
+                "delivery this hypothetical signal has no counterpart to -- there is nothing real to "
+                "evaluate for a dry run, so this is honestly not_tracked rather than guessed."
+            ),
+        },
+        "final_destinations": final_destinations,
+    }
+
+
+class PositionImpactRequest(BaseModel):
+    rule_id: int | None = None
+    source: str
+    destinations: list[str]
+    symbol_filter: list[str] | None = None
+
+
+@app.post("/routing-rules/position-impact")
+async def routing_rule_position_impact(request: PositionImpactRequest, _owner: dict = Depends(require_owner_read)) -> dict:
+    """TR-11's "existing positions vs future signals" check for a pending
+    routing-rule edit, computed for real from this store's own real open
+    positions and their real originating signal (never fabricated
+    example positions).
+
+    Builds one hypothetical `RoutingConfig` identical to the live one
+    except this one rule (`rule_id`, or a brand-new rule if omitted) is
+    replaced by the operator's pending, not-yet-saved field values, then
+    calls the SAME real `RoutingConfig.destinations_for` used at real
+    signal-ingestion time against both the live config and the
+    hypothetical one -- never a reimplemented approximation of what
+    routing would do.
+
+    A position is in scope for this rule's diff only if its most recent
+    real FILLED order's originating signal (`app/db.py`'s
+    `list_filled_orders_with_signal_chronological`, an existing
+    signal->order join, not a new query) came from this rule's `source` --
+    a position from a different provider was never routed by this rule
+    and saving this edit cannot change how it was already opened.
+    """
+    try:
+        pending_rule = RoutingRule(
+            source=request.source, destinations=request.destinations, symbol_filter=request.symbol_filter
+        )
+    except Exception as exc:  # noqa: BLE001 - surface a 400, not a 500, for a malformed pending rule
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    pending_rules: list[RoutingRule] = []
+    replaced = False
+    for row in store.list_config_routing_rules():
+        if request.rule_id is not None and row["id"] == request.rule_id:
+            pending_rules.append(pending_rule)
+            replaced = True
+        else:
+            pending_rules.append(RoutingRule(source=row["source"], destinations=row["destinations"], symbol_filter=row["symbol_filter"]))
+    if not replaced:
+        pending_rules.append(pending_rule)
+    pending_config = RoutingConfig(rules=pending_rules, accounts=routing_config.accounts)
+
+    # Real origin attribution: the most recent real FILLED order for each
+    # (account_id, symbol) this store has recorded, joined to its real
+    # originating signal's source/analyst -- never inferred or guessed.
+    origin_by_key: dict[tuple[str, str], dict] = {}
+    for fill in store.list_filled_orders_with_signal_chronological():
+        origin_by_key[(fill["account_id"], fill["symbol"])] = fill  # chronological asc -> last write is most recent
+
+    positions_out = []
+    for pos in store.list_open_positions():
+        origin = origin_by_key.get((pos["account_id"], pos["symbol"]))
+        if origin is None or origin["source"] != request.source:
+            continue  # not opened via this rule's source -- out of scope for this edit's diff
+
+        now_entry = any(a.account_id == pos["account_id"] for a in routing_config.destinations_for(request.source, pos["symbol"], include_disabled=False))
+        now_close = any(a.account_id == pos["account_id"] for a in routing_config.destinations_for(request.source, pos["symbol"], include_disabled=True))
+        pending_entry = any(a.account_id == pos["account_id"] for a in pending_config.destinations_for(request.source, pos["symbol"], include_disabled=False))
+        pending_close = any(a.account_id == pos["account_id"] for a in pending_config.destinations_for(request.source, pos["symbol"], include_disabled=True))
+
+        if now_close and not pending_close:
+            impact = "exit_path_removed"
+        elif now_entry != pending_entry:
+            impact = "future_entries_change"
+        else:
+            impact = "unaffected"
+
+        positions_out.append({
+            "account_id": pos["account_id"],
+            "symbol": pos["symbol"],
+            "net_quantity": pos["net_quantity"],
+            "origin_source": origin["source"],
+            "origin_analyst": origin["analyst"],
+            "would_route_now": {"entry": now_entry, "close": now_close},
+            "would_route_after_save": {"entry": pending_entry, "close": pending_close},
+            "impact": impact,
+        })
+
+    return {"source": request.source, "positions": positions_out}
 
 
 class ProviderRequest(BaseModel):
