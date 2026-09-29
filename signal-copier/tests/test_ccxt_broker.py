@@ -29,12 +29,14 @@ class _FakeExchange:
 
 @pytest.mark.asyncio
 async def test_stop_loss_and_take_profit_passed_as_unified_params_when_exchange_declares_support(broker):
-    """ADP-02: `stopLossPrice`/`takeProfitPrice` are ccxt's UNIFIED param
-    names, accepted syntactically by every exchange class whether or not
-    the venue actually honors them as a genuine attached bracket -- this
-    exchange declares real support via `exchange.has`, so the order goes
-    through with the (also unified, but the actual attached-bracket-named)
-    stopLoss/takeProfit params."""
+    """ADP-02: `stopLossPrice`/`takeProfitPrice` are ccxt's real unified
+    param names for an attached bracket (a bare `stopLoss`/`takeProfit`
+    float key is not read by e.g. Binance's own order-building code at
+    all, so an order sent that way is silently placed WITHOUT the
+    intended protection). This exchange declares real support via
+    `exchange.has`, so the order goes through carrying the correct
+    `stopLossPrice`/`takeProfitPrice` params -- the same names this
+    broker's own `place_protective_stop` already sends correctly."""
     fake = _FakeExchange(has={"createOrderWithTakeProfitAndStopLoss": True})
     broker._exchanges["acct1"] = fake
     account = DestinationAccount(account_id="acct1", broker="ccxt")
@@ -46,7 +48,7 @@ async def test_stop_loss_and_take_profit_passed_as_unified_params_when_exchange_
         symbol="BTC/USDT",
     )
 
-    assert fake.create_order_calls[0]["params"] == {"stopLoss": 63000.0, "takeProfit": 70000.0}
+    assert fake.create_order_calls[0]["params"] == {"stopLossPrice": 63000.0, "takeProfitPrice": 70000.0}
 
 
 @pytest.mark.asyncio

@@ -104,6 +104,20 @@ async def test_a_buy_signal_submits_a_buy_order_with_the_resolved_rithmic_accoun
 
 
 @pytest.mark.asyncio
+async def test_a_fractional_contract_quantity_is_rejected_not_silently_truncated():
+    """`int(quantity)` truncates toward zero with no warning at all -- a
+    computed size of 4.9 contracts must never quietly become 4. This
+    must be refused, not rounded."""
+    client = _FakeClient()
+    broker = _broker(client)
+
+    result = await broker.place_order(Signal("s", "ESZ5", Side.BUY), ACCOUNT, 4.9, "ESZ5")
+
+    assert result.status == OrderStatus.ERROR
+    assert client.submit_calls == []
+
+
+@pytest.mark.asyncio
 async def test_a_sell_signal_submits_a_sell_order_not_a_buy():
     client = _FakeClient()
     broker = _broker(client)

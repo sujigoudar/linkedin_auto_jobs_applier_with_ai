@@ -102,6 +102,12 @@ class RithmicBroker(BrokerAdapter):
                     message="exit_position submitted to Rithmic",
                 )
 
+            if not float(quantity).is_integer():
+                raise RuntimeError(
+                    f"Rithmic requires a whole-number contract quantity; refusing to silently "
+                    f"truncate {quantity!r}"
+                )
+
             order_id = f"sigcopier_{uuid.uuid4().hex[:12]}"
             transaction_type = (
                 self._TransactionType.BUY if signal.side.value == "buy" else self._TransactionType.SELL
