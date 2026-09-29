@@ -64,6 +64,21 @@ class MT5Broker(BrokerAdapter):
                 "MetaTrader5 package is not installed (Windows only); run `pip install MetaTrader5`"
             ) from exc
         self._mt5 = mt5
+        # CONC-01: the `MetaTrader5` package's initialize()/order_send()/
+        # shutdown() operate on ONE process-global terminal connection, not
+        # per-call or per-thread state -- but one MT5Broker instance serves
+        # every account configured with `broker: mt4_mt5` (see app/main.py's
+        # broker registry), and `_place_order_sync` runs in a real OS thread
+        # via `asyncio.to_thread`. Two orders for two DIFFERENT accounts
+        # submitted concurrently could interleave: thread A calls
+        # initialize(login=A), thread B calls initialize(login=B) (switching
+        # the one global terminal login to B), then thread A's order_send()
+        # actually submits under B's now-current session -- an order placed
+        # in the wrong live account. Serializing every place_order through
+        # this lock makes initialize -> order_send -> shutdown atomic across
+        # concurrent calls, which is what the underlying package's global,
+        # not-thread-safe state requires.
+        self._lock = asyncio.Lock()
 
     def _credentials_for(self, account: DestinationAccount) -> tuple[int, str, str]:
         prefix = f"MT5_{account.account_id.upper()}"
@@ -132,7 +147,11 @@ class MT5Broker(BrokerAdapter):
             )
 
         try:
-            result = await asyncio.to_thread(self._place_order_sync, signal, account, quantity, symbol)
+            # See CONC-01 in __init__: serialize the whole
+            # initialize/order_send/shutdown cycle across every account this
+            # single MT5Broker instance serves.
+            async with self._lock:
+                result = await asyncio.to_thread(self._place_order_sync, signal, account, quantity, symbol)
         except RuntimeError as exc:
             return OrderResult(
                 account_id=account.account_id,
