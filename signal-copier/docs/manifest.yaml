@@ -1,0 +1,220 @@
+# Machine-readable index of signal-copier's documentation set.
+#
+# Purpose: tell an agent (human or Claude) which doc to read before doing a
+# given kind of work, and which docs a given kind of change must update.
+# `read_when` triggers are keyed to the KIND of change, not a file path,
+# because the same subsystem is touched from several files (e.g. capital
+# admission logic lives in app/capital_allocator.py AND app/engine.py).
+#
+# This file is owned by the "foundation" documentation layer along with
+# CLAUDE.md, docs/architecture/*, docs/REPO_MAP.md, docs/GLOSSARY.md,
+# PROJECT_STATUS.yaml, and .agent/context-map.yaml. The other document
+# categories below (database, security, standards, testing, operations,
+# agents, state, adr, requirements, integrations, observability, process)
+# are written and maintained by separate, parallel documentation efforts;
+# this file indexes them so they discover each other, but does not itself
+# contain their content.
+
+version: 1
+
+documents:
+  architecture:
+    path: docs/architecture/ARCHITECTURE.md
+    read_when:
+      - adding a component or background loop
+      - modifying system boundaries
+      - changing how signal -> routing -> risk -> broker data flows
+      - onboarding to the codebase
+    update_when:
+      - a new component, background task, or major subsystem is added
+      - a data flow through the pipeline changes
+
+  system_context:
+    path: docs/architecture/SYSTEM_CONTEXT.md
+    read_when:
+      - adding or changing an external signal source integration
+      - adding or changing a broker/exchange integration
+      - changing what crosses the boundary to signal-portfolio-commercial
+    update_when:
+      - a new external actor (source, broker, or downstream platform) is added
+
+  components:
+    path: docs/architecture/COMPONENTS.md
+    read_when:
+      - locating which module owns a responsibility
+      - reviewing a change's blast radius before starting it
+    update_when:
+      - a module's public functions/classes change meaningfully
+
+  dependencies:
+    path: docs/architecture/DEPENDENCIES.md
+    read_when:
+      - adding a new internal import between subsystems
+      - adding or upgrading a third-party dependency in requirements.txt
+      - checking whether a change would create a circular dependency
+    update_when:
+      - requirements.txt changes
+      - a new cross-module dependency direction is introduced
+
+  data_flows:
+    path: docs/architecture/DATA_FLOWS.md
+    read_when:
+      - tracing a signal from ingestion to broker fill
+      - debugging where in the pipeline a value is set, lost, or overwritten
+      - adding a new pipeline stage (a new gate, a new ledger write)
+    update_when:
+      - the entry/close/exit sequence changes
+      - a new admission gate or ledger stage is inserted into the pipeline
+
+  repo_map:
+    path: docs/REPO_MAP.md
+    read_when:
+      - orienting in the repository for the first time
+      - looking for where a kind of file lives (tests, migrations, deploy)
+
+  glossary:
+    path: docs/GLOSSARY.md
+    read_when:
+      - encountering an unfamiliar domain term (managed lifecycle, writer
+        lease, command ledger, qualification ladder, quantity ledger, etc.)
+      - writing documentation or a commit message that uses a domain term
+
+  database:
+    path: docs/database/SCHEMA.md
+    read_when:
+      - changing persistence (app/db.py)
+      - writing a new Alembic migration
+      - modifying app/models.py dataclasses that round-trip to SQLite
+      - changing config_accounts/config_routing_rules/config_providers/
+        config_analysts shape (the live-managed config tables)
+    update_when:
+      - a table is added, dropped, or a column is added via Alembic
+
+  design:
+    path: docs/design/DESIGN.md
+    read_when:
+      - designing a new subsystem before writing code
+      - reviewing whether a proposed change fits existing design conventions
+
+  security:
+    path: docs/security/ARCHITECTURE.md
+    read_when:
+      - authentication or session changes (app/auth.py)
+      - authorization/owner-gating changes on any endpoint
+      - secrets handling (credentials, OWNER_PASSWORD_HASH, webhook secrets)
+      - changes to external-facing ingress (webhook, SMS, WhatsApp routes)
+      - anything touching CSRF, rate limiting, or the writer-lease fencing
+        token as a security boundary
+    update_when:
+      - a new authenticated or public route is added
+      - a new secret/credential category is introduced
+
+  standards_testing:
+    path: docs/standards/TESTING.md
+    read_when:
+      - implementing a feature
+      - fixing a bug (a regression test is expected)
+      - changing an existing test's assertions
+    update_when:
+      - the test strategy, fixture conventions, or CI-scoped mypy file list
+        changes
+
+  testing:
+    path: docs/testing/STRATEGY.md
+    read_when:
+      - deciding how to test a new broker or source adapter
+      - deciding whether a case needs a unit test, an integration test, or
+        both
+
+  operations:
+    path: docs/operations/RUNBOOK.md
+    read_when:
+      - deploying or redeploying the service
+      - responding to a production incident
+      - running a failover/promotion (see also deploy/RUNBOOK.md,
+        docs/FAILOVER.md, app/promote_cli.py)
+    update_when:
+      - the deployment topology or promotion procedure changes
+
+  agents:
+    path: docs/agents/PROCEDURES.md
+    read_when:
+      - starting any agent-driven change to this codebase
+      - unsure which doc governs a given kind of task
+    update_when:
+      - the agent workflow itself changes (see also .agent/context-map.yaml)
+
+  progress:
+    path: docs/state/PROGRESS.md
+    read_when:
+      - starting a development session
+      - resuming previous work
+    update_when:
+      - during long-running work, at meaningful checkpoints
+
+  project_status:
+    path: PROJECT_STATUS.yaml
+    read_when:
+      - checking whether the build/lint/typecheck/tests are currently green
+      - deciding whether it's safe to build on top of the current state
+    update_when:
+      - after running ruff/mypy/pytest and getting different real numbers
+
+  adr:
+    path: docs/adr/
+    read_when:
+      - understanding why an existing architectural choice was made
+      - about to revisit or reverse a prior significant decision
+    update_when:
+      - a significant, hard-to-reverse architectural decision is made
+        (e.g. adopting the command ledger, the writer-lease fencing model,
+        SQLite-over-Postgres, the managed-lifecycle protect-first design)
+
+  requirements:
+    path: docs/requirements/REQUIREMENTS.md
+    read_when:
+      - unsure whether a behavior is an intentional product decision or a
+        gap (cross-check against README.md's "What's real vs. stubbed"
+        and "What's still open" sections first — they are the most
+        current source of truth for scope)
+    update_when:
+      - a disclosed scope boundary changes (a gap closes, or a new one is
+        deliberately introduced and disclosed)
+
+  integrations:
+    path: docs/integrations/INTEGRATIONS.md
+    read_when:
+      - integrating a new broker or signal source
+      - changing how an existing broker/source integration works
+      - checking what a third-party library (ccxt, ib_async, MetaApi,
+        async_rithmic, TradeRouter) actually guarantees before relying on it
+    update_when:
+      - a new broker/source adapter is added
+      - a third-party integration's verified behavior changes
+
+  observability:
+    path: docs/observability/OBSERVABILITY.md
+    read_when:
+      - adding or changing a metric (app/metrics.py)
+      - changing GET /health, GET /metrics, or GET /system/readiness
+      - debugging why a background loop (PriceMonitor, OrderReconciler,
+        ProviderScout) looks stuck
+    update_when:
+      - a new metric, health signal, or structured log field is added
+
+  process:
+    path: docs/process/PROCESS.md
+    read_when:
+      - opening a PR
+      - deciding how a change should be reviewed or released
+    update_when:
+      - the contribution/review/release process changes
+
+  changelog:
+    path: CHANGELOG.md
+    read_when:
+      - checking what changed recently
+    update_when:
+      - externally observable behavior changes (new endpoint, changed
+        response shape, new broker/source support, a fixed bug that
+        affected live trading behavior)
