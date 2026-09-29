@@ -198,7 +198,7 @@ from sqlalchemy.orm import Session
 
 from app import config
 from app.api.dependencies import SESSION_COOKIE_NAME, get_current_scope, get_db_session
-from app.db import set_tenant_scope
+from app.db import set_current_user_scope, set_tenant_scope
 from app.models.product import ProductLifecycleState, ServiceMode
 from app.models.tenancy import Membership, MembershipRole
 from app.services.auth import TenantScope
@@ -3251,6 +3251,15 @@ def sign_in_submit(
             request, "id01_auth.html", {"error": "Incorrect email or password.", "notice": None}, status_code=401
         )
 
+    # ADR-0009: no `app.tenant_id` scope exists yet at this point in the
+    # flow -- that's exactly what this lookup is trying to discover --
+    # so under real FORCE ROW LEVEL SECURITY the generic `tenant_isolation`
+    # policy alone can never satisfy it (same bootstrap chicken-and-egg
+    # shape ADR-0002 already solved for relay_role). `set_current_user_scope`
+    # sets the ONE additional, narrow, SELECT-only `membership_self_lookup`
+    # policy's session variable, scoped to this caller's own user_id and
+    # nothing else, just long enough to find their own row.
+    set_current_user_scope(session, user.user_id)
     membership = session.execute(
         select(Membership).where(Membership.user_id == user.user_id)
     ).scalars().first()
@@ -3259,6 +3268,11 @@ def sign_in_submit(
             request, "id01_auth.html", {"error": "This identity has no tenant membership.", "notice": None}, status_code=403
         )
 
+    # Now that the tenant is known, scope the session to it for real
+    # (ADR-0001) -- `create_web_session` below writes a real "login"
+    # AuditEvent for this tenant, which itself needs `app.tenant_id` set
+    # to pass the ordinary `tenant_isolation` WITH CHECK on INSERT.
+    set_tenant_scope(session, membership.tenant_id)
     session_id, csrf_token = create_web_session(
         session, user_id=user.user_id, tenant_id=membership.tenant_id, role=membership.role
     )
@@ -3318,12 +3332,16 @@ def verify_email_page(request: Request, token: str | None = None, pending: str |
             status_code=400,
         )
 
+    # See the matching comment in `sign_in_submit` above -- ADR-0009.
+    set_current_user_scope(session, user.user_id)
     membership = session.execute(
         select(Membership).where(Membership.user_id == user.user_id)
     ).scalars().first()
     if membership is None:
         return templates.TemplateResponse(request, "id02_verify.html", {"state": "verified_no_membership", "verify_url": None, "error": None})
 
+    # See the matching comment in `sign_in_submit` above -- ADR-0009/ADR-0001.
+    set_tenant_scope(session, membership.tenant_id)
     session_id, csrf_token = create_web_session(session, user_id=user.user_id, tenant_id=membership.tenant_id, role=membership.role)
     response = templates.TemplateResponse(request, "id02_verify.html", {"state": "verified", "verify_url": None, "error": None})
     _set_session_cookie(request, response, session_id)

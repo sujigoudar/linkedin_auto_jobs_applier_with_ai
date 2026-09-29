@@ -29,6 +29,7 @@ from sqlalchemy import text
 from app.db import (
     Base,
     enable_content_document_visibility_policy,
+    enable_membership_self_lookup_policy,
     enable_product_visibility_policy,
     enable_relay_role_access,
     enable_row_level_security,
@@ -215,6 +216,7 @@ def db_session(postgres_cluster):
     enable_product_visibility_policy(engine)
     enable_content_document_visibility_policy(engine)
     enable_relay_role_access(engine)
+    enable_membership_self_lookup_policy(engine)
     enforce_append_only(engine)
     session_factory = make_session_factory(engine)
     session = session_factory()

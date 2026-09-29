@@ -257,6 +257,77 @@ def enable_relay_role_access(engine) -> None:
         _apply_relay_role_access(conn)
 
 
+def _apply_membership_self_lookup_policy(conn) -> None:
+    """ADR-0009: `sign_in_submit`/`verify_email_page` (app/api/dashboard_
+    routes.py) must look up the CALLER'S OWN `memberships` row by
+    `user_id` to discover which tenant they belong to -- before any
+    `app.tenant_id` scope can be set, since that scope is exactly what
+    this lookup is trying to discover (the same bootstrap
+    chicken-and-egg shape ADR-0002 already solved for `relay_role`'s own
+    `export_stream_registrations` lookup, for a different role and a
+    different table). The generic `tenant_isolation` policy on
+    `memberships` (`_apply_row_level_security`) only ever permits a
+    session already scoped to its own tenant, so under real `FORCE ROW
+    LEVEL SECURITY` this lookup always returns zero rows once a real
+    membership exists -- a genuine, previously-untested production
+    login/verify-email outage (every existing test drove these routes
+    through the Postgres superuser fixture, which bypasses RLS
+    entirely and could never have caught this).
+
+    Unlike `relay_role`'s bespoke policy, this one is not scoped `TO` a
+    separate restricted role -- `app_role` is the ordinary,
+    browser-facing login role, and this lookup happens on the exact
+    same connection/session as everything else that role does. So the
+    policy is instead scoped by VALUE: it only ever matches the one row
+    whose `user_id` equals the session's own `app.current_user_id`
+    setting (see `set_current_user_scope` below), a NEW session
+    variable set only for the length of this one lookup -- never a
+    caller-supplied tenant_id or user_id trusted for anything else.
+    Postgres combines multiple PERMISSIVE policies on the same table
+    with OR, so this does not weaken `tenant_isolation` for anyone --
+    it only gives a session a second way to see ONE table's rows: its
+    own membership rows, before any tenant scope exists. A session that
+    never calls `set_current_user_scope` (i.e. every other request path
+    in this codebase) leaves `app.current_user_id` unset, so this
+    policy's `USING` clause never matches and grants nothing -- exactly
+    like `tenant_isolation` itself fails closed when `app.tenant_id` is
+    unset."""
+    conn.execute(text("DROP POLICY IF EXISTS membership_self_lookup ON memberships"))
+    conn.execute(
+        text(
+            "CREATE POLICY membership_self_lookup ON memberships "
+            "AS PERMISSIVE FOR SELECT "
+            "USING (user_id = current_setting('app.current_user_id', true))"
+        )
+    )
+
+
+def enable_membership_self_lookup_policy(engine) -> None:
+    """Idempotent, same connection-vs-engine split as
+    `enable_row_level_security` -- call
+    `_apply_membership_self_lookup_policy(connection)` directly from
+    within an already-open transaction (e.g. an Alembic migration), this
+    wrapper otherwise. Must run AFTER `enable_row_level_security` has
+    already put `memberships` under `ENABLE`/`FORCE ROW LEVEL SECURITY`
+    (this only adds an additional permissive policy to a table RLS is
+    already active on -- it does not itself enable RLS)."""
+    with engine.begin() as conn:
+        _apply_membership_self_lookup_policy(conn)
+
+
+def set_current_user_scope(session: Session, user_id: str) -> None:
+    """Set the Postgres session variable `membership_self_lookup`
+    (above) keys off of. Called ONLY around the one bootstrap lookup in
+    `sign_in_submit`/`verify_email_page` that must find the caller's own
+    membership row before `set_tenant_scope` can be called for real --
+    never as a substitute for `set_tenant_scope`, and never trusted for
+    anything beyond satisfying that one SELECT (same `set_config`-not-
+    string-formatting reasoning as `set_tenant_scope`'s own docstring:
+    Postgres's `SET` statement takes no bind parameters, so building it
+    by hand would be an injection point)."""
+    session.execute(text("SELECT set_config('app.current_user_id', :user_id, true)"), {"user_id": user_id})
+
+
 def set_tenant_scope(session: Session, tenant_id: str) -> None:
     """Set the Postgres session variable the RLS policies above key off of.
     Must be called (with a real, authenticated tenant_id) at the start of
