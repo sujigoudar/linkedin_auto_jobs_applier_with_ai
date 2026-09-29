@@ -35,6 +35,21 @@
  *     `start`/`_run_loop`), with no route to trigger a pass on demand.
  *     Rendered "unsupported" rather than faked, same treatment TR-03 gives
  *     its own three unimplemented actions.
+ *   - Command queue (P01) gets one real, owner-only trade-affecting
+ *     action: "Emergency: Flatten account", a client for the REAL
+ *     `POST /accounts/{account_id}/flatten` (already used, un-gated, by
+ *     the legacy dashboard's own `flattenAccount()` -- see
+ *     app/main.py's flatten_account docstring: "the dashboard's
+ *     account-level 'Flatten account' action"). This is the same command,
+ *     just gated through Components.confirmAction (app/static/components/
+ *     action-confirm.js) instead of a bare confirm()/alert() pair, per
+ *     the 2026-09 design review's "preview -> impact -> confirmation ->
+ *     durable operation status" requirement. The preview stage reads the
+ *     real GET /positions (+ its managed_lifecycles projection) for the
+ *     selected account -- never a client-side guess -- and honestly
+ *     discloses that fill price/slippage cannot be previewed (this
+ *     service has no quote-before-order capability wired into this
+ *     action).
  *   - "Correlations" (P04, chart) has no verified report snapshot/
  *     definition IDs backing it in this build -- no plot when data is
  *     absent, per the panel's own contract; rendered unsupported.
@@ -80,6 +95,128 @@
       if (filters.account && o.account_id !== filters.account) return false;
       if (filters.status && o.status !== filters.status) return false;
       return true;
+    });
+  }
+
+  // --- TR-06-A0x "Emergency: Flatten account" -- the real, owner-only
+  // POST /accounts/{account_id}/flatten, gated through
+  // Components.confirmAction instead of the legacy dashboard's bare
+  // confirm()/alert() pair. See this file's own module docstring. ---
+
+  function flattenSection(accounts) {
+    if (!accounts.length) return "";
+    return `
+      <div class="tr-controls-row" style="margin-top:0.75rem;">
+        <label for="tr06-flatten-account">Emergency: Flatten account</label>
+        <select id="tr06-flatten-account">
+          ${accounts.map((a) => `<option value="${escapeAttr(a)}">${escapeHtml(a)}</option>`).join("")}
+        </select>
+        <button type="button" class="danger" id="tr06-flatten-btn">Flatten account…</button>
+      </div>
+      <p class="section-note">Exits every open position this service tracks for the selected account (real
+        <code>POST /accounts/{account_id}/flatten</code> -- app/main.py's flatten_account docstring calls this
+        "the dashboard's account-level 'Flatten account' action"). Only positions this service itself opened are
+        touched; a manually held position at the broker is left alone. Preview/impact/confirm/result below.</p>
+    `;
+  }
+
+  // Real preview: reads GET /positions (this service's own tracked
+  // positions, plus its managed_lifecycles coverage projection) for the
+  // selected account. Never a client-side guess -- if this account has no
+  // tracked open positions, or the read fails, that is exactly what gets
+  // shown, honestly, rather than a fabricated estimate.
+  async function previewFlatten(ctx, accountId) {
+    const res = await ctx.fetchJSON("/positions");
+    if (res.status === 401 || res.status === 403) {
+      throw new Error(`Not authorized to read current positions (HTTP ${res.status}).`);
+    }
+    if (!res.ok) {
+      throw new Error("Could not load current positions for this account -- preview unavailable.");
+    }
+    const allPositions = (res.data && res.data.positions) || [];
+    const lifecycles = (res.data && res.data.managed_lifecycles) || [];
+    const positions = allPositions.filter((p) => p.account_id === accountId);
+    const lifecycleByKey = new Map(lifecycles.map((l) => [`${l.account_id}::${l.symbol}`, l]));
+
+    const rows = positions.map((p) => {
+      const lc = lifecycleByKey.get(`${p.account_id}::${p.symbol}`);
+      if (lc) {
+        const uncovered = lc.uncovered_quantity;
+        return {
+          label: p.symbol,
+          value: `${fmtNum(p.net_quantity)} sh -- covered ${fmtNum(lc.covered_quantity)} / uncovered ${fmtNum(uncovered)} (stop: ${lc.stop_status})`,
+          tone: uncovered > 0 ? "crit" : "ok",
+        };
+      }
+      return {
+        label: p.symbol,
+        value: `${fmtNum(p.net_quantity)} sh -- protection status not tracked for this position (not a managed-lifecycle account)`,
+        tone: "warn",
+      };
+    });
+
+    const anyUncovered = positions.some((p) => {
+      const lc = lifecycleByKey.get(`${p.account_id}::${p.symbol}`);
+      return lc && lc.uncovered_quantity > 0;
+    });
+    const anyUntracked = positions.some((p) => !lifecycleByKey.has(`${p.account_id}::${p.symbol}`));
+
+    const notes = [
+      positions.length === 0
+        ? `No open positions are tracked for account "${accountId}" -- this call would be a genuine no-op, not a fabricated success.`
+        : `Closes ${positions.length} position(s) one at a time, in the order app/main.py's flatten_account itself processes them (not concurrently).`,
+      "Fill price and slippage cannot be previewed -- this service has no quote-before-order capability wired into this action; each close submits a real order at whatever price the broker actually fills it at.",
+    ];
+    if (anyUntracked) {
+      notes.push("Protection (stop) coverage is only tracked for managed-lifecycle positions -- see the per-symbol rows above for which ones this build cannot report on.");
+    }
+
+    return {
+      severity: positions.length === 0 ? "info" : anyUncovered ? "critical" : "warning",
+      rows,
+      notes,
+    };
+  }
+
+  function renderFlattenResult(outcome) {
+    if (!outcome || !outcome.ok) {
+      const message = (outcome && outcome.error) || "Unknown error.";
+      return `<p class="action-confirm-result-heading">Flatten failed</p><p class="action-confirm-note action-confirm-impact-crit">${escapeHtml(message)}</p>`;
+    }
+    const result = outcome.result || {};
+    const closed = result.closed || [];
+    if (!closed.length) {
+      return `<p class="action-confirm-result-heading">Completed</p><p class="action-confirm-note">No open positions were tracked for "${escapeHtml(result.account_id || "")}" -- nothing to close.</p>`;
+    }
+    const rows = closed
+      .map(
+        (c) =>
+          `<div class="action-confirm-row"><span class="ac-label">${escapeHtml(c.symbol)}</span><span class="ac-value">${escapeHtml(c.status)} (filled ${c.filled_quantity ?? "—"})${c.message ? " -- " + escapeHtml(c.message) : ""}</span></div>`
+      )
+      .join("");
+    return `<p class="action-confirm-result-heading">Completed -- real result from POST /accounts/${escapeHtml(result.account_id || "")}/flatten</p>${rows}`;
+  }
+
+  function wireFlattenButton(ctx, queueEl) {
+    const btn = queueEl.querySelector("#tr06-flatten-btn");
+    if (!btn) return;
+    btn.addEventListener("click", async () => {
+      const select = queueEl.querySelector("#tr06-flatten-account");
+      const accountId = select ? select.value : "";
+      if (!accountId) return;
+      await Components.confirmAction({
+        title: `Flatten account "${accountId}"`,
+        confirmWord: accountId,
+        confirmLabel: "Flatten account",
+        previewFn: () => previewFlatten(ctx, accountId),
+        onConfirm: () => postJSON(`/accounts/${encodeURIComponent(accountId)}/flatten`, {}),
+        renderResult: renderFlattenResult,
+      });
+      // Refresh the real order/command record after the operator dismisses
+      // the durable result panel, whatever the outcome -- this view's own
+      // 10s poll would eventually pick it up anyway, but a same-account
+      // flatten's own new order rows are worth showing immediately.
+      await load(ctx, { account: accountId, status: "" }, "orders");
     });
   }
 
@@ -154,7 +291,7 @@
           ["Intent", "Account", "Instrument", "Purpose", "Broker ID", "Acknowledged", "Filled", "Remaining", "Outcome"],
           orders.map(commandRow),
           "No commands."
-        )}<div id="tr06-family-detail"></div>`,
+        )}<div id="tr06-family-detail"></div>${flattenSection(accounts)}`,
       });
       const form = els.queue.querySelector("#tr06-filter-form");
       form.addEventListener("submit", (e) => {
@@ -183,6 +320,7 @@
           )}`;
         });
       });
+      wireFlattenButton(ctx, els.queue);
     }
 
     // --- Orders/fills tabs: same read model, client-side presentational
