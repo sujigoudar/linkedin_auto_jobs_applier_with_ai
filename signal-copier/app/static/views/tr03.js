@@ -1012,6 +1012,139 @@
     `;
   }
 
+  // --- TR-03-A01/A02: read-only previews. Both call real GET endpoints
+  // (app/main.py's preview_position_reduction/preview_position_stop_change)
+  // that reuse the exact same pure computation app/lifecycle/manager.py's
+  // real request_exit/_update_trailing themselves call -- see that
+  // module's _compute_reduction_plan/_compute_trailing_candidate. Neither
+  // ever places, amends, or cancels any real order. ---
+  function renderReducePreviewResult(data) {
+    if (!data || !data.supported) {
+      return `<p class="section-note">Not supported: ${escapeHtml((data && data.reason) || "unknown reason")}</p>`;
+    }
+    const rows = [
+      ["Requested quantity", fmtNum(data.requested_quantity)],
+      ["Owned before", fmtNum(data.owned_before)],
+      ["Available before", fmtNum(data.available_before)],
+      ["Remaining after request", fmtNum(data.remaining_after_request)],
+      ["Had stop", data.had_stop ? pill("yes", "ok") : pill("no", "muted")],
+      ["Stop desired price", data.stop_desired_price === null || data.stop_desired_price === undefined ? "—" : fmtNum(data.stop_desired_price)],
+    ];
+    return `${table(["Field", "Value"], rows, "No detail.")}<p class="section-note">${escapeHtml(data.stop_note || "")}</p>`;
+  }
+
+  function wireReducePreview(ctx, controlsEl, accountId, symbol) {
+    const btn = controlsEl.querySelector("#tr03-reduce-preview-btn");
+    const input = controlsEl.querySelector("#tr03-reduce-qty");
+    const resultEl = controlsEl.querySelector("#tr03-reduce-preview-result");
+    if (!btn) return;
+    btn.addEventListener("click", async () => {
+      const quantity = Number(input.value);
+      if (!(quantity > 0)) {
+        resultEl.innerHTML = `<p class="section-note">Enter a positive quantity to preview.</p>`;
+        return;
+      }
+      resultEl.innerHTML = `<p class="section-note">Loading preview…</p>`;
+      try {
+        const res = await ctx.fetchJSON(
+          `/lifecycle/${encodeURIComponent(accountId)}/${encodeURIComponent(symbol)}/preview-reduction?quantity=${encodeURIComponent(quantity)}`
+        );
+        if (res.status === 401 || res.status === 403) {
+          resultEl.innerHTML = `<p class="section-note">Not authorized to preview (HTTP ${res.status}).</p>`;
+          return;
+        }
+        if (!res.ok) {
+          resultEl.innerHTML = `<p class="section-note">Preview failed.</p>`;
+          return;
+        }
+        resultEl.innerHTML = renderReducePreviewResult(res.data);
+      } catch (err) {
+        resultEl.innerHTML = `<p class="section-note">Preview failed: ${escapeHtml(err.message)}</p>`;
+      }
+    });
+  }
+
+  function renderStopPreviewResult(data) {
+    if (!data || !data.supported) {
+      return `<p class="section-note">Not supported: ${escapeHtml((data && data.reason) || "unknown reason")}</p>`;
+    }
+    const rows = [
+      ["Hypothetical price", fmtNum(data.hypothetical_price)],
+      ["Current desired stop price", data.current_desired_stop_price === null || data.current_desired_stop_price === undefined ? "—" : fmtNum(data.current_desired_stop_price)],
+      ["Trail distance", fmtNum(data.trail_distance)],
+      ["Candidate stop price", fmtNum(data.candidate_stop_price)],
+      ["Would change", data.would_change ? pill("yes", "ok") : pill("no", "muted")],
+    ];
+    return table(["Field", "Value"], rows, "No detail.");
+  }
+
+  function wireStopPreview(ctx, controlsEl, accountId, symbol) {
+    const btn = controlsEl.querySelector("#tr03-stop-preview-btn");
+    const input = controlsEl.querySelector("#tr03-stop-price");
+    const resultEl = controlsEl.querySelector("#tr03-stop-preview-result");
+    if (!btn) return;
+    btn.addEventListener("click", async () => {
+      const price = Number(input.value);
+      if (!(price > 0)) {
+        resultEl.innerHTML = `<p class="section-note">Enter a positive hypothetical price to preview.</p>`;
+        return;
+      }
+      resultEl.innerHTML = `<p class="section-note">Loading preview…</p>`;
+      try {
+        const res = await ctx.fetchJSON(
+          `/lifecycle/${encodeURIComponent(accountId)}/${encodeURIComponent(symbol)}/preview-stop-change?price=${encodeURIComponent(price)}`
+        );
+        if (res.status === 401 || res.status === 403) {
+          resultEl.innerHTML = `<p class="section-note">Not authorized to preview (HTTP ${res.status}).</p>`;
+          return;
+        }
+        if (!res.ok) {
+          resultEl.innerHTML = `<p class="section-note">Preview failed.</p>`;
+          return;
+        }
+        resultEl.innerHTML = renderStopPreviewResult(res.data);
+      } catch (err) {
+        resultEl.innerHTML = `<p class="section-note">Preview failed: ${escapeHtml(err.message)}</p>`;
+      }
+    });
+  }
+
+  // --- TR-03-A03: request reconciliation. Same real, account-wide
+  // POST /reconciliation/run-now app/static/views/tr06.js wires -- this
+  // build has no per-position scoped reconciliation trigger, so this
+  // button re-checks every pending order/exit/entry this service tracks,
+  // not just this one (stated honestly in the note beside the button). ---
+  function renderReconcileNowResult(outcome) {
+    if (!outcome || !outcome.ok) {
+      const message = (outcome && outcome.error) || "Unknown error.";
+      return `<p class="section-note">Reconciliation request failed: ${escapeHtml(message)}</p>`;
+    }
+    const result = outcome.result || outcome;
+    if (result.already_running) {
+      return `<p class="section-note">A manual reconciliation pass was already in flight -- this request did not start a second, concurrent one.</p>`;
+    }
+    return `<p class="section-note">Completed -- orders examined ${fmtNum(result.orders_examined ?? 0)}, corrected ${fmtNum(result.corrected ?? 0)}.</p>`;
+  }
+
+  function wireReconcileNow(ctx, reconcileWrap, els) {
+    const btn = reconcileWrap.querySelector("#tr03-reconcile-btn");
+    if (!btn) return;
+    btn.addEventListener("click", async () => {
+      btn.disabled = true;
+      const resultEl = document.createElement("div");
+      reconcileWrap.appendChild(resultEl);
+      resultEl.innerHTML = `<p class="section-note">Running…</p>`;
+      try {
+        const result = await postJSON("/reconciliation/run-now", {});
+        resultEl.innerHTML = renderReconcileNowResult({ ok: true, result });
+      } catch (err) {
+        resultEl.innerHTML = renderReconcileNowResult({ ok: false, error: err.message });
+      }
+      btn.disabled = false;
+      await load(ctx);
+    });
+  }
+
   async function load(ctx) {
     const { account_id: accountId, symbol } = ctx.params;
     const els = {
@@ -1293,10 +1426,10 @@
       wrap.innerHTML = table(["Field", "Value"], rows, "No protection detail.") + `<div id="tr03-reconciliation-gap"></div>`;
       els.transfer.innerHTML = "";
       els.transfer.appendChild(wrap);
-      Components.renderCapabilityState(els.transfer.querySelector("#tr03-reconciliation-gap"), {
-        status: "unsupported",
-        reason: "There is no owner-facing HTTP action to request a reconciliation pass on demand -- app/reconciliation.py only runs on its own internal schedule; this codebase has no 'request reconciliation' endpoint.",
-      });
+      const reconcileWrap = els.transfer.querySelector("#tr03-reconciliation-gap");
+      reconcileWrap.innerHTML = `<div class="tr-controls-row" style="margin-top:0.5rem;"><button type="button" id="tr03-reconcile-btn">Request reconciliation…</button></div>
+        <p class="section-note">Real <code>POST /reconciliation/run-now</code> (app/reconciliation.py's OrderReconciler.reconcile_once, run synchronously, account-wide -- this build has no per-position scoped reconciliation, so this re-checks every pending order/exit/entry this service tracks, not just this one).</p>`;
+      wireReconcileNow(ctx, reconcileWrap, els);
     }
 
     // --- Controls ---
@@ -1314,6 +1447,21 @@
           <button type="button" class="danger" id="tr03-exit-now" ${canClose ? "" : "disabled"}>Exit now (full close)</button>
           <span class="section-note">Bypasses routing; targets exactly this account/symbol. Reuses the existing engine close path -- no new financial capability.</span>
         </div>
+        <div class="tr-controls-row">
+          <label for="tr03-reduce-qty">Preview partial reduction</label>
+          <input type="number" id="tr03-reduce-qty" min="0" step="any" placeholder="quantity" style="max-width:8rem;" />
+          <button type="button" id="tr03-reduce-preview-btn">Preview…</button>
+        </div>
+        <div id="tr03-reduce-preview-result"></div>
+        <div class="tr-controls-row">
+          <label for="tr03-stop-price">Preview stop change at price</label>
+          <input type="number" id="tr03-stop-price" step="any" placeholder="hypothetical price" style="max-width:9rem;" />
+          <button type="button" id="tr03-stop-preview-btn">Preview…</button>
+        </div>
+        <div id="tr03-stop-preview-result"></div>
+        <p class="section-note">Both previews are real, read-only calls -- they reuse the exact same computation
+          app/lifecycle/manager.py itself uses for a real reduction/stop move (never a separate re-implementation),
+          and never place, amend, or cancel any real order.</p>
         <div id="tr03-controls-gap"></div>
       `;
     els.controls.innerHTML = "";
@@ -1331,10 +1479,8 @@
         await load(ctx);
       });
     }
-    Components.renderCapabilityState(els.controls.querySelector("#tr03-controls-gap"), {
-      status: "unsupported",
-      reason: "Preview partial reduction (TR-03-A01), preview stop change (TR-03-A02) and request reconciliation (TR-03-A03) have no backing capability in this build -- app/lifecycle/manager.py's exit/stop-resize/reconciliation machinery is internal-only, with no owner-facing HTTP action to preview or trigger any of the three.",
-    });
+    wireReducePreview(ctx, els.controls, accountId, symbol);
+    wireStopPreview(ctx, els.controls, accountId, symbol);
 
     ctx.setChrome({ asOf: new Date().toISOString() });
   }

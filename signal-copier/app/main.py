@@ -1424,6 +1424,63 @@ async def flatten_account(
     return response
 
 
+@app.post("/reconciliation/run-now")
+async def run_reconciliation_now(_owner: dict = Depends(require_owner)) -> dict:
+    """TR-06-A02/TR-03-A03: the real owner-facing action to trigger an
+    on-demand order/position reconciliation pass. Calls
+    `OrderReconciler.run_now`, which runs the exact same `reconcile_once()`
+    the background loop (app/reconciliation.py) calls on its own schedule --
+    synchronously, so this returns the real outcome (how many pending
+    orders/exits/entries were re-examined, how many actually changed state)
+    rather than just enqueueing something and returning immediately. Guarded
+    so a second concurrent click can't stack a second pass against the same
+    DB/broker calls -- returns `already_running: true` instead."""
+    return await reconciler.run_now()
+
+
+@app.get("/lifecycle/{account_id}/{symbol}/preview-reduction")
+async def preview_position_reduction(
+    account_id: str,
+    symbol: str,
+    quantity: float = Query(..., gt=0),
+    _owner: dict = Depends(require_owner_read),
+) -> dict:
+    """TR-03-A01: read-only preview of a hypothetical partial reduction for
+    one managed-lifecycle position. Calls
+    `PositionLifecycleManager.preview_reduction`, which reuses the exact
+    same pure planning function (`_compute_reduction_plan`) the real
+    `request_exit` itself calls -- never a second, separately maintained
+    computation -- and never places, cancels, or amends any real order.
+    `{"supported": false, "reason": ...}` for every case a real reduction
+    would itself refuse (no managed lifecycle, halted, a prior exit still
+    unresolved, nothing available to sell)."""
+    if account_id not in routing_config.accounts:
+        raise HTTPException(status_code=404, detail=f"no account '{account_id}'")
+    account = routing_config.accounts[account_id]
+    return await lifecycle_manager.preview_reduction(account, symbol, quantity)
+
+
+@app.get("/lifecycle/{account_id}/{symbol}/preview-stop-change")
+async def preview_position_stop_change(
+    account_id: str,
+    symbol: str,
+    price: float = Query(...),
+    _owner: dict = Depends(require_owner_read),
+) -> dict:
+    """TR-03-A02: read-only preview of what the position's real trailing-stop
+    computation would produce at a hypothetical market `price`. Calls
+    `PositionLifecycleManager.preview_stop_change`, which reuses the exact
+    same pure function (`_compute_trailing_candidate`) `_update_trailing`
+    itself calls -- never a second, separately maintained formula -- and
+    never places or replaces any real stop order. Only covers an ACTIVE
+    trailing policy; a TIGHTEN_STOP target (fixed trigger price, evaluated
+    only on a live price tick) has no separable pure formula to preview and
+    is reported as unsupported rather than faked."""
+    if account_id not in routing_config.accounts:
+        raise HTTPException(status_code=404, detail=f"no account '{account_id}'")
+    return lifecycle_manager.preview_stop_change(account_id, symbol, price)
+
+
 @app.get("/brokers")
 async def list_broker_capabilities(_owner: dict = Depends(require_owner_read)) -> dict:
     """Every registered broker's actual, code-verified capabilities — not a

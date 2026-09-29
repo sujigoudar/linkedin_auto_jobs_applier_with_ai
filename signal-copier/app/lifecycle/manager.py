@@ -61,7 +61,9 @@ import asyncio
 import logging
 import math
 from collections import defaultdict
+from dataclasses import dataclass
 from datetime import datetime, timezone
+from typing import Any
 
 from app.brokers.base import BrokerAdapter
 from app.capital_allocator import CapitalAllocator
@@ -82,6 +84,75 @@ from app.lifecycle.models import (
 from app.models import AssetClass, DestinationAccount, OrderResult, OrderStatus, Signal, Side
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class ReductionPlan:
+    """The real pre-order-submission planning `request_exit` computes for a
+    reduction, BEFORE any broker I/O -- extracted into its own pure
+    function (`_compute_reduction_plan`) so a read-only preview (see
+    `PositionLifecycleManager.preview_reduction`) can call the exact same
+    computation `request_exit` itself uses instead of a second,
+    independently maintained copy that could drift."""
+
+    requested_quantity: float
+    owned_before: float
+    available_before: float
+    remaining_after_request: float
+    had_stop: bool
+    stop_desired_price: float | None
+    can_amend_stop_in_place: bool
+
+
+def _compute_reduction_plan(
+    tx: Any, lifecycle: "PositionLifecycle", broker: BrokerAdapter | None, quantity: float
+) -> ReductionPlan:
+    """Pure (no I/O, no mutation): exactly the fields `request_exit` itself
+    derives from `tx`/`lifecycle`/`broker` before it ever calls
+    `broker.replace_stop_quantity`/`cancel_order`/`place_order`. Called from
+    inside `request_exit` (with a live, lock-held `tx`) AND from
+    `preview_reduction` (with a read-only `tx` obtained the same way, via
+    `CloseArbiter.transition`, but never committing a reservation) -- see
+    each caller."""
+    requested = min(quantity, tx.available)
+    had_stop = lifecycle.stop.broker_order_id is not None
+    remaining_after_request = tx.owned - requested
+    can_amend_in_place = (
+        had_stop
+        and remaining_after_request > 0
+        and lifecycle.stop.desired_price is not None
+        and broker is not None
+        and broker.has_replace_stop_capability
+    )
+    return ReductionPlan(
+        requested_quantity=requested,
+        owned_before=tx.owned,
+        available_before=tx.available,
+        remaining_after_request=remaining_after_request,
+        had_stop=had_stop,
+        stop_desired_price=lifecycle.stop.desired_price,
+        can_amend_stop_in_place=can_amend_in_place,
+    )
+
+
+def _compute_trailing_candidate(
+    trailing: TrailingPolicy, current_desired_price: float | None, side: Side, price: float
+) -> tuple[float, bool]:
+    """Pure (no I/O, no mutation): exactly the candidate-floor/`improved`
+    computation `_update_trailing` itself derives before deciding whether to
+    actually move the stop. Extracted so `preview_stop_change` can call the
+    exact same computation `_update_trailing` uses instead of a second,
+    independently maintained copy that could drift -- see each caller."""
+    existing = [v for v in (trailing.floor_price, current_desired_price) if v is not None]
+    if side == Side.BUY:
+        current_best = max(existing) if existing else None
+        candidate_floor = price - trailing.trail_distance
+        improved = current_best is None or candidate_floor > current_best
+    else:
+        current_best = min(existing) if existing else None
+        candidate_floor = price + trailing.trail_distance
+        improved = current_best is None or candidate_floor < current_best
+    return candidate_floor, improved
 
 
 class PositionLifecycleManager:
@@ -211,6 +282,99 @@ class PositionLifecycleManager:
             for lifecycle in self._lifecycles.values()
             if lifecycle.pending_entry is not None and not lifecycle.pending_entry.remainder_resolved
         ]
+
+    async def preview_reduction(self, account: DestinationAccount, symbol: str, quantity: float) -> dict:
+        """TR-03-A01: read-only dry run of `request_exit`'s pre-order-
+        submission planning for a hypothetical partial reduction of
+        `quantity` shares -- calls `_compute_reduction_plan`, the exact same
+        pure function `request_exit` itself calls, inside the same
+        `CloseArbiter.transition` lock (for a read consistent with any
+        concurrently in-flight real exit) but NEVER reserves anything and
+        NEVER calls `broker.replace_stop_quantity`/`cancel_order`/
+        `place_order` -- no real order is placed, amended, or cancelled by
+        this call. Returns `{"supported": False, "reason": ...}` for every
+        case `request_exit` itself would refuse outright (no lifecycle,
+        halted, a prior exit still unresolved, nothing available to sell) --
+        the same honest refusal reasons that method returns, not a
+        fabricated preview."""
+        broker = self.brokers.get(account.broker)
+        async with self.arbiter.transition(account.account_id, symbol) as tx:
+            lifecycle = self._lifecycles.get((account.account_id, symbol))
+            if lifecycle is None or lifecycle.closed:
+                return {"supported": False, "reason": "no active managed lifecycle for this position"}
+            if tx.is_halted:
+                return {"supported": False, "reason": f"halted: {tx.halt_reason}"}
+            if lifecycle.pending_exit is not None and not lifecycle.pending_exit.remainder_resolved:
+                return {
+                    "supported": False,
+                    "reason": (
+                        f"a prior {lifecycle.pending_exit.source or 'exit'} order "
+                        f"({lifecycle.pending_exit.broker_order_id}) for this position hasn't resolved "
+                        "yet -- a real request_exit call would refuse a second exit too"
+                    ),
+                }
+            plan = _compute_reduction_plan(tx, lifecycle, broker, quantity)
+            if plan.requested_quantity <= 0:
+                return {"supported": False, "reason": "no shares available to sell"}
+            if plan.had_stop and plan.remaining_after_request > 0:
+                stop_note = (
+                    "existing protective stop would be amended down to the remaining quantity, at the same price, "
+                    "in place (no moment of zero coverage)"
+                    if plan.can_amend_stop_in_place
+                    else "existing protective stop would be cancelled and a replacement submitted at the same price "
+                    "sized to the remaining quantity (this broker adapter has no in-place amend capability)"
+                )
+            elif plan.had_stop:
+                stop_note = "this reduction would fully close the position -- the existing stop would be cancelled with nothing to replace it"
+            else:
+                stop_note = "no existing protective stop on this position to adjust"
+            return {
+                "supported": True,
+                "requested_quantity": plan.requested_quantity,
+                "owned_before": plan.owned_before,
+                "available_before": plan.available_before,
+                "remaining_after_request": plan.remaining_after_request,
+                "had_stop": plan.had_stop,
+                "stop_desired_price": plan.stop_desired_price,
+                "can_amend_stop_in_place": plan.can_amend_stop_in_place,
+                "stop_note": stop_note,
+            }
+
+    def preview_stop_change(self, account_id: str, symbol: str, price: float) -> dict:
+        """TR-03-A02: read-only preview of what `_update_trailing`'s real
+        trailing-stop computation (`_compute_trailing_candidate`, the exact
+        function it itself calls) would produce for this position at a
+        hypothetical market `price` -- never submits/replaces any real stop
+        order, never mutates `trailing.floor_price`/`stop.desired_price`.
+        Only covers an ACTIVE trailing policy -- a TIGHTEN_STOP target is
+        evaluated only against a live price tick inside `on_price_update`
+        and has no separable pure formula to preview here (it just sets
+        `desired_price` to the target's own fixed `trigger_price`, never
+        loosening -- see `_tighten_stop_to`), so that case is left for the
+        caller to disclose honestly rather than faked."""
+        lifecycle = self._lifecycles.get((account_id, symbol))
+        if lifecycle is None or lifecycle.closed:
+            return {"supported": False, "reason": "no active managed lifecycle for this position"}
+        trailing = lifecycle.plan.trailing
+        if trailing is None or not trailing.active:
+            return {
+                "supported": False,
+                "reason": (
+                    "no ACTIVE trailing-stop policy on this position -- this preview only covers "
+                    "_update_trailing's real computation, which only ever runs once a trailing policy is active"
+                ),
+            }
+        candidate_floor, improved = _compute_trailing_candidate(
+            trailing, lifecycle.stop.desired_price, lifecycle.plan.side, price
+        )
+        return {
+            "supported": True,
+            "hypothetical_price": price,
+            "current_desired_stop_price": lifecycle.stop.desired_price,
+            "trail_distance": trailing.trail_distance,
+            "candidate_stop_price": candidate_floor,
+            "would_change": improved,
+        }
 
     def restore_from_store(self) -> None:
         """Rebuild in-memory lifecycles + arbiter ledgers from persisted
@@ -780,19 +944,15 @@ class PositionLifecycleManager:
                     ),
                 )
 
-            requested = min(quantity, tx.available)
+            plan = _compute_reduction_plan(tx, lifecycle, broker, quantity)
+            requested = plan.requested_quantity
             if requested <= 0:
                 return OrderResult(account_id=account.account_id, status=OrderStatus.REJECTED, signal_id="", message="no shares available to sell")
 
-            had_stop = lifecycle.stop.broker_order_id is not None
-            remaining_after_request = tx.owned - requested
+            had_stop = plan.had_stop
+            remaining_after_request = plan.remaining_after_request
             amended_stop = False
-            if (
-                had_stop
-                and remaining_after_request > 0
-                and lifecycle.stop.desired_price is not None
-                and broker.has_replace_stop_capability
-            ):
+            if plan.can_amend_stop_in_place:
                 # PRO-06: a partial reduce (a target selling a fraction of the
                 # position) used to ALWAYS cancel the entire existing stop
                 # outright, even on a venue that can amend a resting order's
@@ -1195,15 +1355,9 @@ class PositionLifecycleManager:
         never just one or the other."""
         trailing = lifecycle.plan.trailing
         assert trailing is not None  # only caller (on_price_update) checks this first
-        existing = [v for v in (trailing.floor_price, lifecycle.stop.desired_price) if v is not None]
-        if lifecycle.plan.side == Side.BUY:
-            current_best = max(existing) if existing else None
-            candidate_floor = price - trailing.trail_distance
-            improved = current_best is None or candidate_floor > current_best
-        else:
-            current_best = min(existing) if existing else None
-            candidate_floor = price + trailing.trail_distance
-            improved = current_best is None or candidate_floor < current_best
+        candidate_floor, improved = _compute_trailing_candidate(
+            trailing, lifecycle.stop.desired_price, lifecycle.plan.side, price
+        )
 
         if not improved:
             return

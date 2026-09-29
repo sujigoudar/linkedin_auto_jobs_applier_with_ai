@@ -70,6 +70,15 @@ class OrderReconciler:
         #: See PriceMonitor.last_success_at (app/pricing.py) -- same contract,
         #: surfaced by app/main.py's /health.
         self.last_success_at: datetime | None = None
+        # TR-06-A02/TR-03-A03: guards `run_now()` (the owner-facing on-demand
+        # reconciliation trigger, POST /reconciliation/run-now) so a second
+        # click while a manual pass is still in flight can't stack a second
+        # concurrent `reconcile_once()` against the same DB/broker calls --
+        # it reports `already_running` instead of starting another one. Does
+        # NOT serialize against the background `_loop`'s own scheduled
+        # passes; `reconcile_once()` was already written to tolerate being
+        # called repeatedly (it re-reads pending state fresh every call).
+        self._manual_run_lock = asyncio.Lock()
 
     async def start(self) -> None:
         # OPS-02: a second start() call used to unconditionally spawn a
@@ -99,6 +108,38 @@ class OrderReconciler:
                 raise  # see PriceMonitor._loop's identical comment
             except Exception:  # noqa: BLE001 - one bad pass must not kill the loop
                 logger.exception("error during order reconciliation pass")
+
+    async def run_now(self) -> dict:
+        """TR-06-A02/TR-03-A03: the real owner-facing on-demand reconciliation
+        trigger -- runs the exact same `reconcile_once()` the background loop
+        calls on its own schedule (see this module's docstring), synchronously,
+        so the HTTP caller gets the real, immediate outcome rather than firing
+        into the void. Reports how many pending orders/exits/entries were
+        about to be re-examined (counted from the real store/lifecycle-manager
+        state right before the pass, the same collections `reconcile_once`
+        itself iterates) and how many actually changed state (`reconcile_once`'s
+        own real return value -- never a fabricated count). If a manual pass
+        is already in flight, returns `already_running=True` immediately
+        instead of stacking a second concurrent pass."""
+        if self._manual_run_lock.locked():
+            return {"already_running": True, "corrected": 0, "orders_examined": 0}
+        async with self._manual_run_lock:
+            pending_orders = self.store.list_pending_orders()
+            pending_exits = self.lifecycle_manager.list_pending_exits() if self.lifecycle_manager is not None else []
+            pending_entries = (
+                self.lifecycle_manager.list_pending_entries() if self.lifecycle_manager is not None else []
+            )
+            orders_examined = len(pending_orders) + len(pending_exits) + len(pending_entries)
+            corrected = await self.reconcile_once()
+            self.last_success_at = datetime.now(timezone.utc)
+            return {
+                "already_running": False,
+                "orders_examined": orders_examined,
+                "pending_orders_examined": len(pending_orders),
+                "pending_exits_examined": len(pending_exits),
+                "pending_entries_examined": len(pending_entries),
+                "corrected": corrected,
+            }
 
     async def reconcile_once(self) -> int:
         """Re-check every PENDING order once. Returns how many were corrected."""

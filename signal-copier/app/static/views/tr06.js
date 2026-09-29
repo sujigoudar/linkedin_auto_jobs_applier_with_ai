@@ -88,11 +88,16 @@
  *   - "Correlations" (P04, chart) has no verified report snapshot/
  *     definition IDs backing it in this build -- no plot when data is
  *     absent, per the panel's own contract; rendered unsupported.
- *   - TR-06-A02 "Request outcome reconciliation" still has NO owner-facing
- *     HTTP action anywhere in this codebase -- app/reconciliation.py's
- *     OrderReconciler only runs on its own background schedule (see its
- *     `start`/`_run_loop`), with no route to trigger a pass on demand.
- *     Rendered unsupported rather than faked.
+ *   - TR-06-A02 "Request outcome reconciliation": real owner-facing
+ *     `POST /reconciliation/run-now`, which calls `OrderReconciler.run_now`
+ *     -- the exact same `reconcile_once()` the background loop
+ *     (app/reconciliation.py) calls on its own schedule, run synchronously
+ *     so the operator gets the real, immediate outcome (orders/exits/
+ *     entries examined, how many actually changed state). Gated through
+ *     Components.confirmAction (same pattern as "Flatten account" below),
+ *     with a real "already running" outcome surfaced honestly if a manual
+ *     pass is already in flight (the backend guards against stacking a
+ *     second concurrent pass).
  *   - Filters: Account and Status are real (client-side, over the fetched
  *     page, same limitation TR-04 already discloses for its own
  *     filters). A dedicated Family/Purpose filter control is still
@@ -360,6 +365,59 @@
     });
   }
 
+  // --- Request outcome reconciliation (TR-06-A02): real POST
+  // /reconciliation/run-now, gated through Components.confirmAction (no
+  // typed confirmWord -- this is a read/re-check pass, not a destructive
+  // one, unlike Flatten account above). Preview is honest about what this
+  // triggers: a real, synchronous re-check of every still-pending order/
+  // exit/entry this service currently knows about -- not a guess at how
+  // many will actually change. ---
+  async function previewReconcile(ctx) {
+    const res = await ctx.fetchJSON("/orders");
+    if (res.status === 401 || res.status === 403) {
+      throw new Error(`Not authorized to read pending orders (HTTP ${res.status}).`);
+    }
+    const count = (res.ok && res.data && res.data.unreconciled_order_count) || 0;
+    return {
+      severity: count > 0 ? "info" : "info",
+      rows: [{ label: "Pending orders (account-wide)", value: String(count), tone: "neutral" }],
+      notes: [
+        "Runs the real reconciliation pass (app/reconciliation.py's OrderReconciler.reconcile_once) synchronously, " +
+          "right now, instead of waiting for its next scheduled background run.",
+        "If a manual pass is already in flight, this reports that honestly instead of stacking a second concurrent pass.",
+      ],
+    };
+  }
+
+  function renderReconcileResult(outcome) {
+    if (!outcome || !outcome.ok) {
+      const message = (outcome && outcome.error) || "Unknown error.";
+      return `<p class="action-confirm-result-heading">Reconciliation request failed</p><p class="action-confirm-note action-confirm-impact-crit">${escapeHtml(message)}</p>`;
+    }
+    const result = outcome.result || {};
+    if (result.already_running) {
+      return `<p class="action-confirm-result-heading">Already running</p><p class="action-confirm-note">A manual reconciliation pass was already in flight -- this request did not start a second, concurrent one.</p>`;
+    }
+    return `<p class="action-confirm-result-heading">Completed -- real result from POST /reconciliation/run-now</p>
+      <div class="action-confirm-row"><span class="ac-label">Orders examined</span><span class="ac-value">${fmtNum(result.orders_examined ?? 0)} (pending orders ${fmtNum(result.pending_orders_examined ?? 0)}, pending exits ${fmtNum(result.pending_exits_examined ?? 0)}, pending entries ${fmtNum(result.pending_entries_examined ?? 0)})</span></div>
+      <div class="action-confirm-row"><span class="ac-label">Corrected</span><span class="ac-value">${fmtNum(result.corrected ?? 0)}</span></div>`;
+  }
+
+  function wireReconcileButton(ctx, unknownEl) {
+    const btn = unknownEl.querySelector("#tr06-reconcile-btn");
+    if (!btn) return;
+    btn.addEventListener("click", async () => {
+      await Components.confirmAction({
+        title: "Request outcome reconciliation",
+        confirmLabel: "Run reconciliation now",
+        previewFn: () => previewReconcile(ctx),
+        onConfirm: () => postJSON("/reconciliation/run-now", {}),
+        renderResult: renderReconcileResult,
+      });
+      await load(ctx, {}, "orders");
+    });
+  }
+
   // ---------------------------------------------------------------------
   // Unknown outcome queue -- the real status='pending' subset of GET
   // /orders's own orders array (account-wide, not narrowed by this
@@ -572,12 +630,12 @@
           : "."
       }</p><div id="tr06-unknown-body"></div>`;
       Components.renderAttentionQueue(els.unknown.querySelector("#tr06-unknown-body"), { items: unknownItems });
-      const unsupportedActions = document.createElement("div");
-      StateMatrix.render(unsupportedActions, {
-        state: "unsupported",
-        reason: "Request outcome reconciliation (TR-06-A02) has no backing capability in this build -- app/reconciliation.py's OrderReconciler only runs on its own schedule; there is no owner-facing HTTP action to enqueue a readback on demand. Not implemented here rather than faked.",
-      });
-      els.unknown.appendChild(unsupportedActions);
+      const reconcileRow = document.createElement("div");
+      reconcileRow.className = "tr-controls-row";
+      reconcileRow.style.marginTop = "0.75rem";
+      reconcileRow.innerHTML = `<button type="button" id="tr06-reconcile-btn">Request outcome reconciliation…</button>`;
+      els.unknown.appendChild(reconcileRow);
+      wireReconcileButton(ctx, els.unknown);
     }
 
     const accounts = [...new Set(allOrders.map((o) => o.account_id))];

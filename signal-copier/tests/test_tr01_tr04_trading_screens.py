@@ -210,15 +210,15 @@ async def test_all_four_trading_screens_render_real_content(live_server):
             # sanely, and the deliberately-unimplemented ones must say so
             # rather than silently doing nothing.
             assert await page.query_selector("#tr03-exit-now") is not None
-            # `text_content` (not `inner_text`), deliberately -- the
-            # 2026-09 design-system redesign renders this reason inside a
-            # collapsed <details> (Components.renderCapabilityState), which
-            # `inner_text` (a rendered/visible-text read) does not surface
-            # while collapsed; the text is still real and present in the
-            # DOM, just visually receded per that redesign's own Level-3
-            # caveat treatment.
+            # TR-03-A01/A02: partial-reduction and stop-change previews are
+            # real, owner-gated, read-only endpoints (see
+            # app/lifecycle/manager.py's preview_reduction/
+            # preview_stop_change) wired into this screen's controls -- not
+            # unimplemented placeholders.
+            assert await page.query_selector("#tr03-reduce-preview-btn") is not None
+            assert await page.query_selector("#tr03-stop-preview-btn") is not None
             controls_text = await page.text_content("#tr03-p06")
-            assert "no backing capability" in controls_text
+            assert "reuse the exact same computation" in controls_text
 
             # Two more real signals, posted only now (after TR-02/TR-03
             # above already asserted against the single original BTCUSDT
