@@ -58,7 +58,7 @@ from app.economics import compute_account_economics
 from app.equity_history import EquitySnapshotter
 from app.execution_quality import compute_execution_quality
 from app.engine import SignalCopierEngine
-from app.statistics import compute_pairwise_correlation, compute_rolling_stats
+from app.statistics import compute_max_drawdown, compute_pairwise_correlation, compute_rolling_stats
 from app.logging_config import configure_structlog
 from app.metrics import render_metrics
 from app.errors import SignalValidationError
@@ -2162,15 +2162,98 @@ class BacktestRequest(BaseModel):
     fee_per_trade: float = Field(default=0.0, ge=0)
 
 
+def _build_equity_curve_and_drawdown(trades: list[dict]) -> dict:
+    """TR-15 research report: a real cumulative-P&L equity curve built from
+    this run's own resolved (WIN/LOSS) trades -- each point is one real
+    trade's own `exit_time`/`pnl`, running-summed in chronological exit
+    order (never a fabricated smooth line: a run with zero resolved
+    trades gets an empty curve, not an invented flat one). Max drawdown is
+    computed by calling app/statistics.py's `compute_max_drawdown` against
+    that same real curve -- reusing the one real, load-bearing peak-to-
+    trough walk this codebase already has, rather than re-implementing a
+    second (and possibly subtly different) drawdown calculation here."""
+    resolved = sorted(
+        (t for t in trades if t.get("exit_time") and t.get("pnl") is not None),
+        key=lambda t: t["exit_time"],
+    )
+    cumulative = 0.0
+    snapshots: list[dict] = []
+    for t in resolved:
+        cumulative += t["pnl"]
+        snapshots.append({"captured_at": t["exit_time"], "cumulative_pnl": cumulative})
+
+    drawdown = compute_max_drawdown(snapshots)
+    return {
+        "equity_curve": snapshots,
+        "max_drawdown": drawdown[0] if drawdown else None,
+        "max_drawdown_duration_seconds": drawdown[1] if drawdown else None,
+    }
+
+
+def _hash_file_contents(path: Path) -> str:
+    """Real SHA-256 fingerprint of a CSV file's bytes on disk -- used so
+    `compute_backtest_config_hash` is sensitive to the actual bars a run
+    replayed against, not just the path string (the same path can hold
+    different bars across two runs -- e.g. a re-exported/updated CSV --
+    and that's a genuinely different input, not the same config)."""
+    digest = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(65536), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def compute_backtest_config_hash(request: "BacktestRequest") -> str:
+    """TR-15: a real SHA-256 over every input that actually determines this
+    replay's output -- the risk this function exists to guard against is
+    two GENUINELY DIFFERENT configs (different period, different policy
+    params, different underlying CSV data) silently colliding under the
+    same hash and corrupting the run-comparison view. Every field below is
+    a real field POST /backtest's own `BacktestRequest` reads and actually
+    passes to `BacktestEngine`/`apply_cost_stress` -- nothing here is
+    decorative. `csv_paths` is fingerprinted by real file CONTENT (see
+    `_hash_file_contents`), not by path string, since the same path can
+    legitimately hold different bars across two runs.
+
+    A CSV path that doesn't exist (or can't be read) still gets a stable,
+    distinguishing marker (`"unreadable:<path>"`) rather than silently
+    omitting it from the hash -- a request with a missing CSV must not
+    hash the same as one with a present, empty-fingerprint CSV.
+    """
+    csv_fingerprints: dict[str, str] = {}
+    for symbol, raw_path in sorted(request.csv_paths.items()):
+        path = Path(raw_path)
+        try:
+            csv_fingerprints[symbol] = _hash_file_contents(path)
+        except OSError:
+            csv_fingerprints[symbol] = f"unreadable:{raw_path}"
+
+    payload = {
+        "source": request.source,
+        "symbol": request.symbol,
+        "start": request.start.isoformat(),
+        "end": request.end.isoformat(),
+        "max_hold_days": request.max_hold_days,
+        "slippage_bps": request.slippage_bps,
+        "fee_per_trade": request.fee_per_trade,
+        "csv_fingerprints": csv_fingerprints,
+    }
+    canonical = json.dumps(payload, sort_keys=True)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
 @app.post("/backtest")
 async def run_backtest(request: BacktestRequest, _owner: dict = Depends(require_owner)) -> dict:
     """Replays historical signals (from `SignalStore`) against locally
     supplied OHLC data. Only signals SAVED AFTER the stop_loss/take_profit/
     analyst columns were added (see app/db.py's `_COLUMN_MIGRATIONS`) carry
     that data — older rows replay as NO_EXIT_LEVELS. This is a synchronous,
-    in-process replay; no results are persisted (there's no Signal Backtests
-    workspace yet, just this endpoint — see README.md's "Signal Backtester"
-    section for the full list of what's still a documented gap)."""
+    in-process replay whose real result (request/summary/trades/config
+    hash) is now durably persisted to `backtest_runs` before the response
+    is returned (see app/db.py's `save_backtest_run`) -- reloading the
+    Signal Backtests screen no longer loses it. `GET /backtest/runs` lists
+    every persisted run; `GET /backtest/runs/{id}` returns one run's full
+    detail (including its trades)."""
     csv_paths = {symbol: Path(path) for symbol, path in request.csv_paths.items()}
     provider = CsvPriceHistoryProvider(csv_paths)
     engine = BacktestEngine(provider, max_hold=timedelta(days=request.max_hold_days))
@@ -2180,40 +2263,136 @@ async def run_backtest(request: BacktestRequest, _owner: dict = Depends(require_
     )
     report = engine.run(rows)
 
+    trades_payload = [
+        {
+            "signal_id": t.signal_id,
+            "source": t.source,
+            "symbol": t.symbol,
+            "side": t.side.value,
+            "analyst": t.analyst,
+            "entry_time": t.entry_time.isoformat(),
+            "entry_price": t.entry_price,
+            "quantity": t.quantity,
+            "stop_price": t.stop_price,
+            "target_price": t.target_price,
+            "outcome": t.outcome.value,
+            "exit_time": t.exit_time.isoformat() if t.exit_time else None,
+            "exit_price": t.exit_price,
+            "pnl": t.pnl,
+            "note": t.note,
+        }
+        for t in report.trades
+    ]
+
     response: dict[str, Any] = {
         "summary": report.summary(),
-        "trades": [
-            {
-                "signal_id": t.signal_id,
-                "source": t.source,
-                "symbol": t.symbol,
-                "side": t.side.value,
-                "analyst": t.analyst,
-                "entry_time": t.entry_time.isoformat(),
-                "entry_price": t.entry_price,
-                "quantity": t.quantity,
-                "stop_price": t.stop_price,
-                "target_price": t.target_price,
-                "outcome": t.outcome.value,
-                "exit_time": t.exit_time.isoformat() if t.exit_time else None,
-                "exit_price": t.exit_price,
-                "pnl": t.pnl,
-                "note": t.note,
-            }
-            for t in report.trades
-        ],
+        "trades": trades_payload,
+        **_build_equity_curve_and_drawdown(trades_payload),
     }
 
+    stressed_summary: dict | None = None
+    cost_stress_note: str | None = None
     if request.slippage_bps or request.fee_per_trade:
         stressed = apply_cost_stress(report, slippage_bps=request.slippage_bps, fee_per_trade=request.fee_per_trade)
-        response["stressed_summary"] = stressed.summary()
-        response["cost_stress_note"] = (
+        stressed_summary = stressed.summary()
+        cost_stress_note = (
             "Linear stress test only (flat slippage_bps against every resolved trade's exit price, plus a flat "
             "fee_per_trade) -- not a real broker fee schedule or a liquidity/market-impact model. See "
             "app/backtest/cost_stress.py's module docstring."
         )
+        response["stressed_summary"] = stressed_summary
+        response["cost_stress_note"] = cost_stress_note
+
+    config_hash = compute_backtest_config_hash(request)
+    request_payload = json.loads(request.model_dump_json())
+    run_id = store.save_backtest_run(
+        config_hash=config_hash,
+        created_at=datetime.now(timezone.utc),
+        request=request_payload,
+        summary=response["summary"],
+        trades=trades_payload,
+        stressed_summary=stressed_summary,
+        cost_stress_note=cost_stress_note,
+    )
+    response["run_id"] = run_id
+    response["config_hash"] = config_hash
 
     return response
+
+
+@app.get("/backtest/runs")
+async def list_backtest_runs(limit: int = Query(default=50, ge=1, le=500), _owner: dict = Depends(require_owner)) -> dict:
+    """TR-15: every persisted `POST /backtest` run's real identity/summary,
+    most recent first -- real, durable history (`app/db.py`'s
+    `backtest_runs`), not this browser tab's in-memory list. Trades are
+    omitted here for payload size; fetch a single run's detail below for
+    those."""
+    return {"runs": store.list_backtest_runs(limit=limit)}
+
+
+@app.get("/backtest/runs/{run_id}")
+async def get_backtest_run(run_id: int, _owner: dict = Depends(require_owner)) -> dict:
+    """TR-15: one persisted run's full real detail, including every
+    replayed trade -- exactly what `POST /backtest` computed and persisted
+    at run time, never re-derived."""
+    run = store.get_backtest_run(run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="backtest run not found")
+    run = {**run, **_build_equity_curve_and_drawdown(run["trades"])}
+    return run
+
+
+@app.get("/backtest/runs/{run_id}/trades/{signal_id}/market-path")
+async def get_backtest_trade_market_path(run_id: int, signal_id: str, _owner: dict = Depends(require_owner)) -> dict:
+    """TR-15 trade explorer: the real historical OHLC bars around one
+    replayed trade, re-read from the exact local CSV path this run's own
+    persisted request used (see `backtest_runs.request_json`'s
+    `csv_paths`) -- never a synthesized price path. Real IF that path is
+    still readable from this server process; if the file has since moved
+    or been deleted, this honestly reports that instead of fabricating a
+    path."""
+    run = store.get_backtest_run(run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="backtest run not found")
+    trade = next((t for t in run["trades"] if str(t["signal_id"]) == str(signal_id)), None)
+    if trade is None:
+        raise HTTPException(status_code=404, detail="trade not found in this run")
+
+    raw_path = run["request"].get("csv_paths", {}).get(trade["symbol"])
+    if not raw_path:
+        return {
+            "bars": [],
+            "available": False,
+            "note": f"This run's persisted request has no CSV path recorded for symbol {trade['symbol']!r}.",
+        }
+    path = Path(raw_path)
+    if not path.exists():
+        return {
+            "bars": [],
+            "available": False,
+            "note": f"The original CSV path ({raw_path}) is no longer readable from this server process "
+            "(moved or deleted since the run completed) -- the historical market path can't be replayed "
+            "from a file that no longer exists, and this endpoint won't fabricate one.",
+        }
+
+    provider = CsvPriceHistoryProvider({trade["symbol"]: path})
+    entry_time = datetime.fromisoformat(trade["entry_time"])
+    max_hold_days = run["request"].get("max_hold_days", 30.0)
+    bars = provider.get_bars(trade["symbol"], entry_time, entry_time + timedelta(days=max_hold_days))
+    return {
+        "bars": [
+            {
+                "timestamp": b.timestamp.isoformat(),
+                "open": b.open,
+                "high": b.high,
+                "low": b.low,
+                "close": b.close,
+                "volume": b.volume,
+            }
+            for b in bars
+        ],
+        "available": True,
+    }
 
 
 class ProviderFitSimulationRequest(BaseModel):

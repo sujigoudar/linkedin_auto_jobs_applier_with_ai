@@ -226,6 +226,30 @@
 }
 
 /* =====================================================================
+ * Monthly returns heatmap (TR-15 research report -- real month-bucketed
+ * P&L, see app/static/views/tr15.js's renderMonthlyHeatmap)
+ * ===================================================================== */
+.tr15-heatmap {
+  border-collapse: collapse;
+  width: 100%;
+}
+.tr15-heatmap th,
+.tr15-heatmap td {
+  border: 1px solid var(--border);
+  padding: var(--space-2);
+  text-align: center;
+  font-size: var(--level3-size);
+}
+.tr15-heatmap th {
+  color: var(--muted);
+  font-weight: 600;
+}
+.tr15-heat-cell {
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+
+/* =====================================================================
  * Attention queue (Components.renderAttentionQueue)
  * ===================================================================== */
 .attention-queue {

@@ -434,6 +434,42 @@ CREATE TABLE IF NOT EXISTS stop_target_events (
 CREATE INDEX IF NOT EXISTS idx_stop_target_events_account_symbol_at
     ON stop_target_events (account_id, symbol, at);
 
+-- TR-15: real, durable persistence for a completed POST /backtest replay --
+-- see app/backtest/replay.py's BacktestEngine / app/main.py's run_backtest
+-- for what actually produces every field stored here. Brand-new table, so
+-- CREATE TABLE IF NOT EXISTS alone is backfill-safe for a pre-existing
+-- on-disk database that predates this table (no _COLUMN_MIGRATIONS entry
+-- needed -- those are only for adding a column to an already-existing
+-- table).
+--
+-- `config_hash` is a real SHA-256 over the exact replay inputs (source,
+-- symbol filter, period, max_hold_days, cost-stress params, and a
+-- content fingerprint of every CSV file actually used -- not just its
+-- path, since the same path can hold different bars across runs) -- see
+-- app/main.py's `compute_backtest_config_hash`. Two runs sharing a hash
+-- really did replay the identical inputs; two runs that differ in ANY of
+-- those real inputs get different hashes, which is what makes the
+-- configuration-comparison view (Current policy vs candidate A vs
+-- candidate B) trustworthy rather than coincidental.
+--
+-- `request_json`/`summary_json`/`trades_json` are the exact real
+-- BacktestRequest and BacktestReport.summary()/trades this run actually
+-- produced (the same shapes POST /backtest already returned inline before
+-- this table existed) -- never re-derived or approximated after the fact.
+CREATE TABLE IF NOT EXISTS backtest_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    config_hash TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    request_json TEXT NOT NULL,
+    summary_json TEXT NOT NULL,
+    trades_json TEXT NOT NULL,
+    stressed_summary_json TEXT,
+    cost_stress_note TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_backtest_runs_created_at ON backtest_runs (created_at);
+CREATE INDEX IF NOT EXISTS idx_backtest_runs_config_hash ON backtest_runs (config_hash);
+
 CREATE INDEX IF NOT EXISTS idx_orders_executed_at ON orders (executed_at);
 CREATE INDEX IF NOT EXISTS idx_orders_account_id ON orders (account_id);
 CREATE INDEX IF NOT EXISTS idx_signals_received_at ON signals (received_at);
@@ -1672,6 +1708,96 @@ class SignalStore:
             }
             for r in rows
         ]
+
+    def save_backtest_run(
+        self,
+        *,
+        config_hash: str,
+        created_at: datetime,
+        request: dict,
+        summary: dict,
+        trades: list[dict],
+        stressed_summary: dict | None = None,
+        cost_stress_note: str | None = None,
+    ) -> int:
+        """TR-15: persist one completed POST /backtest replay -- the exact
+        real request/summary/trades that endpoint already computes, never
+        re-derived. Always an append (never an upsert): each run is its own
+        real, reproducible record, even if a later run shares the same
+        `config_hash` (a genuine repeat of the identical inputs) -- run
+        history is a durable log, not a "latest result per config" cache."""
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """INSERT INTO backtest_runs
+                   (config_hash, created_at, request_json, summary_json, trades_json,
+                    stressed_summary_json, cost_stress_note)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    config_hash,
+                    created_at.isoformat(),
+                    json.dumps(request),
+                    json.dumps(summary),
+                    json.dumps(trades),
+                    json.dumps(stressed_summary) if stressed_summary is not None else None,
+                    cost_stress_note,
+                ),
+            )
+            # lastrowid is None only for a statement that isn't a rowid-table
+            # INSERT -- see save_order_result's identical comment.
+            assert cursor.lastrowid is not None
+            return cursor.lastrowid
+
+    def list_backtest_runs(self, *, limit: int = 50) -> list[dict]:
+        """Every persisted run's real identity/summary (id, config_hash,
+        created_at, the real request that produced it, and its real
+        summary metrics) -- most recent first. Trades are deliberately
+        omitted here (that's a potentially large payload); fetch
+        `get_backtest_run` for the full per-trade detail."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT id, config_hash, created_at, request_json, summary_json,
+                          stressed_summary_json, cost_stress_note
+                   FROM backtest_runs
+                   ORDER BY created_at DESC, id DESC
+                   LIMIT ?""",
+                (limit,),
+            ).fetchall()
+        return [
+            {
+                "id": r[0],
+                "config_hash": r[1],
+                "created_at": r[2],
+                "request": json.loads(r[3]),
+                "summary": json.loads(r[4]),
+                "stressed_summary": json.loads(r[5]) if r[5] else None,
+                "cost_stress_note": r[6],
+            }
+            for r in rows
+        ]
+
+    def get_backtest_run(self, run_id: int) -> dict | None:
+        """This one persisted run's full real detail, including every
+        replayed trade -- `None` (never a fabricated empty run) if no run
+        with this id was ever persisted."""
+        with self._connect() as conn:
+            row = conn.execute(
+                """SELECT id, config_hash, created_at, request_json, summary_json, trades_json,
+                          stressed_summary_json, cost_stress_note
+                   FROM backtest_runs WHERE id = ?""",
+                (run_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "id": row[0],
+            "config_hash": row[1],
+            "created_at": row[2],
+            "request": json.loads(row[3]),
+            "summary": json.loads(row[4]),
+            "trades": json.loads(row[5]),
+            "stressed_summary": json.loads(row[6]) if row[6] else None,
+            "cost_stress_note": row[7],
+        }
 
     def list_orders_for_signal(self, signal_id: str) -> list[dict]:
         """Every order already recorded against this exact signal id — what
