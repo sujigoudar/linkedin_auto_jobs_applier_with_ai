@@ -15,12 +15,14 @@ from signal_platform_contracts import (
     FeePayload,
     InstrumentIdentity,
     PrivateAccountIdentity,
+    RoutingAdmissionOutcomePayload,
     SourceIdentity,
     SourceReceiptPayload,
     build_subject,
     compute_payload_hash,
 )
 
+from app.models.integration_inbox import InboxEvent
 from app.models.ledger import Book, LedgerEntry
 from app.models.sleeve import Sleeve
 from app.models.tenancy import Tenant
@@ -167,6 +169,59 @@ def _source_receipt_envelope(
     )
 
 
+def _routing_outcome_envelope(
+    *,
+    event_id="evt-outcome-1",
+    export_sequence=1,
+    source_stream="signal-copier:acct1",
+    originating_source_event_id="evt-src-1",
+    outcome="admitted_filled",
+    account_id="acct1",
+    broker="paper",
+    order_status="filled",
+    message=None,
+):
+    """Mirrors exactly what `signal-copier/app/export_events.py`'s own
+    `build_routing_admission_outcome_envelope` produces -- built from the
+    SAME shared `signal_platform_contracts` models, the same idiom every
+    other envelope builder in this file already uses (`_execution_envelope`,
+    `_fee_envelope`, `_source_receipt_envelope`) to exercise the real
+    ingest path without crossing this repo's own application-code
+    boundary into signal-copier's."""
+    account = PrivateAccountIdentity(account_id=account_id) if account_id is not None else None
+    payload = RoutingAdmissionOutcomePayload(
+        originating_source_event_id=originating_source_event_id,
+        outcome=outcome,
+        account=account,
+        broker=broker,
+        order_status=order_status,
+        message=message,
+    )
+    payload_dict = payload.model_dump(mode="json")
+    now = datetime.now(timezone.utc)
+    subject_clusters = {"source": SourceIdentity(
+        source_provider_id="telegram", parser_version="v3", source_event_id="src-evt-1",
+    )}
+    if account is not None:
+        subject_clusters["account"] = account
+    return EventEnvelope(
+        event_type=EventType.ROUTING_ADMISSION_OUTCOME,
+        event_id=event_id,
+        producer_id="signal-copier-instance-1",
+        source_stream=source_stream,
+        export_sequence=export_sequence,
+        subject=build_subject(**subject_clusters),
+        event_time=now,
+        effective_time=now,
+        availability_time=now,
+        receipt_time=now,
+        environment=Environment.LOCAL_SIM,
+        evidence_class=EvidenceClass.SYNTHETIC_FIXTURE,
+        payload_hash=compute_payload_hash(payload_dict),
+        payload=payload_dict,
+    )
+
+
 def test_register_export_stream_persists_the_registration(db_session):
     _seed_tenant(db_session)
     registration = register_export_stream(
@@ -280,6 +335,82 @@ def test_ingest_source_receipt_event_with_unknown_quantity_or_price_creates_no_l
 
     assert inbox_event.ledger_entry_id is None
     assert inbox_event.applied_at is not None
+
+
+def test_a_routing_admission_outcome_attaches_the_real_outcome_to_its_receipt(db_session):
+    """INT-027 "All permitted source outcomes reach research": a real,
+    later, correlated ROUTING_ADMISSION_OUTCOME applies onto its
+    originating SOURCE_RECEIPT's own InboxEvent.routing_outcome -- never
+    a second, separate row a reader has to join by hand."""
+    _seed_tenant(db_session)
+    register_export_stream(db_session, tenant_id="tenant-a", source_stream="signal-copier:acct1", environment="LOCAL_SIM")
+    db_session.commit()
+
+    receipt = _source_receipt_envelope(event_id="evt-src-1", export_sequence=0)
+    ingest_export_event(db_session, receipt.model_dump_json())
+    db_session.commit()
+
+    outcome = _routing_outcome_envelope(
+        event_id="evt-outcome-1", export_sequence=1, originating_source_event_id="evt-src-1",
+        outcome="admitted_filled",
+    )
+    outcome_row = ingest_export_event(db_session, outcome.model_dump_json())
+    db_session.commit()
+
+    assert outcome_row.applied_at is not None
+    receipt_row = db_session.get(InboxEvent, "evt-src-1")
+    assert receipt_row.routing_outcome == "admitted_filled"
+
+
+def test_a_routing_admission_outcome_only_attaches_to_the_exact_receipt_it_names(db_session):
+    """Two signals on the SAME stream (so a wrong correlation that just
+    grabbed "some" SOURCE_RECEIPT on the stream, rather than the exact
+    one named by `originating_source_event_id`, could look correct by
+    accident) get two DIFFERENT real outcomes -- each must land on its
+    own receipt only, never the other's."""
+    _seed_tenant(db_session)
+    register_export_stream(db_session, tenant_id="tenant-a", source_stream="signal-copier:acct1", environment="LOCAL_SIM")
+    db_session.commit()
+
+    receipt_1 = _source_receipt_envelope(event_id="evt-src-1", export_sequence=0)
+    receipt_2 = _source_receipt_envelope(event_id="evt-src-2", export_sequence=1)
+    ingest_export_event(db_session, receipt_1.model_dump_json())
+    db_session.commit()
+    ingest_export_event(db_session, receipt_2.model_dump_json())
+    db_session.commit()
+
+    outcome_for_2 = _routing_outcome_envelope(
+        event_id="evt-outcome-2", export_sequence=2, originating_source_event_id="evt-src-2",
+        outcome="rejected",
+    )
+    ingest_export_event(db_session, outcome_for_2.model_dump_json())
+    db_session.commit()
+
+    assert db_session.get(InboxEvent, "evt-src-2").routing_outcome == "rejected"
+    # The OTHER receipt must stay untouched -- a correlation that matched
+    # by something looser than the exact event_id (e.g. "the first
+    # receipt on this stream") would wrongly leave this None too, or
+    # wrongly set it.
+    assert db_session.get(InboxEvent, "evt-src-1").routing_outcome is None
+
+
+def test_a_routing_admission_outcome_for_an_unarrived_receipt_is_parked_not_dropped(db_session):
+    """The defensive branch -- see app/services/integration_inbox.py's
+    own ROUTING_ADMISSION_OUTCOME docstring for why this is normally
+    unreachable in practice (both event types share one stream/sequence
+    counter), but is still real and checked, not assumed."""
+    _seed_tenant(db_session)
+    register_export_stream(db_session, tenant_id="tenant-a", source_stream="signal-copier:acct1", environment="LOCAL_SIM")
+    db_session.commit()
+
+    outcome = _routing_outcome_envelope(
+        event_id="evt-outcome-orphan", export_sequence=0, originating_source_event_id="evt-src-never-arrived",
+    )
+    outcome_row = ingest_export_event(db_session, outcome.model_dump_json())
+    db_session.commit()
+
+    assert outcome_row.applied_at is None
+    assert outcome_row.parked_reason == "routing_outcome_target_not_found:evt-src-never-arrived"
 
 
 def test_a_source_receipt_matching_an_admitted_sleeve_is_tagged_with_it(db_session):

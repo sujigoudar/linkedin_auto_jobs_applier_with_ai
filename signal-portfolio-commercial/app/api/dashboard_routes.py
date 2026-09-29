@@ -535,6 +535,7 @@ def source_coverage_endpoint(
                 "disposition": row.disposition,
                 "parked_reason": row.parked_reason,
                 "ledger_entry_id": row.ledger_entry_id,
+                "routing_outcome": row.routing_outcome,
             }
             for row in report.rows
         ],

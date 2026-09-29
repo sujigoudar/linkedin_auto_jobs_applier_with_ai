@@ -9,11 +9,22 @@ one this file's own docstring above describes), `_handle_signal` ALSO
 exports a SOURCE_RECEIPT for every non-CLOSE signal, unconditionally,
 right after `save_signal` -- BEFORE routing is even resolved. That
 event lives on its own stream (`signal-copier:source:<source>`), never
-the account's own stream an EXECUTION_APPLIED uses, so these two event
+the account's own stream an EXECUTION_APPLIED uses, so those two event
 types never share an export_sequence counter; tests below that care
 specifically about the EXECUTION_APPLIED (or the per-account sequence)
 filter `list_undelivered_export_events()` down to that event_type/
-stream rather than assuming it's the only thing in the outbox."""
+stream rather than assuming it's the only thing in the outbox.
+
+INT-027 "All permitted source outcomes reach research": `_handle_signal`
+ALSO exports a real `ROUTING_ADMISSION_OUTCOME` for every real signal/
+account outcome it reaches, correlated back to that same signal's own
+SOURCE_RECEIPT via `RoutingAdmissionOutcomePayload.
+originating_source_event_id`. It lives on the SAME
+`signal-copier:source:<source>` stream the SOURCE_RECEIPT itself uses
+(both are about the source's own recommendation, never a private
+per-account ledger) -- so the two DO interleave on that one stream's
+own export_sequence counter, unlike EXECUTION_APPLIED's separate
+per-account stream."""
 import pytest
 from signal_platform_contracts import EventType, EvidenceClass
 
@@ -50,8 +61,10 @@ async def test_a_real_fill_produces_a_real_undelivered_export_event(store):
     undelivered = store.list_undelivered_export_events()
     executions = _by_type(undelivered, EventType.EXECUTION_APPLIED)
     receipts = _by_type(undelivered, EventType.SOURCE_RECEIPT)
+    outcomes = _by_type(undelivered, EventType.ROUTING_ADMISSION_OUTCOME)
     assert len(executions) == 1
     assert len(receipts) == 1  # the signal's own SOURCE_RECEIPT, exported before routing
+    assert len(outcomes) == 1  # INT-027: the real routing outcome, exported once routing resolves
 
     envelope = executions[0]
     assert envelope.source_stream == "signal-copier:acct1"
@@ -62,6 +75,12 @@ async def test_a_real_fill_produces_a_real_undelivered_export_event(store):
 
     assert receipts[0].source_stream == "signal-copier:source:tradingview"
     assert receipts[0].payload["quantity"] == "2.0"
+
+    outcome_envelope = outcomes[0]
+    assert outcome_envelope.source_stream == "signal-copier:source:tradingview"
+    assert outcome_envelope.payload["outcome"] == "admitted_filled"
+    assert outcome_envelope.payload["originating_source_event_id"] == receipts[0].event_id
+    assert outcome_envelope.payload["account"]["account_id"] == "acct1"
 
 
 @pytest.mark.asyncio
@@ -83,6 +102,13 @@ async def test_a_rejected_order_produces_no_execution_applied_event(store):
     # was recommended, independent of whether routing ever sent it
     # anywhere.
     assert len(_by_type(undelivered, EventType.SOURCE_RECEIPT)) == 1
+    # INT-027: no destination even matched this symbol's routing rule --
+    # a real, honest "not_routed" outcome, still correlated to the
+    # receipt above.
+    outcomes = _by_type(undelivered, EventType.ROUTING_ADMISSION_OUTCOME)
+    assert len(outcomes) == 1
+    assert outcomes[0].payload["outcome"] == "not_routed"
+    assert outcomes[0].payload["account"] is None
 
 
 @pytest.mark.asyncio
@@ -101,6 +127,10 @@ async def test_a_missing_broker_error_produces_no_execution_applied_event(store)
     undelivered = store.list_undelivered_export_events()
     assert _by_type(undelivered, EventType.EXECUTION_APPLIED) == []
     assert len(_by_type(undelivered, EventType.SOURCE_RECEIPT)) == 1
+    outcomes = _by_type(undelivered, EventType.ROUTING_ADMISSION_OUTCOME)
+    assert len(outcomes) == 1
+    assert outcomes[0].payload["outcome"] == "error"
+    assert outcomes[0].payload["account"]["account_id"] == "acct1"
 
 
 @pytest.mark.asyncio
@@ -119,8 +149,15 @@ async def test_two_fills_on_the_same_account_get_increasing_export_sequences(sto
     undelivered = store.list_undelivered_export_events()
     executions = _by_type(undelivered, EventType.EXECUTION_APPLIED)
     receipts = _by_type(undelivered, EventType.SOURCE_RECEIPT)
+    outcomes = _by_type(undelivered, EventType.ROUTING_ADMISSION_OUTCOME)
     assert sorted(e.export_sequence for e in executions) == [0, 1]  # own stream: signal-copier:acct1
-    assert sorted(e.export_sequence for e in receipts) == [0, 1]  # own stream: signal-copier:source:tradingview
+    # SOURCE_RECEIPT and ROUTING_ADMISSION_OUTCOME share ONE stream
+    # (signal-copier:source:tradingview) and so share ONE sequence
+    # counter -- two signals each producing one of each interleaves to
+    # [0, 1, 2, 3] across the four rows, never [0, 1] for either alone.
+    assert sorted(e.export_sequence for e in receipts + outcomes) == [0, 1, 2, 3]
+    assert len(receipts) == 2
+    assert len(outcomes) == 2
 
 
 @pytest.mark.asyncio
@@ -144,6 +181,7 @@ async def test_the_produced_envelope_is_accepted_end_to_end_by_the_real_relay_wo
     results = await engine.handle_signal(signal)
     expected_execution_event_id = f"execution-applied:acct1:{results[0].broker_order_id}"
     expected_receipt_event_id = f"source-receipt:{signal.id}"
+    expected_outcome_event_id = f"routing-outcome:{signal.id}:acct1"
 
     class _FakeResponse:
         def raise_for_status(self):
@@ -151,12 +189,14 @@ async def test_the_produced_envelope_is_accepted_end_to_end_by_the_real_relay_wo
 
         def json(self):
             # One result per event in the batch -- the outbox now holds
-            # both this signal's own SOURCE_RECEIPT and the resulting
-            # EXECUTION_APPLIED (see this module's own docstring).
+            # this signal's own SOURCE_RECEIPT, the resulting
+            # EXECUTION_APPLIED, and its own ROUTING_ADMISSION_OUTCOME
+            # (see this module's own docstring).
             return {
                 "results": [
                     {"status": "applied", "event_id": expected_execution_event_id},
                     {"status": "applied", "event_id": expected_receipt_event_id},
+                    {"status": "applied", "event_id": expected_outcome_event_id},
                 ]
             }
 
@@ -171,7 +211,10 @@ async def test_the_produced_envelope_is_accepted_end_to_end_by_the_real_relay_wo
         signing_secret="s", http_post=fake_post,
     )
 
-    assert set(outcome.delivered_event_ids) == {expected_execution_event_id, expected_receipt_event_id}
+    assert set(outcome.delivered_event_ids) == {
+        expected_execution_event_id, expected_receipt_event_id, expected_outcome_event_id,
+    }
     assert b"execution_applied" in captured["content"]
     assert b"source_receipt" in captured["content"]
+    assert b"routing_admission_outcome" in captured["content"]
     assert store.list_undelivered_export_events() == []

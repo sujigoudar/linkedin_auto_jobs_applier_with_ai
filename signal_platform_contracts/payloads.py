@@ -51,6 +51,72 @@ class SourceReceiptPayload(BaseModel):
     _validate_side = field_validator("side")(_known_side)
 
 
+#: The real, distinct routing/admission/fill outcome states signal-copier's
+#: own `app/engine.py` actually produces for one destination account (or,
+#: for the first two, for a signal with no destination account reached at
+#: all) -- see that module's own `_export_source_outcome` docstring for
+#: exactly which code path produces each one. This is NOT
+#: INT-027's own requested taxonomy verbatim (admitted/rejected/unfilled/
+#: canceled/loss/commentary) -- "canceled" has no real code path in this
+#: engine (no cancellation logic exists anywhere in app/engine.py or its
+#: broker adapters), and "loss"/"commentary" are not routing outcomes at
+#: all (a loss is a P&L fact computed later from closed positions, not a
+#: state this engine's routing/admission step ever reports) -- inventing
+#: either here would be exactly the fabrication this contract package's
+#: own tests (INT-035) and this integration's own standing rules forbid.
+_KNOWN_ROUTING_OUTCOMES = (
+    "not_routed",  # no destination account configured for this source/symbol at all
+    "disabled_by_settings",  # a destination account/provider/analyst override skipped this entry
+    "admitted_filled",  # admitted (INT-027's own "admitted") and the broker confirmed a fill
+    "admitted_unfilled",  # admitted but only PENDING so far (INT-027's own "unfilled")
+    "rejected",  # a real, checked refusal: routing/asset-class/risk/capital/broker rejection
+    "error",  # an operational failure (no broker adapter, broker call raised/errored)
+)
+
+
+def _known_routing_outcome(value: str) -> str:
+    if value not in _KNOWN_ROUTING_OUTCOMES:
+        raise ValueError(f"{value!r} is not a known routing outcome (expected one of {_KNOWN_ROUTING_OUTCOMES})")
+    return value
+
+
+class RoutingAdmissionOutcomePayload(BaseModel):
+    """`EventType.ROUTING_ADMISSION_OUTCOME` -- the real routing/admission/
+    fill outcome for one `SOURCE_RECEIPT`, exported as a separate,
+    correlated follow-up event once that outcome is actually known
+    (INTEGRATION_ACCEPTANCE_CASES.json INT-027 "All permitted source
+    outcomes reach research": a `SOURCE_RECEIPT` alone never encoded
+    WHICH routing outcome produced it -- this payload is exactly that
+    missing distinction). Mirrors `FeePayload`'s own late-arriving-
+    correlated-update idiom, but correlates by `originating_source_event_id`
+    (the originating `SOURCE_RECEIPT`'s own `EventEnvelope.event_id`)
+    rather than by an execution's `(broker, broker_order_id)` identity --
+    a routing outcome exists before any broker order necessarily does
+    (e.g. `rejected`/`error`/`not_routed` never reach a broker at all).
+
+    `account` is `None` exactly when no destination account was ever
+    reached for this signal (`not_routed`) -- never fabricated. `outcome`
+    is one of `_KNOWN_ROUTING_OUTCOMES` above; see that tuple's own
+    comment for the two INT-027-requested categories this engine
+    genuinely cannot produce."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    originating_source_event_id: str
+    outcome: str
+    account: PrivateAccountIdentity | None = None
+    broker: str | None = None
+    #: The real, underlying `OrderStatus` value (signal-copier's own
+    #: `app/models.py`) when an order was actually attempted -- `None`
+    #: for `not_routed`/`disabled_by_settings`, where no order ever was.
+    order_status: str | None = None
+    #: The engine's own real rejection/error message, carried verbatim
+    #: (never re-worded or summarized) when one exists.
+    message: str | None = None
+
+    _validate_outcome = field_validator("outcome")(_known_routing_outcome)
+
+
 class FeePayload(BaseModel):
     """`EventType.FEE` -- a confirmed fee for a specific already-applied
     execution, arriving separately from the fill itself

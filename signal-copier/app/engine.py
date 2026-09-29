@@ -78,7 +78,11 @@ from app import config
 from app.brokers.base import BrokerAdapter
 from app.capital_allocator import CapitalAllocator, confirmed_open_notional
 from app.db import SignalStore
-from app.export_events import build_execution_applied_envelope, build_source_receipt_envelope
+from app.export_events import (
+    build_execution_applied_envelope,
+    build_routing_admission_outcome_envelope,
+    build_source_receipt_envelope,
+)
 from app.lifecycle.manager import PositionLifecycleManager
 from app.lifecycle.models import PositionPlan, Target, TargetAction
 from app.logging_config import bind_signal_context
@@ -89,6 +93,20 @@ from app.routing import RoutingConfig
 
 logger = logging.getLogger(__name__)
 structured_logger = structlog.get_logger(__name__)
+
+#: INT-027: the real `OrderStatus` -> `RoutingAdmissionOutcomePayload.outcome`
+#: mapping -- see `app/export_events.py`'s own
+#: `build_routing_admission_outcome_envelope` docstring for what each
+#: outcome string means and signal_platform_contracts.payloads's own
+#: `_KNOWN_ROUTING_OUTCOMES` for why "canceled"/"loss"/"commentary" (part
+#: of INT-027's own requested taxonomy) are deliberately absent -- no
+#: code path in this engine or its broker adapters produces either.
+_OUTCOME_BY_ORDER_STATUS = {
+    OrderStatus.FILLED: "admitted_filled",
+    OrderStatus.PENDING: "admitted_unfilled",
+    OrderStatus.REJECTED: "rejected",
+    OrderStatus.ERROR: "error",
+}
 
 
 class SignalCopierEngine:
@@ -183,6 +201,49 @@ class SignalCopierEngine:
         if envelope is not None:
             self.store.append_export_event(envelope)
 
+    def _export_routing_outcome(
+        self,
+        signal: Signal,
+        *,
+        outcome: str,
+        account: DestinationAccount | None = None,
+        order_status: OrderStatus | None = None,
+        message: str | None = None,
+    ) -> None:
+        """INT-027 "All permitted source outcomes reach research": exports
+        this signal's real routing/admission/fill outcome as a separate
+        `ROUTING_ADMISSION_OUTCOME` event, correlated to its own
+        `SOURCE_RECEIPT` (see app/export_events.py's own
+        `build_routing_admission_outcome_envelope` docstring). Called
+        unconditionally at every real point in `_handle_signal` where
+        such an outcome becomes known -- for a signal with no
+        destinations at all, for an account skipped before any order was
+        attempted, and for every account that DID reach an order attempt
+        (whatever its `OrderResult.status` turned out to be) -- the same
+        "never miss one" property `_export_source_receipt` already has
+        for the receipt itself. Lives on the SAME stream as the receipt
+        (`signal-copier:source:<source>`), never an account's own stream
+        -- this is about the source's own recommendation reaching its
+        outcome, not a private per-account ledger. A no-op (nothing
+        appended) for a `Side.CLOSE` signal -- see the builder's own
+        docstring for why."""
+        source_stream = f"signal-copier:source:{signal.source}"
+        envelope = build_routing_admission_outcome_envelope(
+            signal,
+            outcome=outcome,
+            source_stream=source_stream,
+            export_sequence=self.store.next_export_sequence(source_stream),
+            producer_id=config.RELAY_PRODUCER_ID,
+            evidence_class=EvidenceClass[config.RELAY_EVIDENCE_CLASS],
+            environment=Environment[config.RELAY_ENVIRONMENT],
+            account=account,
+            broker=account.broker if account is not None else None,
+            order_status=order_status,
+            message=message,
+        )
+        if envelope is not None:
+            self.store.append_export_event(envelope)
+
     def _effective_settings(self, signal: Signal, account: DestinationAccount) -> SettingsOverride:
         account_defaults = SettingsOverride(
             multiplier=account.multiplier,
@@ -246,6 +307,7 @@ class SignalCopierEngine:
         )
         if not destinations:
             logger.info("no destinations configured for source=%s symbol=%s", signal.source, signal.symbol)
+            self._export_routing_outcome(signal, outcome="not_routed")
             return []
 
         results: list[OrderResult] = []
@@ -262,6 +324,7 @@ class SignalCopierEngine:
                     signal.source,
                     signal.analyst,
                 )
+                self._export_routing_outcome(signal, outcome="disabled_by_settings", account=raw_account)
                 continue
             # A per-(signal, account) view with provider/analyst overrides applied —
             # every downstream call reads sizing/managed_lifecycle from this, not
@@ -302,6 +365,13 @@ class SignalCopierEngine:
                 )
                 self.store.save_order_result(result, purpose=order_purpose, family_id=order_family_id)
                 results.append(result)
+                self._export_routing_outcome(
+                    signal,
+                    outcome=_OUTCOME_BY_ORDER_STATUS[result.status],
+                    account=account,
+                    order_status=result.status,
+                    message=result.message,
+                )
                 continue
 
             if not broker.can_trade_asset_class(signal.asset_class):
@@ -324,6 +394,13 @@ class SignalCopierEngine:
                     result, broker=account.broker, purpose=order_purpose, family_id=order_family_id
                 )
                 results.append(result)
+                self._export_routing_outcome(
+                    signal,
+                    outcome=_OUTCOME_BY_ORDER_STATUS[result.status],
+                    account=account,
+                    order_status=result.status,
+                    message=result.message,
+                )
                 continue
 
             symbol = symbol_for_account(signal, account)
@@ -359,6 +436,13 @@ class SignalCopierEngine:
                     family_id=order_family_id,
                 )
                 results.append(result)
+                self._export_routing_outcome(
+                    signal,
+                    outcome=_OUTCOME_BY_ORDER_STATUS[result.status],
+                    account=account,
+                    order_status=result.status,
+                    message=result.message,
+                )
                 continue
 
             if signal.side == Side.CLOSE:
@@ -370,6 +454,17 @@ class SignalCopierEngine:
                 # honest default already set above), not re-derived here.
                 result = await self._resolve_and_submit_plain_close(signal, account, symbol, broker)
                 results.append(result)
+                # A CLOSE signal never gets a SOURCE_RECEIPT (see
+                # build_source_receipt_envelope), so this is a real no-op
+                # here -- called anyway for the same unconditional-call-site
+                # shape as every other branch in this loop.
+                self._export_routing_outcome(
+                    signal,
+                    outcome=_OUTCOME_BY_ORDER_STATUS[result.status],
+                    account=account,
+                    order_status=result.status,
+                    message=result.message,
+                )
                 continue
 
             order_signal, quantity = signal, size_for_account(signal, account)
@@ -404,6 +499,13 @@ class SignalCopierEngine:
                     family_id=order_family_id,
                 )
                 results.append(result)
+                self._export_routing_outcome(
+                    signal,
+                    outcome=_OUTCOME_BY_ORDER_STATUS[result.status],
+                    account=account,
+                    order_status=result.status,
+                    message=result.message,
+                )
                 continue
 
             admitted, notional, rejection = await self._try_reserve_capital(account, order_signal, quantity)
@@ -419,6 +521,13 @@ class SignalCopierEngine:
                     family_id=order_family_id,
                 )
                 results.append(rejection)
+                self._export_routing_outcome(
+                    signal,
+                    outcome=_OUTCOME_BY_ORDER_STATUS[rejection.status],
+                    account=account,
+                    order_status=rejection.status,
+                    message=rejection.message,
+                )
                 continue
 
             # PU-A2: the real moment this engine actually calls the broker --
@@ -487,6 +596,13 @@ class SignalCopierEngine:
                 family_id=order_family_id,
             )
             results.append(result)
+            self._export_routing_outcome(
+                signal,
+                outcome=_OUTCOME_BY_ORDER_STATUS[result.status],
+                account=account,
+                order_status=result.status,
+                message=result.message,
+            )
 
         return results
 
