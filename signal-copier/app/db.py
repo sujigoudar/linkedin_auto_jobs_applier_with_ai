@@ -14,6 +14,7 @@ from typing import Iterator
 
 from alembic import command  # type: ignore[attr-defined]  # real, working import; alembic's __init__.py doesn't re-export it in a way mypy can see
 from alembic.config import Config as AlembicConfig
+from alembic.script import ScriptDirectory
 
 from app.models import OrderResult, Side, Signal
 from app.signal_episode import EpisodeLifecycleState, SignalEpisode
@@ -33,6 +34,19 @@ def _alembic_config(db_path: Path) -> AlembicConfig:
     cfg.set_main_option("script_location", str(_ALEMBIC_DIR))
     cfg.set_main_option("sqlalchemy.url", f"sqlite:///{db_path}")
     return cfg
+
+
+def alembic_code_head() -> str | None:
+    """TR-16: the migration revision this DEPLOYED CODE (alembic/versions/
+    on disk, not any particular database file) expects to be at head --
+    read straight from the same `alembic/` scripts `_alembic_config`
+    points every real `SignalStore` at. Compared against a live
+    `SignalStore.schema_version()` this is the real "is this database's
+    schema reproducible from this exact release" check E01 calls for --
+    never a hardcoded version string that could silently drift from the
+    real migration scripts."""
+    script_dir = ScriptDirectory(str(_ALEMBIC_DIR))
+    return script_dir.get_current_head()
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS signals (
@@ -408,6 +422,17 @@ class SignalStore:
         if already_tracked:
             return
         command.stamp(_alembic_config(self.db_path), "head")
+
+    def schema_version(self) -> str | None:
+        """TR-16 (E01 bounded, deployment-reproducibility slice): the
+        `alembic_version` row this exact database file is actually
+        stamped at right now -- real, live evidence read straight off
+        disk, not a cached/assumed value. `None` only for a database this
+        process hasn't opened/stamped yet (shouldn't happen once
+        `__init__` has run, but never guessed at)."""
+        with self._connect() as conn:
+            row = conn.execute("SELECT version_num FROM alembic_version").fetchone()
+        return row[0] if row else None
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
@@ -818,7 +843,8 @@ class SignalStore:
     def list_recent_signals(self, limit: int = 50) -> list[dict]:
         with self._connect() as conn:
             rows = conn.execute(
-                """SELECT id, source, symbol, side, asset_class, quantity, price, received_at
+                """SELECT id, source, symbol, side, asset_class, quantity, price, received_at, analyst,
+                          stop_loss, take_profit, raw
                    FROM signals ORDER BY received_at DESC LIMIT ?""",
                 (limit,),
             ).fetchall()
@@ -832,6 +858,27 @@ class SignalStore:
                 "quantity": r[5],
                 "price": r[6],
                 "received_at": r[7],
+                # TR-04 (incoming signal stream): already-stored per-signal
+                # attribution (see app/db.py's `_COLUMN_MIGRATIONS` --
+                # `signals.analyst` predates this projection; it just wasn't
+                # previously selected here) -- '' for "no analyst on the
+                # signal" (same convention `save_signal` already writes),
+                # never fabricated.
+                "analyst": r[8] or None,
+                # TR-05 (signal evidence and plan preview): `stop_loss` and
+                # `take_profit` were always persisted per-signal (see the
+                # `signals` table above and `save_signal` below) but never
+                # previously projected out of this method -- TR-05's
+                # "Risk/stop/horizon plan" panel needs the actual resolved
+                # values, not just quantity/price. `raw` is the exact,
+                # unmodified payload/text this signal was parsed from --
+                # TR-05's "Original/revisions" panel's only real evidence
+                # (this schema has no revision history; only the single
+                # received version is ever stored, which that panel says
+                # honestly rather than inventing a revision list).
+                "stop_loss": r[9],
+                "take_profit": r[10],
+                "raw": json.loads(r[11]) if r[11] else {},
             }
             for r in rows
         ]

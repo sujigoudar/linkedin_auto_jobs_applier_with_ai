@@ -8,6 +8,7 @@ from sqlalchemy import select
 
 from app.models.local_auth import AuthToken, AuthTokenType, WebSession
 from app.models.tenancy import Membership, MembershipRole, UserIdentity
+from app.services.audit_log import list_audit_events
 from app.services.local_auth import (
     AccountAlreadyExistsError,
     InvalidCredentialsError,
@@ -183,3 +184,41 @@ def test_delete_web_session_revokes_it(db_session):
     delete_web_session(db_session, session_id=session_id)
 
     assert get_web_session(db_session, session_id=session_id) is None
+
+
+def test_create_web_session_appends_a_real_login_audit_event(db_session):
+    """AD-16/AD-11's own previously-documented 'no session/audit-log
+    store' gap -- now closed by app/services/audit_log.py."""
+    user, _token = create_account(db_session, email="l@example.com", password="pw-12345678", tenant_display_name="t")
+    membership = db_session.scalar(select(Membership).where(Membership.user_id == user.user_id))
+
+    create_web_session(db_session, user_id=user.user_id, tenant_id=membership.tenant_id, role=membership.role)
+
+    events = list_audit_events(db_session, tenant_id=membership.tenant_id, object_id=user.user_id)
+    assert len(events) == 1
+    assert events[0].action == "login"
+    assert events[0].object_type == "session"
+    assert events[0].actor_user_id == user.user_id
+
+
+def test_delete_web_session_appends_a_real_logout_audit_event(db_session):
+    user, _token = create_account(db_session, email="m@example.com", password="pw-12345678", tenant_display_name="t")
+    membership = db_session.scalar(select(Membership).where(Membership.user_id == user.user_id))
+    session_id, _csrf = create_web_session(db_session, user_id=user.user_id, tenant_id=membership.tenant_id, role=membership.role)
+
+    delete_web_session(db_session, session_id=session_id)
+
+    events = list_audit_events(db_session, tenant_id=membership.tenant_id, object_id=user.user_id)
+    assert sorted(e.action for e in events) == ["login", "logout"]
+
+
+def test_delete_web_session_on_an_unknown_session_id_writes_no_audit_event(db_session):
+    """A no-op delete (already-expired/unknown session_id) writes
+    nothing -- matches the delete itself being a no-op."""
+    user, _token = create_account(db_session, email="n@example.com", password="pw-12345678", tenant_display_name="t")
+    membership = db_session.scalar(select(Membership).where(Membership.user_id == user.user_id))
+
+    delete_web_session(db_session, session_id="not-a-real-session-id")
+
+    events = list_audit_events(db_session, tenant_id=membership.tenant_id, object_id=user.user_id)
+    assert events == []

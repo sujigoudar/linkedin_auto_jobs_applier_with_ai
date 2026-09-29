@@ -71,6 +71,43 @@ class _Settings(BaseSettings):
     #: header by default.
     FORCE_SECURE_COOKIES: bool = False
 
+    #: Base URL of the signal-copier deployment this service's own public
+    #: catalog fit-simulator (PU-03's "Try our fit simulator") calls --
+    #: e.g. "http://localhost:8000" in local/dev. Blank means the feature
+    #: is not configured; app/services/fit_simulation_client.py refuses to
+    #: guess a destination and honestly reports the simulator as
+    #: unavailable rather than silently no-op'ing.
+    SIGNAL_COPIER_BASE_URL: str = ""
+
+    #: The shared signing secret with signal-copier's own
+    #: CATALOG_FIT_SIM_SIGNING_SECRET (app/services/catalog_fit_sim_auth.py
+    #: there) -- signs every `POST /catalog/providers/{source}/fit-
+    #: simulation` request this service's own backend makes on behalf of
+    #: an anonymous public-catalog visitor. Deliberately a SEPARATE secret
+    #: from RELAY_SIGNING_SECRET above (same "a stolen credential must not
+    #: become a different credential" reasoning INTEGRATION_DECISION.md
+    #: S11 already gives for that one vs the billing-webhook secret): this
+    #: token authenticates to exactly one signal-copier route and nothing
+    #: else. A placeholder for local/test use only; a real deployment
+    #: sets this via a secrets manager, kept in sync with signal-copier's
+    #: own identically-named setting.
+    CATALOG_FIT_SIM_SIGNING_SECRET: str = "LOCAL_SIM-not-a-real-catalog-fit-sim-secret-change-if-ever-deployed"
+
+    #: Which signal-copier `source` (and which local CSV price paths, per
+    #: symbol) backs each PUBLISHED product's own fit-simulator, keyed by
+    #: product slug -- a JSON object:
+    #: '{"<slug>": {"source": "<signal-copier source name>",
+    #:              "csv_paths": {"<symbol>": "<local CSV path>"}}}'.
+    #: Empty ("{}", the default) means NO product has real wiring for
+    #: this feature yet -- app/services/fit_simulation_client.py then
+    #: honestly reports the simulator as unavailable for every slug,
+    #: rather than fabricating a source name or price data that was never
+    #: really configured. This is real, disclosed configuration space for
+    #: an operator to fill in once real historical price CSVs exist for a
+    #: published product's underlying instrument(s), not a claim that any
+    #: currently do.
+    FIT_SIM_CATALOG_CONFIG_JSON: str = "{}"
+
 
 _settings = _Settings()
 
@@ -81,3 +118,7 @@ STRIPE_WEBHOOK_SECRET = _settings.STRIPE_WEBHOOK_SECRET
 RELAY_DATABASE_URL = _settings.RELAY_DATABASE_URL
 RELAY_SIGNING_SECRET = _settings.RELAY_SIGNING_SECRET
 FORCE_SECURE_COOKIES = _settings.FORCE_SECURE_COOKIES
+
+SIGNAL_COPIER_BASE_URL = _settings.SIGNAL_COPIER_BASE_URL
+CATALOG_FIT_SIM_SIGNING_SECRET = _settings.CATALOG_FIT_SIM_SIGNING_SECRET
+FIT_SIM_CATALOG_CONFIG_JSON = _settings.FIT_SIM_CATALOG_CONFIG_JSON

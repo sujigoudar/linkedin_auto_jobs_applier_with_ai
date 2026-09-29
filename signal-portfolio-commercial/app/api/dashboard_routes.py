@@ -25,8 +25,12 @@ what is and is not implemented yet.
   historical data this environment doesn't have.
 - AD-01 "Commercial operations overview": a real cross-subsystem
   summary (release blockers per product, active subscriptions,
-  unknown-state publications). "Open incidents" has no backing model
-  at all yet, so it's shown as unsupported, never a fabricated zero.
+  unknown-state publications). "Open incidents" now has a real backing
+  model (app/models/incident.py, AD-21) with its own real register
+  linked from this overview at /ops/incidents; this overview itself
+  still does not compute a decorative headline count from it -- AD-21's
+  own spec: "No numeric headline required. Do not add a decorative
+  performance KPI."
 - AD-08 "Release and change approvals": a real release-review queue.
   Requesting review (from AD-07) is refused unless the product's
   publication blockers are genuinely empty; deciding enforces a real
@@ -53,7 +57,15 @@ what is and is not implemented yet.
   No NAV/marks-history model exists for a standard portfolio product,
   so the performance/drawdown panel always honestly reports the track
   record as unavailable, never a guessed curve. A draft/unpublished
-  slug returns a scoped 404, never its content.
+  slug returns a scoped 404, never its content. "Try our fit
+  simulator" is a real, bounded call to signal-copier's own signed,
+  non-owner `POST /catalog/providers/{source}/fit-simulation` (see
+  app/services/fit_simulation_client.py) -- honestly rendered as
+  unavailable for every product today, since no product yet has a
+  real signal-copier source mapping or real historical price CSV
+  configured (`config.FIT_SIM_CATALOG_CONFIG_JSON` defaults to empty);
+  the wiring itself is real and tested end to end with the
+  cross-service HTTP call mocked at the boundary.
 - PU-05 "Pricing and service compatibility": real plan-cards data
   (app/models/billing.py's TEST_MODE_MONTHLY_PRICE_CENTS), but ONLY
   once billing is genuinely connected -- those fixture prices are
@@ -69,8 +81,13 @@ what is and is not implemented yet.
   colleague's operator role (reuses the existing `Membership` model --
   no new table). OWNER can never be granted through this form nor
   revoked through it, and a caller can never revoke their own
-  membership. Session audit is NOT implemented -- there is no session/
-  audit-log store in this build.
+  membership. Session audit is now real too: ID-01's own
+  create_web_session/delete_web_session (app/services/local_auth.py)
+  append a real "login"/"logout" AuditEvent (app/services/audit_log.py)
+  for every real session, and this page's own Session audit panel
+  lists them, tenant-scoped. An already-issued Bearer-token JWT (the
+  non-cookie auth path) still remains cryptographically valid until it
+  expires -- only cookie-based web sessions can be explicitly revoked.
 - CU-14 "Support and incident case": a customer's own real support
   cases. `related_object_id` is validated against a real Subscription in
   the caller's own tenant -- never a cross-tenant id, even one that
@@ -100,8 +117,11 @@ what is and is not implemented yet.
   view over a tenant's own customer memberships, built entirely from
   data ID-04/CU-14 already made real (eligibility decisions, support
   cases). A cross-tenant/non-customer user_id returns a scoped 404.
-  Subscription/Mandates/Audit panels are NOT implemented -- no
-  per-customer subscription, copy-mandate or audit-log model exists.
+  Mandates (CU-09's own CopyMandate) and Audit (app/services/
+  audit_log.py's real login/logout AuditEvents) are both real now,
+  tenant- AND customer-scoped. Subscription remains NOT implemented --
+  no per-customer subscription model exists in this schema
+  (Subscription is tenant-scoped, not customer-scoped).
 - AD-17 "Integrations, data rights and quotas": a real "save inactive
   config" gated by a reviewed provider allowlist (only the adapter
   modules this codebase actually has -- Stripe for billing, Collective2/
@@ -130,11 +150,15 @@ what is and is not implemented yet.
   percentage table alone". agreement_evidence_ids must be nonempty --
   no automated signing without evidence.
 - AD-18 "Audit log and release evidence": a real, append-only audit
-  store (app/services/audit_log.py). AD-16's invite/revoke actions are
-  its first real writer. The database itself refuses any UPDATE/DELETE
-  against audit_events, matching ledger_entries' own append-only
-  precedent. Evidence manifest and Export queue are NOT implemented --
-  no evidence-bundling or export-job infrastructure exists.
+  store (app/services/audit_log.py). AD-16's invite/revoke actions were
+  its first real writer; ID-01's own create_web_session/
+  delete_web_session (login/logout, object_type="session") are now a
+  second, feeding AD-16's own Session audit panel and AD-11's own
+  per-customer Audit panel. The database itself refuses any
+  UPDATE/DELETE against audit_events, matching ledger_entries' own
+  append-only precedent. Evidence manifest and Export queue are NOT
+  implemented -- no evidence-bundling or export-job infrastructure
+  exists.
 - CU-04 "Alerts and delivery history" / CU-05 "Alert, trade and
   order-family detail": a customer's own real, entitled publication-
   intent timeline (scoped through PortfolioVersion -> Product -> the
@@ -314,11 +338,14 @@ from app.services.public_site import (
     get_published_portfolio_detail,
     get_service_status,
 )
+from app.services.fit_simulation_client import get_fit_sim_availability, run_fit_simulation
+from app.rate_limit import PUBLIC_FIT_SIM_RATE_LIMIT, limiter
 from app.services.candidate_comparison import (
     CandidateNotFoundError,
     InvalidCandidateDraftError,
     compare_candidates,
     create_portfolio_version_draft_from_candidate,
+    list_candidate_overlap_against_baseline,
     list_comparable_research_runs,
 )
 from app.services.incident import (
@@ -946,6 +973,30 @@ def _require_candidate_comparison(scope: TenantScope) -> None:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
 
 
+def _composition_chart_data(candidate_view) -> dict | None:
+    """JSON-serializable sleeve-weight breakdown for one candidate's real
+    equal-weight allocation (Chart.js labels/values), or None when no
+    allocation exists (RECIPE_NOT_IMPLEMENTED) -- never a fabricated
+    breakdown for an unavailable allocation."""
+    if candidate_view.allocation is None:
+        return None
+    labels = [candidate_view.sleeve_labels[sid] for sid in candidate_view.sleeve_ids] + ["Cash"]
+    values = [float(candidate_view.allocation.weights[sid]) for sid in candidate_view.sleeve_ids]
+    values.append(float(candidate_view.allocation.cash))
+    return {"labels": labels, "values": values}
+
+
+def _overlap_scatter_chart_data(points: list) -> list[dict]:
+    return [
+        {
+            "candidate_index": p.candidate_index,
+            "sleeve_count": p.sleeve_count,
+            "overlap_with_baseline": p.overlap_with_baseline,
+        }
+        for p in points
+    ]
+
+
 @router.get("/ops/research/compare")
 def candidate_comparison_page(
     request: Request,
@@ -968,6 +1019,7 @@ def candidate_comparison_page(
     run = None
     comparison = None
     error = None
+    overlap_scatter_points: list = []
     if research_run_id:
         run = get_research_run(session, research_run_id, tenant_id=scope.tenant_id)
         if run is None:
@@ -975,6 +1027,9 @@ def candidate_comparison_page(
         if candidate_a is not None and candidate_b is not None:
             try:
                 comparison = compare_candidates(session, run, candidate_a, candidate_b, tenant_id=scope.tenant_id)
+                overlap_scatter_points = list_candidate_overlap_against_baseline(
+                    session, run, candidate_a, tenant_id=scope.tenant_id
+                )
             except CandidateNotFoundError as exc:
                 error = str(exc)
 
@@ -987,6 +1042,10 @@ def candidate_comparison_page(
             "candidate_a": candidate_a,
             "candidate_b": candidate_b,
             "comparison": comparison,
+            "overlap_scatter_points": overlap_scatter_points,
+            "overlap_scatter_chart_data": _overlap_scatter_chart_data(overlap_scatter_points),
+            "candidate_a_composition_chart": _composition_chart_data(comparison.candidate_a) if comparison else None,
+            "candidate_b_composition_chart": _composition_chart_data(comparison.candidate_b) if comparison else None,
             "error": error,
             "created_portfolio_version_id": created_portfolio_version_id,
         },
@@ -1034,8 +1093,12 @@ def create_candidate_draft_route(
         set_tenant_scope(session, scope.tenant_id)
         comparable_runs = list_comparable_research_runs(session, tenant_id=scope.tenant_id)
         comparison = None
+        overlap_scatter_points: list = []
         try:
             comparison = compare_candidates(session, run, candidate_index, candidate_index, tenant_id=scope.tenant_id)
+            overlap_scatter_points = list_candidate_overlap_against_baseline(
+                session, run, candidate_index, tenant_id=scope.tenant_id
+            )
         except CandidateNotFoundError:
             comparison = None
         return templates.TemplateResponse(
@@ -1047,6 +1110,10 @@ def create_candidate_draft_route(
                 "candidate_a": candidate_index,
                 "candidate_b": candidate_index,
                 "comparison": comparison,
+                "overlap_scatter_points": overlap_scatter_points,
+                "overlap_scatter_chart_data": _overlap_scatter_chart_data(overlap_scatter_points),
+                "candidate_a_composition_chart": _composition_chart_data(comparison.candidate_a) if comparison else None,
+                "candidate_b_composition_chart": _composition_chart_data(comparison.candidate_b) if comparison else None,
                 "error": str(exc),
                 "created_portfolio_version_id": None,
             },
@@ -1218,7 +1285,72 @@ def public_portfolio_detail_page(slug: str, request: Request, session: Session =
     if detail is None:
         raise HTTPException(status_code=404, detail="not found")
     channels = get_channel_compatibility()
-    return templates.TemplateResponse(request, "pu03_portfolio_detail.html", {"detail": detail, "channels": channels})
+    fit_sim_unavailable = get_fit_sim_availability(slug)
+    return templates.TemplateResponse(
+        request,
+        "pu03_portfolio_detail.html",
+        {"detail": detail, "channels": channels, "fit_sim_unavailable": fit_sim_unavailable, "fit_sim_result": None},
+    )
+
+
+@router.post("/portfolios/{slug}/fit-simulation")
+@limiter.limit(PUBLIC_FIT_SIM_RATE_LIMIT)
+def public_portfolio_fit_simulation(
+    slug: str,
+    request: Request,
+    session: Session = Depends(get_db_session),
+    account_size: float = Form(...),
+    max_per_trade: float = Form(...),
+):
+    """PU-03's "Try our fit simulator" -- the real, personalized "what
+    would copying this provider have done to MY account" number an
+    anonymous visitor can compute for THEIR OWN stated account size and
+    max-per-trade, calling signal-copier's own bounded, signed, non-owner
+    `POST /catalog/providers/{source}/fit-simulation` server-side (see
+    app/services/fit_simulation_client.py's own module docstring for the
+    full design and why the browser never talks to signal-copier
+    directly). A draft/unpublished slug is the same scoped 404 as the GET
+    route above -- this form is never reachable for a product that isn't
+    genuinely public.
+
+    Re-validates the same publication + availability checks the GET
+    route already computed -- a crafted POST straight to this route (no
+    prior GET) gets exactly the same honest "unavailable" outcome, never
+    a code path that only existed because the GET route happened to
+    gate the form's visibility."""
+    detail = get_published_portfolio_detail(session, slug)
+    if detail is None:
+        raise HTTPException(status_code=404, detail="not found")
+    channels = get_channel_compatibility()
+
+    if account_size <= 0 or max_per_trade <= 0:
+        fit_sim_result = None
+        fit_sim_unavailable = get_fit_sim_availability(slug)
+        error = "Account size and max per trade must both be greater than zero."
+        return templates.TemplateResponse(
+            request,
+            "pu03_portfolio_detail.html",
+            {
+                "detail": detail,
+                "channels": channels,
+                "fit_sim_unavailable": fit_sim_unavailable,
+                "fit_sim_result": fit_sim_result,
+                "fit_sim_error": error,
+            },
+        )
+
+    outcome = run_fit_simulation(slug, account_size=account_size, max_per_trade=max_per_trade)
+    fit_sim_unavailable = None if outcome.available else outcome
+    return templates.TemplateResponse(
+        request,
+        "pu03_portfolio_detail.html",
+        {
+            "detail": detail,
+            "channels": channels,
+            "fit_sim_unavailable": fit_sim_unavailable,
+            "fit_sim_result": outcome if outcome.available else None,
+        },
+    )
 
 
 @router.get("/compare")
@@ -1339,16 +1471,28 @@ def staff_access_page(
     error: str | None = None,
 ):
     """AD-16 "Staff roles and access reviews" -- owner-only. Session
-    audit has no backing model (no session/audit-log store exists), so
-    it's rendered as an explicit unsupported note, never a fabricated
-    empty table."""
+    audit now has a real backing store (app/services/audit_log.py):
+    ID-01's own create_web_session/delete_web_session append a real
+    "login"/"logout" AuditEvent for every real session, tenant-scoped
+    the same way this whole page already is. Filtered here to
+    object_type="session" so this panel shows login/logout activity,
+    never the membership-grant events AD-18's own full audit log
+    already covers."""
     _require_staff_access(scope)
     set_tenant_scope(session, scope.tenant_id)
     memberships = list_staff_memberships(session, tenant_id=scope.tenant_id)
+    session_events = [
+        e for e in list_audit_events(session, tenant_id=scope.tenant_id) if e.object_type == "session"
+    ]
     return templates.TemplateResponse(
         request,
         "ad16_access.html",
-        {"memberships": memberships, "all_grantable_roles": _GRANTABLE_ROLE_VALUES, "error": error},
+        {
+            "memberships": memberships,
+            "all_grantable_roles": _GRANTABLE_ROLE_VALUES,
+            "error": error,
+            "session_events": session_events,
+        },
     )
 
 
@@ -1370,10 +1514,18 @@ def invite_staff_page(
     except (ValueError, InvalidStaffGrantError) as exc:
         session.rollback()
         memberships = list_staff_memberships(session, tenant_id=scope.tenant_id)
+        session_events = [
+            e for e in list_audit_events(session, tenant_id=scope.tenant_id) if e.object_type == "session"
+        ]
         return templates.TemplateResponse(
             request,
             "ad16_access.html",
-            {"memberships": memberships, "all_grantable_roles": _GRANTABLE_ROLE_VALUES, "error": str(exc)},
+            {
+                "memberships": memberships,
+                "all_grantable_roles": _GRANTABLE_ROLE_VALUES,
+                "error": str(exc),
+                "session_events": session_events,
+            },
             status_code=400,
         )
     session.commit()
@@ -1394,10 +1546,18 @@ def revoke_staff_page(
     except (MembershipNotFoundError, CannotRevokeOwnerError, CannotRevokeSelfError) as exc:
         session.rollback()
         memberships = list_staff_memberships(session, tenant_id=scope.tenant_id)
+        session_events = [
+            e for e in list_audit_events(session, tenant_id=scope.tenant_id) if e.object_type == "session"
+        ]
         return templates.TemplateResponse(
             request,
             "ad16_access.html",
-            {"memberships": memberships, "all_grantable_roles": _GRANTABLE_ROLE_VALUES, "error": str(exc)},
+            {
+                "memberships": memberships,
+                "all_grantable_roles": _GRANTABLE_ROLE_VALUES,
+                "error": str(exc),
+                "session_events": session_events,
+            },
             status_code=400,
         )
     session.commit()

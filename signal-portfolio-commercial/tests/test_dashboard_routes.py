@@ -785,6 +785,79 @@ def test_candidate_comparison_page_lists_a_real_comparable_run_and_compares_cand
     assert "<td>0</td>" in compare_response.text
 
 
+def _create_three_sleeve_run(client, headers, db_session):
+    """Three sleeves, subset size fixed at 2 -- gives exactly three
+    2-sleeve candidates ((s0,s1), (s0,s2), (s1,s2), sorted sleeve-id
+    order) with real, exactly-predictable composition/allocation and
+    overlap facts, used to load-bear-test the composition and overlap
+    scatter charts below."""
+    for suffix in ("a", "b", "c"):
+        fields = dict(_SLEEVE_FORM_FIELDS)
+        fields["provider"] = f"compare-sleeve-three-{suffix}"
+        client.post("/ops/research/universe", data=fields, headers=headers)
+
+    from app.models.sleeve import Sleeve
+
+    sleeve_ids = sorted(
+        row.sleeve_id
+        for row in db_session.query(Sleeve)
+        .filter(Sleeve.provider.in_(["compare-sleeve-three-a", "compare-sleeve-three-b", "compare-sleeve-three-c"]))
+        .all()
+    )
+    create_response = client.post(
+        "/ops/research/new",
+        data={
+            "sleeve_ids": sleeve_ids,
+            "recipes": ["equal_capital"],
+            "subset_min": "2",
+            "subset_max": "2",
+            "cash_bps": "1500",
+            "max_sleeve_bps": "3500",
+            "max_cluster_bps": "5000",
+            "train_sessions": "252",
+            "test_sessions": "63",
+            "holdout_fraction": "0.20",
+        },
+        headers=headers,
+    )
+    research_run_id = create_response.headers["location"].rsplit("/", 1)[-1]
+    return research_run_id
+
+
+def test_candidate_comparison_page_renders_real_composition_and_overlap_scatter_charts(db_session):
+    client = _client(db_session)
+    headers = _auth_headers()
+    research_run_id = _create_three_sleeve_run(client, headers, db_session)
+
+    compare_response = client.get(
+        f"/ops/research/compare?research_run_id={research_run_id}&candidate_a=0&candidate_b=1",
+        headers=headers,
+    )
+    assert compare_response.status_code == 200
+    body = compare_response.text
+
+    # Composition chart: two-sleeve candidate at these run bounds is
+    # capped at the implemented recipe's 0.35 max-sleeve-weight, leaving
+    # 1 - 2*0.35 = 0.30 cash -- exactly matching equal_weight_recipe.
+    assert '"values": [0.35, 0.35, 0.3]' in body
+    assert body.count('id="candidate-a-composition-data"') == 1
+    assert body.count('id="candidate-b-composition-data"') == 1
+    assert '<canvas id="candidate-a-composition-chart">' in body
+    assert '<canvas id="candidate-b-composition-chart">' in body
+
+    # Overlap scatter: candidate 0 is the baseline (overlap 2 with
+    # itself); candidates 1 and 2 each share exactly one sleeve with it
+    # (real frozenset intersection over the run's three 2-sleeve
+    # candidates), never a fabricated risk/return dimension.
+    assert (
+        '[{"candidate_index": 0, "overlap_with_baseline": 2, "sleeve_count": 2}, '
+        '{"candidate_index": 1, "overlap_with_baseline": 1, "sleeve_count": 2}, '
+        '{"candidate_index": 2, "overlap_with_baseline": 1, "sleeve_count": 2}]'
+    ) in body
+    assert '<canvas id="overlap-scatter-chart">' in body
+    assert "/static/vendor/chart.umd.min.js" in body
+
+
 def test_candidate_comparison_page_is_a_scoped_not_found_for_an_unknown_run(db_session):
     client = _client(db_session)
     response = client.get(
@@ -1033,8 +1106,9 @@ def test_pricing_page_shows_real_plan_cards_once_billing_is_configured(db_sessio
 def _seed_customer_membership(db_session, *, tenant_id="tenant-a", user_id="user-a"):
     from app.models.tenancy import Membership, Tenant, UserIdentity
 
-    db_session.add(Tenant(tenant_id=tenant_id, display_name="Tenant", environment="LOCAL_SIM"))
-    db_session.flush()
+    if db_session.get(Tenant, tenant_id) is None:
+        db_session.add(Tenant(tenant_id=tenant_id, display_name="Tenant", environment="LOCAL_SIM"))
+        db_session.flush()
     db_session.add(UserIdentity(user_id=user_id, email=f"{user_id}@example.com"))
     db_session.flush()
     db_session.add(Membership(tenant_id=tenant_id, user_id=user_id, role=MembershipRole.CUSTOMER))
@@ -1096,8 +1170,9 @@ def test_save_eligibility_facts_rejects_an_empty_service_selection(db_session):
 def _seed_owner_membership(db_session, *, tenant_id="tenant-a", owner_user_id="user-a"):
     from app.models.tenancy import Membership, Tenant, UserIdentity
 
-    db_session.add(Tenant(tenant_id=tenant_id, display_name="Tenant", environment="LOCAL_SIM"))
-    db_session.flush()
+    if db_session.get(Tenant, tenant_id) is None:
+        db_session.add(Tenant(tenant_id=tenant_id, display_name="Tenant", environment="LOCAL_SIM"))
+        db_session.flush()
     db_session.add(UserIdentity(user_id=owner_user_id, email=f"{owner_user_id}@example.com"))
     db_session.flush()
     db_session.add(Membership(tenant_id=tenant_id, user_id=owner_user_id, role=MembershipRole.OWNER))
@@ -1526,6 +1601,84 @@ def test_customer_detail_shows_a_real_copy_mandate_over_real_http(db_session):
     assert staff_response.status_code == 200
     assert "USD" in staff_response.text
     assert "draft" in staff_response.text
+
+
+def test_customer_detail_shows_a_real_login_logout_audit_trail_over_real_http(db_session):
+    """AD-11's own previously-documented 'no ... audit-log model
+    exists' gap -- now closed by app/services/audit_log.py, written by
+    ID-01's own create_web_session/delete_web_session."""
+    _seed_customer_membership(db_session, tenant_id="tenant-a", user_id="user-a")
+    from app.services.local_auth import create_web_session, delete_web_session
+
+    session_id, _csrf = create_web_session(
+        db_session, user_id="user-a", tenant_id="tenant-a", role=MembershipRole.CUSTOMER
+    )
+    delete_web_session(db_session, session_id=session_id)
+
+    client = _client(db_session)
+    staff_response = client.get(
+        "/ops/customers/user-a", headers=_auth_headers(tenant_id="tenant-a", role=MembershipRole.OWNER)
+    )
+    assert staff_response.status_code == 200
+    assert "login" in staff_response.text
+    assert "logout" in staff_response.text
+
+
+def test_customer_detail_audit_trail_is_scoped_to_the_customer_and_their_own_tenant(db_session):
+    """LOAD-BEARING: a staff view over customer A must never show
+    customer B's audit events, even within the same tenant, and never
+    another tenant's events at all -- the same 'scoped not-found'/
+    'never a cross-tenant id' discipline this whole screen already
+    documents for eligibility/cases/mandates."""
+    _seed_customer_membership(db_session, tenant_id="tenant-a", user_id="user-a")
+    _seed_customer_membership(db_session, tenant_id="tenant-a", user_id="user-b")
+    from app.services.local_auth import create_web_session
+
+    create_web_session(db_session, user_id="user-a", tenant_id="tenant-a", role=MembershipRole.CUSTOMER)
+    create_web_session(db_session, user_id="user-b", tenant_id="tenant-a", role=MembershipRole.CUSTOMER)
+
+    client = _client(db_session)
+    staff_response = client.get(
+        "/ops/customers/user-a", headers=_auth_headers(tenant_id="tenant-a", role=MembershipRole.OWNER)
+    )
+    assert staff_response.status_code == 200
+    assert "user-b" not in staff_response.text
+
+
+def test_staff_access_page_shows_real_session_audit_events_over_real_http(db_session):
+    """AD-16's own previously-documented 'no session/audit-log store'
+    gap -- now closed."""
+    _seed_owner_membership(db_session, tenant_id="tenant-a", owner_user_id="user-a")
+    _seed_customer_membership(db_session, tenant_id="tenant-a", user_id="user-b")
+    from app.services.local_auth import create_web_session, delete_web_session
+
+    session_id, _csrf = create_web_session(
+        db_session, user_id="user-b", tenant_id="tenant-a", role=MembershipRole.CUSTOMER
+    )
+    delete_web_session(db_session, session_id=session_id)
+
+    client = _client(db_session)
+    response = client.get("/ops/access", headers=_auth_headers(tenant_id="tenant-a", role=MembershipRole.OWNER))
+    assert response.status_code == 200
+    assert "login" in response.text
+    assert "logout" in response.text
+    assert "user-b" in response.text
+
+
+def test_staff_access_page_session_audit_is_tenant_scoped(db_session):
+    """LOAD-BEARING: a tenant's own Session audit panel must never show
+    another tenant's login/logout events."""
+    _seed_owner_membership(db_session, tenant_id="tenant-a", owner_user_id="user-a")
+    _seed_customer_membership(db_session, tenant_id="tenant-b", user_id="user-c")
+    from app.services.local_auth import create_web_session
+
+    create_web_session(db_session, user_id="user-c", tenant_id="tenant-b", role=MembershipRole.CUSTOMER)
+
+    client = _client(db_session)
+    response = client.get("/ops/access", headers=_auth_headers(tenant_id="tenant-a", role=MembershipRole.OWNER))
+    assert response.status_code == 200
+    assert "user-c" not in response.text
+    assert "No login/logout activity recorded for this tenant yet." in response.text
 
 
 def test_integrations_page_requires_owner_or_publisher_operator(db_session):

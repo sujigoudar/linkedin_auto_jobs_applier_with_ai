@@ -28,7 +28,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
 
 from app import config
-from app.auth import SESSION_COOKIE_NAME, RequireOwner, create_session, verify_password
+from app.auth import SESSION_COOKIE_NAME, RequireOwner, auth_configured, create_session, verify_password
 from app.backtest.cost_stress import apply_cost_stress
 from app.backtest.fit_simulator import simulate_provider_fit
 from app.backtest.models import CsvPriceHistoryProvider
@@ -52,7 +52,7 @@ from app.config_admin import seed_from_yaml_if_empty
 from app.context import fred as fred_context
 from app.context import fx as fx_context
 from app.context import sec_edgar
-from app.db import SignalStore
+from app.db import SignalStore, alembic_code_head
 from app.economics import compute_account_economics
 from app.execution_quality import compute_execution_quality
 from app.engine import SignalCopierEngine
@@ -65,10 +65,16 @@ from app.pricing import PriceMonitor
 from app.providers import SettingsOverride, load_provider_registry_from_store
 from app.provider_scout import ProviderScout
 from app.provider_value import compute_provider_value_report
-from app.rate_limit import INGRESS_RATE_LIMIT, limiter
+from app.rate_limit import CATALOG_FIT_SIM_RATE_LIMIT, INGRESS_RATE_LIMIT, limiter
 from app.protection_auditor import ProtectionAuditor
 from app.reconciliation import OrderReconciler
 from app.relay_scheduler import RelayScheduler
+from app.services.catalog_fit_sim_auth import (
+    CatalogFitSimSignatureMismatchError,
+    InvalidCatalogFitSimSignatureHeaderError,
+    StaleCatalogFitSimTimestampError,
+    verify_catalog_fit_sim_signature,
+)
 from app.routing import load_routing_config_from_store
 from app.signal_commands import CanonicalCommand
 from app.signal_episode import EpisodeCorrelator
@@ -362,6 +368,20 @@ app.add_middleware(SlowAPIMiddleware)
 # HTML/JS itself.
 app.mount("/static/vendor", StaticFiles(directory=STATIC_DIR / "vendor"), name="vendor")
 
+# TR-01..TR-04 (and every later TR-0x batch's) hash-routed views: the
+# shared router/state-matrix helpers and each screen's own view module
+# (app/static/router.js, app/static/state-matrix.js, app/static/views/*.js)
+# -- same trust level as the vendor files above (public, static JS the
+# dashboard itself already ships unauthenticated) and same "no build
+# step" convention (see dashboard.html's own module docstring in
+# app/main.py's `dashboard()`). Registered AFTER the narrower
+# `/static/vendor` mount above so a `/static/vendor/...` request keeps
+# matching that mount first; this broader one only catches everything
+# else under `/static/` (including `/static/dashboard.html` itself,
+# harmlessly served twice alongside `GET /`, since it's the same public,
+# no-secrets page either way).
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
 
 #: Session-only routes -- creating/destroying a browser session, never a
 #: financial effect. A standby must still let its owner log in to inspect
@@ -488,6 +508,52 @@ async def metrics(_owner: dict = Depends(require_owner_read)) -> Response:
         lifecycle_manager=lifecycle_manager,
     )
     return Response(content=body, media_type="text/plain; version=0.0.4; charset=utf-8")
+
+
+@app.get("/system/info")
+async def system_info(_owner: dict = Depends(require_owner_read)) -> dict:
+    """TR-16: private, owner-gated operational facts safe to surface in
+    the UI -- deliberately narrow. Every field here was checked one by
+    one against app/config.py's `_Settings` and is either a non-secret
+    operational fact (an interval, a feature flag, a non-credential
+    label) or a boolean ABOUT a secret (is one configured, which kind)
+    rather than the secret's own value. No API key, token, password,
+    password hash, webhook secret, or session secret is ever read here --
+    see this batch's report for the field-by-field check.
+
+    `schema_version`/`schema_head` are real, live evidence (E01 bounded):
+    `schema_version` is this exact database file's own stamped Alembic
+    revision (`SignalStore.schema_version`), `schema_head` is what the
+    currently-deployed code's own migration scripts expect
+    (`alembic_code_head`) -- equal means this database's schema is
+    reproducible from this exact release; unequal means a migration is
+    pending. This is the one real "deployment reproducibility" signal
+    this codebase has; it is NOT a data backup/snapshot record (see
+    deploy/litestream/litestream.yml and deploy/RUNBOOK.md for this
+    project's actual real backup mechanism -- Litestream replicating the
+    live SQLite WAL to off-site object storage -- which runs as a
+    separate process this API has no live status/API into, so no
+    last-replicated-at timestamp is fabricated here)."""
+    return {
+        "standby_mode": config.STANDBY_MODE,
+        "relay_environment": config.RELAY_ENVIRONMENT,
+        "relay_evidence_class": config.RELAY_EVIDENCE_CLASS,
+        "relay_producer_id": config.RELAY_PRODUCER_ID,
+        "relay_ingress_configured": bool(config.RELAY_INGRESS_URL),
+        "reconcile_interval_seconds": config.RECONCILE_INTERVAL_SECONDS,
+        "price_monitor_interval_seconds": config.PRICE_MONITOR_INTERVAL_SECONDS,
+        "provider_scout_interval_seconds": config.PROVIDER_SCOUT_INTERVAL_SECONDS,
+        "auth_configured": auth_configured(),
+        "owner_credential_kind": (
+            "hashed (OWNER_PASSWORD_HASH)"
+            if config.OWNER_PASSWORD_HASH
+            else ("plain (OWNER_PASSWORD)" if config.OWNER_PASSWORD else "none configured")
+        ),
+        "session_ttl_seconds": config.SESSION_TTL_SECONDS,
+        "force_secure_cookies": config.FORCE_SECURE_COOKIES,
+        "schema_version": store.schema_version(),
+        "schema_head": alembic_code_head(),
+    }
 
 
 class LoginRequest(BaseModel):
@@ -1707,21 +1773,17 @@ class ProviderFitSimulationRequest(BaseModel):
     max_hold_days: float = 30.0
 
 
-@app.post("/providers/{source}/fit-simulation")
-async def run_provider_fit_simulation(
-    source: str, request: ProviderFitSimulationRequest, _owner: dict = Depends(require_owner)
-) -> dict:
-    """Owner-gated for now, same as `/backtest` above -- this service has
-    no customer-facing auth model of its own (see README.md's "Owner
-    authentication" section). A real prospect-facing "browse providers"
-    surface (e.g. a public catalog page in signal-portfolio-commercial)
-    would need its own separate, appropriately-scoped route calling into
-    this one with a service credential, not this endpoint exposed
-    directly to the public internet -- that cross-service wiring doesn't
-    exist yet and isn't guessed at here."""
-    if request.source != source:
-        raise HTTPException(status_code=422, detail="path 'source' and body 'source' must match")
-
+def _run_fit_simulation_and_build_response(request: "ProviderFitSimulationRequest | CatalogFitSimulationRequest") -> dict:
+    """Shared by both the owner-gated `/providers/{source}/fit-simulation`
+    and the signed, non-owner `/catalog/providers/{source}/fit-simulation`
+    below -- ONE code path decides what a fit-simulation response
+    contains, so the two routes can never drift into exposing different
+    fields. What it returns is, by construction, only ever the given
+    source's own historical-signal replay rescaled to the caller-supplied
+    account_size/max_per_trade -- `simulate_provider_fit` (see its own
+    module docstring) never reads anything about the OWNER's own
+    accounts, positions, or balances; there is no owner data for this
+    function to leak even if a caller tried."""
     csv_paths = {symbol: Path(path) for symbol, path in request.csv_paths.items()}
     provider = CsvPriceHistoryProvider(csv_paths)
 
@@ -1753,6 +1815,114 @@ async def run_provider_fit_simulation(
             for t in report.trades
         ],
     }
+
+
+@app.post("/providers/{source}/fit-simulation")
+async def run_provider_fit_simulation(
+    source: str, request: ProviderFitSimulationRequest, _owner: dict = Depends(require_owner)
+) -> dict:
+    """Owner-gated, cookie/CSRF session only -- for the owner's own ad hoc
+    use (see README.md's "Owner authentication" section). The real
+    prospect-facing path is `POST /catalog/providers/{source}/fit-
+    simulation` below: a separate, narrowly-scoped, signed-service-token
+    route signal-portfolio-commercial's own backend calls on behalf of an
+    anonymous public-catalog visitor -- never this one, and never this
+    endpoint exposed directly to the public internet."""
+    if request.source != source:
+        raise HTTPException(status_code=422, detail="path 'source' and body 'source' must match")
+
+    return _run_fit_simulation_and_build_response(request)
+
+
+#: CATALOG-01 (bounded): hard ceilings on the one request shape the
+#: catalog fit-sim route accepts, independent of the owner route's own
+#: (looser -- an authenticated owner is trusted with their own compute)
+#: limits. A valid signature already proves the caller is signal-
+#: portfolio-commercial's own backend, not an arbitrary visitor, but
+#: "trusted caller" still isn't "unbounded caller" -- a bug or a
+#: compromised commercial deployment must not be able to make this
+#: service replay a ten-thousand-symbol, thousand-year backtest on every
+#: request. `CsvPriceHistoryProvider` never reads a path outside the
+#: caller-supplied dict, but bounding the dict's SIZE (not its contents,
+#: which the caller -- not a browser visitor -- controls) keeps one
+#: request's own I/O/compute bounded regardless of source.
+_CATALOG_FIT_SIM_MAX_SYMBOLS = 25
+_CATALOG_FIT_SIM_MAX_LOOKBACK_DAYS = 3650.0
+_CATALOG_FIT_SIM_MAX_HOLD_DAYS = 365.0
+
+
+class CatalogFitSimulationRequest(BaseModel):
+    """Identical fields to `ProviderFitSimulationRequest` (same
+    disclosed real-CSV-price-path requirement, same sizing methodology --
+    see that model's and app/backtest/fit_simulator.py's own docstrings)
+    plus real ceilings on lookback/hold window and symbol count, per
+    CATALOG-01 above. This is the ONLY shape `POST /catalog/providers/
+    {source}/fit-simulation` accepts -- there is no field here (or
+    anywhere in `_run_fit_simulation_and_build_response`) that could
+    reach an owner account, position, or balance even if a caller tried;
+    the request can only name a source, a hypothetical account_size/
+    max_per_trade, and the caller's own supplied CSV price paths for that
+    source's OWN historical signals."""
+
+    source: str
+    account_size: float = Field(gt=0)
+    max_per_trade: float = Field(gt=0)
+    lookback_days: float = Field(default=90.0, gt=0, le=_CATALOG_FIT_SIM_MAX_LOOKBACK_DAYS)
+    csv_paths: dict[str, str] = Field(max_length=_CATALOG_FIT_SIM_MAX_SYMBOLS)
+    max_hold_days: float = Field(default=30.0, gt=0, le=_CATALOG_FIT_SIM_MAX_HOLD_DAYS)
+
+
+@app.post("/catalog/providers/{source}/fit-simulation")
+@limiter.limit(CATALOG_FIT_SIM_RATE_LIMIT)
+async def run_catalog_fit_simulation(
+    source: str, request: Request, catalog_request: CatalogFitSimulationRequest
+) -> dict:
+    """The real, bounded, non-owner path for a prospect-facing "browse
+    providers" surface (signal-portfolio-commercial's own public catalog)
+    to run this service's own fit-simulation capability, per that
+    endpoint's own long-documented gap above. Authenticated by a signed,
+    audience-bound, expiring service token (`X-Catalog-Fit-Sim-Signature`,
+    verified against `config.CATALOG_FIT_SIM_SIGNING_SECRET` -- see
+    app/services/catalog_fit_sim_auth.py's own module docstring for the
+    exact scheme and why it is a SEPARATE secret/verifier from the relay
+    ingest's own), never a cookie/CSRF owner session -- this route takes
+    no `Depends(require_owner)` and is reachable with no browser session
+    at all, by design: a public-catalog visitor has none.
+
+    Deliberately NOT `require_owner` with the CSRF check relaxed, or
+    `require_owner` extended to also accept this signature: those would
+    make a stolen or forged catalog-fit-sim token a step toward every
+    OTHER owner-gated route (accounts, positions, routing rules, backtest
+    with no ceilings, etc). This route's own request/response shape
+    (`CatalogFitSimulationRequest` in, `_run_fit_simulation_and_build_
+    response`'s output out) is the entire capability this token can ever
+    be used for -- see tests/test_catalog_fit_sim_endpoint.py's own
+    "does not expose owner data" and "cannot authenticate to an owner-
+    gated route" coverage."""
+    if catalog_request.source != source:
+        raise HTTPException(status_code=422, detail="path 'source' and body 'source' must match")
+
+    if not config.CATALOG_FIT_SIM_SIGNING_SECRET:
+        # Fail closed, same convention as require_owner/the webhook
+        # ingress: an unconfigured secret disables this route, it does
+        # not make it public.
+        raise HTTPException(
+            status_code=503,
+            detail="catalog fit-simulation is not configured (set CATALOG_FIT_SIM_SIGNING_SECRET)",
+        )
+
+    raw_body = await request.body()
+    sig_header = request.headers.get("x-catalog-fit-sim-signature", "")
+    try:
+        verify_catalog_fit_sim_signature(raw_body, sig_header, config.CATALOG_FIT_SIM_SIGNING_SECRET)
+    except (
+        InvalidCatalogFitSimSignatureHeaderError,
+        CatalogFitSimSignatureMismatchError,
+        StaleCatalogFitSimTimestampError,
+    ) as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+
+    return _run_fit_simulation_and_build_response(catalog_request)
 
 
 # --- Read-only market/economic context (app/context/) ---

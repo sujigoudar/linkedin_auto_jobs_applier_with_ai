@@ -62,6 +62,22 @@
 
 <div class="panel">
   <h2>Session audit</h2>
-  <p><span class="badge badge-unknown">UNSUPPORTED</span> -- there is no session/audit-log store in this build. A revoked membership stops authorizing new requests immediately (every route re-checks role on each request), but an already-issued JWT remains cryptographically valid until it expires.</p>
+  {% if session_events %}
+  <table>
+    <thead><tr><th>Time</th><th>User</th><th>Action</th></tr></thead>
+    <tbody>
+      {% for e in session_events %}
+      <tr>
+        <td>{{ e.event_time }}</td>
+        <td>{{ e.actor_user_id }}</td>
+        <td>{{ e.action }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p>No login/logout activity recorded for this tenant yet.</p>
+  {% endif %}
+  <p>A revoked membership stops authorizing new requests immediately (every route re-checks role on each request), but an already-issued JWT (Bearer-token callers) remains cryptographically valid until it expires -- only cookie-based web sessions can be explicitly revoked (logged out) through this system today.</p>
 </div>
 {% endblock %}
