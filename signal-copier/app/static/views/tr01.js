@@ -108,12 +108,76 @@
  *   - Liquidity-risk heatmap: NO REAL DATA MODEL EXISTS ANYWHERE IN THIS
  *     CODEBASE -- no bid/ask spread, order-book depth, or any other
  *     liquidity figure is tracked or exposed by any endpoint.
+ *
+ * Phase C (this batch, additive -- 2026-09 design review: "Command Center
+ * should become the most important screen ... the ingredients are correct
+ * but the hierarchy is wrong"): a first-viewport KPI band + "Attention
+ * required" queue (Components.renderKPIBand / renderAttentionQueue, new
+ * shared components) ABOVE everything built in Phase B1/B8, plus a
+ * notional-exposure/loss-at-stop panel (p10) supplementing (never
+ * replacing -- see `test_tr01_allocation_donuts.py`'s load-bearing exact
+ * position-COUNT assertions) the existing count donuts. Every figure below
+ * is either a real number already computed elsewhere in this file/this
+ * codebase, or an honest `Components.renderCapabilityState` "not tracked"
+ * -- nothing here is invented:
+ *   - Trading mode: `GET /system/info`'s real `standby_mode` (app/config.py
+ *     -- true means the process serves GET/HEAD/OPTIONS only, no order can
+ *     reach the engine, regardless of any individual route's own logic).
+ *   - Active accounts / Net liquidation / Deployed+Reserved capital: same
+ *     real `GET /accounts` (`enabled`) and `GET /capital-allocation`
+ *     (`deployed_notional`/`reserved_notional`, Phase B7) this file already
+ *     reads elsewhere. Net liquidation is deliberately NOT summed across
+ *     accounts here either -- same M-TR-01-01 currency-normalization gap
+ *     already documented above -- rendered `not_tracked` via
+ *     Components.renderCapabilityState instead of a misleading total.
+ *   - Day P&L / Total P&L: Total P&L sums each account's real
+ *     `GET /accounts/{id}/economics` `realized_pnl` (only when every
+ *     account's read succeeded, else `not_tracked`). Day P&L sums each
+ *     account's real `GET /accounts/{id}/equity-history` `cumulative_pnl`
+ *     change over its OWN real snapshots spanning the last ~24h (never a
+ *     shorter, silently-mislabeled window) -- an account with no real 24h
+ *     of persisted snapshot history yet is honestly excluded, and the
+ *     whole tile renders `not_tracked` if no account qualifies. Same
+ *     unverified-shared-currency caveat as Net liquidation, disclosed once
+ *     in a shared note rather than repeated per tile.
+ *   - Open risk / Unprotected exposure: BOTH read the exact same per-
+ *     lifecycle computation (`computeLifecycleRiskRows`, shared with the
+ *     new p10 loss-at-stop panel, so the arithmetic is never duplicated).
+ *     Unprotected exposure = real `uncovered_quantity` count/quantity
+ *     across managed-lifecycle positions (same field this file's existing
+ *     M-TR-01-03 "Protection deficit" already reads). Open risk = real
+ *     `covered_quantity * abs(entry_price - stop_price)` summed ONLY over
+ *     lifecycles that are fully covered, stop-confirmed, with both prices
+ *     known -- `not_tracked` when zero lifecycles qualify (a real "$0"
+ *     would be indistinguishable from "unknown," which this codebase never
+ *     allows). Scope is managed-lifecycle positions only, same as
+ *     M-TR-01-03 -- a plain-account position's protection state isn't
+ *     tracked anywhere in this build (see PU-A1 note above).
+ *   - Unknown orders: the exact same "unresolved pending_exit/pending_entry"
+ *     signal as this file's existing M-TR-01-04.
+ *   - Critical incidents: real halted-lifecycle count -- the same signal
+ *     TR-13 labels "high" severity (halt is a real PositionCloseArbiter
+ *     decision, not a UI-invented severity).
+ *   - Attention queue: critical rows for each halted / uncovered managed
+ *     lifecycle (same real fields as above); warning rows for a provider
+ *     whose `GET /signals`-derived last-received-signal age exceeds a
+ *     UI-chosen staleness threshold (the AGE itself is real -- TR-09
+ *     already renders this same timestamp as "Lag" -- the THRESHOLD for
+ *     when to surface it is this panel's own judgment call, documented
+ *     inline); info rows for a real count of `GET /orders` status=pending.
+ *     Deliberately NOT built: a broker-vs-internal-ledger discrepancy row
+ *     -- TR-13's own docstring already establishes this build exposes no
+ *     live broker-side position readback via any GET endpoint (store-side
+ *     coverage only), so this condition type is omitted rather than
+ *     fabricated.
  */
 (function () {
   "use strict";
 
   function panelShell() {
     return `
+      <section class="tr-panel" id="tr01-kpi"><h2>At a glance</h2><div class="tr-panel-body"></div></section>
+      <section class="tr-panel" id="tr01-attention"><h2>Attention required</h2><div class="tr-panel-body"></div></section>
       <section class="tr-panel" id="tr01-p01"><h2>Identity / environment</h2><div class="tr-panel-body"></div></section>
       <section class="tr-panel" id="tr01-p02"><h2>Safety summary</h2><div class="tr-panel-body"></div></section>
       <section class="tr-panel" id="tr01-p03"><h2>Account risk cards</h2><div class="tr-panel-body"></div></section>
@@ -122,6 +186,7 @@
       <section class="tr-panel" id="tr01-p06"><h2>Recent activity</h2><div class="tr-panel-body"></div></section>
       <section class="tr-panel" id="tr01-p07"><h2>Open positions</h2><div class="tr-panel-body"></div></section>
       <section class="tr-panel" id="tr01-p08"><h2>Allocation</h2><div class="tr-panel-body"></div></section>
+      <section class="tr-panel" id="tr01-p10"><h2>Exposure by notional / loss at stop</h2><div class="tr-panel-body"></div></section>
       <section class="tr-panel" id="tr01-p09"><h2>Risk</h2><div class="tr-panel-body"></div></section>
     `;
   }
@@ -252,6 +317,425 @@
     });
   }
 
+  // A donut of real notional exposure (quantity * entry price), not a raw
+  // position count -- the dataviz review's own complaint ("four positions
+  // consisting of $50,000 BTC, $10,000 AAPL and two $100 positions should
+  // not visually look like 50/25/25 exposure"). Separate canvas/instance
+  // from renderDonut's count donuts above -- this SUPPLEMENTS them (see
+  // test_tr01_allocation_donuts.py's load-bearing exact-count assertions
+  // on those, which this never touches), it does not replace them.
+  function renderNotionalDonut(container, canvasId, entries, colorFn) {
+    if (donutCharts[canvasId]) {
+      donutCharts[canvasId].destroy();
+      delete donutCharts[canvasId];
+    }
+    const wrap = container.querySelector(`#${canvasId}-wrap`);
+    if (!wrap) return;
+    if (!entries.length) {
+      wrap.innerHTML = `<div class="empty">No open position has a real, known notional to chart (see coverage note above).</div>`;
+      return;
+    }
+    const total = entries.reduce((sum, [, n]) => sum + n, 0);
+    const labels = entries.map(([label]) => label);
+    const values = entries.map(([, n]) => n);
+    const colors = entries.map(([label]) => colorFn(label));
+    const rows = entries.map(([label, n]) => [
+      escapeHtml(label),
+      fmtNum(n),
+      `${((n / total) * 100).toFixed(1)}%`,
+    ]);
+    wrap.innerHTML = `<div class="chart-container" style="height:220px;"><canvas id="${canvasId}"></canvas></div>
+      ${table(["Bucket", "Notional (entry price x quantity)", "Share"], rows, "No priced open positions.")}`;
+    donutCharts[canvasId] = new Chart(wrap.querySelector(`canvas#${canvasId}`).getContext("2d"), {
+      type: "doughnut",
+      data: { labels, datasets: [{ data: values, backgroundColor: colors, borderColor: "#141926", borderWidth: 2 }] },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: { position: "bottom", labels: { color: "#e6e9f0", boxWidth: 12, font: { size: 11 } } },
+          tooltip: {
+            callbacks: {
+              label: (ctxItem) => {
+                const n = ctxItem.parsed;
+                return ` ${ctxItem.label}: ${fmtNum(n)} (${((n / total) * 100).toFixed(1)}%) of ${fmtNum(total)} total notional`;
+              },
+            },
+          },
+        },
+      },
+    });
+  }
+
+  let riskBarChart = null; // destroy-and-recreate, same convention as donutCharts above
+
+  // Aggregate real loss-at-stop (see computeLifecycleRiskRows below) by
+  // asset class -- shares the exact same per-lifecycle figures the Open
+  // risk KPI sums, never a second computation of the arithmetic.
+  function renderRiskBarChart(container, canvasId, entries) {
+    if (riskBarChart) {
+      riskBarChart.destroy();
+      riskBarChart = null;
+    }
+    const wrap = container.querySelector(`#${canvasId}-wrap`);
+    if (!wrap) return;
+    if (!entries.length) {
+      wrap.innerHTML = `<div class="empty">No managed-lifecycle position currently has a fully covered, stop-confirmed, priced loss-at-stop to chart.</div>`;
+      return;
+    }
+    wrap.innerHTML = `<div class="chart-container" style="height:${Math.max(140, entries.length * 40)}px;"><canvas id="${canvasId}"></canvas></div>`;
+    const labels = entries.map(([label]) => label);
+    const values = entries.map(([, n]) => n);
+    riskBarChart = new Chart(wrap.querySelector(`canvas#${canvasId}`).getContext("2d"), {
+      type: "bar",
+      data: {
+        labels,
+        datasets: [{ label: "Loss at stop", data: values, backgroundColor: "rgba(255, 93, 59, 0.55)", borderColor: "#ff5d3b", borderWidth: 1 }],
+      },
+      options: {
+        indexAxis: "y",
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: { display: false },
+          tooltip: { callbacks: { label: (ctxItem) => ` ${fmtNum(ctxItem.parsed.x)} loss at stop` } },
+        },
+        scales: { x: { title: { display: true, text: "Loss at stop (covered_quantity x |entry - stop|)" } } },
+      },
+    });
+  }
+
+  // Sums `valueFn(item)` per `keyFn(item)` bucket, sorted desc, folding the
+  // smallest remainder past `maxSlots` into "Other" -- the notional/risk
+  // analogue of `aggregateCounts` above (same anti-pattern avoidance: never
+  // a generated hue/bucket past the validated slot count).
+  function aggregateSum(items, keyFn, valueFn, maxSlots) {
+    const sums = new Map();
+    for (const item of items) {
+      const key = keyFn(item);
+      sums.set(key, (sums.get(key) || 0) + valueFn(item));
+    }
+    const entries = Array.from(sums.entries()).sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1));
+    if (entries.length <= maxSlots) return entries;
+    const kept = entries.slice(0, maxSlots - 1);
+    const rest = entries.slice(maxSlots - 1).reduce((sum, [, n]) => sum + n, 0);
+    kept.push(["Other", rest]);
+    return kept;
+  }
+
+  // The ONE real per-lifecycle protection/risk computation this whole
+  // Phase C section shares -- the Open risk KPI, the Unprotected exposure
+  // KPI, the attention queue's unprotected rows, and the p10 notional/
+  // loss-at-stop panel all read from this, never re-deriving the
+  // arithmetic. Only considers OPEN managed-lifecycle positions
+  // (owned_quantity > 0) -- a plain-account position has no protection
+  // state tracked anywhere in this build (see PU-A1 note above), so it is
+  // out of scope here exactly as it already is for M-TR-01-03.
+  function computeLifecycleRiskRows(lifecycles) {
+    return lifecycles
+      .filter((l) => l.owned_quantity > 0)
+      .map((l) => {
+        const hasEntry = l.entry_price !== null && l.entry_price !== undefined;
+        const hasStopPrice = l.stop_price !== null && l.stop_price !== undefined;
+        const stopConfirmed = l.stop_status === "stop_confirmed";
+        const unprotected = l.uncovered_quantity > 0;
+        const notional = hasEntry ? l.owned_quantity * l.entry_price : null;
+        const uncoveredNotional = unprotected && hasEntry ? l.uncovered_quantity * l.entry_price : null;
+        let riskAtStop = null;
+        if (!unprotected && stopConfirmed && hasEntry && hasStopPrice && l.covered_quantity > 0) {
+          riskAtStop = l.covered_quantity * Math.abs(l.entry_price - l.stop_price);
+        }
+        return {
+          account_id: l.account_id,
+          symbol: l.symbol,
+          owned_quantity: l.owned_quantity,
+          uncovered_quantity: l.uncovered_quantity,
+          unprotected,
+          notional,
+          uncoveredNotional,
+          riskAtStop,
+          riskUnknown: !unprotected && !(riskAtStop !== null),
+        };
+      });
+  }
+
+  // A UI-chosen staleness threshold applied to a REAL timestamp (time since
+  // this source's last received signal, GET /signals -- the exact same
+  // figure TR-09 already renders as its honestly-labeled "Lag," not a
+  // transport/collector lag metric). The threshold itself is a judgment
+  // call this panel makes, not fabricated telemetry -- no per-source
+  // heartbeat/SLA config exists anywhere in this codebase to read one from.
+  const STALE_SOURCE_THRESHOLD_SECONDS = 15 * 60;
+
+  // Real conditions only -- see this file's module docstring (Phase C) for
+  // exactly which GET endpoint backs each severity, and why a broker/
+  // internal-ledger discrepancy row is deliberately omitted (no live
+  // broker-side readback is exposed by any GET endpoint -- see TR-13).
+  function buildAttentionItems({ lifecycles, providers, signals, orders }) {
+    const items = [];
+
+    for (const l of lifecycles.filter((x) => x.halted)) {
+      items.push({
+        severity: "critical",
+        text: `${l.account_id} · ${l.symbol} halted -- ${l.halt_reason || "reason unknown"}`,
+        correlationId: `${l.account_id}:${l.symbol}`,
+      });
+    }
+    for (const l of lifecycles.filter((x) => x.uncovered_quantity > 0)) {
+      items.push({
+        severity: "critical",
+        text: `${l.account_id} · ${fmtNum(l.uncovered_quantity)} ${l.symbol} shares have no confirmed working stop`,
+        correlationId: `${l.account_id}:${l.symbol}`,
+      });
+    }
+
+    const lastSeenBySource = new Map();
+    for (const s of signals) {
+      if (!lastSeenBySource.has(s.source)) lastSeenBySource.set(s.source, s.received_at);
+    }
+    const now = Date.now();
+    for (const p of providers) {
+      const enabled = !p.settings || p.settings.enabled !== false;
+      if (!enabled) continue;
+      const lastSeen = lastSeenBySource.get(p.provider_id);
+      if (!lastSeen) continue;
+      const ageSeconds = (now - new Date(lastSeen).getTime()) / 1000;
+      if (Number.isFinite(ageSeconds) && ageSeconds > STALE_SOURCE_THRESHOLD_SECONDS) {
+        items.push({
+          severity: "warning",
+          text: `${p.provider_id} · source stream stale`,
+          ageSeconds,
+          correlationId: p.provider_id,
+        });
+      }
+    }
+
+    const pending = orders.filter((o) => o.status === "pending");
+    if (pending.length) {
+      items.push({ severity: "info", text: `${pending.length} entry order(s) awaiting fill` });
+    }
+
+    return items;
+  }
+
+  // Renders the KPI band + its Level-3 caveats, the attention queue, and
+  // the notional/loss-at-stop panel (p10) -- entirely additive, reads-only
+  // data this file's own docstring documents, never touching the Phase
+  // B1/B8 panels' own fetch/render logic above.
+  async function loadGlanceSection(ctx, panelEls, { accountsRes, positionsRes, ordersRes }) {
+    if (accountsRes.status === 401 || accountsRes.status === 403 || positionsRes.status === 401 || positionsRes.status === 403) {
+      const code = accountsRes.status === 401 || accountsRes.status === 403 ? accountsRes.status : positionsRes.status;
+      StateMatrix.render(panelEls.kpi, { state: "denied", deniedCode: code });
+      StateMatrix.render(panelEls.attention, { state: "denied", deniedCode: code });
+      StateMatrix.render(panelEls.exposure, { state: "denied", deniedCode: code });
+      return;
+    }
+    if (!accountsRes.ok || !positionsRes.ok) {
+      StateMatrix.render(panelEls.kpi, { state: "error", message: "Could not load accounts/positions." });
+      StateMatrix.render(panelEls.attention, { state: "error", message: "Could not load accounts/positions." });
+      StateMatrix.render(panelEls.exposure, { state: "error", message: "Could not load accounts/positions." });
+      return;
+    }
+
+    const accounts = (accountsRes.data && accountsRes.data.accounts) || [];
+    const lifecycles = (positionsRes.data && positionsRes.data.managed_lifecycles) || [];
+    const orders = (ordersRes.ok && ordersRes.data && ordersRes.data.orders) || [];
+    const halted = lifecycles.filter((l) => l.halted);
+    const unknownOps = lifecycles.filter((l) => l.pending_exit || l.pending_entry).length;
+
+    const [capitalRes, systemInfoRes, providersRes, signalsRes] = await Promise.all([
+      ctx.fetchJSON("/capital-allocation"),
+      ctx.fetchJSON("/system/info"),
+      ctx.fetchJSON("/providers"),
+      ctx.fetchJSON("/signals?limit=500"),
+    ]);
+
+    const economics = await Promise.all(
+      accounts.map((a) => ctx.fetchJSON(`/accounts/${encodeURIComponent(a.account_id)}/economics`))
+    );
+
+    const capitalAccounts = (capitalRes.ok && capitalRes.data && capitalRes.data.accounts) || [];
+    const deployedTotal = capitalAccounts.reduce((sum, a) => sum + (a.deployed_notional || 0), 0);
+    const reservedTotal = capitalAccounts.reduce((sum, a) => sum + (a.reserved_notional || 0), 0);
+    const capitalDegraded = !capitalRes.ok;
+
+    // Total P&L: real per-account GET /accounts/{id}/economics realized_pnl,
+    // summed -- only when EVERY account's read succeeded (a partial sum
+    // that silently drops a failed account would understate real P&L).
+    const economicsOk = economics.every((r) => r.ok);
+    const totalPnl = economicsOk ? economics.reduce((sum, r) => sum + (r.data.realized_pnl || 0), 0) : null;
+
+    // Day P&L: real per-account GET /accounts/{id}/equity-history
+    // cumulative_pnl change, but ONLY over an account's own real snapshots
+    // that genuinely span (close to) the last 24h -- never a shorter
+    // window silently mislabeled "day." equity_snapshot_interval_seconds
+    // (real, GET /system/info) sets the tolerance for "close to."
+    const snapshotIntervalSeconds = (systemInfoRes.ok && systemInfoRes.data && systemInfoRes.data.equity_snapshot_interval_seconds) || 300;
+    const sinceIso = new Date(Date.now() - 24 * 3600 * 1000).toISOString();
+    const equityHistories = await Promise.all(
+      accounts.map((a) => ctx.fetchJSON(`/accounts/${encodeURIComponent(a.account_id)}/equity-history?since=${encodeURIComponent(sinceIso)}&limit=2000`))
+    );
+    let dayPnlTotal = 0;
+    let dayPnlCoveredCount = 0;
+    equityHistories.forEach((r) => {
+      if (!r.ok) return;
+      const snaps = (r.data && r.data.snapshots) || [];
+      if (snaps.length < 2) return;
+      const first = snaps[0];
+      const last = snaps[snaps.length - 1];
+      const firstAgeMs = Date.now() - new Date(first.captured_at).getTime();
+      const targetMs = 24 * 3600 * 1000;
+      if (firstAgeMs < targetMs - 2 * snapshotIntervalSeconds * 1000) return; // genuinely doesn't reach back ~24h yet
+      dayPnlTotal += last.cumulative_pnl - first.cumulative_pnl;
+      dayPnlCoveredCount += 1;
+    });
+    const dayPnlAvailable = dayPnlCoveredCount > 0;
+
+    // Open risk / Unprotected exposure: one shared computation.
+    const riskRows = computeLifecycleRiskRows(lifecycles);
+    const unprotectedRows = riskRows.filter((r) => r.unprotected);
+    const unprotectedCount = unprotectedRows.length;
+    const unprotectedQty = unprotectedRows.reduce((sum, r) => sum + r.uncovered_quantity, 0);
+    const pricedRiskRows = riskRows.filter((r) => r.riskAtStop !== null);
+    const openRiskTotal = pricedRiskRows.reduce((sum, r) => sum + r.riskAtStop, 0);
+    const openRiskAvailable = pricedRiskRows.length > 0;
+    const riskUnknownCount = riskRows.filter((r) => r.riskUnknown).length;
+
+    const activeAccounts = accounts.filter((a) => a.enabled).length;
+    const standbyMode = systemInfoRes.ok && systemInfoRes.data ? systemInfoRes.data.standby_mode : null;
+
+    // Every path below is a real "ready" render -- StateMatrix.render's own
+    // "ready" case would do exactly this (removeAttribute + innerHTML),
+    // but these three panels build real DOM nodes via Components.render*
+    // rather than an HTML string, so it's done directly here instead of
+    // through StateMatrix's html-string-only "ready" case.
+    panelEls.kpi.removeAttribute("aria-busy");
+    panelEls.attention.removeAttribute("aria-busy");
+    panelEls.exposure.removeAttribute("aria-busy");
+
+    // --- KPI band ---
+    const items = [
+      standbyMode === null
+        ? { label: "Trading mode", value: "Unknown", tone: "neutral", sublabel: "Could not read GET /system/info" }
+        : standbyMode
+        ? { label: "Trading mode", value: "Standby", tone: "warn", sublabel: "STANDBY_MODE set -- no order can reach the engine" }
+        : { label: "Trading mode", value: "Live", tone: "ok", sublabel: "Standby mode is off" },
+      {
+        label: "Active accounts",
+        value: fmtNum(activeAccounts),
+        tone: activeAccounts === 0 && accounts.length > 0 ? "warn" : "neutral",
+        sublabel: `${accounts.length} configured`,
+      },
+      { label: "Net liquidation", value: "Not summed", tone: "neutral", sublabel: "see note below" },
+      dayPnlAvailable
+        ? { label: "Day P&L", value: fmtNum(dayPnlTotal), tone: dayPnlTotal >= 0 ? "ok" : "warn", sublabel: `${dayPnlCoveredCount}/${accounts.length} accounts have ~24h history` }
+        : { label: "Day P&L", value: "Not tracked", tone: "neutral", sublabel: "see note below" },
+      economicsOk
+        ? { label: "Total P&L", value: fmtNum(totalPnl), tone: totalPnl >= 0 ? "ok" : "warn", sublabel: "realized, sum of all accounts" }
+        : { label: "Total P&L", value: "Not tracked", tone: "neutral", sublabel: "see note below" },
+      { label: "Deployed capital", value: fmtNum(deployedTotal), tone: "neutral", sublabel: capitalDegraded ? "degraded this refresh" : `${capitalAccounts.length} accounts` },
+      { label: "Reserved capital", value: fmtNum(reservedTotal), tone: "neutral", sublabel: capitalDegraded ? "degraded this refresh" : `${capitalAccounts.length} accounts` },
+      openRiskAvailable
+        ? { label: "Open risk", value: fmtNum(openRiskTotal), tone: "neutral", sublabel: `${pricedRiskRows.length} priced position(s)${riskUnknownCount ? `, ${riskUnknownCount} unknown` : ""}` }
+        : { label: "Open risk", value: "Not tracked", tone: "neutral", sublabel: "see note below" },
+      {
+        label: "Unprotected exposure",
+        value: fmtNum(unprotectedCount),
+        tone: unprotectedCount > 0 ? "crit" : "ok",
+        sublabel: unprotectedCount > 0 ? `${fmtNum(unprotectedQty)} shares uncovered` : "0 uncovered managed positions",
+      },
+      { label: "Unknown orders", value: fmtNum(unknownOps), tone: unknownOps > 0 ? "warn" : "ok", sublabel: "unresolved pending entry/exit" },
+      { label: "Critical incidents", value: fmtNum(halted.length), tone: halted.length > 0 ? "crit" : "ok", sublabel: "halted managed positions" },
+    ];
+
+    const kpiHost = document.createElement("div");
+    Components.renderKPIBand(kpiHost, { items });
+
+    const caveats = [];
+    caveats.push({
+      title: "Net liquidation",
+      status: "not_tracked",
+      reason: "This build has no per-account currency field (see app/models.py's AccountBalance) to prove every configured account's broker-reported equity is in the same currency, so summing them into one figure would be an unverified number, not a real one (same M-TR-01-01 gap this file's Account risk cards panel already discloses per-account below).",
+    });
+    if (!dayPnlAvailable) {
+      caveats.push({
+        title: "Day P&L",
+        status: "not_tracked",
+        reason: "No configured account yet has real, persisted equity-history snapshots (GET /accounts/{id}/equity-history, app/equity_history.py) spanning a full ~24h window -- computing a 'day' change from a shorter real window would silently mislabel it.",
+      });
+    }
+    if (!economicsOk) {
+      caveats.push({
+        title: "Total P&L",
+        status: "not_tracked",
+        reason: "GET /accounts/{id}/economics could not be read for one or more accounts this refresh -- a partial sum would understate real realized P&L.",
+      });
+    }
+    if (!openRiskAvailable) {
+      caveats.push({
+        title: "Open risk",
+        status: "not_tracked",
+        reason: "No managed-lifecycle position is currently fully covered, stop-confirmed, and has both a known entry price and a known broker-confirmed stop price -- a real '$0' would be indistinguishable from 'unknown,' which this codebase never allows (see app/lifecycle/models.py's ProtectionStatus).",
+      });
+    }
+
+    panelEls.kpi.innerHTML = "";
+    panelEls.kpi.appendChild(kpiHost);
+    const caveatsWrap = document.createElement("div");
+    caveatsWrap.className = "tr-controls-row";
+    caveatsWrap.style.cssText = "margin-top:10px; gap:24px; flex-wrap:wrap;";
+    caveatsWrap.innerHTML = caveats
+      .map((c) => `<div><span class="section-note">${escapeHtml(c.title)}: </span><span class="tr01-caveat" data-title="${escapeAttr(c.title)}"></span></div>`)
+      .join("");
+    panelEls.kpi.appendChild(caveatsWrap);
+    caveats.forEach((c) => {
+      const el = caveatsWrap.querySelector(`.tr01-caveat[data-title="${c.title.replace(/"/g, '\\"')}"]`);
+      if (el) Components.renderCapabilityState(el, { status: c.status, reason: c.reason });
+    });
+    panelEls.kpi.insertAdjacentHTML(
+      "beforeend",
+      `<p class="section-note" style="margin-top:8px;">Cross-account totals above (Day/Total P&L, Deployed/Reserved capital) assume every configured account's figures share one implicit currency/unit -- this build stores no per-account currency field anywhere to verify that (the same gap that keeps Net liquidation from being summed at all).</p>`
+    );
+
+    // --- Attention required ---
+    const attentionItems = buildAttentionItems({
+      lifecycles,
+      providers: (providersRes.ok && providersRes.data && providersRes.data.providers) || [],
+      signals: (signalsRes.ok && signalsRes.data && signalsRes.data.signals) || [],
+      orders,
+    });
+    Components.renderAttentionQueue(panelEls.attention, { items: attentionItems });
+
+    // --- p10: notional exposure + loss-at-stop, by asset class ---
+    const assetClassBySymbol = signalsRes.ok
+      ? assetClassMapFromSignals((signalsRes.data && signalsRes.data.signals) || [])
+      : new Map();
+    const pricedRows = riskRows.filter((r) => r.notional !== null);
+    const unpricedCount = riskRows.length - pricedRows.length;
+    const notionalEntries = aggregateSum(
+      pricedRows,
+      (r) => assetClassBySymbol.get(r.symbol) || "unknown",
+      (r) => r.notional,
+      6
+    );
+    const riskByAssetClass = aggregateSum(
+      pricedRiskRows,
+      (r) => assetClassBySymbol.get(r.symbol) || "unknown",
+      (r) => r.riskAtStop,
+      6
+    );
+
+    panelEls.exposure.innerHTML = `<p class="section-note">Real notional (entry price x quantity) and loss-at-stop (covered_quantity x |entry - stop|), by asset class -- both computed ONLY from managed-lifecycle positions with a known entry price (this build stores no current market price for a plain-account position anywhere -- see this file's own docstring). ${
+      riskRows.length ? `${pricedRows.length} of ${riskRows.length} open managed-lifecycle position(s) have a known notional${unpricedCount ? `; ${unpricedCount} excluded (no entry price yet)` : ""}.` : "No open managed-lifecycle position exists right now."
+    }</p>
+      <div class="tr-controls-row" style="align-items:flex-start; gap:24px; flex-wrap:wrap;">
+        <div style="flex:1; min-width:260px;"><h3 class="section-note">Notional exposure by asset class</h3><div id="tr01-donut-notional-wrap"></div></div>
+        <div style="flex:1; min-width:260px;"><h3 class="section-note">Loss at stop by asset class</h3><div id="tr01-riskbar-wrap"></div></div>
+      </div>`;
+    renderNotionalDonut(panelEls.exposure, "tr01-donut-notional", notionalEntries, (label) => ASSET_CLASS_COLOR[label] || DONUT_OTHER_COLOR);
+    renderRiskBarChart(panelEls.exposure, "tr01-riskbar", riskByAssetClass);
+  }
+
   async function load(ctx) {
     const panelEls = {
       identity: ctx.container.querySelector("#tr01-p01 .tr-panel-body"),
@@ -263,6 +747,9 @@
       openPositions: ctx.container.querySelector("#tr01-p07 .tr-panel-body"),
       allocation: ctx.container.querySelector("#tr01-p08 .tr-panel-body"),
       risk2: ctx.container.querySelector("#tr01-p09 .tr-panel-body"),
+      kpi: ctx.container.querySelector("#tr01-kpi .tr-panel-body"),
+      attention: ctx.container.querySelector("#tr01-attention .tr-panel-body"),
+      exposure: ctx.container.querySelector("#tr01-p10 .tr-panel-body"),
     };
     for (const el of Object.values(panelEls)) StateMatrix.render(el, { state: "loading" });
 
@@ -386,7 +873,12 @@
       }
     }
 
-    const ordersRes = await ctx.fetchJSON("/orders?limit=15");
+    // limit=100 (was 15): the same fetch now also backs the Attention
+    // queue's real "orders awaiting fill" count below (loadGlanceSection)
+    // -- the Recent activity table itself still only ever shows the 15
+    // most recent (orders is already newest-first), so this changes no
+    // rendered content in this panel.
+    const ordersRes = await ctx.fetchJSON("/orders?limit=100");
     if (ordersRes.status === 401 || ordersRes.status === 403) {
       StateMatrix.render(panelEls.activity, { state: "denied", deniedCode: ordersRes.status });
     } else if (!ordersRes.ok) {
@@ -396,7 +888,7 @@
       if (!orders.length) {
         StateMatrix.render(panelEls.activity, { state: "empty", emptyMessage: "No recent activity." });
       } else {
-        const rows = orders.map((o) => [
+        const rows = orders.slice(0, 15).map((o) => [
           o.executed_at || "—",
           `<span class="mono">${escapeHtml(o.account_id)}</span>`,
           `<span class="mono">${escapeHtml(o.symbol || "—")}</span>`,
@@ -580,6 +1072,8 @@
         });
       }
     }
+
+    await loadGlanceSection(ctx, panelEls, { accountsRes, positionsRes, ordersRes });
 
     ctx.setChrome({ asOf: new Date().toISOString() });
   }
