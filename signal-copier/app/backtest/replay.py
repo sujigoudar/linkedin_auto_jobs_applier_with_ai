@@ -311,7 +311,19 @@ class BacktestEngine:
                     still_open.append((exit_time, notional))
             open_reservations = still_open
 
-            notional = abs(t.quantity) * t.entry_price  # type: ignore[operator]
+            # `sizeable`'s own filter above already guarantees both are
+            # non-None for every `t` reached here; mypy can't carry that
+            # narrowing through the generator-expression filter into this
+            # loop, so narrow it again explicitly rather than silencing the
+            # checker (a stale `# type: ignore[operator]` used to sit here,
+            # but that error code doesn't even match this one; a real
+            # `quantity`/`entry_price` of None reaching this line would be
+            # a genuine bug the assert below is meant to catch, not paper
+            # over).
+            quantity = t.quantity
+            entry_price = t.entry_price
+            assert quantity is not None and entry_price is not None
+            notional = abs(quantity) * entry_price
             admitted = await allocator.admit(
                 account_id, notional, confirmed_exposure=0.0, max_exposure=max_notional_exposure
             )
