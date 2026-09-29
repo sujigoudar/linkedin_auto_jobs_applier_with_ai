@@ -21,6 +21,12 @@ from signal_platform_contracts import EventEnvelope
 
 _ALEMBIC_DIR = Path(__file__).resolve().parent.parent / "alembic"
 
+#: AUD-01: private sentinel distinguishing "this call has no new value for
+#: this quantity column, leave whatever's stored" from an explicit `None`
+#: ("this call knows the real value is genuinely unknown") -- see
+#: `SignalStore._update_order_status_locked`'s docstring.
+_UNSET = object()
+
 
 def _alembic_config(db_path: Path) -> AlembicConfig:
     """A fresh, in-process Alembic Config per call, pointed at whichever
@@ -130,15 +136,65 @@ CREATE TABLE IF NOT EXISTS orders (
     -- plain_close`), so there is no real family id to report -- an honest
     -- gap, not a fabricated one.
     family_id TEXT,
+    -- AUD-01 (this pass): the distinct-field quantity model replacing the
+    -- old "optimistically apply the requested quantity to positions while
+    -- an async broker's order is still PENDING" behavior (see
+    -- app/engine.py's module docstring history / git blame on this
+    -- comment for exactly what that was). `requested_quantity` above is
+    -- what was asked for; these three, together with `positions
+    -- .net_quantity` (== `actual_remaining_ownership` by contract from
+    -- this pass on -- see that table's own comment), are the rest of the
+    -- model. All three are nullable: NULL means "this row predates this
+    -- migration" (a real, pre-existing deployment's history — never
+    -- backfilled with a guess) or "this call site hasn't been updated to
+    -- populate it" (e.g. a REJECTED/ERROR result with nothing to report),
+    -- never a fabricated 0.0 standing in for genuinely unknown.
+    --
+    -- `confirmed_cumulative_fill`: the broker's own reported cumulative
+    -- filled quantity for this order, exactly as given (`result
+    -- .filled_quantity`) -- never guessed, never defaulted to the
+    -- requested quantity. NULL means the broker has not confirmed
+    -- anything yet for this specific PENDING order.
+    --
+    -- `applied_execution_delta`: the actual signed-by-side quantity this
+    -- exact save applied to `positions.net_quantity` (via `record_fill`),
+    -- if anything. 0.0 (not NULL) is a genuine, known fact -- "this save
+    -- confirmed nothing new and touched the position not at all" (e.g. a
+    -- still-PENDING order with no confirmed fill yet) -- distinct from
+    -- NULL ("this row predates the field / never applicable").
+    --
+    -- `outstanding_possible_fill`: `requested_quantity -
+    -- confirmed_cumulative_fill` at the moment this row was written --
+    -- the quantity that could STILL be confirmed by the broker and must
+    -- be treated as uncertain exposure, not zero, while this order
+    -- remains PENDING. 0.0 once the order reaches a terminal status
+    -- (FILLED/REJECTED/ERROR -- nothing more can possibly fill). See
+    -- `SignalStore.get_outstanding_possible_fill`'s docstring for the
+    -- live, queryable aggregate other code (the capital allocator, the
+    -- position-detail UI) should call instead of reading this column
+    -- directly off one row.
+    confirmed_cumulative_fill REAL,
+    applied_execution_delta REAL,
+    outstanding_possible_fill REAL,
     FOREIGN KEY (signal_id) REFERENCES signals (id)
 );
 
 -- Net position per (account, symbol), maintained by the engine so a
 -- 'close' signal knows what to close. Positive = net long, negative = net
 -- short, zero = flat. This is this service's own record of what it has
--- sent, not a live read of the broker's actual position — see
--- app/engine.py's docstring for the accuracy caveat on brokers that report
--- PENDING rather than a confirmed fill.
+-- sent, not a live read of the broker's actual position.
+--
+-- AUD-01 (this pass): `net_quantity` IS `actual_remaining_ownership` by
+-- contract from this pass on -- it is updated ONLY from a broker-confirmed
+-- fill (`record_fill` called with a real `confirmed_cumulative_fill`-
+-- derived delta, never from a PENDING order's merely-requested quantity).
+-- A broker that reports PENDING rather than a synchronous confirmed fill
+-- (SignalStack, Alpaca, IBKR, NinjaTrader, Rithmic) leaves this column
+-- UNCHANGED until app/reconciliation.py (or a synchronous partial-fill
+-- report alongside PENDING) confirms a real quantity -- see
+-- app/engine.py's module docstring and `orders.outstanding_possible_fill`/
+-- `SignalStore.get_outstanding_possible_fill` for where that unconfirmed,
+-- still-possible exposure is tracked and surfaced instead.
 CREATE TABLE IF NOT EXISTS positions (
     account_id TEXT NOT NULL,
     symbol TEXT NOT NULL,
@@ -583,6 +639,12 @@ _COLUMN_MIGRATIONS = [
     # app/models.py for why this is the one field added for it.
     ("signals", "import_batch", "TEXT"),
     ("backtest_runs", "capital_contention_json", "TEXT"),
+    # AUD-01 (this pass): the distinct-field quantity model -- see the
+    # `orders` table's own SCHEMA comment above for exactly what each
+    # column means and why all three are nullable.
+    ("orders", "confirmed_cumulative_fill", "REAL"),
+    ("orders", "applied_execution_delta", "REAL"),
+    ("orders", "outstanding_possible_fill", "REAL"),
 ]
 
 
@@ -682,6 +744,9 @@ class SignalStore:
         side: Side | None = None,
         requested_quantity: float | None = None,
         applied_quantity: float | None = None,
+        confirmed_cumulative_fill: float | None = None,
+        applied_execution_delta: float | None = None,
+        outstanding_possible_fill: float | None = None,
         reserved_notional: float | None = None,
         export_envelope: EventEnvelope | None = None,
         submitted_at: datetime | None = None,
@@ -720,20 +785,42 @@ class SignalStore:
         Side.CLOSE).
 
         `applied_quantity` is what the caller actually applied to the
-        tracked position (`SignalStore.positions`) for this order, if
-        anything — pass it whenever `record_fill`/`adjust_position` was
-        called alongside this save. It is NOT always `result.filled_quantity`:
-        a broker reporting PENDING with `filled_quantity=None` still gets an
-        optimistic quantity applied to the tracked position (the requested
-        quantity, per the "protect first" design), and that applied amount,
-        not the broker's still-unconfirmed `None`, is what
-        app/reconciliation.py's `_correct_position` must use as its baseline
-        when the real fill is confirmed later — otherwise it corrects
-        against a baseline of 0 and adds the confirmed quantity a second
-        time on top of what was already applied (a real, confirmed bug this
-        parameter exists to close). Omit this for calls that never touched
+        tracked position (`SignalStore.positions.net_quantity`, i.e.
+        `actual_remaining_ownership` — see that table's own SCHEMA comment)
+        for this order, if anything — pass it whenever `record_fill` was
+        called alongside this save, so this row's stored `filled_quantity`
+        matches what the position ledger actually did. It is NEVER an
+        optimistic guess from this pass on (AUD-01): a PENDING order with
+        no confirmed fill yet (`result.filled_quantity is None`) must pass
+        `applied_quantity=None` (or omit it) here too, matching the fact
+        that `record_fill` was correctly NOT called for it — see
+        app/engine.py's call sites. Omit this for calls that never touched
         the tracked position (REJECTED/ERROR results, or a save with no
         `symbol`/`side` at all).
+
+        `confirmed_cumulative_fill` / `applied_execution_delta` /
+        `outstanding_possible_fill` (AUD-01, the distinct-field quantity
+        model this pass introduces to replace the old optimistic-PENDING
+        behavior — see `orders`'s own SCHEMA comment in this module for
+        the full contract each column implies):
+
+        - `confirmed_cumulative_fill`: pass exactly `result.filled_quantity`
+          as reported by the broker for this specific save (never a
+          fallback to `requested_quantity`). `None` when the broker hasn't
+          confirmed anything yet for this order.
+        - `applied_execution_delta`: pass exactly what this save applied to
+          `positions.net_quantity` (i.e. exactly `applied_quantity`,
+          signed the same way `record_fill`'s own `side` argument implies).
+          `0.0` (not `None`) when this save genuinely applied nothing —
+          e.g. a still-PENDING order with nothing confirmed yet. `None`
+          only for a caller that hasn't been updated to pass it.
+        - `outstanding_possible_fill`: pass `requested_quantity -
+          (confirmed_cumulative_fill or 0.0)` while `result.status` is
+          PENDING (the quantity that could still be confirmed later, and
+          must be treated as uncertain exposure — see
+          `get_outstanding_possible_fill`), or `0.0` once the order is
+          terminal (FILLED/REJECTED/ERROR — nothing more can fill). `None`
+          for a caller that hasn't been updated to pass it.
 
         `submitted_at`/`protection_confirmed_at` (PU-A2): real multi-stage
         execution-latency timestamps -- see app/execution_quality.py's
@@ -754,8 +841,9 @@ class SignalStore:
                 """INSERT INTO orders
                    (account_id, broker, symbol, side, requested_quantity, signal_id, status,
                     broker_order_id, filled_quantity, filled_price, message, executed_at, reserved_notional,
-                    submitted_at, protection_confirmed_at, purpose, family_id)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    submitted_at, protection_confirmed_at, purpose, family_id,
+                    confirmed_cumulative_fill, applied_execution_delta, outstanding_possible_fill)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     result.account_id,
                     broker,
@@ -774,6 +862,9 @@ class SignalStore:
                     protection_confirmed_at.isoformat() if protection_confirmed_at else None,
                     purpose,
                     family_id,
+                    confirmed_cumulative_fill,
+                    applied_execution_delta,
+                    outstanding_possible_fill,
                 ),
             )
             if export_envelope is not None:
@@ -1005,26 +1096,75 @@ class SignalStore:
             for r in rows
         ]
 
-    def update_order_status(self, order_row_id: int, result: OrderResult) -> None:
+    def update_order_status(
+        self,
+        order_row_id: int,
+        result: OrderResult,
+        *,
+        confirmed_cumulative_fill: float | None = _UNSET,  # type: ignore[assignment]
+        applied_execution_delta: float | None = _UNSET,  # type: ignore[assignment]
+        outstanding_possible_fill: float | None = _UNSET,  # type: ignore[assignment]
+    ) -> None:
         with self._connect() as conn:
-            self._update_order_status_locked(conn, order_row_id, result)
-
-    def _update_order_status_locked(self, conn: sqlite3.Connection, order_row_id: int, result: OrderResult) -> None:
-        conn.execute(
-            """UPDATE orders SET status = ?, filled_quantity = ?, filled_price = ?,
-                      message = ?, executed_at = ? WHERE id = ?""",
-            (
-                result.status.value,
-                result.filled_quantity,
-                result.filled_price,
-                result.message,
-                result.executed_at.isoformat(),
+            self._update_order_status_locked(
+                conn,
                 order_row_id,
-            ),
-        )
+                result,
+                confirmed_cumulative_fill=confirmed_cumulative_fill,
+                applied_execution_delta=applied_execution_delta,
+                outstanding_possible_fill=outstanding_possible_fill,
+            )
+
+    def _update_order_status_locked(
+        self,
+        conn: sqlite3.Connection,
+        order_row_id: int,
+        result: OrderResult,
+        *,
+        confirmed_cumulative_fill: float | None = _UNSET,  # type: ignore[assignment]
+        applied_execution_delta: float | None = _UNSET,  # type: ignore[assignment]
+        outstanding_possible_fill: float | None = _UNSET,  # type: ignore[assignment]
+    ) -> None:
+        """`confirmed_cumulative_fill`/`applied_execution_delta`/
+        `outstanding_possible_fill` (AUD-01) each default to the private
+        `_UNSET` sentinel, meaning "this call has nothing new to report for
+        this column -- leave whatever was already stored." Passing an
+        explicit value (including `None`, e.g. a genuinely-unknown
+        confirmed fill) overwrites it. This is deliberately NOT the same as
+        defaulting to `None`: an ordinary status/price/message update (the
+        original, pre-AUD-01 shape of this method) must never silently
+        blank out a quantity column a previous, more-informative call
+        already set."""
+        columns = ["status = ?", "filled_quantity = ?", "filled_price = ?", "message = ?", "executed_at = ?"]
+        params: list[object] = [
+            result.status.value,
+            result.filled_quantity,
+            result.filled_price,
+            result.message,
+            result.executed_at.isoformat(),
+        ]
+        for column_name, value in (
+            ("confirmed_cumulative_fill", confirmed_cumulative_fill),
+            ("applied_execution_delta", applied_execution_delta),
+            ("outstanding_possible_fill", outstanding_possible_fill),
+        ):
+            if value is not _UNSET:
+                columns.append(f"{column_name} = ?")
+                params.append(value)
+        params.append(order_row_id)
+        conn.execute(f"UPDATE orders SET {', '.join(columns)} WHERE id = ?", params)
 
     def correct_position_and_update_order_status(
-        self, order_row_id: int, account_id: str, symbol: str, signed_delta: float, result: OrderResult
+        self,
+        order_row_id: int,
+        account_id: str,
+        symbol: str,
+        signed_delta: float,
+        result: OrderResult,
+        *,
+        confirmed_cumulative_fill: float | None = _UNSET,  # type: ignore[assignment]
+        applied_execution_delta: float | None = _UNSET,  # type: ignore[assignment]
+        outstanding_possible_fill: float | None = _UNSET,  # type: ignore[assignment]
     ) -> float:
         """Apply a reconciliation correction to `positions` and mark this
         order row's terminal status in ONE local transaction (EXE-03: these
@@ -1035,7 +1175,18 @@ class SignalStore:
         it a SECOND time on top of the first). `signed_delta` may be 0.0
         (no position change, e.g. a straight terminal-status confirmation)
         -- the order row is still updated in the same call so it's never
-        re-processed."""
+        re-processed.
+
+        `confirmed_cumulative_fill`/`applied_execution_delta`/
+        `outstanding_possible_fill` (AUD-01): see `_update_order_status_locked`'s
+        docstring for the `_UNSET`-sentinel contract shared with
+        `update_order_status`. `signed_delta` IS this call's
+        `applied_execution_delta` by definition (the exact quantity just
+        applied to `positions.net_quantity`, i.e.
+        `actual_remaining_ownership`) — a caller (`OrderReconciler
+        ._correct_position`) that already computed `signed_delta` should
+        normally also pass it as `applied_execution_delta` for the stored
+        row to agree with what this method actually did to the position."""
         with self._connect() as conn:
             current = conn.execute(
                 "SELECT net_quantity FROM positions WHERE account_id = ? AND symbol = ?",
@@ -1050,7 +1201,14 @@ class SignalStore:
                        DO UPDATE SET net_quantity = excluded.net_quantity, updated_at = excluded.updated_at""",
                     (account_id, symbol, new_quantity, datetime.now(timezone.utc).isoformat()),
                 )
-            self._update_order_status_locked(conn, order_row_id, result)
+            self._update_order_status_locked(
+                conn,
+                order_row_id,
+                result,
+                confirmed_cumulative_fill=confirmed_cumulative_fill,
+                applied_execution_delta=applied_execution_delta,
+                outstanding_possible_fill=outstanding_possible_fill,
+            )
         return new_quantity
 
     def get_position(self, account_id: str, symbol: str) -> float:
@@ -1060,6 +1218,61 @@ class SignalStore:
                 (account_id, symbol),
             ).fetchone()
         return row[0] if row else 0.0
+
+    def get_outstanding_possible_fill(self, account_id: str) -> dict[str, float]:
+        """AUD-01: the plain-account (non-managed_lifecycle) counterpart of
+        `PositionLifecycleManager.get_outstanding_possible_fill` — the
+        contract every downstream reader (in particular
+        app/capital_allocator.py's capital allocator, and any position-
+        detail UI) should call for "how much MORE could this account's
+        tracked position still move, from orders the broker hasn't finished
+        confirming."
+
+        Returns `{symbol: net_signed_outstanding_possible_fill}` for every
+        symbol with at least one currently-PENDING order on this account —
+        a symbol with nothing pending is simply absent (never a fabricated
+        0.0 entry); callers should treat a missing key as zero, exactly
+        like `PositionLifecycleManager.get_outstanding_possible_fill`.
+
+        For each pending order, its own contribution is `requested_quantity
+        - COALESCE(confirmed_cumulative_fill, 0)` — the quantity that could
+        still be confirmed — signed by that order's own `side` (BUY
+        positive, SELL negative: what it would do to net exposure if it
+        lands), then summed per symbol across every pending order. This is
+        DISTINCT from `actual_remaining_ownership` (`positions.net_quantity`,
+        read via `get_position`): that column only ever reflects a
+        CONFIRMED fill (see this table's own SCHEMA comment and
+        app/engine.py's PENDING-order handling) and this method's result is
+        never folded into it — the two are meant to be read together, not
+        merged into one number, so a caller can see both "what's actually
+        owned" and "what could still change" without one masking the
+        other.
+
+        Only orders with a real `broker_order_id` are included (mirrors
+        `list_pending_orders`'s own filter): a PENDING order with no
+        broker_order_id at all (a lost/ambiguous response — see
+        app/engine.py's exception-handling branches) is never polled to a
+        terminal state by app/reconciliation.py either, so it has no
+        `confirmed_cumulative_fill` this method could use here — excluding
+        it here is the same "don't guess, disclose the gap elsewhere"
+        choice as everywhere else in this pass, not a silent undercount of
+        a case this method could otherwise resolve."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT symbol, side, requested_quantity, confirmed_cumulative_fill
+                   FROM orders
+                   WHERE account_id = ? AND status = 'pending' AND broker_order_id IS NOT NULL
+                         AND symbol IS NOT NULL AND side IS NOT NULL AND requested_quantity IS NOT NULL""",
+                (account_id,),
+            ).fetchall()
+        outstanding: dict[str, float] = {}
+        for symbol, side, requested_quantity, confirmed_cumulative_fill in rows:
+            remainder = requested_quantity - (confirmed_cumulative_fill or 0.0)
+            if remainder <= 0:
+                continue
+            signed = remainder if side == Side.BUY.value else -remainder
+            outstanding[symbol] = outstanding.get(symbol, 0.0) + signed
+        return outstanding
 
     def record_fill(
         self, account_id: str, symbol: str, side: Side, quantity: float, *, lifecycle_state: dict | None = None

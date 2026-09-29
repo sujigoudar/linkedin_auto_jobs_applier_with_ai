@@ -412,8 +412,16 @@ class OrderReconciler:
             return  # nothing was optimistically recorded for this order to correct
 
         side = Side(order["side"])
+        # AUD-01: `order["filled_quantity"]` is this row's own
+        # `applied_execution_delta` baseline -- since app/engine.py no
+        # longer optimistically applies the full requested quantity for a
+        # PENDING order with nothing confirmed yet, this is correctly 0.0
+        # for a genuinely-still-unconfirmed order (never an inflated
+        # guess), or the real confirmed partial amount already applied for
+        # one that reported partial progress alongside PENDING.
         optimistic_quantity = order["filled_quantity"] or 0.0
         signed_delta = 0.0
+        confirmed_cumulative_fill: float | None = None
 
         if new_status == OrderStatus.FILLED:
             # B5: a broker like Alpaca/IBKR reports PENDING at placement
@@ -443,10 +451,12 @@ class OrderReconciler:
             actual_quantity = confirmed_quantity if confirmed_quantity is not None else 0.0
             delta = actual_quantity - optimistic_quantity
             signed_delta = delta if side == Side.BUY else -delta
+            confirmed_cumulative_fill = actual_quantity
         elif new_status == OrderStatus.FILLED:
             actual_quantity = confirmed_quantity if confirmed_quantity is not None else optimistic_quantity
             delta = actual_quantity - optimistic_quantity
             signed_delta = delta if side == Side.BUY else -delta
+            confirmed_cumulative_fill = actual_quantity
 
         # The position correction and this order row's terminal status are
         # committed together (EXE-03): applying `signed_delta` in one write
@@ -456,8 +466,23 @@ class OrderReconciler:
         # the still-stale `orders.filled_quantity` baseline (a 100-unit buy
         # canceled with 30 filled was observed reaching -40, not the correct
         # 30, after exactly this interruption).
+        #
+        # AUD-01: this order has now reached a terminal status (FILLED or
+        # REJECTED -- the only two `new_status` values this method is ever
+        # called with, see `reconcile_once`'s own PENDING-skip guard), so
+        # `outstanding_possible_fill` is unconditionally 0.0 (nothing more
+        # can fill) and `applied_execution_delta` is exactly this call's
+        # own `signed_delta` -- the quantity this call itself just applied
+        # to `positions.net_quantity`.
         self.store.correct_position_and_update_order_status(
-            order["id"], order["account_id"], order["symbol"], signed_delta, result
+            order["id"],
+            order["account_id"],
+            order["symbol"],
+            signed_delta,
+            result,
+            confirmed_cumulative_fill=confirmed_cumulative_fill,
+            applied_execution_delta=signed_delta,
+            outstanding_possible_fill=0.0,
         )
         self._release_reservation_if_any(order)
 

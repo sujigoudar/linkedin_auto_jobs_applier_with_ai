@@ -244,6 +244,18 @@ class PendingEntry:
     #: nothing guarantees this will ever be polled to a terminal state.
     reserved_notional: float = 0.0
 
+    @property
+    def unresolved_remainder(self) -> float:
+        """How much of `requested_quantity` could still fill for this entry
+        — mirrors `PendingExit.unresolved_remainder`. This is exactly the
+        per-entry contribution to `PositionLifecycleManager.get_outstanding_possible_fill`:
+        genuine uncertain exposure (the broker could still confirm more of
+        this fill) that must be surfaced, never silently treated as zero
+        and never silently treated as already-owned."""
+        if self.remainder_resolved:
+            return 0.0
+        return max(0.0, self.requested_quantity - self.confirmed_filled_quantity)
+
 
 @dataclass
 class PositionLifecycle:

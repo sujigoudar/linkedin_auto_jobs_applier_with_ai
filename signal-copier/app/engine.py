@@ -37,14 +37,47 @@ unaffected (this is an additive, opt-in layer, same pattern as
 provider, or analyst) skips that destination the same way a disabled
 account already does.
 
-Position tracking itself updates from `OrderResult.filled_quantity` when a
-broker confirms FILLED, or optimistically from the requested quantity when
-a broker only reports PENDING (SignalStack, Alpaca, IBKR, NinjaTrader,
-Rithmic all confirm fills asynchronously, outside this call). That means
-tracked positions on those brokers can drift from the real book if an
-order is later rejected or partially filled after reporting PENDING — this
-is a known limitation of not having a fill-confirmation feedback path from
-those brokers back into this service yet.
+## Position tracking's distinct-field quantity model (AUD-01)
+
+`SignalStore.positions.net_quantity` (`actual_remaining_ownership` by
+contract — see that table's own SCHEMA comment in app/db.py) is updated
+ONLY from a broker-CONFIRMED fill: a synchronous FILLED result, or a real,
+broker-reported `filled_quantity` accompanying a PENDING result (a genuine
+partial-fill progress report). It is NEVER updated optimistically from the
+merely-requested quantity while a broker's order is still PENDING with
+nothing confirmed yet (SignalStack, Alpaca, IBKR, NinjaTrader, Rithmic all
+confirm fills asynchronously, outside this call, via
+app/reconciliation.py's polling loop) — doing so used to let tracked
+positions silently diverge from the real book whenever such an order was
+later rejected or only partially filled, which is not a tolerable basis
+for live holdings, risk, P&L, or a subsequent close in this system.
+
+Every order/fill event distinguishes five fields, persisted on the
+`orders` row (see app/db.py's SCHEMA comment for the exact column
+contract) and surfaced in aggregate via `SignalStore
+.get_outstanding_possible_fill`/`PositionLifecycleManager
+.get_outstanding_possible_fill`:
+
+- `requested_quantity` — what was asked for.
+- `confirmed_cumulative_fill` — what the broker has actually confirmed
+  filled so far for this order, exactly as reported (never guessed).
+- `applied_execution_delta` — the position-impacting change this specific
+  fill event actually applied to `positions.net_quantity` (0.0, not a
+  fabricated guess, when nothing was confirmed yet).
+- `outstanding_possible_fill` — `requested_quantity -
+  confirmed_cumulative_fill` while the order remains PENDING: genuine
+  uncertain exposure that must be tracked and surfaced (e.g. to
+  app/capital_allocator.py, or a position-detail UI), never silently
+  treated as already-owned and never silently treated as zero.
+- `actual_remaining_ownership` — `positions.net_quantity` itself: the
+  current believed-owned quantity, updated only from confirmed fills/exits.
+
+A PENDING order whose broker later reports REJECTED or a lower final fill
+than requested therefore never needed "correcting" from a wrong optimistic
+baseline in the first place — `OrderReconciler._correct_position` still
+applies the (now correctly zero-or-partial) baseline-to-confirmed delta,
+but that delta is the FULL confirmed amount, not a true-up of an inflated
+guess.
 
 ## Managed-lifecycle accounts
 
@@ -573,16 +606,42 @@ class SignalCopierEngine:
             else:
                 self.capital_allocator.release(account.account_id, notional)
 
-            applied_quantity = None
-            if result.status in (OrderStatus.FILLED, OrderStatus.PENDING):
-                # An explicit, reported zero fill must stay zero -- `x or
-                # quantity` treats 0.0 as falsy and silently substitutes the
-                # full requested quantity, exactly the "zero fill becomes a
-                # fictitious full fill" bug (EXE-04). Only a genuinely
-                # unknown fill (`None` -- the broker hasn't said anything
-                # yet) falls back to the optimistic full-quantity guess.
+            # AUD-01: `applied_quantity`/`confirmed_cumulative_fill`/
+            # `applied_execution_delta`/`outstanding_possible_fill` --
+            # see this module's own docstring section on the distinct-
+            # field quantity model, and app/db.py's `save_order_result`
+            # docstring for exactly what each of these four means.
+            #
+            # A FILLED result is a broker-confirmed synchronous fill --
+            # `result.filled_quantity is None` there is a broker that
+            # confirmed FILLED without reporting a quantity, so the
+            # requested quantity is the only real number available (not
+            # an optimistic guess: the broker DID confirm this happened).
+            #
+            # A PENDING result confirms NOTHING by itself. Only a real,
+            # broker-reported `filled_quantity` alongside PENDING (a
+            # genuine partial-fill progress report, EXE-04: explicit 0.0
+            # is real progress too, not "unknown") is confirmed and
+            # applied. `filled_quantity is None` on a PENDING result means
+            # the broker hasn't said anything yet -- `actual_remaining_
+            # ownership` must NOT change for it, full stop; the full
+            # requested quantity is tracked ONLY as `outstanding_possible_
+            # fill`, genuine uncertain exposure, never applied to the
+            # position.
+            applied_quantity: float | None = None
+            confirmed_cumulative_fill: float | None = None
+            outstanding_possible_fill = 0.0
+            if result.status == OrderStatus.FILLED:
                 applied_quantity = quantity if result.filled_quantity is None else result.filled_quantity
+                confirmed_cumulative_fill = applied_quantity
+            elif result.status == OrderStatus.PENDING:
+                confirmed_cumulative_fill = result.filled_quantity
+                if result.filled_quantity is not None:
+                    applied_quantity = result.filled_quantity
+                outstanding_possible_fill = quantity - (confirmed_cumulative_fill or 0.0)
+            if applied_quantity is not None:
                 self.store.record_fill(account.account_id, symbol, order_signal.side, applied_quantity)
+            applied_execution_delta = applied_quantity if applied_quantity is not None else 0.0
 
             export_envelope = self._build_export_envelope(
                 result,
@@ -600,6 +659,9 @@ class SignalCopierEngine:
                 side=order_signal.side,
                 requested_quantity=quantity,
                 applied_quantity=applied_quantity,
+                confirmed_cumulative_fill=confirmed_cumulative_fill,
+                applied_execution_delta=applied_execution_delta,
+                outstanding_possible_fill=outstanding_possible_fill,
                 reserved_notional=reserved_notional,
                 export_envelope=export_envelope,
                 submitted_at=submitted_at,
@@ -858,12 +920,16 @@ class SignalCopierEngine:
 
     async def _submit_order(
         self, order_signal: Signal, quantity: float, account: DestinationAccount, symbol: str, broker: BrokerAdapter
-    ) -> tuple[OrderResult, float | None, datetime]:
-        """Returns (result, applied_quantity, submitted_at) — `applied_quantity`
-        is what was actually applied to the tracked position (None if nothing
-        was), for the caller to pass into `save_order_result`'s
-        `applied_quantity` so the stored row matches what `record_fill` did
-        (see that parameter's docstring for why the two must agree).
+    ) -> tuple[OrderResult, float | None, float | None, float, float, datetime]:
+        """Returns (result, applied_quantity, confirmed_cumulative_fill,
+        applied_execution_delta, outstanding_possible_fill, submitted_at).
+        `applied_quantity` is what was actually applied to the tracked
+        position (None if nothing was), for the caller to pass into
+        `save_order_result`'s `applied_quantity` so the stored row matches
+        what `record_fill` did (see that parameter's docstring for why the
+        two must agree). The remaining three are AUD-01's distinct-field
+        quantity model -- see handle_signal's identical computation and
+        this module's own docstring section for the shared contract.
         `submitted_at` (PU-A2) is the real moment this call actually reached
         the broker, captured immediately before it -- see handle_signal's
         identical field for what it feeds into."""
@@ -875,13 +941,34 @@ class SignalCopierEngine:
             result = OrderResult(
                 account_id=account.account_id, status=OrderStatus.ERROR, signal_id=order_signal.id, message=str(exc)
             )
-        applied_quantity = None
-        if result.status in (OrderStatus.FILLED, OrderStatus.PENDING):
-            # See handle_signal's identical fix -- an explicit zero fill
-            # must stay zero, never fall back to the requested quantity.
+        # AUD-01: mirrors handle_signal's identical branch exactly -- a
+        # PENDING result with `filled_quantity is None` confirms nothing,
+        # so `actual_remaining_ownership` (positions.net_quantity) must not
+        # change for it; only a real, broker-reported quantity (FILLED, or
+        # a genuine partial-fill progress report alongside PENDING -- EXE-04:
+        # explicit 0.0 is real progress too) is applied.
+        applied_quantity: float | None = None
+        confirmed_cumulative_fill: float | None = None
+        outstanding_possible_fill = 0.0
+        if result.status == OrderStatus.FILLED:
             applied_quantity = quantity if result.filled_quantity is None else result.filled_quantity
+            confirmed_cumulative_fill = applied_quantity
+        elif result.status == OrderStatus.PENDING:
+            confirmed_cumulative_fill = result.filled_quantity
+            if result.filled_quantity is not None:
+                applied_quantity = result.filled_quantity
+            outstanding_possible_fill = quantity - (confirmed_cumulative_fill or 0.0)
+        if applied_quantity is not None:
             self.store.record_fill(account.account_id, symbol, order_signal.side, applied_quantity)
-        return result, applied_quantity, submitted_at
+        applied_execution_delta = applied_quantity if applied_quantity is not None else 0.0
+        return (
+            result,
+            applied_quantity,
+            confirmed_cumulative_fill,
+            applied_execution_delta,
+            outstanding_possible_fill,
+            submitted_at,
+        )
 
     async def _resolve_and_submit_plain_close(
         self, signal: Signal, account: DestinationAccount, symbol: str, broker: BrokerAdapter
@@ -930,9 +1017,14 @@ class SignalCopierEngine:
                     return result
 
                 order_signal, quantity = resolved
-                result, applied_quantity, submitted_at = await self._submit_order(
-                    order_signal, quantity, account, symbol, broker
-                )
+                (
+                    result,
+                    applied_quantity,
+                    confirmed_cumulative_fill,
+                    applied_execution_delta,
+                    outstanding_possible_fill,
+                    submitted_at,
+                ) = await self._submit_order(order_signal, quantity, account, symbol, broker)
                 self.store.save_order_result(
                     result,
                     broker=account.broker,
@@ -940,6 +1032,9 @@ class SignalCopierEngine:
                     side=order_signal.side,
                     requested_quantity=quantity,
                     applied_quantity=applied_quantity,
+                    confirmed_cumulative_fill=confirmed_cumulative_fill,
+                    applied_execution_delta=applied_execution_delta,
+                    outstanding_possible_fill=outstanding_possible_fill,
                     submitted_at=submitted_at,
                     purpose="close",
                     family_id=None,

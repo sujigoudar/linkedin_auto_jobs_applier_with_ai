@@ -223,14 +223,15 @@ async def test_plain_buy_partially_filled_then_canceled_leaves_the_confirmed_par
     broker, account, engine, reconciler = plain_setup
 
     await engine.handle_signal(Signal(source="tv", symbol="AAPL", side=Side.BUY, quantity=100.0))
-    assert store.get_position("acct1", "AAPL") == 100.0  # optimistic
+    # AUD-01: nothing confirmed yet -- no optimistic full-quantity guess.
+    assert store.get_position("acct1", "AAPL") == 0.0
 
     # Only 30 actually filled; the remaining 70 was canceled (Alpaca reports
     # this as REJECTED, with the real partial fill quantity attached).
     broker.script("order-1", status=OrderStatus.REJECTED, filled_quantity=30.0)
     await reconciler.reconcile_once()
 
-    assert store.get_position("acct1", "AAPL") == 30.0  # NOT 0.0
+    assert store.get_position("acct1", "AAPL") == 30.0  # the confirmed partial, applied once
 
 
 @pytest.mark.asyncio
@@ -244,7 +245,9 @@ async def test_plain_close_partially_filled_then_canceled_leaves_the_correct_rem
     close_signal = Signal(source="tv", symbol="AAPL", side=Side.CLOSE)
     broker.next_broker_order_id = "close-order-1"
     await engine.handle_signal(close_signal)
-    assert store.get_position("acct1", "AAPL") == 0.0  # optimistic full close applied
+    # AUD-01: nothing confirmed yet for the close order either -- holding
+    # stays at the real 100.0, not an optimistic full close.
+    assert store.get_position("acct1", "AAPL") == 100.0
 
     # Only 40 of the 100-share close actually sold; the remaining 60 was
     # canceled -- true remaining holding is 60, not 100.

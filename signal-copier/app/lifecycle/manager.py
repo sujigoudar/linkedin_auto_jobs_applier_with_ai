@@ -283,6 +283,52 @@ class PositionLifecycleManager:
             if lifecycle.pending_entry is not None and not lifecycle.pending_entry.remainder_resolved
         ]
 
+    def get_outstanding_possible_fill(self, account_id: str) -> dict[str, float]:
+        """The managed-lifecycle counterpart of `SignalStore.get_outstanding_possible_fill`
+        (see that method's docstring for the shared contract) — per-symbol
+        net signed quantity that could STILL be confirmed by the broker for
+        this account's open managed positions, from either an unresolved
+        entry (`PendingEntry.unresolved_remainder`) or an unresolved exit
+        (`PendingExit.unresolved_remainder`).
+
+        Sign convention: a BUY-side unresolved entry contributes a POSITIVE
+        amount (more long exposure could still land); a SELL-side unresolved
+        entry contributes NEGATIVE. An unresolved EXIT contributes the
+        OPPOSITE sign of its own side (a still-possible SELL exit reduces
+        long exposure if it lands, so it contributes negative for a
+        long/BUY-side position, and vice versa) — the same "what could this
+        do to net exposure if it lands" reasoning
+        `SignalStore.get_outstanding_possible_fill` uses for the plain path.
+        A symbol with nothing unresolved is simply absent from the result
+        (never a fabricated 0.0 entry) — callers should treat a missing key
+        as zero.
+
+        This is READ-ONLY: it never mutates `PendingEntry`/`PendingExit`, and
+        it does not include anything already reflected in
+        `confirmed_owned_quantity` (that part is no longer "possible", it's
+        already actual — see `PositionLifecycle.confirmed_owned_quantity`,
+        this manager's own equivalent of `actual_remaining_ownership`)."""
+        outstanding: dict[str, float] = {}
+        for lifecycle in self._lifecycles.values():
+            if lifecycle.plan.account_id != account_id or lifecycle.closed:
+                continue
+            symbol = lifecycle.plan.symbol
+            delta = 0.0
+            entry = lifecycle.pending_entry
+            if entry is not None:
+                remainder = entry.unresolved_remainder
+                delta += remainder if lifecycle.plan.side == Side.BUY else -remainder
+            exit_ = lifecycle.pending_exit
+            if exit_ is not None:
+                remainder = exit_.unresolved_remainder
+                # The exit sells in the direction opposite the position's
+                # own side, so a possible exit fill moves net exposure the
+                # opposite way an entry fill would.
+                delta += -remainder if lifecycle.plan.side == Side.BUY else remainder
+            if delta:
+                outstanding[symbol] = outstanding.get(symbol, 0.0) + delta
+        return outstanding
+
     async def preview_reduction(self, account: DestinationAccount, symbol: str, quantity: float) -> dict:
         """TR-03-A01: read-only dry run of `request_exit`'s pre-order-
         submission planning for a hypothetical partial reduction of
