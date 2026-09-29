@@ -185,11 +185,12 @@ what is and is not implemented yet.
 """
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request, Response
 from fastapi.responses import RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import select
@@ -238,6 +239,7 @@ from app.services.content_document import (
     save_content_draft,
 )
 from app.services.audit_log import append_audit_event, get_object_timeline, list_audit_events
+from app.services.evidence_manifest import generate_evidence_manifest
 from app.services.customer_support_view import get_customer_support_record, list_customers
 from app.services.managed_program import (
     InvalidManagedProgramError,
@@ -2286,7 +2288,46 @@ def audit_log_page(
             "actor_user_id": actor_user_id or "",
             "object_id": object_id or "",
             "action": action or "",
+            "can_export_evidence_manifest": is_allowed(scope.role, "export_evidence_manifest"),
         },
+    )
+
+
+@router.post("/ops/audit/evidence-manifest")
+def export_evidence_manifest_page(
+    scope: TenantScope = Depends(get_current_scope),
+    session: Session = Depends(get_db_session),
+    actor_user_id: str | None = Form(None),
+    object_id: str | None = Form(None),
+    action: str | None = Form(None),
+):
+    """AD-18 "Audit log and release evidence" -- synchronous evidence
+    manifest export. See app/services/evidence_manifest.py's own
+    docstring for the manifest format and hash approach; this route
+    only applies the same actor/object_id/action filter the search
+    panel above already supports and hands back the real, bounded
+    bundle as a downloadable JSON file."""
+    try:
+        require_permission(scope.role, "export_evidence_manifest")
+    except PermissionDenied as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+    set_tenant_scope(session, scope.tenant_id)
+    manifest = generate_evidence_manifest(
+        session,
+        tenant_id=scope.tenant_id,
+        generated_by_actor_user_id=scope.user_id,
+        actor_user_id=actor_user_id or None,
+        object_id=object_id or None,
+        action=action or None,
+    )
+    session.commit()
+
+    filename = f"evidence-manifest-{manifest.generated_at.strftime('%Y%m%dT%H%M%SZ')}.json"
+    return Response(
+        content=json.dumps(manifest.to_dict(), indent=2, sort_keys=True),
+        media_type="application/json",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 
 

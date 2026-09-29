@@ -1986,6 +1986,57 @@ def test_revoke_staff_member_appends_a_real_audit_event(db_session):
     assert "revoke_staff_member" in response.text
 
 
+def test_export_evidence_manifest_requires_owner_or_reviewer(db_session):
+    client = _client(db_session)
+    response = client.post(
+        "/ops/audit/evidence-manifest", headers=_auth_headers(role=MembershipRole.SUPPORT_READONLY)
+    )
+    assert response.status_code == 403
+
+
+def test_export_evidence_manifest_denies_customer(db_session):
+    client = _client(db_session)
+    response = client.post("/ops/audit/evidence-manifest", headers=_auth_headers(role=MembershipRole.CUSTOMER))
+    assert response.status_code == 403
+
+
+def test_export_evidence_manifest_returns_the_real_rows_and_a_verifiable_hash(db_session):
+    from app.models.tenancy import UserIdentity
+
+    _seed_owner_membership(db_session)
+    db_session.add(UserIdentity(user_id="evidence-staff", email="evidence-staff@example.com"))
+    db_session.commit()
+
+    client = _client(db_session)
+    owner_headers = _auth_headers(role=MembershipRole.OWNER)
+    client.post("/ops/access/invite", data={"user_id": "evidence-staff", "role": "researcher"}, headers=owner_headers)
+
+    reviewer_headers = _auth_headers(role=MembershipRole.REVIEWER)
+    response = client.post(
+        "/ops/audit/evidence-manifest",
+        data={"object_id": "evidence-staff"},
+        headers=reviewer_headers,
+    )
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("application/json")
+    assert "attachment; filename=" in response.headers["content-disposition"]
+
+    import json
+
+    from signal_platform_contracts import compute_payload_hash
+
+    body = json.loads(response.text)
+    assert body["manifest"]["row_count"] == 1
+    assert body["manifest"]["filter_criteria"]["object_id"] == "evidence-staff"
+    assert body["rows"][0]["action"] == "invite_staff_member:researcher"
+    assert body["manifest"]["content_hash"] == compute_payload_hash({"rows": body["rows"]})
+
+    # The export itself must leave a real new AuditEvent row.
+    audit_response = client.get("/ops/audit", params={"action": "export_evidence_manifest"}, headers=reviewer_headers)
+    assert "export_evidence_manifest" in audit_response.text
+    assert "user-a" in audit_response.text  # the actor who ran the export
+
+
 def test_workspace_settings_page_requires_owner(db_session):
     client = _client(db_session)
     response = client.get("/ops/settings", headers=_auth_headers(role=MembershipRole.REVIEWER))
