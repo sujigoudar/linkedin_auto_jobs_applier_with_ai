@@ -57,6 +57,7 @@ from app.economics import compute_account_economics
 from app.equity_history import EquitySnapshotter
 from app.execution_quality import compute_execution_quality
 from app.engine import SignalCopierEngine
+from app.statistics import compute_pairwise_correlation, compute_rolling_stats
 from app.logging_config import configure_structlog
 from app.metrics import render_metrics
 from app.errors import SignalValidationError
@@ -994,6 +995,53 @@ async def get_account_equity_history(
         "verified zero).",
         "snapshots": snapshots,
     }
+
+
+@app.get("/accounts/correlation")
+async def get_accounts_correlation(
+    account_a: str = Query(...),
+    account_b: str = Query(...),
+    _owner: dict = Depends(require_owner_read),
+) -> dict:
+    """Phase A5: real Pearson correlation between two accounts' real
+    `cumulative_pnl` snapshot series (app/equity_history.py), matched by
+    overlapping `captured_at` timestamp -- used as a proxy for "strategy"
+    correlation since this codebase has no separate per-provider/per-
+    analyst equity attribution (see app/statistics.py's module
+    docstring). `correlation` is `null`, never a fabricated 0 or
+    NaN-as-zero, when the two accounts have fewer than
+    `app.statistics.MIN_CORRELATION_SAMPLES` real overlapping snapshots.
+
+    Registered as a fixed path ahead of no other `/accounts/...` route
+    with a conflicting shape (`/accounts/{account_id}/...` all take a
+    second path segment), so `correlation` here can never be mistaken by
+    FastAPI's router for an `account_id`."""
+    for account_id in (account_a, account_b):
+        if account_id not in routing_config.accounts:
+            raise HTTPException(status_code=404, detail=f"no account '{account_id}'")
+    snapshots_a = store.list_equity_snapshots(account_a, limit=10000)
+    snapshots_b = store.list_equity_snapshots(account_b, limit=10000)
+    return compute_pairwise_correlation(account_a, snapshots_a, account_b, snapshots_b).to_dict()
+
+
+@app.get("/accounts/{account_id}/statistics")
+async def get_account_statistics(
+    account_id: str,
+    window: int = Query(default=30, gt=0, le=10000),
+    _owner: dict = Depends(require_owner_read),
+) -> dict:
+    """Phase A5: rolling volatility/Sharpe-equivalent/Sortino-equivalent/
+    max-drawdown(+duration), computed from this account's real
+    `cumulative_pnl` snapshot series (app/equity_history.py) over the
+    last `window` real snapshots -- see app/statistics.py's module
+    docstring for the full honest-labeling rationale (absolute
+    P&L-delta terms, never a fabricated percentage return; implicit
+    zero risk-free rate; each field `null` when the account's real
+    history is too short for that statistic to be meaningful)."""
+    if account_id not in routing_config.accounts:
+        raise HTTPException(status_code=404, detail=f"no account '{account_id}'")
+    snapshots = store.list_equity_snapshots(account_id, limit=10000)
+    return compute_rolling_stats(account_id, snapshots, window=window).to_dict()
 
 
 @app.post("/positions/{account_id}/{symbol}/close")
