@@ -211,7 +211,14 @@ async def test_working_partial_fill_then_remainder_cancelled_protects_only_the_p
 @pytest.fixture
 def plain_setup(store):
     broker = _ControllablePendingBroker()
-    account = DestinationAccount(account_id="acct1", broker="paper")
+    # P0-5: _ControllablePendingBroker's get_broker_position deliberately
+    # always returns None (see its own docstring) -- a plain close now
+    # needs this account explicitly exclusive_writer_qualified to proceed
+    # without a usable broker readback. This fixture's tests are about
+    # partial-fill/cancellation bookkeeping, not reconciliation, so it
+    # opts in rather than have the close blocked before reaching the code
+    # under test.
+    account = DestinationAccount(account_id="acct1", broker="paper", exclusive_writer_qualified=True)
     routing = RoutingConfig(rules=[RoutingRule(source="tv", destinations=["acct1"])], accounts={"acct1": account})
     engine = SignalCopierEngine(routing=routing, brokers={"paper": broker}, store=store)
     reconciler = OrderReconciler(store, {"paper": broker})

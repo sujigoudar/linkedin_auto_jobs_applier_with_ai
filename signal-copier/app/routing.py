@@ -7,7 +7,7 @@ from typing import Optional
 
 import yaml
 
-from app.models import DestinationAccount
+from app.models import DestinationAccount, ManagementRecipe
 
 
 @dataclass
@@ -133,6 +133,18 @@ def load_routing_config(routing_path: Path, accounts_path: Path) -> RoutingConfi
                 managed_lifecycle=spec.get("managed_lifecycle", False),
                 max_notional_exposure=spec.get("max_notional_exposure"),
                 risk_percent_of_equity=spec.get("risk_percent_of_equity"),
+                # P0-5: an explicit management_recipe in accounts.yaml is
+                # honored as-is (including a deliberate mismatch against
+                # managed_lifecycle, surfaced/audited rather than
+                # silently resolved -- see ManagementRecipe's own
+                # docstring); omitted, DestinationAccount.__post_init__
+                # fills it from managed_lifecycle the same way it always
+                # has for every other unset field here.
+                management_recipe=(
+                    ManagementRecipe(spec["management_recipe"]) if spec.get("management_recipe") else None
+                ),
+                qualification_level=spec.get("qualification_level"),
+                exclusive_writer_qualified=spec.get("exclusive_writer_qualified", False),
             )
 
     rules: list[RoutingRule] = []
@@ -167,6 +179,9 @@ def load_routing_config_from_store(store) -> RoutingConfig:
             managed_lifecycle=row["managed_lifecycle"],
             max_notional_exposure=row["max_notional_exposure"],
             risk_percent_of_equity=row["risk_percent_of_equity"],
+            management_recipe=ManagementRecipe(row["management_recipe"]) if row.get("management_recipe") else None,
+            qualification_level=row.get("qualification_level"),
+            exclusive_writer_qualified=bool(row.get("exclusive_writer_qualified", False)),
         )
         for row in store.list_config_accounts()
     }

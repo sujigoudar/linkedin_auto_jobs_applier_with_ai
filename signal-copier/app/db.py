@@ -232,7 +232,19 @@ CREATE TABLE IF NOT EXISTS config_accounts (
     enabled INTEGER NOT NULL DEFAULT 1,
     managed_lifecycle INTEGER NOT NULL DEFAULT 0,
     max_notional_exposure REAL,
-    risk_percent_of_equity REAL
+    risk_percent_of_equity REAL,
+    -- P0-5: explicit, persisted management-recipe declaration (see
+    -- app/models.py's ManagementRecipe) and a simple free-form
+    -- qualification label -- both additive, both NULLable so an
+    -- existing row is honestly "not yet declared" until read back
+    -- through app/routing.py's *_from_store loader (which fills
+    -- management_recipe from managed_lifecycle the same way
+    -- DestinationAccount.__post_init__ does for a fresh construction).
+    management_recipe TEXT,
+    qualification_level TEXT,
+    -- P0-5: off-by-default exclusive-writer-qualified assertion -- see
+    -- DestinationAccount.exclusive_writer_qualified's own docstring.
+    exclusive_writer_qualified INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS config_routing_rules (
@@ -685,6 +697,11 @@ _COLUMN_MIGRATIONS = [
     ("orders", "confirmed_cumulative_fill", "REAL"),
     ("orders", "applied_execution_delta", "REAL"),
     ("orders", "outstanding_possible_fill", "REAL"),
+    # P0-5: additive for a pre-existing config_accounts table -- see this
+    # table's own CREATE TABLE comment above.
+    ("config_accounts", "management_recipe", "TEXT"),
+    ("config_accounts", "qualification_level", "TEXT"),
+    ("config_accounts", "exclusive_writer_qualified", "INTEGER NOT NULL DEFAULT 0"),
 ]
 
 
@@ -1714,7 +1731,8 @@ class SignalStore:
         with self._connect() as conn:
             rows = conn.execute(
                 """SELECT account_id, broker, multiplier, fixed_quantity, symbol_map, enabled,
-                          managed_lifecycle, max_notional_exposure, risk_percent_of_equity
+                          managed_lifecycle, max_notional_exposure, risk_percent_of_equity,
+                          management_recipe, qualification_level, exclusive_writer_qualified
                    FROM config_accounts ORDER BY account_id"""
             ).fetchall()
         return [
@@ -1728,6 +1746,15 @@ class SignalStore:
                 "managed_lifecycle": bool(r[6]),
                 "max_notional_exposure": r[7],
                 "risk_percent_of_equity": r[8],
+                # P0-5: a row written before this migration (or one whose
+                # caller never passed management_recipe explicitly) has
+                # NULL here -- fall back to the same managed_lifecycle
+                # -> recipe mapping DestinationAccount.__post_init__ uses,
+                # rather than surface a raw NULL to a caller that expects
+                # a real declared value.
+                "management_recipe": r[9] or ("full_managed_lifecycle" if r[6] else "plain_unmanaged"),
+                "qualification_level": r[10],
+                "exclusive_writer_qualified": bool(r[11]),
             }
             for r in rows
         ]
@@ -1743,19 +1770,26 @@ class SignalStore:
         managed_lifecycle: bool = False,
         max_notional_exposure: float | None = None,
         risk_percent_of_equity: float | None = None,
+        management_recipe: str | None = None,
+        qualification_level: str | None = None,
+        exclusive_writer_qualified: bool = False,
     ) -> None:
         with self._connect() as conn:
             conn.execute(
                 """INSERT INTO config_accounts
                    (account_id, broker, multiplier, fixed_quantity, symbol_map, enabled, managed_lifecycle,
-                    max_notional_exposure, risk_percent_of_equity)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    max_notional_exposure, risk_percent_of_equity, management_recipe, qualification_level,
+                    exclusive_writer_qualified)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT (account_id) DO UPDATE SET
                      broker = excluded.broker, multiplier = excluded.multiplier,
                      fixed_quantity = excluded.fixed_quantity, symbol_map = excluded.symbol_map,
                      enabled = excluded.enabled, managed_lifecycle = excluded.managed_lifecycle,
                      max_notional_exposure = excluded.max_notional_exposure,
-                     risk_percent_of_equity = excluded.risk_percent_of_equity""",
+                     risk_percent_of_equity = excluded.risk_percent_of_equity,
+                     management_recipe = excluded.management_recipe,
+                     qualification_level = excluded.qualification_level,
+                     exclusive_writer_qualified = excluded.exclusive_writer_qualified""",
                 (
                     account_id,
                     broker,
@@ -1766,6 +1800,14 @@ class SignalStore:
                     int(managed_lifecycle),
                     max_notional_exposure,
                     risk_percent_of_equity,
+                    # P0-5: honor an explicit caller value; otherwise persist
+                    # the same managed_lifecycle-derived default
+                    # DestinationAccount.__post_init__ would -- this is what
+                    # makes the field a real, non-NULL declaration on write,
+                    # not just on read.
+                    management_recipe or ("full_managed_lifecycle" if managed_lifecycle else "plain_unmanaged"),
+                    qualification_level,
+                    int(exclusive_writer_qualified),
                 ),
             )
 

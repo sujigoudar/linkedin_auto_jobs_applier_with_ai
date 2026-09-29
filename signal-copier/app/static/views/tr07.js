@@ -395,6 +395,21 @@
         ? boolPill(broker.can_protect_a_managed_position, "qualified for managed lifecycle", "not qualified -- missing protective stop")
         : pill("qualified (plain account, no protection required)", "ok");
 
+      // P0-5: real, persisted per-account fields now (app/models.py's
+      // DestinationAccount.management_recipe/qualification_level/
+      // exclusive_writer_qualified) -- not re-derived from
+      // managed_lifecycle alone. A mismatch between management_recipe and
+      // managed_lifecycle is a real misconfiguration surfaced as a
+      // warning, not silently resolved.
+      const recipeMismatch =
+        (a.management_recipe === "full_managed_lifecycle") !== Boolean(a.managed_lifecycle);
+      const recipeCell = recipeMismatch
+        ? pill(`${escapeHtml(a.management_recipe || "unset")} (disagrees with managed_lifecycle=${a.managed_lifecycle})`, "bad")
+        : pill(escapeHtml(a.management_recipe || "unset"), a.management_recipe === "full_managed_lifecycle" ? "ok" : "muted");
+      const qualLevelCell = a.qualification_level
+        ? pill(escapeHtml(a.qualification_level), "muted")
+        : pill("not declared", "muted");
+
       const ordersRes = ordersPerAccount[i];
       const openOrders = ordersRes.ok ? ordersRes.data.unreconciled_order_count : null;
       const recentOrders = (ordersRes.ok && ordersRes.data.orders) || [];
@@ -420,6 +435,8 @@
         products,
         broker ? pill("registered adapter", "ok") : pill("no adapter registered", "bad"),
         typeof qualification === "string" ? qualification : qualification,
+        recipeCell,
+        qualLevelCell,
         openOrders === null ? pill("unknown", "muted") : fmtNum(openOrders),
         reconciliation,
         capSlot(`tr07-cap-writer-${escapeAttr(a.account_id)}`),
@@ -427,8 +444,8 @@
     });
     StateMatrix.render(els.accounts, {
       state: "ready",
-      html: `<p class="section-note">Products is approximated from each account's symbol_map (a rename map, not a real product allowlist). Open orders and Reconciliation are real, computed from this exact account's own GET /orders / GET /positions state (same derivation TR-13 uses) -- click an account to jump to its adapter's row in the Capability matrix below.</p>${table(
-        ["Account", "Adapter", "Venue/API", "Environment", "Credential reference", "Account attributes", "Products", "Connection", "Qualification", "Open orders (pending)", "Reconciliation", "Writer site"],
+      html: `<p class="section-note">Products is approximated from each account's symbol_map (a rename map, not a real product allowlist). Open orders and Reconciliation are real, computed from this exact account's own GET /orders / GET /positions state (same derivation TR-13 uses) -- click an account to jump to its adapter's row in the Capability matrix below. Management recipe and Qualification level (P0-5) are this account's own explicit, persisted declaration (app/models.py's DestinationAccount.management_recipe/qualification_level) -- not re-derived from managed_lifecycle each time a screen needs it; a mismatch against managed_lifecycle is flagged, not silently resolved. Close reconciliation (also P0-5) is what a plain account's CLOSE now requires before it's allowed to act on this service's own tracked position -- see that badge's own "Why / details".</p>${table(
+        ["Account", "Adapter", "Venue/API", "Environment", "Credential reference", "Account attributes", "Products", "Connection", "Qualification", "Management recipe", "Qualification level", "Open orders (pending)", "Reconciliation", "Close reconciliation"],
         accountRows,
         "No accounts."
       )}`,
@@ -447,7 +464,42 @@
         if (!venueEnvCell(broker, "environment")) {
           specs.push([`tr07-cap-env-${escapeAttr(a.account_id)}`, { status: "not_tracked", reason: "This adapter resolves paper/live per-account from an env var read at call time rather than storing it on the instance -- GET /brokers' environment is null for it, so this screen shows the honest gap rather than a guess." }]);
         }
-        specs.push([`tr07-cap-writer-${escapeAttr(a.account_id)}`, { status: "not_tracked", reason: "Writer site is not tracked per account in this build." }]);
+        // P0-5: real, computed close-reconciliation state for a plain
+        // (non-managed_lifecycle) account -- see
+        // SignalCopierEngine._reconcile_before_plain_close for the exact
+        // contract this describes. Managed_lifecycle accounts don't go
+        // through this gate at all (CLOSE resolves against CloseArbiter
+        // instead), so this stays not_tracked/not-applicable for them.
+        if (a.managed_lifecycle) {
+          specs.push([
+            `tr07-cap-writer-${escapeAttr(a.account_id)}`,
+            { status: "not_tracked", reason: "This account is managed_lifecycle -- its CLOSE resolves against PositionLifecycleManager's CloseArbiter, not the plain-account broker-reconciliation gate this badge describes." },
+          ]);
+        } else if (broker && broker.has_position_readback_capability) {
+          specs.push([
+            `tr07-cap-writer-${escapeAttr(a.account_id)}`,
+            {
+              status: "implemented",
+              reason: `Broker '${a.broker}' has a real get_broker_position implementation -- a plain CLOSE on this account is reconciled against a fresh broker readback before it's allowed to proceed (rejected on a mismatch), never against this service's own tracked position alone.`,
+            },
+          ]);
+        } else if (a.exclusive_writer_qualified) {
+          specs.push([
+            `tr07-cap-writer-${escapeAttr(a.account_id)}`,
+            {
+              status: "configured",
+              reason: `Broker '${a.broker}' has no verified position-readback capability, so this account's own exclusive_writer_qualified=true is what allows a plain CLOSE to proceed -- an explicit operator assertion that nothing else writes to this account's position outside Signal Copier, not a live-verified fact.`,
+            },
+          ]);
+        } else {
+          specs.push([
+            `tr07-cap-writer-${escapeAttr(a.account_id)}`,
+            {
+              status: "unsupported",
+              reason: `Broker '${a.broker}' has no verified position-readback capability and this account is not exclusive_writer_qualified -- a plain CLOSE on this account is currently BLOCKED (fail-closed) until one of those is true. See README.md's "Exclusive-writer qualification" section.`,
+            },
+          ]);
+        }
         return specs;
       })
     );

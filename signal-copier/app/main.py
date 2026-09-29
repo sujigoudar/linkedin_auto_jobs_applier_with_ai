@@ -66,7 +66,7 @@ from app.metrics import render_metrics
 from app.errors import SignalValidationError
 from app.lifecycle.manager import PositionLifecycleManager
 from app.lifecycle.models import ProtectionStatus
-from app.models import AccountBalance, AssetClass, Side, Signal
+from app.models import AccountBalance, AssetClass, ManagementRecipe, Side, Signal
 from app.pricing import PriceMonitor
 from app.qualification import QUALIFICATION_STATE_ORDER, QualificationError
 from app.providers import SettingsOverride, load_provider_registry_from_store
@@ -1788,10 +1788,32 @@ class AccountRequest(BaseModel):
     managed_lifecycle: bool = False
     max_notional_exposure: float | None = Field(default=None, gt=0)
     risk_percent_of_equity: float | None = Field(default=None, gt=0, le=1)
+    #: P0-5: explicit management-recipe declaration -- omitted, this is
+    #: derived from `managed_lifecycle` the same way
+    #: DestinationAccount.__post_init__ / SignalStore.upsert_config_account
+    #: both already do. See app/models.py's `ManagementRecipe`.
+    management_recipe: str | None = None
+    qualification_level: str | None = None
+    #: P0-5: off by default -- see DestinationAccount.exclusive_writer_qualified's
+    #: own docstring for exactly what setting this True asserts and allows.
+    exclusive_writer_qualified: bool = False
 
     _reject_bool_multiplier = field_validator(
         "multiplier", "fixed_quantity", "max_notional_exposure", "risk_percent_of_equity", mode="before"
     )(_reject_bool_scaling_value)
+
+    @field_validator("management_recipe")
+    @classmethod
+    def _validate_management_recipe(cls, v: str | None) -> str | None:
+        if v is None:
+            return v
+        try:
+            ManagementRecipe(v)
+        except ValueError as exc:
+            raise ValueError(
+                f"management_recipe must be one of {[m.value for m in ManagementRecipe]}"
+            ) from exc
+        return v
 
 
 @app.get("/accounts")
@@ -1838,6 +1860,9 @@ async def create_or_update_account(request: AccountRequest, _owner: dict = Depen
         managed_lifecycle=request.managed_lifecycle,
         max_notional_exposure=request.max_notional_exposure,
         risk_percent_of_equity=request.risk_percent_of_equity,
+        management_recipe=request.management_recipe,
+        qualification_level=request.qualification_level,
+        exclusive_writer_qualified=request.exclusive_writer_qualified,
     )
     _reload_routing_config()
     return {"account_id": request.account_id, "status": "saved"}

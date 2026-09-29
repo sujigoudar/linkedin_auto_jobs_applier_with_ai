@@ -17,7 +17,19 @@ resolves it here, per account, before calling the broker at all:
        has sent, not a live read of the broker's book).
     2. If flat (zero), there's nothing to close: report REJECTED without
        calling the broker.
-    3. Otherwise resolve to the opposing BUY/SELL at the full open
+    3. P0-5: before resolving/submitting anything further, reconcile that
+       tracked quantity against reality -- see
+       `_reconcile_before_plain_close`'s own docstring for the full
+       contract. In short: a plain account's own tracked position can go
+       stale after manual intervention, an external fill placed directly
+       at the broker, a corporate action, or ordinary reconciliation lag,
+       so a plain CLOSE additionally requires EITHER (a) a fresh
+       `BrokerAdapter.get_broker_position` readback that matches the
+       tracked quantity within tolerance, or (b) the account's own
+       explicit, off-by-default `DestinationAccount.exclusive_writer_qualified`
+       flag. Neither holding is a REJECTED result, not a close that
+       proceeds anyway against a possibly-stale local projection.
+    4. Otherwise resolve to the opposing BUY/SELL at the full open
        quantity, and call `place_order` with that — brokers never see
        `Side.CLOSE` from the engine; they only need to implement BUY/SELL.
        (Each broker's own `Side.CLOSE` handling, where present, is a
@@ -140,6 +152,24 @@ _OUTCOME_BY_ORDER_STATUS = {
     OrderStatus.REJECTED: "rejected",
     OrderStatus.ERROR: "error",
 }
+
+#: P0-5: tolerance for comparing a broker's live position readback against
+#: this service's own locally tracked quantity before a plain close is
+#: allowed to proceed -- see `_positions_reconcile`. A pure `==` would
+#: reject on ordinary floating-point noise (accumulated fills/partial
+#: fills/fx-converted quantities); this is deliberately small (never
+#: large enough to paper over a real, material mismatch) and combines an
+#: absolute floor with a relative term so it scales sanely for both a
+#: fractional crypto position and a large equity/futures one.
+_RECONCILIATION_ABS_TOLERANCE = 1e-6
+_RECONCILIATION_REL_TOLERANCE = 1e-6
+
+
+def _positions_reconcile(broker_position: float, local_position: float) -> bool:
+    tolerance = _RECONCILIATION_ABS_TOLERANCE + _RECONCILIATION_REL_TOLERANCE * max(
+        abs(broker_position), abs(local_position)
+    )
+    return abs(broker_position - local_position) <= tolerance
 
 
 class SignalCopierEngine:
@@ -895,9 +925,20 @@ class SignalCopierEngine:
                 self.capital_allocator.owner_lock.release()
 
     def _resolve_close(
-        self, signal: Signal, account: DestinationAccount, symbol: str
+        self, signal: Signal, account: DestinationAccount, symbol: str, *, position: float | None = None
     ) -> tuple[Signal, float] | None:
-        position = self.store.get_position(account.account_id, symbol)
+        """`position`: the caller's already-known tracked position, reused
+        instead of re-reading `SignalStore.get_position` a second time when
+        the caller (`_resolve_and_submit_plain_close`) already read it once
+        under the same (account_id, symbol) lock to run reconciliation
+        against -- re-reading here could otherwise observe a DIFFERENT
+        value if some other, non-close write (e.g. a concurrent entry fill
+        for the same symbol) landed in between, silently resolving this
+        close against a quantity reconciliation never actually checked.
+        `None` (the default) preserves the original single-read behavior
+        for every other caller."""
+        if position is None:
+            position = self.store.get_position(account.account_id, symbol)
         if position == 0:
             return None
 
@@ -970,6 +1011,92 @@ class SignalCopierEngine:
             submitted_at,
         )
 
+    async def _reconcile_before_plain_close(
+        self, signal: Signal, account: DestinationAccount, symbol: str, local_position: float, broker: BrokerAdapter
+    ) -> OrderResult | None:
+        """P0-5: a plain (non-managed_lifecycle) account's CLOSE resolves
+        against this service's own locally tracked position
+        (`SignalStore.get_position` -- see this module's own docstring,
+        "Close signals"), never a live read of the broker's actual book.
+        That's an acceptable simplification only as long as nothing else
+        can move that account's real position without this service
+        knowing -- which is exactly what can stop being true after a
+        manual intervention, an external fill placed directly at the
+        broker, a corporate action, or ordinary reconciliation lag (a
+        PENDING order whose terminal status this service hasn't polled
+        yet). Before a plain close is allowed to proceed, this requires
+        ONE of:
+
+          (a) A fresh broker position readback
+              (`BrokerAdapter.get_broker_position`) that matches
+              `local_position` within `_positions_reconcile`'s tolerance --
+              only real when `broker.has_position_readback_capability` is
+              True (a REAL, verified adapter override -- see
+              app/brokers/base.py's "computed, not declared" section, not
+              a name/imported-SDK claim). This is the preferred path and
+              is checked first.
+
+          (b) This account's own explicit, narrow, OFF-BY-DEFAULT
+              `DestinationAccount.exclusive_writer_qualified` flag -- an
+              operator's deliberate, per-account assertion that nothing
+              else writes to this specific broker account's position, so
+              the local tracked quantity genuinely IS authoritative. Only
+              consulted when (a) isn't available (no verified readback
+              capability, or the readback itself came back unknown) --
+              this method never falls back to (b) just because (a)
+              happened to disagree; a disagreement is reported as a
+              reconciliation failure, not silently downgraded to "trust
+              the flag instead."
+
+        Returns a REJECTED `OrderResult` (never raises, never proceeds) if
+        NEITHER holds -- this is a fail-closed gate: an unreconciled,
+        unqualified plain close must be blocked with a clear, actionable
+        reason, not allowed through on an unproven local projection.
+        Returns `None` when the close may proceed.
+        """
+        if broker.has_position_readback_capability:
+            broker_position = await broker.get_broker_position(account, symbol)
+            if broker_position is not None:
+                if _positions_reconcile(broker_position, local_position):
+                    return None
+                return OrderResult(
+                    account_id=account.account_id,
+                    status=OrderStatus.REJECTED,
+                    signal_id=signal.id,
+                    message=(
+                        f"broker-reported position ({broker_position}) for account "
+                        f"'{account.account_id}' symbol '{symbol}' does not match this service's "
+                        f"own tracked position ({local_position}) -- refusing to close against a "
+                        "stale/unreconciled local projection. Possible causes: manual intervention, "
+                        "an external fill placed directly at the broker, a corporate action, or "
+                        "reconciliation lag. Reconcile the account (or correct the tracked position) "
+                        "before retrying this close."
+                    ),
+                )
+            # `broker_position is None`: a broker that CLAIMS the
+            # capability (overrides the method) but genuinely couldn't
+            # answer this specific query right now. Treat exactly like "no
+            # verified capability" -- fall through to the
+            # exclusive-writer-qualified check below rather than assume
+            # anything about the real book.
+        if account.exclusive_writer_qualified:
+            return None
+        return OrderResult(
+            account_id=account.account_id,
+            status=OrderStatus.REJECTED,
+            signal_id=signal.id,
+            message=(
+                f"cannot reconcile account '{account.account_id}' symbol '{symbol}' before closing: "
+                f"broker '{account.broker}' has no verified position-readback capability (or its "
+                "readback returned unknown), and this account is not marked "
+                "exclusive_writer_qualified. Refusing to close against this service's own locally "
+                "tracked position alone. Either use a broker adapter with a real "
+                "get_broker_position implementation, or set exclusive_writer_qualified=True on this "
+                "account ONLY if you are certain nothing else can write to its position outside "
+                "Signal Copier."
+            ),
+        )
+
     async def _resolve_and_submit_plain_close(
         self, signal: Signal, account: DestinationAccount, symbol: str, broker: BrokerAdapter
     ) -> OrderResult:
@@ -1001,8 +1128,8 @@ class SignalCopierEngine:
                     message="a close for this account/symbol is already in progress elsewhere",
                 )
             try:
-                resolved = self._resolve_close(signal, account, symbol)
-                if resolved is None:
+                local_position = self.store.get_position(account.account_id, symbol)
+                if local_position == 0:
                     result = OrderResult(
                         account_id=account.account_id,
                         status=OrderStatus.REJECTED,
@@ -1015,6 +1142,21 @@ class SignalCopierEngine:
                     # method's own docstring / app/db.py's SCHEMA comment).
                     self.store.save_order_result(result, purpose="close", family_id=None)
                     return result
+
+                # P0-5: reconcile BEFORE resolving/submitting anything --
+                # see _reconcile_before_plain_close's own docstring for the
+                # full contract. Reuses local_position (already read above,
+                # under this same lock) rather than letting _resolve_close
+                # read it again, which could observe a different value.
+                reconciliation_rejection = await self._reconcile_before_plain_close(
+                    signal, account, symbol, local_position, broker
+                )
+                if reconciliation_rejection is not None:
+                    self.store.save_order_result(reconciliation_rejection, purpose="close", family_id=None)
+                    return reconciliation_rejection
+
+                resolved = self._resolve_close(signal, account, symbol, position=local_position)
+                assert resolved is not None  # local_position != 0 already checked above
 
                 order_signal, quantity = resolved
                 (

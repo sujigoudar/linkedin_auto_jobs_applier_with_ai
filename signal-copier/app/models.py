@@ -128,6 +128,41 @@ class AccountBalance:
         }
 
 
+class ManagementRecipe(str, enum.Enum):
+    """P0-5: an account's explicit, PERSISTED declaration of which safety
+    product it actually is -- managed and unmanaged positions are
+    fundamentally different products (MAE/MFE, protection coverage,
+    transfer logic, and the rest of app/lifecycle/manager.py's machinery
+    exist for one of them and not the other), and that distinction must
+    be a real, auditable field on the account, not something a screen or
+    a report has to re-derive by checking `managed_lifecycle` itself
+    every time.
+
+    This is deliberately a two-value declaration today (matching this
+    codebase's own existing `managed_lifecycle` boolean terminology, not
+    inventing new tiers): a broker/route-CAPABILITY qualification
+    taxonomy (what a broker adapter can actually verify/do) is a related
+    but distinct concept that a sibling effort (P0-7) is building for
+    broker capabilities specifically -- this field is the ACCOUNT's own
+    declared management contract, and P0-7's taxonomy may reference it,
+    not replace it.
+    """
+
+    #: Entries/exits for this account route through
+    #: PositionLifecycleManager -- protect-first, logical targets/
+    #: trailing, MAE/MFE tracking, a serialized close arbiter. The full
+    #: managed-lifecycle safety product.
+    FULL_MANAGED_LIFECYCLE = "full_managed_lifecycle"
+    #: Entries/exits for this account are plain BUY/SELL/CLOSE orders
+    #: against this service's own tracked position -- no MAE/MFE, no
+    #: protection coverage, no transfer logic. See
+    #: app/engine.py's module docstring ("Close signals") and
+    #: `DestinationAccount.exclusive_writer_qualified` for what a plain
+    #: account's CLOSE additionally now requires before it's allowed to
+    #: proceed.
+    PLAIN_UNMANAGED = "plain_unmanaged"
+
+
 @dataclass
 class DestinationAccount:
     """One account a signal can be routed to, plus how to size the trade."""
@@ -162,3 +197,54 @@ class DestinationAccount:
     #: `equity` figure right now. See app/capital_allocator.py's module
     #: docstring and app/engine.py's `_check_risk_basis`.
     risk_percent_of_equity: Optional[float] = None
+    #: P0-5: this account's own explicit, persisted management-recipe
+    #: declaration -- see `ManagementRecipe`'s own docstring. `None` on
+    #: construction means "not explicitly declared"; `__post_init__`
+    #: immediately fills it from `managed_lifecycle` so every constructed
+    #: `DestinationAccount` always carries a real, non-None value from
+    #: here on (never left as an unauditable inference done ad hoc by
+    #: whatever screen/report happens to read it). Passing an EXPLICIT
+    #: value that disagrees with `managed_lifecycle` is accepted as-is
+    #: (not silently overwritten) -- that disagreement is itself a real
+    #: misconfiguration worth surfacing/auditing on TR-07, not something
+    #: this field quietly resolves on the account's behalf.
+    management_recipe: Optional[ManagementRecipe] = None
+    #: P0-5: a simple, free-form qualification label for this account's
+    #: declared management contract (e.g. "qualified", "unqualified",
+    #: "pending_review") -- intentionally NOT an enum yet. P0-7 is
+    #: building a fuller broker-capability qualification taxonomy
+    #: separately; this field may end up referencing that taxonomy later,
+    #: but for now it's this account's own simple, independent label.
+    #: `None` (the default) means "not yet declared," never fabricated as
+    #: "qualified."
+    qualification_level: Optional[str] = None
+    #: P0-5: an explicit, narrow, OFF-BY-DEFAULT operator assertion that
+    #: NOTHING else writes to this specific broker account's position
+    #: outside Signal Copier -- no manual intervention, no other
+    #: automated writer, no direct dashboard/API trade at the broker, no
+    #: corporate action that changes share count without an offsetting
+    #: fill this service sees. See app/engine.py's
+    #: `_reconcile_before_plain_close` for exactly what setting this to
+    #: True allows: a plain (non-managed_lifecycle) account's CLOSE to
+    #: proceed against this service's own locally tracked position alone,
+    #: with no live broker-side reconciliation, WHEN the broker adapter
+    #: also has no verified position-readback capability at all (see
+    #: `BrokerAdapter.has_position_readback_capability`). `False` (the
+    #: default) is a hard block, not a silent gap being accepted: an
+    #: unreconciled, unqualified plain close is REJECTED outright rather
+    #: than proceeding on a possibly-stale local projection. This is a
+    #: real operational promise the operator is making about this one
+    #: account, not a config convenience to flip to make a rejection go
+    #: away -- see README.md's "Exclusive-writer qualification" section
+    #: for what it means and its risk before setting it True.
+    exclusive_writer_qualified: bool = False
+
+    def __post_init__(self) -> None:
+        if self.management_recipe is None:
+            self.management_recipe = (
+                ManagementRecipe.FULL_MANAGED_LIFECYCLE
+                if self.managed_lifecycle
+                else ManagementRecipe.PLAIN_UNMANAGED
+            )
+        elif isinstance(self.management_recipe, str):
+            self.management_recipe = ManagementRecipe(self.management_recipe)
