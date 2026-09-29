@@ -224,17 +224,43 @@ areas:
       - path: docs/12_addendum_post_phase12_work.md
         status: confirmed
       - path: PROJECT_STATUS.yaml
-        status: planned
+        status: confirmed
         why: >
-          Being built by a concurrent agent as the machine-readable
-          status summary. Did not exist at write time — verify it landed
-          at this path (repo root of signal-portfolio-commercial/)
-          before relying on it.
-      - path: ../CLAUDE.md
-        status: planned
-        why: >
-          A slim top-level CLAUDE.md is being built by a concurrent
-          agent. Verify it landed before relying on it for orientation.
+          Machine-readable build/lint/typecheck/test health, verified
+          for real against a disposable Postgres cluster (see the file
+          itself for the exact commands and numbers).
+      - path: CLAUDE.md
+        status: confirmed
+        why: The slim top-level operating contract for agents working in this repo.
+      - path: docs/manifest.yaml
+        status: confirmed
+        why: Machine-readable index of every doc category, with read_when triggers.
+      - path: docs/REPO_MAP.md
+        status: confirmed
+        why: Directory structure guide.
+      - path: docs/GLOSSARY.md
+        status: confirmed
+        why: Domain terms (four books, relay_role, RLS, parked_reason, FIFO-lot attribution, evidence manifest, etc.).
+
+  - id: architecture_overview
+    keywords: [architecture, component, module, dependency, data_flow,
+               api_layer, system_context, external_actor, sequence_diagram]
+    read_first:
+      - path: docs/architecture/ARCHITECTURE.md
+        status: confirmed
+        why: Real component breakdown — API layer, RLS model, ingest inbox, four-book ledger, research/publication lifecycle, auth.
+      - path: docs/architecture/SYSTEM_CONTEXT.md
+        status: confirmed
+        why: External actors and boundaries (signal-copier relay, customers, staff, publisher destinations).
+      - path: docs/architecture/COMPONENTS.md
+        status: confirmed
+        why: Per-module responsibility catalog for app/api, app/models, app/services.
+      - path: docs/architecture/DEPENDENCIES.md
+        status: confirmed
+        why: Internal dependency direction and real external package dependencies.
+      - path: docs/architecture/DATA_FLOWS.md
+        status: confirmed
+        why: End-to-end sequence diagrams (relay ingest, publication admission, evidence manifest export).
 
 notes:
   - >-
@@ -243,3 +269,105 @@ notes:
     neighbors in the same directory.
   - See .agent/autonomy.yaml for what an agent may decide unilaterally
     once it has the context this map points to.
+
+# Task-first lookup, complementing the keyword-based `areas` above: pick
+# the task category closest to what you're about to do and read its
+# list in order before starting.
+task_categories:
+  add_or_change_api_route:
+    read:
+      - CLAUDE.md
+      - docs/architecture/ARCHITECTURE.md
+      - docs/architecture/COMPONENTS.md
+      - docs/security/AUTHORIZATION.md
+      - docs/design/
+    notes: >
+      Every route must go through a service function and resolve a
+      TenantScope before touching a tenant-scoped table. Check
+      app/services/permissions.py for an existing allow-list entry or
+      add one.
+
+  change_database_schema:
+    read:
+      - docs/database/SCHEMA.md
+      - docs/database/MIGRATIONS.md
+      - docs/adr/0001-postgres-row-level-security-multi-tenant-isolation.md
+      - docs/architecture/ARCHITECTURE.md
+    notes: >
+      New tenant-scoped tables need an RLS policy (app/db.py's
+      _TENANT_SCOPED_TABLES or a bespoke policy for public-visible
+      data); append-only tables need the append-only trigger. A
+      migration must pass its OWN frozen table-name snapshot to these
+      helpers, never the live module constant.
+
+  change_relay_ingest:
+    read:
+      - docs/architecture/DATA_FLOWS.md
+      - docs/adr/0003-idempotent-ordered-ingest-inbox.md
+      - docs/adr/0006-bootstrap-snapshot-protocol.md
+      - docs/design/INGEST_PIPELINE.md
+      - docs/GLOSSARY.md
+    notes: >
+      app/services/integration_inbox.py is the single writer of
+      InboxEvent rows. Never coerce an unrecognized shape into a
+      ledger projection — park it with a named reason instead.
+
+  change_ledger_or_attribution:
+    read:
+      - docs/architecture/ARCHITECTURE.md
+      - docs/adr/0004-four-book-economic-ledger.md
+      - docs/adr/0005-fifo-lot-analyst-attribution.md
+      - docs/GLOSSARY.md
+    notes: >
+      ledger_entries is append-only at the DB level. Use
+      app/services/ledger.py's append_entry/append_correction only.
+      Never blend books (SOURCE/MODEL/PLATFORM/FOLLOWER).
+
+  change_auth_or_permissions:
+    read:
+      - docs/security/AUTHORIZATION.md
+      - docs/adr/0007-local-auth-revocable-jwt-sessions.md
+      - docs/architecture/ARCHITECTURE.md
+    notes: >
+      permissions.py's allow-list is closed: an action with no entry
+      denies every role, including OWNER. Token revocation must fail
+      closed on any lookup error.
+
+  change_publisher_adapter:
+    read:
+      - docs/architecture/SYSTEM_CONTEXT.md
+      - docs/integrations/CATALOG.md
+    notes: >
+      These adapters build requests but must never transmit them
+      without real, reviewed platform credentials (CARD-3/CARD-4).
+
+  write_or_run_tests:
+    read:
+      - docs/standards/TESTING.md
+      - docs/testing/TEST_MATRIX.md
+      - PROJECT_STATUS.yaml
+    notes: >
+      tests/conftest.py spins a real disposable Postgres 16 cluster
+      per session; do not mock or substitute SQLite.
+
+  deploy_or_operate:
+    read:
+      - docs/operations/DEPLOYMENT.md
+      - docs/operations/CONFIGURATION.md
+      - PROJECT_STATUS.yaml
+
+  onboarding:
+    read:
+      - CLAUDE.md
+      - docs/REPO_MAP.md
+      - docs/architecture/ARCHITECTURE.md
+      - docs/architecture/SYSTEM_CONTEXT.md
+      - docs/GLOSSARY.md
+      - docs/manifest.yaml
+
+  resume_long_running_work:
+    read:
+      - docs/state/PROGRESS.md
+      - docs/state/BLOCKERS.md
+      - docs/adr/
+      - PROJECT_STATUS.yaml

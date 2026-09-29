@@ -1,0 +1,155 @@
+# Machine-readable index of every documentation category for
+# signal-portfolio-commercial. An agent (or a human) should consult
+# `read_when` triggers before touching the matching subsystem.
+#
+# Categories owned by this agent (foundation layer): architecture,
+# repo map, glossary, project status, context map.
+# Categories populated by sibling agents in the same docs/ tree:
+# design, database, security, standards, testing, operations, agents,
+# state, adr, requirements, integrations, observability, process.
+# This manifest indexes all of them so any agent can navigate the
+# whole tree from one file, even before every category exists.
+
+version: 1
+repo: signal-portfolio-commercial
+
+categories:
+  architecture:
+    owner: foundation-agent
+    path: docs/architecture/
+    docs:
+      - docs/architecture/ARCHITECTURE.md
+      - docs/architecture/SYSTEM_CONTEXT.md
+      - docs/architecture/COMPONENTS.md
+      - docs/architecture/DEPENDENCIES.md
+      - docs/architecture/DATA_FLOWS.md
+    read_when:
+      - "Before adding, moving or removing an API route"
+      - "Before changing the relay ingest state machine (integration_inbox.py)"
+      - "Before changing the RLS/append-only DDL in app/db.py"
+      - "Before adding a new service module or changing which layer calls which"
+      - "Before changing how the four ledger books relate to each other"
+      - "When onboarding to this repo for the first time"
+
+  design:
+    owner: sibling-agent
+    path: docs/design/
+    docs: []
+    read_when:
+      - "Before changing a dashboard screen's UI/UX contract"
+      - "Before adding a new screen or customer/staff-facing flow"
+
+  database:
+    owner: sibling-agent
+    path: docs/database/
+    docs: []
+    read_when:
+      - "Before writing a new Alembic migration"
+      - "Before adding or modifying a table, index or constraint"
+      - "Before changing RLS policy scope or the append-only table list"
+
+  security:
+    owner: sibling-agent
+    path: docs/security/
+    docs: []
+    read_when:
+      - "Before changing auth (JWT, sessions, password handling)"
+      - "Before changing permissions.py's role/action allow-list"
+      - "Before changing relay_role's grants or the relay signing/HMAC scheme"
+      - "Before handling any customer PII or credential-shaped data"
+
+  standards:
+    owner: sibling-agent
+    path: docs/standards/
+    docs: []
+    read_when:
+      - "Before writing new code, to match this repo's conventions"
+      - "Before a code review"
+
+  testing:
+    owner: sibling-agent
+    path: docs/testing/
+    docs: []
+    read_when:
+      - "Before writing or modifying a test"
+      - "Before changing tests/conftest.py's Postgres fixture setup"
+      - "Before running the full verification suite"
+
+  operations:
+    owner: sibling-agent
+    path: docs/operations/
+    docs: []
+    read_when:
+      - "Before deploying or changing deployment configuration"
+      - "Before changing environment variables / secrets handling"
+      - "When diagnosing a production incident"
+
+  agents:
+    owner: sibling-agent
+    path: docs/agents/
+    docs: []
+    read_when:
+      - "Before starting any autonomous multi-step task in this repo"
+      - "Before resuming a long-running or previously-interrupted build"
+
+  state:
+    owner: sibling-agent
+    path: docs/state/
+    docs:
+      - docs/state/PROGRESS.md
+    read_when:
+      - "Before starting new work, to see what is already in flight"
+      - "During long-running work, to record progress"
+
+  adr:
+    owner: sibling-agent
+    path: docs/adr/
+    docs: []
+    read_when:
+      - "Before reversing or significantly altering a past architectural decision"
+      - "After making a significant architectural decision, to record it"
+
+  requirements:
+    owner: sibling-agent
+    path: docs/requirements/
+    docs: []
+    read_when:
+      - "Before changing behavior that a screen/requirement spec (spec/, dashboard_spec/) depends on"
+      - "Before deciding whether a feature gap is in-scope for this build"
+
+  integrations:
+    owner: sibling-agent
+    path: docs/integrations/
+    docs: []
+    read_when:
+      - "Before changing the relay contract with signal-copier"
+      - "Before touching a publisher adapter (Collective2/eToro/CopyFactory)"
+      - "Before changing the Stripe webhook integration"
+
+  observability:
+    owner: sibling-agent
+    path: docs/observability/
+    docs: []
+    read_when:
+      - "Before changing logging, audit-event emission, or the evidence-manifest export"
+      - "Before adding a new metric or health-check surface"
+
+  process:
+    owner: sibling-agent
+    path: docs/process/
+    docs: []
+    read_when:
+      - "Before changing the CI pipeline or release process"
+      - "Before changing how ADRs, CHANGELOG entries or progress notes are recorded"
+
+root_docs:
+  - path: CLAUDE.md
+    read_when: ["Always, before any work in this repo"]
+  - path: PROJECT_STATUS.yaml
+    read_when: ["Before claiming build/lint/typecheck/test health"]
+  - path: docs/REPO_MAP.md
+    read_when: ["When locating a file/module by responsibility"]
+  - path: docs/GLOSSARY.md
+    read_when: ["When encountering an unfamiliar domain term"]
+  - path: .agent/context-map.yaml
+    read_when: ["Before starting a task, to find which docs it implies reading"]
