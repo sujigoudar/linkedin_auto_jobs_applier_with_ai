@@ -18,6 +18,7 @@ import asyncio
 import logging
 from datetime import datetime, timezone
 
+from app import config
 from app.db import SignalStore
 from app.relay_worker import RelayIngestResult, run_once
 
@@ -58,6 +59,34 @@ class RelayScheduler:
                 raise  # see PriceMonitor._loop's identical comment
             except Exception:  # noqa: BLE001 - one bad pass must not kill the loop
                 logger.exception("error during relay poll pass")
+            # INT-040: a real, structured warning alongside GET /health's
+            # own outbox_backlog_ok -- so an operator watching this
+            # process's logs (not just polling /health) also sees a
+            # ceiling breach. Never blocks, refuses, or discards anything:
+            # this scheduler still attempted the poll-and-forward pass
+            # above exactly as usual: an over-ceiling backlog is a
+            # standing alert about undelivered evidence piling up, not a
+            # reason to stop trying to deliver it or to prune it.
+            try:
+                self._check_outbox_backlog()
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - one bad check must not kill the loop
+                logger.exception("error checking export outbox backlog ceiling")
+
+    def _check_outbox_backlog(self) -> None:
+        row_count, backlog_bytes = self.store.export_outbox_backlog()
+        if backlog_bytes >= config.EXPORT_OUTBOX_SIZE_CEILING_BYTES:
+            logger.error(
+                "export outbox backlog exceeds its configured storage ceiling: "
+                "%d undelivered bytes (%d rows) >= %d byte ceiling "
+                "(EXPORT_OUTBOX_SIZE_CEILING_BYTES) -- see GET /health's "
+                "outbox_backlog_ok; this backlog is never pruned or "
+                "truncated automatically, so it must be resolved by "
+                "restoring commercial-ingress connectivity or raising the "
+                "ceiling after a deliberate operator review",
+                backlog_bytes, row_count, config.EXPORT_OUTBOX_SIZE_CEILING_BYTES,
+            )
 
     @staticmethod
     def _log_result(result: RelayIngestResult) -> None:

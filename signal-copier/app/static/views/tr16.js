@@ -18,6 +18,13 @@
  *     AND price_monitor_ok AND reconciler_ok -- see app/main.py's own
  *     `health()`). `*_ok` is false both for a stuck worker and before its
  *     first pass after startup, never hardcoded.
+ *   - GET /health also carries INT-040's own real storage-ceiling check:
+ *     `outbox_backlog_ok`/`outbox_backlog_bytes`/`outbox_backlog_row_count`/
+ *     `outbox_backlog_ceiling_bytes` -- a live `SUM(LENGTH(envelope_json))`
+ *     over undelivered `export_events` rows (app/db.py's
+ *     `SignalStore.export_outbox_backlog`) compared against the
+ *     configurable `EXPORT_OUTBOX_SIZE_CEILING_BYTES`. Never an estimate,
+ *     never a fabricated pass.
  *   - GET /system/info (owner-gated): `standby_mode` (this instance's
  *     real writer/standby role), relay labels/config, and this exact
  *     database's live Alembic schema version vs. the deployed code's own
@@ -52,7 +59,19 @@
  *      (database_ok AND price_monitor_ok AND reconciler_ok) says no.
  *   3. DEGRADED  -- otherwise, if any INFORMATIONAL-only worker is not
  *      fresh (provider_scout_ok, equity_snapshotter_ok, or relay_ok when
- *      a relay is actually configured).
+ *      a relay is actually configured) OR the export outbox backlog is
+ *      over its configured ceiling (outbox_backlog_ok === false).
+ *      INT-040's own explicit, stated decision: an over-ceiling outbox
+ *      backlog does NOT belong in the critical NOT READY gate above,
+ *      because it does not itself mean this instance's open positions
+ *      are unprotected right now (database_ok/price_monitor_ok/
+ *      reconciler_ok already cover that) -- it is the same kind of
+ *      slower-building, export-reliability risk relay_ok already
+ *      represents (indeed the outbox and the relay are the same pipe:
+ *      a long relay outage is exactly what grows this backlog), so it
+ *      is surfaced the same way: real, never silent, but folded into
+ *      DEGRADED rather than forcing a healthy, fully-protected instance
+ *      to read NOT READY over a storage/export concern.
  *   4. ACTIVE    -- otherwise.
  * This deliberately does NOT fold "fencing" into this rollup: fencing
  * has no automated, continuously-computed real signal anywhere in this
@@ -157,6 +176,19 @@
     return `${d}d ago`;
   }
 
+  function fmtBytes(n) {
+    if (n === null || n === undefined || Number.isNaN(n)) return "not exposed";
+    if (n < 1024) return `${n} B`;
+    const units = ["KB", "MB", "GB", "TB"];
+    let v = n;
+    let u = -1;
+    while (v >= 1024 && u < units.length - 1) {
+      v /= 1024;
+      u += 1;
+    }
+    return `${v.toFixed(1)} ${units[u]}`;
+  }
+
   function fmtLastCheck(ageSeconds, fetchedAt) {
     if (ageSeconds === null || ageSeconds === undefined) return "not exposed by this build";
     const t = new Date(fetchedAt.getTime() - ageSeconds * 1000);
@@ -181,11 +213,14 @@
       };
     }
     const relayDown = info.relay_ingress_configured && health.relay_ok === false;
-    if (!health.provider_scout_ok || !health.equity_snapshotter_ok || relayDown) {
+    const outboxOverCeiling = health.outbox_backlog_ok === false;
+    if (!health.provider_scout_ok || !health.equity_snapshotter_ok || relayDown || outboxOverCeiling) {
       return {
         label: "DEGRADED",
         tone: "warn",
-        reason: "Every subsystem position-protection depends on is fresh, but an informational-only worker (provider scout, equity snapshotter, or the configured relay export) is not.",
+        reason: outboxOverCeiling
+          ? "The private export outbox backlog is over its configured storage ceiling -- see the Storage row below. Position protection itself is unaffected; this is an export/storage-reliability risk, not silently ignored."
+          : "Every subsystem position-protection depends on is fresh, but an informational-only worker (provider scout, equity snapshotter, or the configured relay export) is not.",
       };
     }
     return { label: "ACTIVE", tone: "ok", reason: "This is the active writer, and every subsystem GET /health tracks is fresh." };
@@ -429,6 +464,24 @@
         positionsRes.ok ? "live (checked this cycle)" : "unknown",
         "GET /positions' stop_gap_count (server-computed off each lifecycle's real stop_status, app/main.py) + halted flags (app/lifecycle/close_arbiter.py)",
         stopGapCount === null ? "cannot verify -- GET /positions was unreachable this cycle" : stopGapCount > 0 || haltedCount > 0 ? "see Reconciliation and trading incidents (#/trade/incidents) for which position and why" : "none",
+      ],
+      [
+        "Storage (export outbox)",
+        health && health.outbox_backlog_ok !== undefined
+          ? (health.outbox_backlog_ok ? pill("under ceiling", "ok") : pill("over ceiling", "bad"))
+          : pill("unknown", "muted"),
+        health ? fmtLastCheck(0, fetchedAt) : "not exposed",
+        health ? "live (checked this cycle)" : "unknown",
+        `GET /health's outbox_backlog_ok (INT-040) -- real SUM(LENGTH(envelope_json)) over undelivered app/db.py export_events rows, app/db.py's SignalStore.export_outbox_backlog: ${
+          health && health.outbox_backlog_bytes !== null && health.outbox_backlog_bytes !== undefined
+            ? `${fmtBytes(health.outbox_backlog_bytes)} across ${fmtNum(health.outbox_backlog_row_count)} undelivered row(s), ceiling ${fmtBytes(health.outbox_backlog_ceiling_bytes)} (EXPORT_OUTBOX_SIZE_CEILING_BYTES)`
+            : "not exposed this cycle"
+        }`,
+        !health
+          ? "cannot verify -- GET /health was unreachable this cycle"
+          : health.outbox_backlog_ok
+          ? "none"
+          : "the commercial ingress has been unreachable long enough to build a real backlog past its configured ceiling -- restore RELAY_INGRESS_URL connectivity, or raise EXPORT_OUTBOX_SIZE_CEILING_BYTES only after a deliberate operator review of real disk headroom. Rows are never pruned or truncated automatically.",
       ],
       [
         "Backup",

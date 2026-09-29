@@ -315,6 +315,35 @@ class _Settings(BaseSettings):
     #: CATALOG_FIT_SIM_SIGNING_SECRET.
     CATALOG_FIT_SIM_SIGNING_SECRET: str = "LOCAL_SIM-not-a-real-catalog-fit-sim-secret-change-if-ever-deployed"
 
+    # INT-040: a real, configurable ceiling on the private export outbox's
+    # own real backlog -- see app/db.py's `SignalStore.export_outbox_backlog`
+    # for exactly what is measured (SUM(LENGTH(envelope_json)) over
+    # undelivered `export_events` rows -- a real, live number, never an
+    # estimate) and app/main.py's `/health` `outbox_backlog_ok` for how
+    # it's surfaced. If the commercial platform is unreachable long
+    # enough, this table grows unboundedly; this ceiling is the alerting
+    # threshold at which an operator should be told, well before an
+    # actual out-of-space condition, so it never becomes a reason to
+    # prune or truncate real, undelivered financial evidence.
+    #
+    # Default (256 MiB) -- an operator-tunable starting point, not a
+    # claim about any specific deployment's real disk capacity:
+    # `signal_platform_contracts.EventEnvelope` (this table's own
+    # `envelope_json`) is a handful of scalar identity/timing fields plus
+    # one small payload -- a real EXECUTION_APPLIED envelope in this
+    # codebase's own test fixtures serializes to roughly 1-2 KB. 256 MiB
+    # is therefore on the order of 150k-250k undelivered events: at any
+    # plausible per-account signal rate this project's own sources
+    # produce (webhook/Telegram/Discord/etc., nowhere near
+    # high-frequency-trading volume), that is comfortably weeks of a
+    # fully-down commercial ingress before this ceiling trips, while
+    # still staying a small, safe fraction (well under 5%) of even a
+    # modest 5-10 GB deployment disk -- real headroom between "the alert
+    # fires" and "the disk is actually full." Tune this down for a
+    # small/constrained disk, or up for a genuinely high-volume
+    # deployment.
+    EXPORT_OUTBOX_SIZE_CEILING_BYTES: int = 256 * 1024 * 1024
+
 
 _settings = _Settings()
 
@@ -399,3 +428,5 @@ RELAY_EVIDENCE_CLASS = _settings.RELAY_EVIDENCE_CLASS
 RELAY_ENVIRONMENT = _settings.RELAY_ENVIRONMENT
 
 CATALOG_FIT_SIM_SIGNING_SECRET = _settings.CATALOG_FIT_SIM_SIGNING_SECRET
+
+EXPORT_OUTBOX_SIZE_CEILING_BYTES = _settings.EXPORT_OUTBOX_SIZE_CEILING_BYTES

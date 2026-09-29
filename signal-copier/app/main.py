@@ -429,6 +429,26 @@ async def health() -> dict:
         if config.RELAY_INGRESS_URL
         else None
     )
+    # INT-040: a real, live storage-ceiling check against the private
+    # export outbox's own real backlog (SignalStore.export_outbox_backlog
+    # -- SUM(LENGTH(envelope_json)) over undelivered rows, never an
+    # estimate). Deliberately NOT folded into the critical `status` gate
+    # above alongside database_ok/price_monitor_ok/reconciler_ok: an
+    # over-ceiling backlog does not itself compromise this instance's
+    # position protection (the same reasoning `provider_scout_ok`/
+    # `equity_snapshotter_ok`/`relay_ok` already document) -- it is a
+    # slower-building storage/export-reliability risk, surfaced honestly
+    # here and on TR-16's Storage row rather than silently, but never
+    # allowed to mask (or be masked by) whether positions are actually
+    # protected right now. False both on a real ceiling breach and if the
+    # backlog query itself fails (e.g. database unreachable) -- the same
+    # "can't verify" convention `database_ok` above already uses.
+    try:
+        outbox_row_count, outbox_backlog_bytes = store.export_outbox_backlog()
+        outbox_backlog_ok = outbox_backlog_bytes < config.EXPORT_OUTBOX_SIZE_CEILING_BYTES
+    except Exception:  # noqa: BLE001 - health check must never raise
+        outbox_row_count, outbox_backlog_bytes = None, None
+        outbox_backlog_ok = False
     return {
         # OPS-01: `status` was hardcoded to "ok" regardless of the flags
         # right next to it -- a fresh startup (before either worker's
@@ -441,6 +461,10 @@ async def health() -> dict:
         "provider_scout_ok": provider_scout_ok,
         "equity_snapshotter_ok": equity_snapshotter_ok,
         "relay_ok": relay_ok,
+        "outbox_backlog_ok": outbox_backlog_ok,
+        "outbox_backlog_bytes": outbox_backlog_bytes,
+        "outbox_backlog_row_count": outbox_row_count,
+        "outbox_backlog_ceiling_bytes": config.EXPORT_OUTBOX_SIZE_CEILING_BYTES,
     }
 
 

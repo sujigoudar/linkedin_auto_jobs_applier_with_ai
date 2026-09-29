@@ -771,6 +771,42 @@ class SignalStore:
                 [(datetime.now(timezone.utc).isoformat(), event_id) for event_id in event_ids],
             )
 
+    def export_outbox_backlog(self) -> tuple[int, int]:
+        """INT-040: a real, live measurement of the undelivered export
+        outbox backlog -- the storage-ceiling/alerting policy this
+        supports needs a genuine number, never a fabricated or estimated
+        one. Returns `(row_count, total_bytes)`:
+
+        - `row_count` is a real `COUNT(*)` over rows not yet marked
+          delivered.
+        - `total_bytes` is the real `SUM(LENGTH(envelope_json))` already
+          stored for those exact rows -- the precise serialized size of
+          every envelope this producer has appended but has not yet had
+          the commercial platform acknowledge as delivered.
+
+        Deliberately NOT this whole database file's own on-disk size
+        (`os.path.getsize(DATABASE_PATH)`): that file also holds every
+        other table this module defines (`orders`, `position_excursions`,
+        `stop_target_events`, `backtest_runs`, `account_equity_snapshots`,
+        ...), so its size conflates their own, unrelated growth with
+        outbox pressure -- a large `backtest_runs` history could trip a
+        file-size ceiling with zero undelivered financial evidence at
+        risk, or a genuinely large outbox backlog could stay hidden
+        inside an otherwise-small file right after a fresh VACUUM. Summing
+        the real serialized length of exactly the rows a storage-pressure
+        incident would be tempted to prune is the actionable number: it
+        is exactly what would be discarded if a disk-pressure response
+        ever (wrongly) truncated this table.
+
+        `(0, 0)` for an empty backlog -- always a real, completed query,
+        never `None`."""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*), COALESCE(SUM(LENGTH(envelope_json)), 0) "
+                "FROM export_events WHERE delivered_at IS NULL"
+            ).fetchone()
+        return (row[0], row[1])
+
     def list_pending_orders(self) -> list[dict]:
         """Orders still PENDING with a broker_order_id to re-check (see
         app/reconciliation.py). Joined to this order's originating signal
