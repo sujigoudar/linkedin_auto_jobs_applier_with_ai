@@ -61,6 +61,24 @@ def test_exceeding_the_limit_returns_429(client):
     assert statuses[30] == 429
 
 
+def test_whatsapp_verify_handshake_is_rate_limited(client, monkeypatch):
+    """GET /whatsapp/webhook (Meta's one-time subscription-verify
+    handshake) must be rate limited the same as its POST sibling --
+    defense-in-depth even though it's normally called once at setup."""
+    monkeypatch.setattr(app_config, "WHATSAPP_VERIFY_TOKEN", "test-verify-token")
+    with client:
+        responses = [
+            client.get(
+                "/whatsapp/webhook",
+                params={"hub.mode": "subscribe", "hub.verify_token": "test-verify-token", "hub.challenge": "1234"},
+            )
+            for _ in range(31)
+        ]
+    statuses = [r.status_code for r in responses]
+    assert statuses[:30] == [200] * 30
+    assert statuses[30] == 429
+
+
 def test_rate_limit_is_per_route_not_shared_across_endpoints(client, monkeypatch):
     """Exhausting the webhook route's limit must not also block the SMS
     route -- each is limited independently."""

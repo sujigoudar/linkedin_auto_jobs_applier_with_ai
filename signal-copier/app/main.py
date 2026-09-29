@@ -1181,6 +1181,7 @@ async def receive_sms(
 
 
 @app.get("/whatsapp/webhook")
+@limiter.limit(INGRESS_RATE_LIMIT)
 async def verify_whatsapp_webhook(request: Request) -> Response:
     """Meta's one-time subscription handshake: after you set the Callback
     URL in the WhatsApp app dashboard, Meta immediately sends this GET to
