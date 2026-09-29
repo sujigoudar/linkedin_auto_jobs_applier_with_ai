@@ -253,11 +253,11 @@ async def test_all_four_trading_screens_render_real_content(live_server):
             assert "tradingview" in disposition_text
             assert "BTCUSDT" in disposition_text
 
-            # PU-B3: the 5 additive signal-analytics charts, computed
+            # Signal-analytics charts (side/asset-class/volume), computed
             # client-side from the exact same 3 real seeded signals above
             # (2x tradingview: BTCUSDT/buy/crypto and EURUSD/sell/forex;
             # 1x manual: ETHUSDT/sell/crypto, unrouted so it has no order).
-            await wait_settled("#tr04-p05")
+            await wait_settled("#tr04-p06")
 
             def chart_data(canvas_id):
                 return page.evaluate(
@@ -266,18 +266,19 @@ async def test_all_four_trading_screens_render_real_content(live_server):
                     canvas_id,
                 )
 
-            # LOAD-BEARING INVARIANT: the by-source/by-side/by-asset-class
-            # breakdown counts must exactly match the real signals list --
-            # each chart's own values must sum to the total real signal
-            # count (3), and each individual category's count must be
-            # exactly right, not off-by-one or double-counted.
-            await page.wait_for_selector("#tr04-source-chart", timeout=5000)
-            source_data = await chart_data("tr04-source-chart")
-            assert sum(source_data["values"]) == 3
-            source_counts = dict(zip(source_data["labels"], source_data["values"], strict=True))
-            assert source_counts["tradingview"] == 2
-            assert source_counts["manual"] == 1
+            def chart_datasets(canvas_id):
+                return page.evaluate(
+                    "(id) => { const c = Chart.getChart(document.getElementById(id)); "
+                    "return c ? { labels: c.data.labels, datasets: c.data.datasets.map(d => "
+                    "({ label: d.label, data: d.data })) } : null; }",
+                    canvas_id,
+                )
 
+            # LOAD-BEARING INVARIANT: the by-side/by-asset-class breakdown
+            # counts must exactly match the real signals list -- each
+            # chart's own values must sum to the total real signal count
+            # (3), and each individual category's count must be exactly
+            # right, not off-by-one or double-counted.
             side_data = await chart_data("tr04-side-chart")
             assert sum(side_data["values"]) == 3
             side_counts = dict(zip(side_data["labels"], side_data["values"], strict=True))
@@ -297,16 +298,33 @@ async def test_all_four_trading_screens_render_real_content(live_server):
             assert sum(volume_data["values"]) == 3
             assert len(volume_data["labels"]) == 1
 
-            # Disposition: the 2 real tradingview signals were routed to
-            # acct1 (real orders, whatever their real status), the 1 real
-            # unrouted "manual" signal has no matching order at all -- an
-            # honest "accepted, no order yet" bucket, not a fabricated
-            # rejection.
-            disposition_data = await chart_data("tr04-disposition-chart")
-            assert sum(disposition_data["values"]) == 3
-            disposition_counts = dict(zip(disposition_data["labels"], disposition_data["values"], strict=True))
-            assert disposition_counts["accepted, no order yet"] == 1
-            assert sum(v for k, v in disposition_counts.items() if k != "accepted, no order yet") == 2
+            # PU (this batch): the real signal funnel -- see
+            # app/static/views/tr04.js's FUNNEL_STAGES comment for exactly
+            # which real app/engine.py transition each stage represents.
+            # Of the 3 real seeded signals: the 2 tradingview ones were
+            # routed to acct1 (a plain, non-managed_lifecycle PaperBroker
+            # account, which always synchronously FILLS -- see
+            # app/brokers/paper.py's place_order), so both reach "Filled"
+            # but neither reaches "Exited" (no CLOSE signal was ever sent,
+            # and acct1 isn't managed_lifecycle so there is no real
+            # family_id link to trace an exit through even if there were).
+            # The 1 real unrouted "manual" signal has zero real orders, so
+            # it never advances past "Received".
+            await wait_settled("#tr04-p05")
+            overall_data = await chart_data("tr04-funnel-overall")
+            assert overall_data["labels"] == ["Received", "Routed", "Submitted", "Filled", "Exited"]
+            assert overall_data["values"] == [3, 2, 2, 2, 0]
+
+            provider_data = await chart_datasets("tr04-funnel-provider")
+            provider_counts = {d["label"]: d["data"] for d in provider_data["datasets"]}
+            assert provider_counts["tradingview"] == [2, 2, 2, 2, 0]
+            assert provider_counts["manual"] == [1, 0, 0, 0, 0]
+
+            analyst_data = await chart_datasets("tr04-funnel-analyst")
+            analyst_counts = {d["label"]: d["data"] for d in analyst_data["datasets"]}
+            # None of these 3 real webhook payloads set an analyst -- one
+            # real "(none)" group, never a fabricated split.
+            assert analyst_counts["(none)"] == [3, 2, 2, 2, 0]
 
             # Browser-history-backed navigation: back button returns to
             # the legacy dashboard's default (no-hash) view.

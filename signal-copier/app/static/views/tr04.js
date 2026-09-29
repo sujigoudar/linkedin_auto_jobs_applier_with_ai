@@ -1,10 +1,12 @@
 /* TR-04: Incoming signal stream (`#/trade/signals`).
  *
  * Real backing data: GET /signals (every accepted, persisted Signal --
- * `app/db.py`'s `list_recent_signals`, extended in this batch to also
- * project the already-stored `analyst` column it wasn't previously
- * selecting -- see that function's comment). No numeric headline metric
- * per spec ("Do not add a decorative performance KPI").
+ * `app/db.py`'s `list_recent_signals`, extended in an earlier batch to
+ * also project the already-stored `analyst` column, and `stop_loss`/
+ * `take_profit`) joined client-side against GET /orders (`list_recent_orders`
+ * -- account_id, symbol, status, message, purpose, family_id, all real,
+ * already-persisted columns). No numeric headline metric per spec ("Do not
+ * add a decorative performance KPI").
  *
  * Honest gap, disclosed rather than worked around: the spec's purpose
  * line is "classify every authorized incoming event including rejected
@@ -19,52 +21,56 @@
  * non-persisting analysis tool (see its own docstring: "never ingests a
  * signal"), not a log of real rejected events -- using it here would
  * misrepresent hypothetical classification as historical disposition.
- * Every row below is therefore an accepted signal; Disposition reads
- * "accepted (recorded)" for all of them, with an explicit note that
- * rejected/ignored instructions are not persisted in this build.
+ * Every row below is therefore an accepted, persisted signal; its
+ * Disposition cell reports the real furthest pipeline stage that
+ * signal's own linked order(s) reached (see FUNNEL_STAGES below), with
+ * an explicit note that pre-persistence rejected/ignored instructions
+ * are not represented at all in this build.
  *
- * --- Signal analytics charts (this batch, PU-B3) ---
- * Five additive Chart.js charts, computed client-side from data this
- * screen already fetches (GET /signals, plus a client-side join against
- * GET /orders for the disposition chart only) -- reusing the exact same
- * one-persistent-instance, destroy-and-recreate pattern established by
- * dashboard.html's "economics-chart" (C12) and TR-14/TR-15 (see
- * app/static/views/tr14.js, tr15.js):
+ * --- Operational inbox (this batch) ---
+ * The disposition table is now a genuine per-signal operational inbox:
+ * every row shows received time, provider, analyst, raw/normalized
+ * instrument, side, entry instruction, stop, target, parser status, age,
+ * disposition, destinations, order result and rejection reason -- see
+ * `buildInboxRow` below for exactly which real column backs each cell,
+ * and which one honestly renders `Components.renderCapabilityState`
+ * instead of a fabricated value.
+ *
+ * --- Signal funnel (this batch) ---
+ * A REAL signal funnel, per `computeFunnelForSignal` below: this
+ * schema's actual, distinctly-observable transitions a signal's own
+ * linked order rows go through, not the review's idealized 10-stage
+ * list verbatim (several of those stages collapse in this codebase --
+ * see the stage-by-stage rationale on FUNNEL_STAGES). Broken down by
+ * provider (source) and by analyst, both real grouping keys already on
+ * every signal row. Chart.js grouped bars, same one-persistent-instance
+ * destroy-and-recreate idiom as dashboard.html's "economics-chart" (C12)
+ * and TR-14/TR-15 (app/static/views/tr14.js, tr15.js).
+ *
+ * --- Remaining signal analytics charts (from an earlier batch, PU-B3) ---
+ * Three additive Chart.js charts, computed client-side from data this
+ * screen already fetches (GET /signals) -- same destroy-and-recreate
+ * pattern:
  *   1. Signal volume over time -- real `received_at` timestamps bucketed
  *      by hour if the fetched page's own timestamp range spans <=48h, by
  *      day otherwise (never padded: a bucket only appears if a real
  *      signal landed in it).
- *   2. Signals by source, 3. by side, 4. by asset class -- real counts
- *      over the exact same (filtered) signals list the table below
- *      renders.
- *   5. Disposition breakdown -- this schema still has no rejected/ignored
- *      ledger (see the module docstring above), but GET /orders' own
- *      `signal_id` + `status` columns are a REAL, already-persisted join:
- *      for each signal in the current (filtered) list, every order that
- *      references it contributes one real order status (filled/rejected/
- *      pending/...), and a signal with no matching order at all
- *      contributes to a separate, honestly-labeled "accepted, no order
- *      yet" bucket. Nothing here is fabricated: a bucket with zero real
- *      orders behind it simply does not appear.
+ *   2. Signals by side, 3. by asset class -- real counts over the exact
+ *      same (filtered) signals list the table above renders.
+ * "Signals by source" and the old standalone "Disposition breakdown"
+ * chart from that batch are superseded by the funnel's by-provider
+ * breakdown and the inbox's own Disposition column respectively, so they
+ * are not duplicated here.
  *
- * Deliberately NOT built (per this batch's brief):
- *   - A signal-to-order conversion FUNNEL with a "rejected/skipped" stage:
- *     app/rate_limit.py and app/sources/*.py were checked for a real,
- *     queryable parse-failure/skip count and none exists -- a failed
- *     parse never becomes a row anywhere in this schema, so a funnel
- *     chart could only fake that stage. The disposition chart above
- *     already covers the one real join (order status) without inventing
- *     a stage that has no data behind it.
+ * Deliberately NOT built:
  *   - A signal-arrival heatmap by hour/day: this build's real seed/demo
  *     data is far too sparse (often a handful of signals in one test run)
  *     for an hour x day-of-week grid to be anything but mostly-empty
  *     cells -- that is itself an honest result, but not a meaningful
  *     chart, so it is left out rather than padded to look fuller.
- *   - Provider latency distribution: that is Phase A2/B9's job once new
- *     latency-stage timestamps land (a different, concurrent batch on
- *     this same branch touches app/engine.py/app/execution_quality.py
- *     for exactly that) -- duplicating or preempting it here would fork
- *     that work.
+ *   - Provider latency distribution: that is Phase A2/B9's job (see
+ *     app/execution_quality.py, rendered on TR-14) -- duplicating it here
+ *     would fork that work.
  */
 (function () {
   "use strict";
@@ -91,10 +97,11 @@
   // chart instances or double-render onto a stale canvas.
   const charts = {
     volume: null,
-    source: null,
     side: null,
     assetClass: null,
-    disposition: null,
+    funnelOverall: null,
+    funnelByProvider: null,
+    funnelByAnalyst: null,
   };
 
   function destroyChart(key) {
@@ -197,47 +204,279 @@
     charts[chartKey] = renderBarChart(wrap.querySelector(`#${canvasId}`), labels, values, label);
   }
 
-  // 5. Disposition breakdown -- real client-side join of the current
-  // (filtered) signals list against GET /orders' own signal_id/status
-  // columns. A signal with zero matching orders contributes to an
-  // honestly-labeled "accepted, no order yet" bucket rather than being
-  // dropped or guessed at.
-  function renderDispositionChart(wrap, signals, orders) {
-    destroyChart("disposition");
-    if (!signals.length) {
-      wrap.innerHTML = `<div class="empty">No signals to break down yet.</div>`;
-      return;
-    }
-    const ordersBySignal = new Map();
+  // ---------------------------------------------------------------------
+  // Signal funnel (real, per-signal stage reached).
+  //
+  // This codebase's actual sequence of distinctly-observable states a
+  // signal's processing goes through (verified against app/engine.py's
+  // real control flow, not the review brief's 10-stage list verbatim --
+  // several of those stages collapse here because nothing this codebase
+  // persists can tell them apart):
+  //
+  //   - "Received" / "parsed" COLLAPSE: app/engine.py's own module
+  //     docstring and app/sources/*.py's parsers build a `Signal` (which
+  //     stamps `received_at`) as the very last step of parsing, in the
+  //     same call frame -- a signal that fails to parse is rejected with
+  //     an HTTP 4xx and never becomes a `signals` row at all (see this
+  //     file's own module docstring), so every real signal row already
+  //     represents "received AND parsed" with no persisted gap between
+  //     the two. There is no separate "parsed" moment to report.
+  //   - "Instrument resolved" does not become a separate observable
+  //     stage: `symbol_for_account` (app/risk.py) is a deterministic,
+  //     always-succeeding remap with no rejection path in app/engine.py
+  //     -- there is no real "instrument could not be resolved" state
+  //     this schema ever records, so this step is folded into "Routed"
+  //     below rather than invented as its own bar.
+  //   - "Routed": routing.destinations_for(signal.source, signal.symbol)
+  //     found at least one destination account -- observable as "this
+  //     signal has >=1 real row in `orders`" (GET /orders' signal_id),
+  //     since app/engine.py only ever calls save_order_result once
+  //     destinations exist. A signal with zero destinations has zero
+  //     order rows and never advances past "Received".
+  //   - "Policy valid" and "risk admitted" COLLAPSE into the same
+  //     observable boundary as "Submitted": app/engine.py runs the
+  //     broker/asset-class check, the stop/target-bracket-support check,
+  //     the capital-admission check and (for managed_lifecycle accounts)
+  //     `validate_plan` all BEFORE ever calling `broker.place_order` --
+  //     none of those individual gates gets its own persisted
+  //     status/timestamp in `orders`, only the final order `status`
+  //     (rejected/error/pending/filled). A REJECTED order with a real
+  //     `message` (shown in the inbox's Rejection reason column) may
+  //     have failed any one of those gates; this schema cannot
+  //     distinguish which without a persisted per-gate outcome, so they
+  //     honestly collapse into one "did this signal's order reach the
+  //     broker at all" boundary rather than three invented bars with the
+  //     same underlying (real) rejected/not-rejected signal.
+  //   - "Submitted": >=1 linked order has status 'pending' or 'filled'
+  //     (i.e. `broker.place_order` was actually called and returned a
+  //     non-rejected result). A 'error' status is NOT counted as
+  //     reaching this stage -- ERROR can happen either before the broker
+  //     call (no broker adapter registered) or during it (an exception
+  //     while calling place_order), and `orders` has no column that
+  //     distinguishes the two (see app/execution_quality.py's own stage
+  //     4 discussion of this exact ambiguity for `submitted_at`, which
+  //     GET /orders does not project at all) -- treating every ERROR as
+  //     "reached the broker" would overstate this stage on an ambiguous
+  //     signal, so it conservatively does not count.
+  //   - "Filled": >=1 linked order has status 'filled'.
+  //   - "Protected": NOT built. `orders.protection_confirmed_at` is a
+  //     real column (app/db.py's SCHEMA, PU-A2) but `GET /orders`
+  //     (list_recent_orders) does not project it, and this batch's scope
+  //     is this file only -- there is no real data reaching this screen
+  //     to honestly compute a Protected stage from. The funnel stops
+  //     before it rather than fabricating a count; see the by-provider/
+  //     by-analyst chart's own caption for this exact disclosure.
+  //   - "Exited": only observable for a managed_lifecycle destination --
+  //     a CLOSE signal's own linked order (real, via `orders.signal_id`)
+  //     carries a real `family_id` equal to the ENTRY signal's id when
+  //     that account is managed_lifecycle (see app/engine.py's DB-0X
+  //     comments); a plain (non-managed_lifecycle) account's close
+  //     leaves `family_id` NULL, so an entry closed on a plain account
+  //     cannot be traced to "Exited" through this real field at all --
+  //     it honestly stops at "Filled" for that signal instead.
+  const FUNNEL_STAGES = ["Received", "Routed", "Submitted", "Filled", "Exited"];
+
+  function indexOrders(orders) {
+    const bySignalId = new Map();
+    const byFamilyId = new Map();
     for (const o of orders) {
-      if (!ordersBySignal.has(o.signal_id)) ordersBySignal.set(o.signal_id, []);
-      ordersBySignal.get(o.signal_id).push(o);
-    }
-    const counts = new Map();
-    for (const s of signals) {
-      const matching = ordersBySignal.get(s.id) || [];
-      if (!matching.length) {
-        counts.set("accepted, no order yet", (counts.get("accepted, no order yet") || 0) + 1);
-      } else {
-        for (const o of matching) {
-          const key = `order: ${o.status || "unknown"}`;
-          counts.set(key, (counts.get(key) || 0) + 1);
-        }
+      if (!bySignalId.has(o.signal_id)) bySignalId.set(o.signal_id, []);
+      bySignalId.get(o.signal_id).push(o);
+      if (o.family_id) {
+        if (!byFamilyId.has(o.family_id)) byFamilyId.set(o.family_id, []);
+        byFamilyId.get(o.family_id).push(o);
       }
     }
-    const labels = [...counts.keys()];
-    const values = labels.map((k) => counts.get(k));
-    wrap.innerHTML = `<p class="section-note" style="margin-top:0;">Real join of the signals above against GET /orders' own signal_id/status -- "accepted, no order yet" is not a fabricated rejection, it is a signal with no matching order row at all. This build has no separate rejected/ignored ledger (see this screen's module docstring).</p><div class="chart-container"><canvas id="tr04-disposition-chart"></canvas></div>`;
-    charts.disposition = renderBarChart(wrap.querySelector("#tr04-disposition-chart"), labels, values, "Signals");
+    return { bySignalId, byFamilyId };
+  }
+
+  // Returns the real furthest FUNNEL_STAGES index this one signal's own
+  // linked orders reached -- see FUNNEL_STAGES' own comment above for
+  // exactly what each index means and why the boundaries fall where they
+  // do.
+  function stageIndexForSignal(signal, ordersForSignal, byFamilyId) {
+    if (!ordersForSignal.length) return 0; // Received only -- no destination found.
+    const reachedBroker = ordersForSignal.some((o) => o.status === "pending" || o.status === "filled");
+    if (!reachedBroker) return 1; // Routed, but every linked order was rejected/errored before/at the broker call.
+    const filled = ordersForSignal.some((o) => o.status === "filled");
+    if (!filled) return 2; // Submitted, still pending (or an ambiguous error) -- not yet a confirmed fill.
+    if (signal.side === "close") return 3; // A close signal's own fill IS an exit of something else, not itself something to "exit" again.
+    const linkedCloses = byFamilyId.get(signal.id) || [];
+    const exited = linkedCloses.some((o) => o.purpose === "close" && o.status === "filled");
+    return exited ? 4 : 3;
+  }
+
+  function computePerSignalStages(signals, orders) {
+    const { bySignalId, byFamilyId } = indexOrders(orders);
+    return signals.map((s) => ({
+      signal: s,
+      ordersForSignal: bySignalId.get(s.id) || [],
+      stageIndex: stageIndexForSignal(s, bySignalId.get(s.id) || [], byFamilyId),
+    }));
+  }
+
+  // Cumulative real counts: "reached stage i" always implies "reached
+  // every stage before it" by construction of stageIndexForSignal above,
+  // so this renders as a real, honestly non-increasing funnel shape --
+  // never independently-counted bars that could show a later stage with
+  // MORE signals than an earlier one.
+  function stageCounts(perSignalStages) {
+    return FUNNEL_STAGES.map((_, i) => perSignalStages.filter((p) => p.stageIndex >= i).length);
+  }
+
+  function renderGroupedFunnelChart(canvas, groups) {
+    // `groups`: [{ label, perSignalStages }] -- one dataset per group
+    // (provider or analyst), each real counts over FUNNEL_STAGES.
+    return new Chart(canvas.getContext("2d"), {
+      type: "bar",
+      data: {
+        labels: FUNNEL_STAGES,
+        datasets: groups.map((g, i) => ({
+          label: g.label,
+          data: stageCounts(g.perSignalStages),
+          backgroundColor: CHART_PALETTE[i % CHART_PALETTE.length],
+          maxBarThickness: 40,
+        })),
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: { legend: { display: true } },
+        scales: { y: { beginAtZero: true, ticks: { precision: 0 } } },
+      },
+    });
+  }
+
+  function renderFunnelSection(wrap, perSignalStages) {
+    destroyChart("funnelOverall");
+    destroyChart("funnelByProvider");
+    destroyChart("funnelByAnalyst");
+    if (!perSignalStages.length) {
+      wrap.innerHTML = `<div class="empty">No signals to build a funnel from yet.</div>`;
+      return;
+    }
+    wrap.innerHTML = `
+      <p class="section-note" style="margin-top:0;">Real, cumulative per-signal stage counts (a signal counted at a stage always reached every stage before it) -- see this module's own FUNNEL_STAGES comment for exactly which real app/engine.py transition backs each bar, and where this codebase's real observable chain currently ends ("Protected" is a real column this batch's endpoint doesn't project; "Exited" is only traceable for managed_lifecycle destinations).</p>
+      <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(320px, 1fr)); gap:16px;">
+        <div style="grid-column:1 / -1;"><h3 class="section-note">Overall</h3><div class="chart-container"><canvas id="tr04-funnel-overall"></canvas></div></div>
+        <div><h3 class="section-note">By provider (source)</h3><div class="chart-container"><canvas id="tr04-funnel-provider"></canvas></div></div>
+        <div><h3 class="section-note">By analyst</h3><div class="chart-container"><canvas id="tr04-funnel-analyst"></canvas></div></div>
+      </div>
+    `;
+    charts.funnelOverall = renderBarChart(
+      wrap.querySelector("#tr04-funnel-overall"),
+      FUNNEL_STAGES,
+      stageCounts(perSignalStages),
+      "Signals"
+    );
+
+    const byProvider = [...countBy(perSignalStages, (p) => p.signal.source).keys()].map((source) => ({
+      label: source,
+      perSignalStages: perSignalStages.filter((p) => p.signal.source === source),
+    }));
+    charts.funnelByProvider = renderGroupedFunnelChart(wrap.querySelector("#tr04-funnel-provider"), byProvider);
+
+    const byAnalyst = [...countBy(perSignalStages, (p) => p.signal.analyst || "(none)").keys()].map((analyst) => ({
+      label: analyst,
+      perSignalStages: perSignalStages.filter((p) => (p.signal.analyst || "(none)") === analyst),
+    }));
+    charts.funnelByAnalyst = renderGroupedFunnelChart(wrap.querySelector("#tr04-funnel-analyst"), byAnalyst);
+  }
+
+  // ---------------------------------------------------------------------
+  // Operational inbox row builders.
+
+  function formatAge(receivedAt) {
+    if (!receivedAt) return "—";
+    const t = Date.parse(receivedAt);
+    if (Number.isNaN(t)) return "—";
+    const ms = Date.now() - t;
+    if (ms < 0) return "just now";
+    const mins = Math.floor(ms / 60000);
+    if (mins < 1) return "<1m";
+    if (mins < 60) return `${mins}m`;
+    const hours = Math.floor(mins / 60);
+    if (hours < 48) return `${hours}h ${mins % 60}m`;
+    const days = Math.floor(hours / 24);
+    return `${days}d ${hours % 24}h`;
+  }
+
+  function entryInstructionCell(s) {
+    if (s.side === "close") return "Flatten existing position (CLOSE)";
+    const qty = s.quantity != null ? fmtNum(s.quantity) : "—";
+    const px = s.price != null ? `@ ${fmtNum(s.price)}` : "@ market";
+    return `${qty} ${px}`;
+  }
+
+  function instrumentCell(s, ordersForSignal) {
+    const rawSym = `<span class="mono">${escapeHtml(s.symbol)}</span>`;
+    const mapped = [...new Set(ordersForSignal.map((o) => o.symbol).filter(Boolean))];
+    if (!mapped.length) return rawSym;
+    if (mapped.length === 1 && mapped[0] === s.symbol) return rawSym;
+    return `${rawSym} → <span class="mono">${mapped.map(escapeHtml).join(", ")}</span>`;
+  }
+
+  const STATUS_PILL_KIND = { filled: "ok", pending: "warn", rejected: "bad", error: "bad" };
+
+  function dispositionCell(stageIndex, ordersForSignal) {
+    if (!ordersForSignal.length) return pill("no destination configured", "muted");
+    if (stageIndex === 1) {
+      const anyRejected = ordersForSignal.some((o) => o.status === "rejected");
+      return pill(anyRejected ? "routed, rejected before submission" : "routed, errored before/without reaching broker", "bad");
+    }
+    if (stageIndex === 2) return pill("submitted, awaiting fill", "warn");
+    if (stageIndex === 3) return pill("filled", "ok");
+    return pill("filled and exited", "ok");
+  }
+
+  function destinationsCell(ordersForSignal) {
+    if (!ordersForSignal.length) return pill("no destination configured", "muted");
+    return [...new Set(ordersForSignal.map((o) => o.account_id))]
+      .map((id) => `<span class="mono">${escapeHtml(id)}</span>`)
+      .join(", ");
+  }
+
+  function orderResultCell(ordersForSignal) {
+    if (!ordersForSignal.length) return pill("no order yet", "muted");
+    return ordersForSignal
+      .map((o) => `<span class="mono">${escapeHtml(o.account_id)}</span> ${pill(o.status, STATUS_PILL_KIND[o.status] || "muted")}`)
+      .join("<br>");
+  }
+
+  function rejectionReasonCell(ordersForSignal) {
+    const reasons = ordersForSignal.filter((o) => (o.status === "rejected" || o.status === "error") && o.message);
+    if (!reasons.length) return "—";
+    return reasons.map((o) => `<span class="mono">${escapeHtml(o.account_id)}</span>: ${escapeHtml(o.message)}`).join("<br>");
+  }
+
+  function buildInboxRow(entry) {
+    const { signal: s, ordersForSignal, stageIndex } = entry;
+    return [
+      `<a class="mono" href="#/trade/signals/${encodeURIComponent(s.id)}">${escapeHtml(s.received_at || "—")}</a>`,
+      `<span class="mono">${escapeHtml(s.source)}</span>`,
+      escapeHtml(s.analyst || "(none)"),
+      instrumentCell(s, ordersForSignal),
+      escapeHtml(s.side || "—"),
+      entryInstructionCell(s),
+      s.stop_loss != null ? fmtNum(s.stop_loss) : "—",
+      s.take_profit != null ? fmtNum(s.take_profit) : "—",
+      capSlot(`tr04-cap-parser-${escapeAttr(s.id)}`),
+      formatAge(s.received_at),
+      dispositionCell(stageIndex, ordersForSignal),
+      destinationsCell(ordersForSignal),
+      orderResultCell(ordersForSignal),
+      rejectionReasonCell(ordersForSignal),
+    ];
   }
 
   function shell() {
     return `
       <section class="tr-panel" id="tr04-p01"><h2>Source filters</h2><div class="tr-panel-body"></div></section>
       <section class="tr-panel" id="tr04-p02"><h2>Stream status</h2><div class="tr-panel-body"></div></section>
-      <section class="tr-panel" id="tr04-p03"><h2>Disposition table</h2><div class="tr-panel-body"></div></section>
+      <section class="tr-panel" id="tr04-p03"><h2>Operational inbox</h2><div class="tr-panel-body"></div></section>
       <section class="tr-panel" id="tr04-p04"><h2>Backlog</h2><div class="tr-panel-body"></div></section>
-      <section class="tr-panel" id="tr04-p05"><h2>Signal analytics</h2><div class="tr-panel-body"></div></section>
+      <section class="tr-panel" id="tr04-p05"><h2>Signal funnel</h2><div class="tr-panel-body"></div></section>
+      <section class="tr-panel" id="tr04-p06"><h2>Signal analytics</h2><div class="tr-panel-body"></div></section>
     `;
   }
 
@@ -255,7 +494,8 @@
       status: ctx.container.querySelector("#tr04-p02 .tr-panel-body"),
       disposition: ctx.container.querySelector("#tr04-p03 .tr-panel-body"),
       backlog: ctx.container.querySelector("#tr04-p04 .tr-panel-body"),
-      analytics: ctx.container.querySelector("#tr04-p05 .tr-panel-body"),
+      funnel: ctx.container.querySelector("#tr04-p05 .tr-panel-body"),
+      analytics: ctx.container.querySelector("#tr04-p06 .tr-panel-body"),
     };
     for (const el of Object.values(els)) StateMatrix.render(el, { state: "loading" });
 
@@ -305,6 +545,7 @@
       StateMatrix.render(els.filters, { state: "denied", deniedCode: signalsRes.status });
       StateMatrix.render(els.disposition, { state: "denied", deniedCode: signalsRes.status });
       StateMatrix.render(els.backlog, { state: "denied", deniedCode: signalsRes.status });
+      StateMatrix.render(els.funnel, { state: "denied", deniedCode: signalsRes.status });
       StateMatrix.render(els.analytics, { state: "denied", deniedCode: signalsRes.status });
       return;
     }
@@ -312,6 +553,7 @@
       StateMatrix.render(els.filters, { state: "error", message: "Could not load signals." });
       StateMatrix.render(els.disposition, { state: "error", message: "Could not load signals." });
       StateMatrix.render(els.backlog, { state: "error", message: "Could not load signals." });
+      StateMatrix.render(els.funnel, { state: "error", message: "Could not load signals." });
       StateMatrix.render(els.analytics, { state: "error", message: "Could not load signals." });
       return;
     }
@@ -344,6 +586,15 @@
     }
 
     const signals = applyFilters(allSignals, filters || {});
+
+    // GET /orders is the real, already-persisted join key for the inbox's
+    // destinations/order-result/rejection-reason/disposition columns AND
+    // the signal funnel below -- fetched once here (not just inside the
+    // old analytics-only branch) since the inbox table now needs it too.
+    const ordersRes = await ctx.fetchJSON("/orders?limit=500");
+    const orders = ordersRes.ok && ordersRes.data && Array.isArray(ordersRes.data.orders) ? ordersRes.data.orders : [];
+    const perSignalStages = computePerSignalStages(signals, orders);
+
     if (!signals.length) {
       StateMatrix.render(els.disposition, {
         state: "empty",
@@ -352,31 +603,40 @@
         nextLabel: "Signal providers and collectors (TR-09, not yet available)",
       });
     } else {
-      const rows = signals.map((s) => [
-        `<a class="mono" href="#/trade/signals/${encodeURIComponent(s.id)}">${escapeHtml(s.id)}</a>`,
-        `<span class="mono">${escapeHtml(s.source)}</span>`,
-        escapeHtml(s.analyst || "(none)"),
-        s.received_at || "—",
-        escapeHtml(s.side || "—"),
-        `<span class="mono">${escapeHtml(s.symbol)}</span>`,
-        pill("accepted (recorded)", "ok"),
-        capSlot(`tr04-cap-disposition-${escapeAttr(s.id)}`),
-      ]);
+      const rows = perSignalStages.map(buildInboxRow);
       StateMatrix.render(els.disposition, {
         state: "ready",
-        html: table(
-          ["Event/revision", "Provider", "Analyst", "Observed", "Interpreted action", "Instrument", "Disposition", "Reason"],
-          rows,
-          "No authorized signals have been received."
-        ),
+        html: `
+          <p class="section-note" style="margin-top:0;">Every row is a real, persisted signal -- see this module's docstring for what an authorized-but-rejected-at-parse-time instruction looks like (never persisted, so never a row here). Click an event id below for the full evidence/plan-preview detail (TR-05).</p>
+          ${table(
+            [
+              "Received",
+              "Provider",
+              "Analyst",
+              "Raw / normalized instrument",
+              "Side",
+              "Entry instruction",
+              "Stop",
+              "Target",
+              "Parser status",
+              "Age",
+              "Disposition",
+              "Destinations",
+              "Order result",
+              "Rejection reason",
+            ],
+            rows,
+            "No authorized signals have been received."
+          )}
+        `,
       });
       mountCapStates(
         els.disposition,
         signals.map((s) => [
-          `tr04-cap-disposition-${escapeAttr(s.id)}`,
+          `tr04-cap-parser-${escapeAttr(s.id)}`,
           {
             status: "not_tracked",
-            reason: "Rejected/ignored instructions are not persisted in this build.",
+            reason: "parser is deterministic; no confidence score is computed",
           },
         ])
       );
@@ -388,42 +648,37 @@
       reason: "No ingestion queue-depth/backlog metric is exposed by any endpoint in this build -- signals are processed synchronously per request (see app/engine.py), so there is no queue to report depth for.",
     });
 
-    // --- Signal analytics charts (real, over the same filtered `signals`
-    // the disposition table above renders) ---
+    if (!signals.length) {
+      StateMatrix.render(els.funnel, {
+        state: "empty",
+        emptyMessage: "No authorized signals have been received -- nothing real to build a funnel from yet.",
+      });
+    } else {
+      StateMatrix.render(els.funnel, { state: "ready", html: `<div id="tr04-funnel-wrap"></div>` });
+      renderFunnelSection(els.funnel.querySelector("#tr04-funnel-wrap"), perSignalStages);
+    }
+
+    // --- Remaining signal analytics charts (real, over the same filtered
+    // `signals` the inbox above renders) ---
     if (!signals.length) {
       StateMatrix.render(els.analytics, {
         state: "empty",
         emptyMessage: "No authorized signals have been received -- nothing real to chart yet.",
       });
     } else {
-      const ordersRes = await ctx.fetchJSON("/orders?limit=500");
-      const orders =
-        ordersRes.ok && ordersRes.data && Array.isArray(ordersRes.data.orders) ? ordersRes.data.orders : [];
-
       StateMatrix.render(els.analytics, {
         state: "ready",
         html: `
-          <p class="section-note" style="margin-top:0;">All charts below are computed client-side from the exact same (filtered) signals list the Disposition table above renders -- see this module's own header comment for what is charted and what is deliberately left out.</p>
+          <p class="section-note" style="margin-top:0;">Computed client-side from the exact same (filtered) signals list the inbox above renders -- see this module's own header comment for what is charted and what is deliberately left out (signals-by-source and the old order-status disposition chart are superseded by the funnel above).</p>
           <div class="tr-chart-grid" style="display:grid; grid-template-columns:repeat(auto-fit, minmax(280px, 1fr)); gap:16px;">
-            <div><h3 class="section-note">Signal volume over time</h3><div id="tr04-volume-wrap"></div></div>
-            <div><h3 class="section-note">Signals by source</h3><div id="tr04-source-wrap"></div></div>
+            <div style="grid-column:1 / -1;"><h3 class="section-note">Signal volume over time</h3><div id="tr04-volume-wrap"></div></div>
             <div><h3 class="section-note">Signals by side</h3><div id="tr04-side-wrap"></div></div>
             <div><h3 class="section-note">Signals by asset class</h3><div id="tr04-assetclass-wrap"></div></div>
-            <div style="grid-column:1 / -1;"><h3 class="section-note">Disposition breakdown (real order-status join)</h3><div id="tr04-disposition-wrap"></div></div>
           </div>
         `,
       });
 
       renderVolumeChart(els.analytics.querySelector("#tr04-volume-wrap"), signals);
-      renderBreakdownChart(
-        els.analytics.querySelector("#tr04-source-wrap"),
-        "source",
-        "tr04-source-chart",
-        signals,
-        (s) => s.source,
-        "No signals to break down by source yet.",
-        "Signals"
-      );
       renderBreakdownChart(
         els.analytics.querySelector("#tr04-side-wrap"),
         "side",
@@ -442,7 +697,6 @@
         "No signals to break down by asset class yet.",
         "Signals"
       );
-      renderDispositionChart(els.analytics.querySelector("#tr04-disposition-wrap"), signals, orders);
     }
 
     ctx.setChrome({ asOf: new Date().toISOString() });
