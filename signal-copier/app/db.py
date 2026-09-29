@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -16,7 +17,15 @@ from alembic import command  # type: ignore[attr-defined]  # real, working impor
 from alembic.config import Config as AlembicConfig
 from alembic.script import ScriptDirectory
 
-from app.models import OrderResult, Side, Signal
+from app.models import (
+    TERMINAL_UNCERTAINTY_STATES,
+    CommandLedgerEntry,
+    CommandType,
+    OrderResult,
+    Side,
+    Signal,
+    UncertaintyState,
+)
 from signal_platform_contracts import EventEnvelope
 
 _ALEMBIC_DIR = Path(__file__).resolve().parent.parent / "alembic"
@@ -657,6 +666,78 @@ CREATE TABLE IF NOT EXISTS route_qualifications (
 
 CREATE INDEX IF NOT EXISTS idx_route_qualifications_route
     ON route_qualifications (adapter_type, route_key, asset_class, product_type);
+
+-- P0-2 (external release audit, "one durable command ledger"): the
+-- pre-effect durable ledger for EVERY real financial command this service
+-- submits to a broker -- entry, close, stop_change (initial/re-placed
+-- protective stop), replace (an in-place broker amend of a resting stop),
+-- cancel, and flatten. See app/command_ledger.py's module docstring for
+-- the full contract and app/models.py's `CommandType`/`UncertaintyState`
+-- for the real, closed sets of values `command_type`/`uncertainty_state`
+-- take. `target_change` is a reserved value in the enum with no writer on
+-- this branch -- see `CommandType`'s own docstring for why.
+--
+-- The whole point of this table is ORDERING: a row here is written and
+-- COMMITTED before the broker call it describes is ever made (see every
+-- real call site in app/engine.py / app/lifecycle/manager.py) -- never
+-- after. `created_at` is that pre-effect instant. A process killed between
+-- this commit and the broker call still leaves a real, durable
+-- `pending_submission` row for a restart to find (see
+-- SignalStore.list_unresolved_command_ledger_entries) -- the exact
+-- "PENDING result without a broker order ID is an acknowledged exposure
+-- gap" scenario the audit names, now visible instead of silently lost.
+--
+-- `idempotency_key` is UNIQUE: a retried/duplicated call with the SAME key
+-- never submits a second broker order (see
+-- SignalStore.open_command_ledger_entry) -- it either replays the
+-- existing row's tracked state (matching `request_fingerprint`) or is
+-- rejected outright (a different fingerprint under the same key is a
+-- caller bug, never silently allowed through).
+--
+-- `request_fingerprint` is a deterministic hash over the exact request
+-- parameters (see app/command_ledger.py's `compute_fingerprint`) -- what
+-- distinguishes "this is really the same command, retried" from "this
+-- reused an old key for a genuinely different command."
+--
+-- `expected_revision` is an optional optimistic-concurrency token (e.g. a
+-- broker-reported order/position revision a `replace`/`cancel` was issued
+-- against) -- NULL wherever the command has no such precondition (e.g. a
+-- fresh `entry`, which has nothing to be optimistic-concurrent against).
+--
+-- `remote_identifiers` and `terminal_evidence` are both JSON objects
+-- (never NULL -- '{}' when nothing is known yet): the former holds
+-- whatever broker order id(s) become known once the broker responds
+-- (never fabricated before then); the latter holds whatever REAL evidence
+-- resolved this row to a terminal state -- a broker fill confirmation, a
+-- confirmed rejection, a reconciliation match, or (for the ambiguous case)
+-- the exception/response that made the outcome genuinely unknown. Both are
+-- read with `json.loads`, so a row's on-disk value is always valid JSON --
+-- see SignalStore's own read/write helpers, the only code that ever
+-- touches this column.
+--
+-- `resolved_at` is NULL for every unresolved row (`pending_submission`,
+-- `submitted_unconfirmed`, `unknown_ambiguous`) and set exactly once, at
+-- the moment `uncertainty_state` is written as `confirmed` or
+-- `rejected_confirmed` -- see app/models.py's `TERMINAL_UNCERTAINTY_STATES`.
+CREATE TABLE IF NOT EXISTS command_ledger (
+    id TEXT PRIMARY KEY,
+    intent_id TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL UNIQUE,
+    command_type TEXT NOT NULL,
+    account_id TEXT NOT NULL,
+    environment TEXT NOT NULL,
+    expected_revision TEXT,
+    request_fingerprint TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    remote_identifiers TEXT NOT NULL DEFAULT '{}',
+    uncertainty_state TEXT NOT NULL,
+    terminal_evidence TEXT NOT NULL DEFAULT '{}',
+    resolved_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_command_ledger_account_id ON command_ledger (account_id);
+CREATE INDEX IF NOT EXISTS idx_command_ledger_created_at ON command_ledger (created_at);
+CREATE INDEX IF NOT EXISTS idx_command_ledger_unresolved ON command_ledger (resolved_at) WHERE resolved_at IS NULL;
 
 CREATE INDEX IF NOT EXISTS idx_orders_executed_at ON orders (executed_at);
 CREATE INDEX IF NOT EXISTS idx_orders_account_id ON orders (account_id);
@@ -1721,6 +1802,237 @@ class SignalStore:
             conn.execute(
                 "DELETE FROM close_claims WHERE account_id = ? AND symbol = ?", (account_id, symbol)
             )
+
+    # --- P0-2: command_ledger -- the pre-effect durable command ledger.
+    # See app/db.py's own `command_ledger` SCHEMA comment for the table's
+    # full contract and app/command_ledger.py for the real call sites that
+    # use these three methods.
+
+    def open_command_ledger_entry(
+        self,
+        *,
+        idempotency_key: str,
+        command_type: "CommandType",
+        account_id: str,
+        environment: str,
+        request_fingerprint: str,
+        expected_revision: str | None = None,
+        intent_id: str | None = None,
+    ) -> "CommandLedgerEntry":
+        """Write the PRE-EFFECT durable intent row and COMMIT it -- the
+        caller must call this, and see it return, BEFORE making the actual
+        broker call it describes. Never call this after the broker call;
+        that would defeat the entire point (see the `command_ledger`
+        table's own schema comment on why ordering is load-bearing here).
+
+        Idempotency (this is the real dedup boundary, not `orders`' own
+        best-effort in-memory locks):
+          - A brand-new `idempotency_key` inserts a fresh row with
+            `uncertainty_state=PENDING_SUBMISSION` and returns it. The
+            caller proceeds to call the broker.
+          - The SAME `idempotency_key` arriving again BEFORE the first
+            call resolved (or after it resolved -- either way) with a
+            MATCHING `request_fingerprint` returns the EXISTING row
+            unchanged, never inserting a second one. The caller must NOT
+            call the broker again -- it already has this row's tracked
+            `uncertainty_state`/`remote_identifiers` to act on (replay,
+            not resubmit).
+          - The same `idempotency_key` with a DIFFERENT
+            `request_fingerprint` is a caller bug (a genuinely different
+            command reusing an old key) -- raises `CommandFingerprintMismatch`
+            rather than silently allowing it through (fail closed on
+            ambiguity, same posture as EXE-11's HTTP-level idempotency
+            check in app/main.py).
+        """
+        from app.command_ledger import CommandFingerprintMismatch
+
+        row_id = str(uuid.uuid4())
+        resolved_intent_id = intent_id or row_id
+        now = datetime.now(timezone.utc)
+        with self._connect() as conn:
+            try:
+                conn.execute(
+                    """INSERT INTO command_ledger
+                       (id, intent_id, idempotency_key, command_type, account_id, environment,
+                        expected_revision, request_fingerprint, created_at, remote_identifiers,
+                        uncertainty_state, terminal_evidence, resolved_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '{}', ?, '{}', NULL)""",
+                    (
+                        row_id,
+                        resolved_intent_id,
+                        idempotency_key,
+                        command_type.value,
+                        account_id,
+                        environment,
+                        expected_revision,
+                        request_fingerprint,
+                        now.isoformat(),
+                        UncertaintyState.PENDING_SUBMISSION.value,
+                    ),
+                )
+            except sqlite3.IntegrityError:
+                pass  # idempotency_key already exists -- fall through to read it back below.
+            else:
+                return self._command_ledger_row_to_entry(
+                    (
+                        row_id,
+                        resolved_intent_id,
+                        idempotency_key,
+                        command_type.value,
+                        account_id,
+                        environment,
+                        expected_revision,
+                        request_fingerprint,
+                        now.isoformat(),
+                        "{}",
+                        UncertaintyState.PENDING_SUBMISSION.value,
+                        "{}",
+                        None,
+                    )
+                )
+            existing_row = conn.execute(
+                """SELECT id, intent_id, idempotency_key, command_type, account_id, environment,
+                          expected_revision, request_fingerprint, created_at, remote_identifiers,
+                          uncertainty_state, terminal_evidence, resolved_at
+                   FROM command_ledger WHERE idempotency_key = ?""",
+                (idempotency_key,),
+            ).fetchone()
+        assert existing_row is not None  # the IntegrityError above guarantees this row now exists
+        existing = self._command_ledger_row_to_entry(existing_row)
+        if existing.request_fingerprint != request_fingerprint:
+            raise CommandFingerprintMismatch(
+                f"idempotency_key '{idempotency_key}' was already used for a different command "
+                f"(fingerprint {existing.request_fingerprint!r} != {request_fingerprint!r}) -- "
+                "refusing to reuse it for a different request rather than silently allowing it through"
+            )
+        return existing
+
+    def mark_command_ledger_outcome(
+        self,
+        idempotency_key: str,
+        *,
+        uncertainty_state: "UncertaintyState",
+        remote_identifiers: dict | None = None,
+        terminal_evidence: dict | None = None,
+    ) -> None:
+        """Update a command_ledger row's tracked outcome after the broker
+        call this row's own pre-effect intent describes has returned (or
+        raised). `resolved_at` is set (once, now) iff `uncertainty_state`
+        is one of `app.models.TERMINAL_UNCERTAINTY_STATES` -- every other
+        state (including `unknown_ambiguous`) leaves it NULL, so this row
+        keeps showing up in `list_unresolved_command_ledger_entries` until
+        something with real evidence (a reconciliation match, a later
+        broker poll) resolves it. `remote_identifiers`/`terminal_evidence`
+        are merged into the existing JSON dict (never replace wholesale),
+        so an earlier partial write (e.g. `submitted_unconfirmed` recording
+        just a broker_order_id) isn't lost when a later call adds
+        `terminal_evidence` on confirmation."""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT remote_identifiers, terminal_evidence FROM command_ledger WHERE idempotency_key = ?",
+                (idempotency_key,),
+            ).fetchone()
+            if row is None:
+                # Never happens on a real call site (every caller marks an
+                # outcome only for a key it just opened), but a row that
+                # vanished between open and mark is worth failing loudly on
+                # rather than silently no-opping over.
+                raise KeyError(f"no command_ledger row for idempotency_key '{idempotency_key}'")
+            merged_remote = json.loads(row[0])
+            merged_remote.update(remote_identifiers or {})
+            merged_evidence = json.loads(row[1])
+            merged_evidence.update(terminal_evidence or {})
+            resolved_at = (
+                datetime.now(timezone.utc).isoformat() if uncertainty_state in TERMINAL_UNCERTAINTY_STATES else None
+            )
+            conn.execute(
+                """UPDATE command_ledger
+                   SET uncertainty_state = ?, remote_identifiers = ?, terminal_evidence = ?, resolved_at = ?
+                   WHERE idempotency_key = ?""",
+                (
+                    uncertainty_state.value,
+                    json.dumps(merged_remote),
+                    json.dumps(merged_evidence),
+                    resolved_at,
+                    idempotency_key,
+                ),
+            )
+
+    def get_command_ledger_entry(self, idempotency_key: str) -> "CommandLedgerEntry | None":
+        with self._connect() as conn:
+            row = conn.execute(
+                """SELECT id, intent_id, idempotency_key, command_type, account_id, environment,
+                          expected_revision, request_fingerprint, created_at, remote_identifiers,
+                          uncertainty_state, terminal_evidence, resolved_at
+                   FROM command_ledger WHERE idempotency_key = ?""",
+                (idempotency_key,),
+            ).fetchone()
+        return self._command_ledger_row_to_entry(row) if row is not None else None
+
+    def list_unresolved_command_ledger_entries(self, account_id: str | None = None) -> list["CommandLedgerEntry"]:
+        """Contract depended on by a sibling agent (P0-4, restart-survivable
+        capital reservations): the durable source of truth for
+        reconstructing in-flight broker commands after a restart.
+
+        Returns every `command_ledger` row whose `uncertainty_state` is
+        NOT in `app.models.TERMINAL_UNCERTAINTY_STATES` -- i.e.
+        `pending_submission`, `submitted_unconfirmed`, or
+        `unknown_ambiguous` -- ordered by `created_at` ascending (oldest
+        first, the order those commands were actually issued in, so a
+        recovery replay processes them in the same order they happened).
+        Optionally filtered to one `account_id`; omit (or pass `None`) for
+        every account.
+
+        Each `CommandLedgerEntry` in the result carries: `id`, `intent_id`,
+        `idempotency_key`, `command_type`, `account_id`, `environment`,
+        `expected_revision` (`None` if not applicable to that command),
+        `request_fingerprint`, `created_at` (the real PRE-EFFECT instant --
+        this row was committed before the broker was ever called),
+        `remote_identifiers` (a `dict`, `{}` if no broker order id is known
+        yet -- this IS the "acknowledged exposure gap" case the audit
+        names when `command_type` implies risk was taken but this dict is
+        still empty), `uncertainty_state`, `terminal_evidence` (a `dict`,
+        `{}` for every unresolved row by construction), and `resolved_at`
+        (always `None` for a row in this result set).
+
+        A caller reconstructing in-flight state after a restart MUST treat
+        every returned row as "broker outcome unknown as of process
+        death/last update" and reconcile it against the broker's own
+        order/position state (or wait for app/reconciliation.py's own
+        pending-order polling to resolve it) rather than assuming either
+        success or failure. This method itself does no reconciliation --
+        it only exposes what's durably known.
+        """
+        query = """SELECT id, intent_id, idempotency_key, command_type, account_id, environment,
+                          expected_revision, request_fingerprint, created_at, remote_identifiers,
+                          uncertainty_state, terminal_evidence, resolved_at
+                   FROM command_ledger WHERE resolved_at IS NULL"""
+        params: tuple = ()
+        if account_id is not None:
+            query += " AND account_id = ?"
+            params = (account_id,)
+        query += " ORDER BY created_at ASC"
+        with self._connect() as conn:
+            rows = conn.execute(query, params).fetchall()
+        return [self._command_ledger_row_to_entry(r) for r in rows]
+
+    @staticmethod
+    def _command_ledger_row_to_entry(row: tuple) -> "CommandLedgerEntry":
+        return CommandLedgerEntry(
+            id=row[0],
+            intent_id=row[1],
+            idempotency_key=row[2],
+            command_type=CommandType(row[3]),
+            account_id=row[4],
+            environment=row[5],
+            expected_revision=row[6],
+            request_fingerprint=row[7],
+            created_at=datetime.fromisoformat(row[8]),
+            remote_identifiers=json.loads(row[9]),
+            uncertainty_state=UncertaintyState(row[10]),
+            terminal_evidence=json.loads(row[11]),
+            resolved_at=datetime.fromisoformat(row[12]) if row[12] else None,
+        )
 
     # --- Live-editable config: accounts, routing rules, providers/analysts ---
     # See app/main.py's CRUD endpoints and app/routing.py's/app/providers.py's

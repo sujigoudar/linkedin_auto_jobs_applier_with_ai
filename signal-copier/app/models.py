@@ -163,6 +163,99 @@ class ManagementRecipe(str, enum.Enum):
     PLAIN_UNMANAGED = "plain_unmanaged"
 
 
+class CommandType(str, enum.Enum):
+    """What kind of durable financial command a `command_ledger` row
+    describes -- see app/command_ledger.py's module docstring for exactly
+    which real call site in app/engine.py / app/lifecycle/manager.py writes
+    each one. `TARGET_CHANGE` is a reserved name: this codebase's logical
+    targets (app/lifecycle/models.py's `Target`) are evaluated in-process
+    against a price feed and never themselves become a resting broker
+    order -- a target SELL fires as a `CLOSE` command and a TIGHTEN_STOP
+    target fires as a `STOP_CHANGE` -- so no call site produces a
+    `TARGET_CHANGE` row today. Kept in the enum (rather than omitted)
+    because a future broker-native take-profit order would be a real,
+    distinct command needing this exact type, and the audit this ledger
+    responds to names it explicitly."""
+
+    ENTRY = "entry"
+    CLOSE = "close"
+    STOP_CHANGE = "stop_change"
+    TARGET_CHANGE = "target_change"
+    REPLACE = "replace"
+    CANCEL = "cancel"
+    FLATTEN = "flatten"
+
+
+class UncertaintyState(str, enum.Enum):
+    """The lifecycle of one `command_ledger` row's knowledge about whether
+    its command actually happened at the broker -- see
+    app/command_ledger.py's module docstring for the full state machine.
+    `PENDING_SUBMISSION` and `SUBMITTED_UNCONFIRMED` and
+    `UNKNOWN_AMBIGUOUS` are all *unresolved* (no `resolved_at`);
+    `CONFIRMED` and `REJECTED_CONFIRMED` are terminal."""
+
+    #: Row written and committed BEFORE the broker call -- the pre-effect
+    #: durable intent. Never observed after `open_command_ledger_entry`
+    #: returns in-process (the very next thing that call site does is
+    #: either call the broker or, in a crash/restart, leave the row here
+    #: for a restart-recovery reader to find -- see
+    #: `SignalStore.list_unresolved_command_ledger_entries`'s docstring).
+    PENDING_SUBMISSION = "pending_submission"
+    #: The broker call returned a real broker_order_id but no terminal fill/
+    #: reject yet (a PENDING OrderResult with an id to poll) -- expected to
+    #: resolve later via reconciliation.
+    SUBMITTED_UNCONFIRMED = "submitted_unconfirmed"
+    #: A definite, broker-confirmed terminal success (FILLED, or a confirmed
+    #: cancel/replace).
+    CONFIRMED = "confirmed"
+    #: A definite, broker-confirmed terminal rejection -- nothing was ever
+    #: accepted at the venue.
+    REJECTED_CONFIRMED = "rejected_confirmed"
+    #: The critical state the audit names: the broker call itself raised,
+    #: timed out, or returned PENDING/ERROR with no broker_order_id to poll
+    #: -- genuinely unknown whether the request reached (and was accepted
+    #: by) the venue before the failure. Never silently dropped or treated
+    #: as either a success or a failure; must be resolved only by
+    #: independent reconciliation (a broker position/order readback), never
+    #: assumed.
+    UNKNOWN_AMBIGUOUS = "unknown_ambiguous"
+
+
+#: Every `UncertaintyState` a row can be resolved into -- `resolved_at` is
+#: set iff a row's current state is one of these. Kept next to the enum
+#: (not private/scattered across app/db.py) since app/command_ledger.py and
+#: SignalStore both need the exact same terminal set.
+TERMINAL_UNCERTAINTY_STATES = frozenset({UncertaintyState.CONFIRMED, UncertaintyState.REJECTED_CONFIRMED})
+
+
+@dataclass
+class CommandLedgerEntry:
+    """One durable row of the financial command ledger (`command_ledger`
+    table) -- see app/command_ledger.py's module docstring for the full
+    contract, and `SignalStore.list_unresolved_command_ledger_entries`'s
+    docstring for the exact shape a sibling restart-recovery reader (P0-4)
+    depends on.
+    """
+
+    id: str
+    intent_id: str
+    idempotency_key: str
+    command_type: CommandType
+    account_id: str
+    environment: str
+    request_fingerprint: str
+    created_at: datetime
+    uncertainty_state: UncertaintyState
+    expected_revision: Optional[str] = None
+    remote_identifiers: dict[str, Any] = field(default_factory=dict)
+    terminal_evidence: dict[str, Any] = field(default_factory=dict)
+    resolved_at: Optional[datetime] = None
+
+    @property
+    def is_resolved(self) -> bool:
+        return self.resolved_at is not None
+
+
 @dataclass
 class DestinationAccount:
     """One account a signal can be routed to, plus how to size the trade."""

@@ -60,11 +60,13 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+import uuid
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
+from app import command_ledger
 from app.brokers.base import BrokerAdapter
 from app.capital_allocator import CapitalAllocator
 from app.lifecycle.close_arbiter import CloseArbiter
@@ -81,7 +83,17 @@ from app.lifecycle.models import (
     TrailingPolicy,
     TransferPhase,
 )
-from app.models import AssetClass, DestinationAccount, OrderResult, OrderStatus, Signal, Side
+from app.models import (
+    AssetClass,
+    CommandLedgerEntry,
+    CommandType,
+    DestinationAccount,
+    OrderResult,
+    OrderStatus,
+    Signal,
+    Side,
+    UncertaintyState,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1010,8 +1022,14 @@ class PositionLifecycleManager:
                 # moment with zero coverage, only the shares actually being
                 # sold are freed.
                 assert lifecycle.stop.broker_order_id is not None  # had_stop guarantees this
-                replaced = await broker.replace_stop_quantity(
-                    account, lifecycle.stop.broker_order_id, remaining_after_request, lifecycle.stop.desired_price
+                replaced = await self._ledgered_replace_stop_quantity(
+                    broker,
+                    account,
+                    symbol,
+                    lifecycle.stop.broker_order_id,
+                    remaining_after_request,
+                    lifecycle.stop.desired_price,
+                    source=source,
                 )
                 if replaced is not None and replaced.status not in (OrderStatus.ERROR, OrderStatus.REJECTED):
                     if replaced.broker_order_id:
@@ -1021,7 +1039,9 @@ class PositionLifecycleManager:
 
             if had_stop and not amended_stop:
                 assert lifecycle.stop.broker_order_id is not None  # had_stop guarantees this
-                cancelled = await broker.cancel_order(account, lifecycle.stop.broker_order_id)
+                cancelled = await self._ledgered_cancel_order(
+                    broker, account, symbol, lifecycle.stop.broker_order_id, source=source
+                )
                 if not cancelled:
                     # Could mean "not supported," or "the stop may have already filled" — either
                     # way, proceeding could oversell, so this exit is refused rather than guessed at.
@@ -1236,7 +1256,63 @@ class PositionLifecycleManager:
             # close/flatten) goes through, rather than every caller having
             # to know this id needs saving.
             self.store.save_signal(exit_signal)
-        return await broker.place_order(exit_signal, account, quantity, lifecycle.plan.symbol)
+
+        # P0-2: pre-effect durable command-ledger intent for this exit --
+        # `_submit_exit_order` is the single place every request_exit-driven
+        # submission (a logical target, trailing, a provider EXIT signal, a
+        # time exit, manual close/flatten) funnels through, so wiring the
+        # ledger here (rather than at every individual caller) covers all
+        # of them. `exit_signal.id` is fresh every call (there is no
+        # caller-supplied idempotency token threaded this deep through
+        # `request_exit`'s own reservation/stop-resize transition above --
+        # a documented, honest gap, not a silent one) so this row's
+        # `idempotency_key` is a best-effort identity built from this
+        # exit's own real parameters, not a value a genuine external retry
+        # would reliably reproduce; `CloseArbiter`'s own `pending_exit`
+        # check (see `request_exit`, just above this call) is what
+        # actually prevents a concurrent duplicate exit for the same
+        # position today. `command_type` distinguishes a dashboard-driven
+        # flatten from every other exit reason (see app/engine.py's
+        # `close_position`, the only caller that passes a "flatten"-tagged
+        # `reason`).
+        command_type = CommandType.FLATTEN if "flatten" in reason.lower() else CommandType.CLOSE
+        ledger_key = None
+        if self.store is not None:
+            ledger_key = f"{command_type.value}:{account.account_id}:{lifecycle.plan.symbol}:{exit_signal.id}"
+            ledger_fingerprint = command_ledger.compute_fingerprint(
+                {
+                    "command_type": command_type.value,
+                    "account_id": account.account_id,
+                    "symbol": lifecycle.plan.symbol,
+                    "side": exit_signal.side.value,
+                    "quantity": quantity,
+                    "reason": reason,
+                    "exit_signal_id": exit_signal.id,
+                }
+            )
+            self.store.open_command_ledger_entry(
+                idempotency_key=ledger_key,
+                command_type=command_type,
+                account_id=account.account_id,
+                environment=command_ledger.current_environment(),
+                request_fingerprint=ledger_fingerprint,
+            )
+        try:
+            result = await broker.place_order(exit_signal, account, quantity, lifecycle.plan.symbol)
+        except Exception as exc:
+            if ledger_key is not None and self.store is not None:
+                self.store.mark_command_ledger_outcome(
+                    ledger_key,
+                    uncertainty_state=UncertaintyState.UNKNOWN_AMBIGUOUS,
+                    terminal_evidence=command_ledger.ambiguous_evidence_for_exception(exc),
+                )
+            raise
+        if ledger_key is not None and self.store is not None:
+            outcome_state, outcome_remote, outcome_evidence = command_ledger.classify_order_result(result)
+            self.store.mark_command_ledger_outcome(
+                ledger_key, uncertainty_state=outcome_state, remote_identifiers=outcome_remote, terminal_evidence=outcome_evidence
+            )
+        return result
 
     async def _restore_stop_coverage(
         self,
@@ -1259,8 +1335,14 @@ class PositionLifecycleManager:
         capability) is a fresh stop actually placed."""
         assert lifecycle.stop.desired_price is not None  # both call sites check this first
         if stop_amended and lifecycle.stop.broker_order_id:
-            replaced = await broker.replace_stop_quantity(
-                account, lifecycle.stop.broker_order_id, remaining, lifecycle.stop.desired_price
+            replaced = await self._ledgered_replace_stop_quantity(
+                broker,
+                account,
+                lifecycle.plan.symbol,
+                lifecycle.stop.broker_order_id,
+                remaining,
+                lifecycle.stop.desired_price,
+                source=source,
             )
             if replaced is not None and replaced.status not in (OrderStatus.ERROR, OrderStatus.REJECTED):
                 if replaced.broker_order_id:
@@ -1298,7 +1380,68 @@ class PositionLifecycleManager:
         # attempt ends up emitting (None for a true initial placement).
         previous_confirmed_price = lifecycle.stop.broker_confirmed_price
         lifecycle.stop.status = ProtectionStatus.STOP_PENDING
-        result = await broker.place_protective_stop(account, lifecycle.plan.symbol, quantity, price, lifecycle.exit_side)
+
+        # P0-2: pre-effect durable command-ledger intent for this stop
+        # placement/re-placement -- `_place_stop_locked` is the single real
+        # `place_protective_stop` call site in this module (both the
+        # initial post-fill placement and the cancel-then-resubmit
+        # fallback funnel through here). Unlike the entry/close paths in
+        # app/engine.py (which dedup on a real, caller-supplied signal id),
+        # this call site is ALSO this module's own deliberate-retry path
+        # (see `retry_unprotected_positions`, which resubmits the exact
+        # same account/symbol/quantity/price after an earlier REJECTED/
+        # unprotected outcome, by design) -- a key built only from those
+        # request parameters would wrongly treat a legitimate retry as a
+        # duplicate of the failed first attempt and either short-circuit it
+        # or raise `CommandFingerprintMismatch` the moment `source` differs
+        # between the two. So `idempotency_key` here includes a fresh
+        # per-call nonce: every call to this method gets its own ledger
+        # row (a full, honest pre-effect/outcome audit trail of every
+        # attempt), never silently deduped against a previous one. See
+        # `_submit_exit_order`'s identical, already-documented gap for the
+        # same reasoning applied to a close/flatten exit.
+        ledger_key = None
+        if self.store is not None:
+            ledger_key = f"stop_change:{account.account_id}:{lifecycle.plan.symbol}:{quantity}:{price}:{uuid.uuid4().hex[:12]}"
+            ledger_fingerprint = command_ledger.compute_fingerprint(
+                {
+                    "command_type": "stop_change",
+                    "account_id": account.account_id,
+                    "symbol": lifecycle.plan.symbol,
+                    "quantity": quantity,
+                    "price": price,
+                    "exit_side": lifecycle.exit_side.value,
+                    "source": source,
+                }
+            )
+            ledger_entry = self.store.open_command_ledger_entry(
+                idempotency_key=ledger_key,
+                command_type=CommandType.STOP_CHANGE,
+                account_id=account.account_id,
+                environment=command_ledger.current_environment(),
+                request_fingerprint=ledger_fingerprint,
+            )
+            if command_ledger.is_duplicate_submission(ledger_entry.uncertainty_state):
+                logger.info(
+                    "duplicate stop_change command idempotency_key=%s -- not resubmitting", ledger_key
+                )
+                return
+
+        try:
+            result = await broker.place_protective_stop(account, lifecycle.plan.symbol, quantity, price, lifecycle.exit_side)
+        except Exception as exc:
+            if ledger_key is not None and self.store is not None:
+                self.store.mark_command_ledger_outcome(
+                    ledger_key,
+                    uncertainty_state=UncertaintyState.UNKNOWN_AMBIGUOUS,
+                    terminal_evidence=command_ledger.ambiguous_evidence_for_exception(exc),
+                )
+            raise
+        if ledger_key is not None and self.store is not None:
+            outcome_state, outcome_remote, outcome_evidence = command_ledger.classify_optional_order_result(result)
+            self.store.mark_command_ledger_outcome(
+                ledger_key, uncertainty_state=outcome_state, remote_identifiers=outcome_remote, terminal_evidence=outcome_evidence
+            )
         if result is None or result.status in (OrderStatus.ERROR, OrderStatus.REJECTED):
             # REJECTED is not a working protective order any more than ERROR
             # is — both mean nothing is actually resting at the broker; only
@@ -1378,6 +1521,122 @@ class PositionLifecycleManager:
             source=source,
         )
 
+    async def _ledgered_replace_stop_quantity(
+        self,
+        broker: BrokerAdapter,
+        account: DestinationAccount,
+        symbol: str,
+        broker_order_id: str,
+        new_quantity: float,
+        new_price: float | None,
+        *,
+        source: str,
+    ) -> OrderResult | None:
+        """P0-2: the one real `broker.replace_stop_quantity` call, wrapped
+        with a pre-effect command_ledger entry and outcome recording --
+        used by every one of this module's 3 real call sites (the
+        can-amend-in-place branch of `request_exit`'s own stop-resize
+        transition, `_restore_stop_coverage`, and `_replace_stop_price`) so
+        the ledger wiring lives in one place instead of being repeated at
+        each. Like `_place_stop_locked`'s identical note: this module can
+        legitimately retry the SAME (broker_order_id, new_quantity,
+        new_price) replace after an earlier failed attempt (e.g.
+        `retry_unprotected_positions`), so `idempotency_key` includes a
+        fresh per-call nonce -- every call gets its own row rather than
+        risking a false duplicate/`CommandFingerprintMismatch` against an
+        earlier attempt's differing `source`."""
+        ledger_key = None
+        if self.store is not None:
+            ledger_key = f"replace:{account.account_id}:{symbol}:{broker_order_id}:{new_quantity}:{new_price}:{uuid.uuid4().hex[:12]}"
+            fingerprint = command_ledger.compute_fingerprint(
+                {
+                    "command_type": "replace",
+                    "account_id": account.account_id,
+                    "symbol": symbol,
+                    "broker_order_id": broker_order_id,
+                    "new_quantity": new_quantity,
+                    "new_price": new_price,
+                    "source": source,
+                }
+            )
+            entry = self.store.open_command_ledger_entry(
+                idempotency_key=ledger_key,
+                command_type=CommandType.REPLACE,
+                account_id=account.account_id,
+                environment=command_ledger.current_environment(),
+                request_fingerprint=fingerprint,
+                expected_revision=broker_order_id,
+            )
+            if command_ledger.is_duplicate_submission(entry.uncertainty_state):
+                logger.info("duplicate replace command idempotency_key=%s -- replaying tracked state", ledger_key)
+                return _order_result_from_ledger_entry(account.account_id, entry)
+        try:
+            result = await broker.replace_stop_quantity(account, broker_order_id, new_quantity, new_price)
+        except Exception as exc:
+            if ledger_key is not None and self.store is not None:
+                self.store.mark_command_ledger_outcome(
+                    ledger_key,
+                    uncertainty_state=UncertaintyState.UNKNOWN_AMBIGUOUS,
+                    terminal_evidence=command_ledger.ambiguous_evidence_for_exception(exc),
+                )
+            raise
+        if ledger_key is not None and self.store is not None:
+            outcome_state, outcome_remote, outcome_evidence = command_ledger.classify_optional_order_result(result)
+            self.store.mark_command_ledger_outcome(
+                ledger_key, uncertainty_state=outcome_state, remote_identifiers=outcome_remote, terminal_evidence=outcome_evidence
+            )
+        return result
+
+    async def _ledgered_cancel_order(
+        self, broker: BrokerAdapter, account: DestinationAccount, symbol: str, broker_order_id: str, *, source: str
+    ) -> bool:
+        """P0-2: the one real `broker.cancel_order` call, wrapped with a
+        pre-effect command_ledger entry and outcome recording -- used by
+        this module's 2 real call sites (the cancel-then-resubmit fallback
+        in `request_exit` and in `_replace_stop_price`). Same per-call
+        nonce reasoning as `_ledgered_replace_stop_quantity`/
+        `_place_stop_locked`: this module can legitimately re-attempt
+        cancelling the same broker_order_id from a different `source`."""
+        ledger_key = None
+        if self.store is not None:
+            ledger_key = f"cancel:{account.account_id}:{symbol}:{broker_order_id}:{uuid.uuid4().hex[:12]}"
+            fingerprint = command_ledger.compute_fingerprint(
+                {
+                    "command_type": "cancel",
+                    "account_id": account.account_id,
+                    "symbol": symbol,
+                    "broker_order_id": broker_order_id,
+                    "source": source,
+                }
+            )
+            entry = self.store.open_command_ledger_entry(
+                idempotency_key=ledger_key,
+                command_type=CommandType.CANCEL,
+                account_id=account.account_id,
+                environment=command_ledger.current_environment(),
+                request_fingerprint=fingerprint,
+                expected_revision=broker_order_id,
+            )
+            if command_ledger.is_duplicate_submission(entry.uncertainty_state):
+                logger.info("duplicate cancel command idempotency_key=%s -- replaying tracked state", ledger_key)
+                return entry.uncertainty_state == UncertaintyState.CONFIRMED
+        try:
+            cancelled = await broker.cancel_order(account, broker_order_id)
+        except Exception as exc:
+            if ledger_key is not None and self.store is not None:
+                self.store.mark_command_ledger_outcome(
+                    ledger_key,
+                    uncertainty_state=UncertaintyState.UNKNOWN_AMBIGUOUS,
+                    terminal_evidence=command_ledger.ambiguous_evidence_for_exception(exc),
+                )
+            raise
+        if ledger_key is not None and self.store is not None:
+            outcome_state, outcome_evidence = command_ledger.classify_cancel_result(cancelled)
+            self.store.mark_command_ledger_outcome(
+                ledger_key, uncertainty_state=outcome_state, terminal_evidence=outcome_evidence
+            )
+        return cancelled
+
     async def _tighten_stop_to(self, lifecycle: PositionLifecycle, account: DestinationAccount, price: float) -> None:
         current = lifecycle.stop.desired_price
         if current is not None:
@@ -1449,8 +1708,14 @@ class PositionLifecycleManager:
                 return
 
             if lifecycle.stop.broker_order_id:
-                replaced = await broker.replace_stop_quantity(
-                    account, lifecycle.stop.broker_order_id, quantity, lifecycle.stop.desired_price
+                replaced = await self._ledgered_replace_stop_quantity(
+                    broker,
+                    account,
+                    lifecycle.plan.symbol,
+                    lifecycle.stop.broker_order_id,
+                    quantity,
+                    lifecycle.stop.desired_price,
+                    source=source,
                 )
                 if replaced is not None and replaced.status in (OrderStatus.ERROR, OrderStatus.REJECTED):
                     # The broker attempted the replace and told us it did NOT
@@ -1508,7 +1773,9 @@ class PositionLifecycleManager:
                 # confirmed, the old stop might have just filled: design section 8's rule is
                 # "the old working stop remains meaningful until actual broker evidence says
                 # otherwise," so this leaves it alone rather than guessing.
-                cancelled = await broker.cancel_order(account, lifecycle.stop.broker_order_id)
+                cancelled = await self._ledgered_cancel_order(
+                    broker, account, lifecycle.plan.symbol, lifecycle.stop.broker_order_id, source=source
+                )
                 if not cancelled:
                     return
                 lifecycle.stop.broker_order_id = None
@@ -1517,6 +1784,34 @@ class PositionLifecycleManager:
                 lifecycle, account, broker, quantity, lifecycle.stop.desired_price, source=source
             )
         self._persist(lifecycle)
+
+
+def _order_result_from_ledger_entry(account_id: str, entry: "CommandLedgerEntry") -> OrderResult:
+    """P0-2: reconstruct a synthetic `OrderResult` from a duplicate
+    command_ledger entry's own tracked state, for a caller (see
+    `_ledgered_replace_stop_quantity`) that must return something in this
+    shape without calling the broker again. Maps `UncertaintyState` to the
+    closest honest `OrderStatus`: CONFIRMED/SUBMITTED_UNCONFIRMED both
+    report as PENDING (something real is/was resting, whether the row's
+    own last update knows the exact broker_order_id or not -- a caller
+    branching on `status not in (ERROR, REJECTED)` treats this the same as
+    the original successful replace did); REJECTED_CONFIRMED reports
+    REJECTED; UNKNOWN_AMBIGUOUS reports ERROR (the honest "don't trust
+    this as a success" signal), never fabricated as a confirmed success."""
+    status = {
+        UncertaintyState.CONFIRMED: OrderStatus.PENDING,
+        UncertaintyState.SUBMITTED_UNCONFIRMED: OrderStatus.PENDING,
+        UncertaintyState.REJECTED_CONFIRMED: OrderStatus.REJECTED,
+        UncertaintyState.UNKNOWN_AMBIGUOUS: OrderStatus.ERROR,
+        UncertaintyState.PENDING_SUBMISSION: OrderStatus.ERROR,
+    }[entry.uncertainty_state]
+    return OrderResult(
+        account_id=account_id,
+        status=status,
+        signal_id="",
+        broker_order_id=entry.remote_identifiers.get("broker_order_id"),
+        message=f"duplicate command (idempotency_key={entry.idempotency_key}); tracked state={entry.uncertainty_state.value}",
+    )
 
 
 # --- state (de)serialization, for PositionLifecycleManager's store-backed persist/restore ---

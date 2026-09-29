@@ -119,19 +119,28 @@ from datetime import datetime, timezone
 import structlog
 from signal_platform_contracts import Environment, EventEnvelope, EvidenceClass
 
-from app import config
+from app import command_ledger, config
 from app.brokers.base import BrokerAdapter
 from app.capital_allocator import CapitalAllocator, confirmed_open_notional, owner_wide_exposure
 from app.db import SignalStore
 from app.export_events import (
-    build_execution_applied_envelope,
+build_execution_applied_envelope,
     build_routing_admission_outcome_envelope,
     build_source_receipt_envelope,
 )
 from app.lifecycle.manager import PositionLifecycleManager
 from app.lifecycle.models import PositionPlan, Target, TargetAction
 from app.logging_config import bind_signal_context
-from app.models import AssetClass, DestinationAccount, OrderResult, OrderStatus, Side, Signal
+from app.models import (
+    AssetClass,
+    CommandType,
+    DestinationAccount,
+    OrderResult,
+    OrderStatus,
+    Side,
+    Signal,
+    UncertaintyState,
+)
 from app.providers import ProviderRegistry, SettingsOverride
 from app.risk import size_for_account, symbol_for_account
 from app.routing import RoutingConfig
@@ -604,6 +613,62 @@ class SignalCopierEngine:
                 )
                 continue
 
+            # P0-2: pre-effect durable command-ledger intent, written and
+            # COMMITTED before the broker is ever called -- see
+            # app/command_ledger.py's module docstring. `signal.id` is
+            # this entry's own natural retry identity (the same value
+            # `order_family_id` already uses above); a second call for the
+            # exact same signal/account/quantity/symbol replays this row's
+            # tracked outcome instead of submitting a second broker order.
+            ledger_key = f"entry:{account.account_id}:{symbol}:{signal.id}"
+            ledger_fingerprint = command_ledger.compute_fingerprint(
+                {
+                    "command_type": "entry",
+                    "account_id": account.account_id,
+                    "symbol": symbol,
+                    "side": order_signal.side.value,
+                    "quantity": quantity,
+                    "signal_id": signal.id,
+                }
+            )
+            ledger_entry = self.store.open_command_ledger_entry(
+                idempotency_key=ledger_key,
+                command_type=CommandType.ENTRY,
+                account_id=account.account_id,
+                environment=command_ledger.current_environment(),
+                request_fingerprint=ledger_fingerprint,
+            )
+            if command_ledger.is_duplicate_submission(ledger_entry.uncertainty_state):
+                # A prior attempt under this exact key already ran (or is
+                # running) -- never submit a second broker order for it.
+                # The broker was already released this reservation's fate
+                # one way or another on that first attempt, so release here
+                # too rather than double-reserve.
+                self.capital_allocator.release(account.account_id, notional)
+                logger.info(
+                    "duplicate entry command idempotency_key=%s account=%s symbol=%s -- replaying "
+                    "tracked state=%s instead of resubmitting",
+                    ledger_key,
+                    account.account_id,
+                    symbol,
+                    ledger_entry.uncertainty_state.value,
+                )
+                result = OrderResult(
+                    account_id=account.account_id,
+                    status=OrderStatus.PENDING,
+                    signal_id=signal.id,
+                    broker_order_id=ledger_entry.remote_identifiers.get("broker_order_id"),
+                    message=(
+                        f"duplicate command (idempotency_key={ledger_key}); tracked state="
+                        f"{ledger_entry.uncertainty_state.value}, not resubmitted"
+                    ),
+                )
+                results.append(result)
+                self._export_routing_outcome(
+                    signal, outcome="duplicate_command", account=account, order_status=result.status, message=result.message
+                )
+                continue
+
             # PU-A2: the real moment this engine actually calls the broker --
             # the "decision -> submission" boundary app/execution_quality.py's
             # stage breakdown reports, captured immediately before the call
@@ -619,6 +684,19 @@ class SignalCopierEngine:
                     status=OrderStatus.ERROR,
                     signal_id=signal.id,
                     message=str(exc),
+                )
+                self.store.mark_command_ledger_outcome(
+                    ledger_key,
+                    uncertainty_state=UncertaintyState.UNKNOWN_AMBIGUOUS,
+                    terminal_evidence=command_ledger.ambiguous_evidence_for_exception(exc),
+                )
+            else:
+                outcome_state, outcome_remote, outcome_evidence = command_ledger.classify_order_result(result)
+                self.store.mark_command_ledger_outcome(
+                    ledger_key,
+                    uncertainty_state=outcome_state,
+                    remote_identifiers=outcome_remote,
+                    terminal_evidence=outcome_evidence,
                 )
 
             # E03 (bounded): a PENDING result with a real broker_order_id is
@@ -973,7 +1051,54 @@ class SignalCopierEngine:
         this module's own docstring section for the shared contract.
         `submitted_at` (PU-A2) is the real moment this call actually reached
         the broker, captured immediately before it -- see handle_signal's
-        identical field for what it feeds into."""
+        identical field for what it feeds into.
+
+        P0-2: this is the plain-account (non-managed_lifecycle) close's
+        one real broker.place_order call site -- `_resolve_and_submit_
+        plain_close`'s own `claim_close` already gives it cross-process
+        exclusion per (account_id, symbol), but the command ledger's own
+        idempotency check is a second, independent layer (a retried close
+        signal reaching this call again AFTER the first one's claim was
+        already released) rather than relying on that lock alone."""
+        ledger_key = f"close:{account.account_id}:{symbol}:{order_signal.id}"
+        ledger_fingerprint = command_ledger.compute_fingerprint(
+            {
+                "command_type": "close",
+                "account_id": account.account_id,
+                "symbol": symbol,
+                "side": order_signal.side.value,
+                "quantity": quantity,
+                "signal_id": order_signal.id,
+            }
+        )
+        ledger_entry = self.store.open_command_ledger_entry(
+            idempotency_key=ledger_key,
+            command_type=CommandType.CLOSE,
+            account_id=account.account_id,
+            environment=command_ledger.current_environment(),
+            request_fingerprint=ledger_fingerprint,
+        )
+        if command_ledger.is_duplicate_submission(ledger_entry.uncertainty_state):
+            logger.info(
+                "duplicate close command idempotency_key=%s account=%s symbol=%s -- replaying "
+                "tracked state=%s instead of resubmitting",
+                ledger_key,
+                account.account_id,
+                symbol,
+                ledger_entry.uncertainty_state.value,
+            )
+            result = OrderResult(
+                account_id=account.account_id,
+                status=OrderStatus.PENDING,
+                signal_id=order_signal.id,
+                broker_order_id=ledger_entry.remote_identifiers.get("broker_order_id"),
+                message=(
+                    f"duplicate command (idempotency_key={ledger_key}); tracked state="
+                    f"{ledger_entry.uncertainty_state.value}, not resubmitted"
+                ),
+            )
+            return result, None, None, 0.0, 0.0, datetime.now(timezone.utc)
+
         submitted_at = datetime.now(timezone.utc)
         try:
             result = await broker.place_order(order_signal, account, quantity, symbol)
@@ -981,6 +1106,16 @@ class SignalCopierEngine:
             logger.exception("order failed for account=%s", account.account_id)
             result = OrderResult(
                 account_id=account.account_id, status=OrderStatus.ERROR, signal_id=order_signal.id, message=str(exc)
+            )
+            self.store.mark_command_ledger_outcome(
+                ledger_key,
+                uncertainty_state=UncertaintyState.UNKNOWN_AMBIGUOUS,
+                terminal_evidence=command_ledger.ambiguous_evidence_for_exception(exc),
+            )
+        else:
+            outcome_state, outcome_remote, outcome_evidence = command_ledger.classify_order_result(result)
+            self.store.mark_command_ledger_outcome(
+                ledger_key, uncertainty_state=outcome_state, remote_identifiers=outcome_remote, terminal_evidence=outcome_evidence
             )
         # AUD-01: mirrors handle_signal's identical branch exactly -- a
         # PENDING result with `filled_quantity is None` confirms nothing,
@@ -1277,6 +1412,54 @@ class SignalCopierEngine:
             raw=signal.raw,
         )
 
+        # P0-2: pre-effect durable command-ledger intent -- see
+        # app/command_ledger.py's module docstring and handle_signal's
+        # identical wiring for the plain-account entry path. `signal.id`
+        # (== `entry_signal.id` above) is this entry's natural retry
+        # identity.
+        ledger_key = f"entry:{account.account_id}:{symbol}:{signal.id}"
+        ledger_fingerprint = command_ledger.compute_fingerprint(
+            {
+                "command_type": "entry",
+                "account_id": account.account_id,
+                "symbol": symbol,
+                "side": entry_signal.side.value,
+                "quantity": quantity,
+                "signal_id": signal.id,
+            }
+        )
+        ledger_entry = self.store.open_command_ledger_entry(
+            idempotency_key=ledger_key,
+            command_type=CommandType.ENTRY,
+            account_id=account.account_id,
+            environment=command_ledger.current_environment(),
+            request_fingerprint=ledger_fingerprint,
+        )
+        if command_ledger.is_duplicate_submission(ledger_entry.uncertainty_state):
+            self.capital_allocator.release(account.account_id, notional)
+            logger.info(
+                "duplicate managed entry command idempotency_key=%s account=%s symbol=%s -- replaying "
+                "tracked state=%s instead of resubmitting",
+                ledger_key,
+                account.account_id,
+                symbol,
+                ledger_entry.uncertainty_state.value,
+            )
+            return (
+                OrderResult(
+                    account_id=account.account_id,
+                    status=OrderStatus.PENDING,
+                    signal_id=signal.id,
+                    broker_order_id=ledger_entry.remote_identifiers.get("broker_order_id"),
+                    message=(
+                        f"duplicate command (idempotency_key={ledger_key}); tracked state="
+                        f"{ledger_entry.uncertainty_state.value}, not resubmitted"
+                    ),
+                ),
+                None,
+                None,
+            )
+
         # PU-A2: submission moment for this managed entry -- see
         # handle_signal's identical field for what it feeds into.
         submitted_at = datetime.now(timezone.utc)
@@ -1309,6 +1492,11 @@ class SignalCopierEngine:
             # released -- see app/capital_allocator.py's "Known gap".
             self.capital_allocator.release(account.account_id, notional)
             self.lifecycle_manager.register_pending_entry(account, symbol, None, quantity)
+            self.store.mark_command_ledger_outcome(
+                ledger_key,
+                uncertainty_state=UncertaintyState.UNKNOWN_AMBIGUOUS,
+                terminal_evidence=command_ledger.ambiguous_evidence_for_exception(exc),
+            )
             return (
                 OrderResult(
                     account_id=account.account_id, status=OrderStatus.ERROR, signal_id=signal.id, message=str(exc)
@@ -1316,6 +1504,14 @@ class SignalCopierEngine:
                 submitted_at,
                 None,
             )
+
+        # P0-2: one real broker answer landed (didn't raise) -- classify
+        # and record it against the pre-effect row opened above, whatever
+        # branch below then does with it.
+        _ledger_state, _ledger_remote, _ledger_evidence = command_ledger.classify_order_result(result)
+        self.store.mark_command_ledger_outcome(
+            ledger_key, uncertainty_state=_ledger_state, remote_identifiers=_ledger_remote, terminal_evidence=_ledger_evidence
+        )
 
         protection_confirmed_at: datetime | None = None
         if result.status == OrderStatus.REJECTED:
