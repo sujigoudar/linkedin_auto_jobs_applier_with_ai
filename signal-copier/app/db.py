@@ -762,6 +762,8 @@ CREATE INDEX IF NOT EXISTS idx_command_ledger_unresolved ON command_ledger (reso
 
 CREATE INDEX IF NOT EXISTS idx_orders_executed_at ON orders (executed_at);
 CREATE INDEX IF NOT EXISTS idx_orders_account_id ON orders (account_id);
+CREATE INDEX IF NOT EXISTS idx_orders_signal_id ON orders (signal_id);
+CREATE INDEX IF NOT EXISTS idx_orders_status ON orders (status);
 CREATE INDEX IF NOT EXISTS idx_signals_received_at ON signals (received_at);
 CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions (expires_at);
 CREATE INDEX IF NOT EXISTS idx_export_events_undelivered ON export_events (source_stream, export_sequence) WHERE delivered_at IS NULL;

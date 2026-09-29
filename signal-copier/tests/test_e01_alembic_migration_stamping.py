@@ -20,7 +20,7 @@ def test_fresh_database_is_stamped_at_head(tmp_path):
     row = conn.execute("SELECT version_num FROM alembic_version").fetchone()
     conn.close()
 
-    assert row == ("0016",)  # current head -- see alembic/versions/0016_add_signals_import_batch.py
+    assert row == ("0017",)  # current head -- see alembic/versions/0017_add_orders_signal_id_status_indexes.py
 
 
 def test_legacy_pre_alembic_database_is_stamped_not_recreated(tmp_path):
@@ -50,7 +50,7 @@ def test_legacy_pre_alembic_database_is_stamped_not_recreated(tmp_path):
     signal_row = conn.execute("SELECT id FROM signals WHERE id = ?", (signal.id,)).fetchone()
     conn.close()
 
-    assert version_row == ("0016",)  # current head -- see alembic/versions/0016_add_signals_import_batch.py
+    assert version_row == ("0017",)  # current head -- see alembic/versions/0017_add_orders_signal_id_status_indexes.py
     assert signal_row is not None  # the pre-existing row survived untouched
 
 
@@ -86,6 +86,33 @@ def _table_columns(db_path) -> dict[str, set[str]]:
         ]
         return {
             table: {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+            for table in tables
+        }
+    finally:
+        conn.close()
+
+
+def _table_indexes(db_path) -> dict[str, set[str]]:
+    """table name -> set of index names, for every real table (never the
+    sqlite_* bookkeeping tables or alembic's own alembic_version) --
+    sqlite's own auto-created indexes (e.g. for a UNIQUE column, named
+    `sqlite_autoindex_*`) are excluded since those are never declared by
+    either path directly and so aren't a meaningful comparison."""
+    conn = sqlite3.connect(db_path)
+    try:
+        tables = [
+            name
+            for (name,) in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table' "
+                "AND name NOT LIKE 'sqlite_%' AND name != 'alembic_version'"
+            ).fetchall()
+        ]
+        return {
+            table: {
+                row[1]
+                for row in conn.execute(f"PRAGMA index_list({table})")
+                if not row[1].startswith("sqlite_autoindex_")
+            }
             for table in tables
         }
     finally:
@@ -128,7 +155,7 @@ def test_alembic_upgrade_head_from_genuinely_empty_database_matches_bootstrap(tm
     conn = sqlite3.connect(alembic_db_path)
     version_row = conn.execute("SELECT version_num FROM alembic_version").fetchone()
     conn.close()
-    assert version_row == ("0016",)  # reached real head, not stuck partway through
+    assert version_row == ("0017",)  # reached real head, not stuck partway through
 
     bootstrap_db_path = tmp_path / "bootstrap.db"
     SignalStore(bootstrap_db_path)  # the real, SignalStore-backed path
@@ -150,4 +177,23 @@ def test_alembic_upgrade_head_from_genuinely_empty_database_matches_bootstrap(tm
             f"table {table!r} has different columns via the alembic-only path "
             f"vs. SignalStore's bootstrap: {alembic_schema[table]!r} != "
             f"{bootstrap_schema[table]!r}"
+        )
+
+    # Same check for indexes: `idx_orders_signal_id`/`idx_orders_status`
+    # used to be reachable only via app/db.py's SCHEMA string, never via a
+    # numbered Alembic revision (see
+    # 0017_add_orders_signal_id_status_indexes.py) -- the two paths now
+    # create the exact same indexes too.
+    alembic_indexes = _table_indexes(alembic_db_path)
+    bootstrap_indexes = _table_indexes(bootstrap_db_path)
+
+    assert alembic_indexes.keys() == bootstrap_indexes.keys(), (
+        "the CLI-only alembic upgrade path and SignalStore's own bootstrap "
+        "must create indexes on the exact same set of tables"
+    )
+    for table in alembic_indexes:
+        assert alembic_indexes[table] == bootstrap_indexes[table], (
+            f"table {table!r} has different indexes via the alembic-only path "
+            f"vs. SignalStore's bootstrap: {alembic_indexes[table]!r} != "
+            f"{bootstrap_indexes[table]!r}"
         )
