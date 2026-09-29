@@ -52,10 +52,39 @@ narrow use this needs.
   risk, which is why this module's default tolerance is deliberately
   short (60s, not the relay's 300s) rather than needing a separate
   idempotency layer.
-- No key rotation is implemented: a single static secret, a placeholder
-  default that must be replaced (and kept in sync with signal-
-  portfolio-commercial's own identically-named setting) before any real
-  deployment.
+
+## Key rotation
+
+`verify_catalog_fit_sim_signature` accepts a signature against either
+of two configured secrets: `config.CATALOG_FIT_SIM_SIGNING_SECRET`
+(CURRENT, tried first) and the optional
+`config.CATALOG_FIT_SIM_SIGNING_SECRET_PREVIOUS` (PREVIOUS, tried only
+if CURRENT does not match). Both comparisons use
+`hmac.compare_digest`, so accepting PREVIOUS is not a timing
+side-channel on CURRENT, and a signature that matches neither
+configured secret is always rejected -- there is no "rotation mode"
+bypass. An operator rotates the real secret in two zero-downtime
+steps:
+
+1. Set `CATALOG_FIT_SIM_SIGNING_SECRET_PREVIOUS` to the current
+   (soon-to-be-old) secret value, then set
+   `CATALOG_FIT_SIM_SIGNING_SECRET` to the new value, on THIS
+   (receiving) service. Update signal-portfolio-commercial's own
+   caller to sign with the new secret. During the overlap, this route
+   accepts both the new secret (already-updated caller) and the old
+   one (a caller that has not yet picked up the change), so real
+   traffic never fails verification during the switch.
+2. Once signal-portfolio-commercial is confirmed to be signing with
+   the new secret, unset `CATALOG_FIT_SIM_SIGNING_SECRET_PREVIOUS`
+   here. A signature made with the old secret is rejected from that
+   point on.
+
+`CATALOG_FIT_SIM_SIGNING_SECRET`/
+`CATALOG_FIT_SIM_SIGNING_SECRET_PREVIOUS` remain placeholders for
+local/test use only; a real deployment sets and rotates them through a
+secrets manager, not a repo default, and keeps
+`CATALOG_FIT_SIM_SIGNING_SECRET` in sync with signal-portfolio-
+commercial's own identically-named setting.
 """
 from __future__ import annotations
 
@@ -120,6 +149,7 @@ def verify_catalog_fit_sim_signature(
     sig_header: str,
     secret: str,
     *,
+    secret_previous: str | None = None,
     tolerance_seconds: int = _DEFAULT_TOLERANCE_SECONDS,
     now: float | None = None,
 ) -> None:
@@ -127,12 +157,25 @@ def verify_catalog_fit_sim_signature(
     doesn't match (wrong secret, tampered body, or a signature computed
     for a different audience/scheme entirely), or a timestamp outside the
     replay-tolerance window. Returns None so a caller cannot accidentally
-    ignore a False result and proceed anyway."""
+    ignore a False result and proceed anyway.
+
+    `secret` (CURRENT) is checked first. If it does not match and
+    `secret_previous` (PREVIOUS) is a non-empty string, that secret is
+    checked too -- this is the whole of the rotation window described
+    in this module's own docstring: a signature must still
+    cryptographically match one of the two real configured secrets,
+    there is no bypass. Both checks use `hmac.compare_digest`."""
     timestamp, provided_signature = _parse_signature_header(sig_header)
 
     signed_payload = f"{timestamp}.{_AUDIENCE}.".encode() + payload
     expected_signature = hmac.new(secret.encode(), signed_payload, hashlib.sha256).hexdigest()
-    if not hmac.compare_digest(expected_signature, provided_signature):
+    matched = hmac.compare_digest(expected_signature, provided_signature)
+    if not matched and secret_previous:
+        expected_signature_previous = hmac.new(
+            secret_previous.encode(), signed_payload, hashlib.sha256
+        ).hexdigest()
+        matched = hmac.compare_digest(expected_signature_previous, provided_signature)
+    if not matched:
         raise CatalogFitSimSignatureMismatchError(
             "catalog fit-sim signature does not match the expected value for this payload"
         )

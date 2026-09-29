@@ -314,6 +314,14 @@ class _Settings(BaseSettings):
     #: it in sync with signal-portfolio-commercial's own
     #: CATALOG_FIT_SIM_SIGNING_SECRET.
     CATALOG_FIT_SIM_SIGNING_SECRET: str = "LOCAL_SIM-not-a-real-catalog-fit-sim-secret-change-if-ever-deployed"
+    #: Optional: the PREVIOUS value of CATALOG_FIT_SIM_SIGNING_SECRET,
+    #: accepted alongside the CURRENT one above by
+    #: app/services/catalog_fit_sim_auth.py's own
+    #: `verify_catalog_fit_sim_signature` -- see that module's own
+    #: docstring for the two-step zero-downtime rotation procedure this
+    #: enables. Blank (the default) means no previous secret is
+    #: accepted, i.e. rotation is not in progress.
+    CATALOG_FIT_SIM_SIGNING_SECRET_PREVIOUS: str = ""
 
     # INT-040: a real, configurable ceiling on the private export outbox's
     # own real backlog -- see app/db.py's `SignalStore.export_outbox_backlog`
@@ -428,5 +436,6 @@ RELAY_EVIDENCE_CLASS = _settings.RELAY_EVIDENCE_CLASS
 RELAY_ENVIRONMENT = _settings.RELAY_ENVIRONMENT
 
 CATALOG_FIT_SIM_SIGNING_SECRET = _settings.CATALOG_FIT_SIM_SIGNING_SECRET
+CATALOG_FIT_SIM_SIGNING_SECRET_PREVIOUS = _settings.CATALOG_FIT_SIM_SIGNING_SECRET_PREVIOUS
 
 EXPORT_OUTBOX_SIZE_CEILING_BYTES = _settings.EXPORT_OUTBOX_SIZE_CEILING_BYTES

@@ -2837,7 +2837,12 @@ async def run_catalog_fit_simulation(
     raw_body = await request.body()
     sig_header = request.headers.get("x-catalog-fit-sim-signature", "")
     try:
-        verify_catalog_fit_sim_signature(raw_body, sig_header, config.CATALOG_FIT_SIM_SIGNING_SECRET)
+        verify_catalog_fit_sim_signature(
+            raw_body,
+            sig_header,
+            config.CATALOG_FIT_SIM_SIGNING_SECRET,
+            secret_previous=config.CATALOG_FIT_SIM_SIGNING_SECRET_PREVIOUS or None,
+        )
     except (
         InvalidCatalogFitSimSignatureHeaderError,
         CatalogFitSimSignatureMismatchError,
