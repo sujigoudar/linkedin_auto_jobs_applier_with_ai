@@ -1,7 +1,7 @@
 """Add writer_lease table (cross-process/cross-host single-writer fencing)
 
-Revision ID: 0014
-Revises: 0013
+Revision ID: 0015
+Revises: 0014
 Create Date: 2026-09-29
 
 See app/db.py's SCHEMA comment on `writer_lease`, app/writer_lease.py's
@@ -12,18 +12,19 @@ docstring on why that's the real source of truth for every
 SignalStore-created database). This revision only matters for someone
 provisioning a database purely through the Alembic CLI, or an operator
 running `alembic upgrade head` by hand against an existing deployment
-whose `alembic_version` table was already stamped at 0013 (see
+whose `alembic_version` table was already stamped at 0014 (see
 0011_add_capital_reservations_table.py, P0-4;
-0012_add_orders_distinct_quantity_fields.py, AUD-01; and
-0013_add_route_qualifications_table.py).
+0012_add_orders_distinct_quantity_fields.py, AUD-01;
+0013_add_route_qualifications_table.py; and
+0014_add_command_ledger_table.py).
 """
 from __future__ import annotations
 
 import sqlalchemy as sa
 from alembic import op
 
-revision = "0014"
-down_revision = "0013"
+revision = "0015"
+down_revision = "0014"
 branch_labels = None
 depends_on = None
 
