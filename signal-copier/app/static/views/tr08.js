@@ -245,7 +245,8 @@
           rows,
           "No capability evidence."
         )}
-        ${unsupportedNote("Live identity/scope/position read-only checks against this specific (not-yet-saved) account are not available -- no credentials are entered in this form, and this build has no connectivity-check endpoint for an unconfigured account.")}`,
+        ${unsupportedNote("Live identity/scope/position read-only checks against this specific (not-yet-saved) account are not available -- no credentials are entered in this form, and this build has no connectivity-check endpoint for an unconfigured account.")}
+        <p class="section-note" style="margin-top:10px;">This panel is implementation-derived engineering capability only -- it never claims a specific account/route is actually qualified for live trading. That is a separate, higher-bar, per-exact-route concept (implemented &lt; configured &lt; authenticated &lt; account_entitled &lt; protocol_tested &lt; venue_tested &lt; release_approved) tracked once this account is saved -- see <a href="#/trade/accounts">Broker accounts and capabilities (TR-07)</a>'s "Live qualification status" panel to view or record it.</p>`,
       });
       mountCapStates(els.capabilities, capSpecs);
       flushCapStates(els.capabilities);

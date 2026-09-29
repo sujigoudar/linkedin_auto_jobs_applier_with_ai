@@ -17,7 +17,15 @@
  *   });
  *
  * `status` is one of: implemented | configured | authenticated |
- * entitled | verified | unsupported | not_tracked.
+ * entitled | verified | unsupported | not_tracked, PLUS the live-
+ * qualification-only rungs added for app/qualification.py's per-route
+ * ladder (see that module's docstring): account_entitled | protocol_tested
+ * | venue_tested | release_approved. The two vocabularies overlap on
+ * implemented/configured/authenticated deliberately (same words, same
+ * meaning) but are rendered by different screens for different concepts --
+ * engineering capability (GET /brokers, method-override introspection)
+ * never itself reaches account_entitled or higher; only a real
+ * GET/POST /qualifications record does.
  * Degrades gracefully: with only `status` given, still renders a
  * sensible badge and no <details> block.
  */
@@ -33,6 +41,8 @@
   const VALID_STATUSES = new Set([
     "implemented", "configured", "authenticated", "entitled",
     "verified", "unsupported", "not_tracked",
+    "account_entitled", "protocol_tested", "venue_tested", "release_approved",
+    "not_started", "rejected",
   ]);
 
   const STATUS_LABELS = {
@@ -43,6 +53,12 @@
     verified: "Verified",
     unsupported: "Unsupported",
     not_tracked: "Not tracked",
+    account_entitled: "Account-entitled",
+    protocol_tested: "Protocol-tested",
+    venue_tested: "Venue-tested",
+    release_approved: "Release-approved",
+    not_started: "Not started",
+    rejected: "Rejected",
   };
 
   function renderCapabilityState(container, opts) {

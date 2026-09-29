@@ -68,6 +68,7 @@ from app.lifecycle.manager import PositionLifecycleManager
 from app.lifecycle.models import ProtectionStatus
 from app.models import AccountBalance, AssetClass, Side, Signal
 from app.pricing import PriceMonitor
+from app.qualification import QUALIFICATION_STATE_ORDER, QualificationError
 from app.providers import SettingsOverride, load_provider_registry_from_store
 from app.provider_scout import ProviderScout
 from app.provider_value import compute_provider_value_report
@@ -1589,6 +1590,123 @@ async def list_broker_capabilities(_owner: dict = Depends(require_owner_read)) -
             for broker in brokers.values()
         ]
     }
+
+
+class QualificationRequest(BaseModel):
+    """Body for `POST /qualifications`. See app/qualification.py's module
+    docstring for the ladder and why a route is
+    (adapter_type, route_key, asset_class, product_type)."""
+
+    adapter_type: str = Field(..., min_length=1, max_length=80)
+    #: The exact account/venue variant this record is about -- e.g. a real
+    #: config_accounts account_id, or (for a route not yet backed by a
+    #: saved account) an operator-chosen identifier such as
+    #: "ccxt_binance_spot". Never validated against config_accounts here:
+    #: a route can legitimately be qualified before an account exists for
+    #: it (or after one was later removed) -- the ladder/feedback checks
+    #: below are what actually gate anything.
+    route_key: str = Field(..., min_length=1, max_length=200)
+    asset_class: str = Field(..., min_length=1, max_length=40)
+    #: Free-text refinement distinguishing routes that share the same
+    #: asset_class but are genuinely different products (e.g. "spot" vs
+    #: "perpetual" on the same crypto exchange) -- this codebase has no
+    #: structured enum for this (see app/qualification.py's module
+    #: docstring on why CCXT spot/perp are different routes despite
+    #: identical asset_class=crypto).
+    product_type: str = Field(..., min_length=1, max_length=80)
+    state: str = Field(..., min_length=1, max_length=40)
+    notes: str | None = Field(default=None, max_length=2000)
+
+    @field_validator("asset_class")
+    @classmethod
+    def _valid_asset_class(cls, v: str) -> str:
+        try:
+            AssetClass(v)
+        except ValueError:
+            valid = ", ".join(a.value for a in AssetClass)
+            raise ValueError(f"asset_class must be one of: {valid}") from None
+        return v
+
+
+@app.get("/qualifications")
+async def list_route_qualifications(
+    adapter_type: str | None = None,
+    route_key: str | None = None,
+    _owner: dict = Depends(require_owner_read),
+) -> dict:
+    """Every route's live qualification history (app/qualification.py) --
+    a real, persisted record of what has actually been checked for this
+    EXACT (adapter_type, route_key, asset_class, product_type) tuple, never
+    inferred from `app/brokers/base.py`'s implementation-derived capability
+    introspection (that stays available, unchanged, at `GET /brokers` --
+    this is a separate, higher-bar concept: see this module's own
+    docstring). `current_state` is the highest ladder rung actually
+    achieved for that route; `events` is the full, append-only history of
+    every state ever recorded for it, oldest first."""
+    return {
+        "ladder": [s.value for s in QUALIFICATION_STATE_ORDER],
+        "routes": store.list_route_qualifications(adapter_type=adapter_type, route_key=route_key),
+    }
+
+
+@app.post("/qualifications")
+async def create_route_qualification(
+    request: QualificationRequest, _owner: dict = Depends(require_owner)
+) -> dict:
+    """Record one live-qualification state for one exact route. Owner-
+    gated (session + CSRF), same as every other mutation in this build --
+    `release_approved` in particular is a deliberate human sign-off, never
+    something code should be able to assert on its own.
+
+    Two structural rejections happen here, BEFORE the write ever reaches
+    `SignalStore.record_route_qualification` (which independently enforces
+    the ladder-prerequisite and feedback-capability checks itself -- this
+    is defense in depth, not the only place they're enforced):
+
+    1. `adapter_type` must match a currently-registered broker adapter's
+       real `.name` (`GET /brokers`) -- there is no such thing as a
+       qualification record for code that isn't even wired up in this
+       deployment.
+    2. If that adapter declares a real, code-verified
+       `supported_asset_classes` restriction (`BrokerAdapter.
+       supported_asset_classes`), the requested `asset_class` must be in
+       it -- a route this adapter's own `place_order` cannot even submit
+       cannot honestly be qualified for anything.
+    """
+    brokers_by_name: dict[str, BrokerAdapter] = {}
+    for registered_broker in brokers.values():
+        brokers_by_name.setdefault(registered_broker.name, registered_broker)
+    broker = brokers_by_name.get(request.adapter_type)
+    if broker is None:
+        raise HTTPException(
+            status_code=400,
+            detail=f"adapter_type '{request.adapter_type}' is not a currently-registered broker adapter (see GET /brokers)",
+        )
+    asset_class = AssetClass(request.asset_class)
+    if broker.supported_asset_classes is not None and asset_class not in broker.supported_asset_classes:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"adapter '{request.adapter_type}' declares supported_asset_classes="
+                f"{sorted(a.value for a in broker.supported_asset_classes)}, which does not include "
+                f"'{request.asset_class}' -- this adapter's own place_order cannot submit this asset class at all"
+            ),
+        )
+
+    try:
+        result = store.record_route_qualification(
+            adapter_type=request.adapter_type,
+            route_key=request.route_key,
+            asset_class=request.asset_class,
+            product_type=request.product_type,
+            state=request.state,
+            supports_feedback=broker.has_account_order_position_feedback,
+            recorded_by="owner",
+            notes=request.notes,
+        )
+    except QualificationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    return result
 
 
 @app.get("/providers")

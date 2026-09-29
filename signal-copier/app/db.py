@@ -606,6 +606,46 @@ CREATE TABLE IF NOT EXISTS capital_reservations (
 CREATE INDEX IF NOT EXISTS idx_capital_reservations_account_unresolved
     ON capital_reservations (account_id) WHERE resolved_at IS NULL;
 
+-- Live qualification state, per EXACT execution route -- see
+-- app/qualification.py's module docstring for what this is and why it is
+-- deliberately separate from app/brokers/base.py's implementation-derived
+-- capability introspection. A route is the tuple (adapter_type, route_key,
+-- asset_class, product_type): `adapter_type` is the registered adapter's
+-- own `.name` (e.g. "ccxt", "alpaca", "signalstack" -- shared by every
+-- instance of that adapter class), `route_key` is the exact account/venue
+-- variant this row is about (e.g. "ccxt_binance_spot" vs
+-- "ccxt_binance_perp" -- these are DIFFERENT routes even though both run
+-- through the identical CCXTBroker class), `asset_class` is one of
+-- app/models.py's AssetClass values, and `product_type` is a free-text
+-- refinement distinguishing routes that share the same asset_class but are
+-- genuinely different products (spot vs perpetual on the same crypto
+-- exchange, cash vs margin equities, etc).
+--
+-- Rows are APPEND-ONLY, one per (route, state) ever achieved -- never
+-- updated to a different state and never deleted by any code path in this
+-- build (an operator re-recording an already-achieved state updates that
+-- SAME row's recorded_at/recorded_by/notes via the UNIQUE constraint's
+-- upsert, not a new logical fact). This durable history is what lets the
+-- ladder-prerequisite check in `SignalStore.record_route_qualification`
+-- work at all (it recomputes "every state already achieved for this exact
+-- route" from these rows every time) and is what TR-07/TR-08 render
+-- alongside the engineering capability matrix, never replacing it.
+CREATE TABLE IF NOT EXISTS route_qualifications (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    adapter_type TEXT NOT NULL,
+    route_key TEXT NOT NULL,
+    asset_class TEXT NOT NULL,
+    product_type TEXT NOT NULL,
+    state TEXT NOT NULL,
+    recorded_at TEXT NOT NULL,
+    recorded_by TEXT NOT NULL,
+    notes TEXT,
+    UNIQUE(adapter_type, route_key, asset_class, product_type, state)
+);
+
+CREATE INDEX IF NOT EXISTS idx_route_qualifications_route
+    ON route_qualifications (adapter_type, route_key, asset_class, product_type);
+
 CREATE INDEX IF NOT EXISTS idx_orders_executed_at ON orders (executed_at);
 CREATE INDEX IF NOT EXISTS idx_orders_account_id ON orders (account_id);
 CREATE INDEX IF NOT EXISTS idx_signals_received_at ON signals (received_at);
@@ -2271,6 +2311,182 @@ class SignalStore:
         with self._connect() as conn:
             cursor = conn.execute("DELETE FROM saved_views WHERE id = ?", (view_id,))
             return cursor.rowcount > 0
+
+    # --- Live qualification (app/qualification.py) ---------------------
+
+    def _achieved_qualification_states(
+        self, conn: sqlite3.Connection, *, adapter_type: str, route_key: str, asset_class: str, product_type: str
+    ) -> "set":
+        from app.qualification import QualificationState
+
+        rows = conn.execute(
+            "SELECT DISTINCT state FROM route_qualifications "
+            "WHERE adapter_type = ? AND route_key = ? AND asset_class = ? AND product_type = ?",
+            (adapter_type, route_key, asset_class, product_type),
+        ).fetchall()
+        achieved = set()
+        for (state_value,) in rows:
+            try:
+                achieved.add(QualificationState(state_value))
+            except ValueError:  # pragma: no cover - schema only ever stores valid values via this path
+                continue
+        return achieved
+
+    def record_route_qualification(
+        self,
+        *,
+        adapter_type: str,
+        route_key: str,
+        asset_class: str,
+        product_type: str,
+        state: str,
+        supports_feedback: bool,
+        recorded_by: str,
+        notes: str | None = None,
+        recorded_at: datetime | None = None,
+    ) -> dict:
+        """Record ONE state achieved for ONE exact route. Fails closed --
+        raises `app.qualification.QualificationError` (never silently
+        drops, downgrades, or reorders the request) when:
+
+        1. `state` isn't a real `QualificationState` value.
+        2. Any prerequisite rung below `state` on the ladder has not
+           already been recorded for this SAME (adapter_type, route_key,
+           asset_class, product_type) tuple -- see
+           `app.qualification.missing_prerequisites`. A route that was
+           never `authenticated` cannot jump straight to `venue_tested`.
+        3. `state` is at or above `app.qualification.
+           FEEDBACK_DEPENDENT_FLOOR` (account_entitled and everything
+           above it) and the caller asserts `supports_feedback=False` --
+           the caller (app/main.py) computes this from the REAL,
+           currently-registered adapter's
+           `has_account_order_position_feedback`, but this check is
+           enforced here, at the persistence layer, so it can't be
+           bypassed by any caller of this method (including a test or a
+           future endpoint) that doesn't go through that resolution.
+           `supports_feedback` defaults to nothing -- callers must pass it
+           explicitly, so an unknown/unverified adapter fails closed
+           rather than silently being allowed through.
+
+        Re-recording a state that's already achieved for this route is an
+        idempotent update (new recorded_at/recorded_by/notes on the same
+        row, via the schema's UNIQUE constraint) -- it never re-runs the
+        prerequisite check against itself.
+        """
+        from app.qualification import QualificationError, parse_state, missing_prerequisites, requires_feedback
+
+        parsed_state = parse_state(state)
+        if not adapter_type or not route_key or not asset_class or not product_type:
+            raise QualificationError(
+                "adapter_type, route_key, asset_class and product_type are all required to identify an exact route"
+            )
+
+        when = (recorded_at or datetime.now(timezone.utc)).isoformat()
+
+        with self._connect() as conn:
+            achieved = self._achieved_qualification_states(
+                conn, adapter_type=adapter_type, route_key=route_key, asset_class=asset_class, product_type=product_type
+            )
+            if parsed_state not in achieved:
+                missing = missing_prerequisites(parsed_state, achieved)
+                if missing:
+                    raise QualificationError(
+                        f"cannot record '{parsed_state.value}' for route "
+                        f"({adapter_type}/{route_key}/{asset_class}/{product_type}): "
+                        f"missing prerequisite state(s) {[m.value for m in missing]} -- "
+                        "the qualification ladder must be achieved in order"
+                    )
+                if requires_feedback(parsed_state) and not supports_feedback:
+                    raise QualificationError(
+                        f"cannot record '{parsed_state.value}' for route "
+                        f"({adapter_type}/{route_key}/{asset_class}/{product_type}): "
+                        f"adapter '{adapter_type}' has no real order-status, position-readback, or "
+                        "balance-readback implementation (has_account_order_position_feedback is False) -- "
+                        "there is no genuine feedback channel to verify this state with, so it structurally "
+                        "cannot be claimed for any route on this adapter, regardless of operator intent"
+                    )
+
+            conn.execute(
+                """
+                INSERT INTO route_qualifications
+                    (adapter_type, route_key, asset_class, product_type, state, recorded_at, recorded_by, notes)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(adapter_type, route_key, asset_class, product_type, state)
+                DO UPDATE SET recorded_at = excluded.recorded_at, recorded_by = excluded.recorded_by, notes = excluded.notes
+                """,
+                (adapter_type, route_key, asset_class, product_type, parsed_state.value, when, recorded_by, notes),
+            )
+
+        return {
+            "adapter_type": adapter_type,
+            "route_key": route_key,
+            "asset_class": asset_class,
+            "product_type": product_type,
+            "state": parsed_state.value,
+            "recorded_at": when,
+            "recorded_by": recorded_by,
+            "notes": notes,
+        }
+
+    def list_route_qualifications(
+        self, *, adapter_type: str | None = None, route_key: str | None = None
+    ) -> list[dict]:
+        """Every route that has at least one recorded qualification event,
+        grouped into one summary per route: its full achieved-state
+        history (oldest first) plus `current_state`, the HIGHEST rung on
+        the ladder actually achieved (never the most-recently-recorded row
+        -- an operator recording `configured` again after `venue_tested`
+        was already achieved must not regress what's shown as current)."""
+        from app.qualification import QualificationState, state_index
+
+        query = (
+            "SELECT adapter_type, route_key, asset_class, product_type, state, recorded_at, recorded_by, notes "
+            "FROM route_qualifications"
+        )
+        clauses = []
+        params: list = []
+        if adapter_type is not None:
+            clauses.append("adapter_type = ?")
+            params.append(adapter_type)
+        if route_key is not None:
+            clauses.append("route_key = ?")
+            params.append(route_key)
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        query += " ORDER BY adapter_type, route_key, asset_class, product_type, recorded_at"
+
+        with self._connect() as conn:
+            rows = conn.execute(query, params).fetchall()
+
+        routes: dict[tuple, dict] = {}
+        for r in rows:
+            key = (r[0], r[1], r[2], r[3])
+            route = routes.setdefault(
+                key,
+                {
+                    "adapter_type": r[0],
+                    "route_key": r[1],
+                    "asset_class": r[2],
+                    "product_type": r[3],
+                    "events": [],
+                },
+            )
+            route["events"].append(
+                {"state": r[4], "recorded_at": r[5], "recorded_by": r[6], "notes": r[7]}
+            )
+
+        result = []
+        for route in routes.values():
+            try:
+                highest = max(
+                    (QualificationState(e["state"]) for e in route["events"]),
+                    key=state_index,
+                )
+                route["current_state"] = highest.value
+            except ValueError:  # pragma: no cover - schema only ever stores valid values via this path
+                route["current_state"] = None
+            result.append(route)
+        return result
 
     def list_orders_for_signal(self, signal_id: str) -> list[dict]:
         """Every order already recorded against this exact signal id — what

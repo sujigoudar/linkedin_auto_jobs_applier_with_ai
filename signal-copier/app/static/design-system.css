@@ -350,13 +350,32 @@
   color: var(--ok);
   background: var(--ok-bg);
 }
-.capability-badge.status-unsupported {
+.capability-badge.status-unsupported,
+.capability-badge.status-rejected {
   color: var(--bad);
   background: var(--bad-bg);
 }
-.capability-badge.status-not_tracked {
+.capability-badge.status-not_tracked,
+.capability-badge.status-not_started {
   color: var(--level3-color);
   background: var(--neutral-bg);
+}
+/* Live-qualification-only rungs (app/qualification.py) -- account_entitled
+   and protocol_tested share the same "achieved" green as the engineering-
+   capability vocabulary above; venue_tested and release_approved are the
+   two highest, deliberately hardest-to-reach rungs (a real venue/sandbox
+   test, and a separate human sign-off) and get the accent color so they
+   visually stand apart rather than blending into "just another green
+   badge". */
+.capability-badge.status-account_entitled,
+.capability-badge.status-protocol_tested {
+  color: var(--ok);
+  background: var(--ok-bg);
+}
+.capability-badge.status-venue_tested,
+.capability-badge.status-release_approved {
+  color: var(--accent);
+  background: var(--accent-bg);
 }
 .capability-state details {
   margin-top: 2px;

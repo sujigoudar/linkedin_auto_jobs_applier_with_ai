@@ -54,6 +54,27 @@
  * allowlist) and labelled accordingly, never presented as a real
  * restriction list.
  *
+ * Live qualification status (design review, 2026-09, audit follow-up):
+ * a SEPARATE panel below the Capability matrix renders GET /qualifications
+ * -- app/qualification.py's per-EXACT-ROUTE ladder (implemented <
+ * configured < authenticated < account_entitled < protocol_tested <
+ * venue_tested < release_approved). This is deliberately NOT the same
+ * concept as the Capability matrix above it: that matrix is
+ * implementation-derived (does the adapter CLASS override a base no-op),
+ * while this panel is venue-qualified evidence for one exact
+ * (adapter_type, route_key, asset_class, product_type) tuple -- e.g. a
+ * CCXT spot exchange and a CCXT perpetual exchange are different routes
+ * here even though both run the identical CCXTBroker class and show
+ * identical rows in the Capability matrix. Recording a new state
+ * (POST /qualifications, owner-gated) is rejected by the server itself
+ * (never just this screen) if a ladder prerequisite is missing, or if the
+ * adapter structurally cannot provide the account/order/position feedback
+ * `account_entitled` and above require (see
+ * BrokerAdapter.has_account_order_position_feedback) -- SignalStack is the
+ * concrete case that can never pass that gate (see its own module
+ * docstring: a webhook accept is not a fill/position/balance
+ * confirmation).
+ *
  * TR-07-A03 "Pause new entries" is a REAL action, not a new financial
  * capability: `account.enabled=False` is an existing, already-tested
  * entry pause (see app/routing.py's `destinations_for` and
@@ -167,7 +188,8 @@
   function shell() {
     return `
       <section class="tr-panel" id="tr07-p01"><h2>Accounts</h2><div class="tr-panel-body"></div></section>
-      <section class="tr-panel" id="tr07-p02"><h2>Capability matrix</h2><div class="tr-panel-body"></div></section>
+      <section class="tr-panel" id="tr07-p02"><h2>Engineering capability (implementation-derived)</h2><div class="tr-panel-body"></div></section>
+      <section class="tr-panel" id="tr07-p05"><h2>Live qualification status (per exact route)</h2><div class="tr-panel-body"></div></section>
       <section class="tr-panel" id="tr07-p03"><h2>Balance/permission state</h2><div class="tr-panel-body"></div></section>
       <section class="tr-panel" id="tr07-p04"><h2>Change review</h2><div class="tr-panel-body"></div></section>
     `;
@@ -177,15 +199,17 @@
     const els = {
       accounts: ctx.container.querySelector("#tr07-p01 .tr-panel-body"),
       capabilities: ctx.container.querySelector("#tr07-p02 .tr-panel-body"),
+      qualification: ctx.container.querySelector("#tr07-p05 .tr-panel-body"),
       balance: ctx.container.querySelector("#tr07-p03 .tr-panel-body"),
       review: ctx.container.querySelector("#tr07-p04 .tr-panel-body"),
     };
     for (const el of Object.values(els)) StateMatrix.render(el, { state: "loading" });
 
-    const [accountsRes, brokersRes, positionsRes] = await Promise.all([
+    const [accountsRes, brokersRes, positionsRes, qualificationsRes] = await Promise.all([
       ctx.fetchJSON("/accounts"),
       ctx.fetchJSON("/brokers"),
       ctx.fetchJSON("/positions"),
+      ctx.fetchJSON("/qualifications"),
     ]);
     if (accountsRes.status === 401 || accountsRes.status === 403) {
       for (const el of Object.values(els)) StateMatrix.render(el, { state: "denied", deniedCode: accountsRes.status });
@@ -248,6 +272,95 @@
         )}`,
       });
       mountCapStates(els.capabilities, capSpecs);
+    }
+
+    // --- Live qualification status (app/qualification.py) -- a SEPARATE,
+    // higher-bar concept from the Capability matrix above: see this file's
+    // own docstring. Rendered per exact route, never merged into the
+    // capability matrix's rows. ---
+    {
+      const qualOk = qualificationsRes.ok;
+      const ladder = (qualOk && qualificationsRes.data.ladder) || [];
+      const routes = (qualOk && qualificationsRes.data.routes) || [];
+      const qualSpecs = [];
+      const routeRows = routes.map((r, i) => {
+        const slotId = `tr07-qual-state-${i}`;
+        qualSpecs.push([
+          slotId,
+          {
+            status: r.current_state || "not_started",
+            reason: `Highest live-qualification rung actually recorded for this exact route (${r.events.length} event(s) in its history). Ladder: ${ladder.join(" < ")}.`,
+          },
+        ]);
+        return [
+          `<span class="mono">${escapeHtml(r.adapter_type)}</span>`,
+          `<span class="mono">${escapeHtml(r.route_key)}</span>`,
+          escapeHtml(r.asset_class),
+          escapeHtml(r.product_type),
+          capSlot(slotId),
+          fmtNum(r.events.length),
+        ];
+      });
+      const brokerOptions = brokers.map((b) => `<option value="${escapeAttr(b.name)}">${escapeHtml(b.name)}</option>`).join("");
+      const stateOptions = ladder.map((s) => `<option value="${escapeAttr(s)}">${escapeHtml(s)}</option>`).join("");
+      StateMatrix.render(els.qualification, {
+        state: "ready",
+        html: `<p class="section-note">Separate from the Capability matrix above: this is real, persisted, per-exact-route evidence (adapter_type + route_key + asset_class + product_type), never inferred from method-override introspection. A CCXT spot exchange and a CCXT perpetual exchange track independently here even though both show identical rows above. The server rejects any state that skips a ladder prerequisite, and rejects account_entitled-or-higher outright for any adapter with no real order-status/position/balance feedback (SignalStack, concretely) -- see each badge's "Why / details".</p>${table(
+          ["Adapter type", "Route key", "Asset class", "Product type", "Current state", "Events recorded"],
+          routeRows,
+          "No qualification records yet -- record the first one below."
+        )}
+        <h3 class="section-note" style="margin-top:14px;">Record a qualification event (owner-gated)</h3>
+        <div class="tr-controls-row">
+          <label>Adapter type<select id="tr07-qual-adapter">${brokerOptions}</select></label>
+          <label>Route key<input type="text" id="tr07-qual-route" placeholder="e.g. ccxt_binance_spot" maxlength="200"></label>
+          <label>Asset class
+            <select id="tr07-qual-asset">
+              <option value="crypto">crypto</option>
+              <option value="forex">forex</option>
+              <option value="equity">equity</option>
+              <option value="option">option</option>
+              <option value="future">future</option>
+            </select>
+          </label>
+          <label>Product type<input type="text" id="tr07-qual-product" placeholder="e.g. spot, perpetual, cash_equity" maxlength="80"></label>
+          <label>State<select id="tr07-qual-state">${stateOptions}</select></label>
+        </div>
+        <label>Notes (optional)<input type="text" id="tr07-qual-notes" maxlength="2000"></label>
+        <div class="form-error" id="tr07-qual-error"></div>
+        <div class="tr-controls-row"><button type="button" id="tr07-qual-record">Record state</button></div>
+        <div id="tr07-qual-result"></div>`,
+      });
+      mountCapStates(els.qualification, qualSpecs);
+
+      const recordBtn = els.qualification.querySelector("#tr07-qual-record");
+      if (recordBtn) {
+        recordBtn.addEventListener("click", async () => {
+          const errorEl = els.qualification.querySelector("#tr07-qual-error");
+          errorEl.textContent = "";
+          const routeKey = els.qualification.querySelector("#tr07-qual-route").value.trim();
+          if (!routeKey) {
+            errorEl.textContent = "Route key is required.";
+            return;
+          }
+          const body = {
+            adapter_type: els.qualification.querySelector("#tr07-qual-adapter").value,
+            route_key: routeKey,
+            asset_class: els.qualification.querySelector("#tr07-qual-asset").value,
+            product_type: els.qualification.querySelector("#tr07-qual-product").value.trim() || "unspecified",
+            state: els.qualification.querySelector("#tr07-qual-state").value,
+            notes: els.qualification.querySelector("#tr07-qual-notes").value.trim() || null,
+          };
+          try {
+            await postJSON("/qualifications", body);
+            els.qualification.querySelector("#tr07-qual-result").innerHTML = `<p class="section-note">Recorded.</p>`;
+          } catch (err) {
+            errorEl.textContent = err.message;
+            return;
+          }
+          await load(ctx);
+        });
+      }
     }
 
     if (!accounts.length) {
