@@ -28,6 +28,25 @@
  *     completed-episode rows (entry/exit fill pairs) through any GET
  *     endpoint, only the aggregated counts app/economics.py computes.
  *
+ * PU-B9 additive: `stage_latencies` (app/execution_quality.py's per-stage
+ * breakdown, real -- see that module's docstring for which of the 3 named
+ * stages -- receipt_to_submission, submission_to_fill, fill_to_protection --
+ * each order actually reaches) is rendered as a second, additive grouped-bar
+ * Chart.js chart, one bar-group per (account, symbol), one dataset per
+ * stage. Values come straight from the backend's own mean_seconds -- never
+ * recomputed client-side. A stage the backend omitted for a given symbol
+ * (zero qualifying orders with both real endpoint timestamps) is rendered
+ * as `null` in that dataset, which Chart.js correctly draws as no bar --
+ * never a fabricated zero.
+ *
+ * Venue routing (Sankey/multi-venue quote comparison, the other half of
+ * this catalog section) stays `unsupported`/not built at all: this
+ * codebase has no multi-venue quote feed anywhere (a single
+ * `BrokerAdapter.place_order` per order, one broker per account -- no
+ * `ExecutionVenueSelector` or equivalent exists in app/brokers/*.py or
+ * app/engine.py). Building a venue-routing chart here would fabricate a
+ * capability this schema doesn't have; it stays infrastructure-gated.
+ *
  * "Export report" (F-REPORT) has no server-side async export-job queue
  * anywhere in this codebase (no job table, no download-token issuance) --
  * rather than fabricate one, TR-14-A01 generates a REAL client-side CSV
@@ -103,6 +122,61 @@
         responsive: true,
         maintainAspectRatio: false,
         plugins: { legend: { display: false } },
+        scales: { y: { beginAtZero: true } },
+      },
+    });
+  }
+
+  // PU-B9: additive grouped-bar Chart.js chart of the real per-stage
+  // latency breakdown (app/execution_quality.py's `stage_latencies`,
+  // mean_seconds per named stage per account/symbol). Never recomputed --
+  // rendered exactly as the backend aggregated it. A stage absent from the
+  // backend response for a given (account, symbol) is plotted as `null`
+  // (Chart.js draws no bar for a null point), never a fabricated zero.
+  const STAGE_ORDER = ["receipt_to_submission", "submission_to_fill", "fill_to_protection"];
+  const STAGE_LABELS = {
+    receipt_to_submission: "Receipt → submission",
+    submission_to_fill: "Submission → fill",
+    fill_to_protection: "Fill → protection",
+  };
+  const STAGE_COLORS = {
+    receipt_to_submission: "#3ddc84",
+    submission_to_fill: "#4f8ef7",
+    fill_to_protection: "#f7b84f",
+  };
+  let stageLatencyChart = null;
+
+  function renderStageLatencyChart(container, stageRows) {
+    if (stageLatencyChart) {
+      stageLatencyChart.destroy();
+      stageLatencyChart = null;
+    }
+    const wrap = container.querySelector("#tr14-stage-latency-chart-wrap");
+    if (!wrap) return;
+    if (!stageRows.length) {
+      wrap.innerHTML = `<div class="empty">No real per-stage latency samples yet -- no filled order has both endpoint timestamps for any named stage.</div>`;
+      return;
+    }
+    const labels = stageRows.map((r) => `${r.account}/${r.symbol}`);
+    wrap.innerHTML = `<div class="chart-container"><canvas id="tr14-stage-latency-chart"></canvas></div>`;
+    const datasets = STAGE_ORDER.map((stageName) => ({
+      label: STAGE_LABELS[stageName],
+      // `null` (never 0) when the backend omitted this stage for this
+      // (account, symbol) -- see app/execution_quality.py's own
+      // "omit rather than report a zero-sample stage" rule.
+      data: stageRows.map((r) =>
+        Object.prototype.hasOwnProperty.call(r.stages, stageName) ? r.stages[stageName].mean_seconds : null
+      ),
+      backgroundColor: STAGE_COLORS[stageName],
+      maxBarThickness: 40,
+    }));
+    stageLatencyChart = new Chart(wrap.querySelector("#tr14-stage-latency-chart").getContext("2d"), {
+      type: "bar",
+      data: { labels, datasets },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: { legend: { display: true } },
         scales: { y: { beginAtZero: true } },
       },
     });
@@ -219,6 +293,7 @@
     // --- Latency/slippage ---
     const latencySamples = [];
     const latencyRows = [];
+    const stageRows = [];
     for (const { account, data } of quality) {
       if (!data) continue;
       for (const [symbol, s] of Object.entries(data.per_symbol || {})) {
@@ -232,6 +307,15 @@
           `${fmtNum(s.max_seconds)}s`,
         ]);
       }
+      // PU-B9: real per-stage breakdown, additive to the per-symbol
+      // latency above -- `data.stage_latencies` only has a symbol key at
+      // all when at least one stage had qualifying samples for it (see
+      // app/execution_quality.py's compute_execution_quality).
+      for (const [symbol, stages] of Object.entries(data.stage_latencies || {})) {
+        const stageMap = {};
+        for (const stage of stages) stageMap[stage.stage] = stage;
+        stageRows.push({ account: account.account_id, symbol, stages: stageMap });
+      }
     }
     StateMatrix.render(els.latency, {
       state: latencyRows.length ? "ready" : "empty",
@@ -239,13 +323,17 @@
       html: `<p class="section-note">Real signal-received-to-fill latency (E05, app/execution_quality.py) -- mixes this process's own handling time with real network/broker latency; there is no separately tracked decision/submission/acknowledgement timestamp to split it further.</p>
         <h3 class="section-note" style="margin-top:12px;">Mean latency by account/symbol (additive to the table below, not a replacement)</h3>
         <div id="tr14-latency-chart-wrap"></div>
+        <h3 class="section-note" style="margin-top:12px;">Mean latency by real pipeline stage (PU-B9, additive -- receipt&#8594;submission / submission&#8594;fill / fill&#8594;protection, each rendered only where the backend reports it; an absent stage is drawn as no bar, never a fake zero)</h3>
+        <div id="tr14-stage-latency-chart-wrap"></div>
         ${table(
         ["Account", "Symbol", "Samples", "Mean", "Median", "Max"],
         latencyRows,
         "No latency samples."
-      )}${unsupportedNote('"Protection delay" (signal→confirmed protective stop) and "Fill slippage" (fill price vs. a reference/expected price) are not tracked anywhere in this build -- no reference price is stored to diff a fill against, and no protection-confirmation timestamp is kept separately from the stop\'s own current status.')}`,
+      )}${unsupportedNote('"Protection delay" (signal→confirmed protective stop) and "Fill slippage" (fill price vs. a reference/expected price) are not tracked anywhere in this build -- no reference price is stored to diff a fill against, and no protection-confirmation timestamp is kept separately from the stop\'s own current status.')}
+        ${unsupportedNote("Venue routing (multi-venue quote comparison / Sankey of order routing across venues) stays unsupported: this codebase has exactly one BrokerAdapter.place_order call per order, one broker per account, and no multi-venue quote feed or ExecutionVenueSelector anywhere in app/brokers/*.py or app/engine.py -- there is no real routing-across-venues data to chart.")}`,
     });
     renderLatencyChart(els.latency, latencySamples);
+    renderStageLatencyChart(els.latency, stageRows);
 
     // --- Costs: fees not tracked at all ---
     StateMatrix.render(els.costs, {
