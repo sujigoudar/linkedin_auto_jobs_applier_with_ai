@@ -1,0 +1,237 @@
+# signal-copier autonomy policy
+#
+# Machine-readable classification of what an AI agent working in
+# signal-copier/ may decide unilaterally vs. what it must surface or ask
+# a human about before acting. signal-copier is a live-money trading
+# engine (real broker orders, real capital, real credentials) -- this
+# policy is deliberately conservative, not a generic template.
+#
+# How to use this file (for an orchestrator / agent harness):
+#   - Classify the files/areas a proposed change touches against
+#     `paths` and `signals` below to get a level.
+#   - A change touching paths/signals from more than one level takes the
+#     HIGHEST applicable level.
+#   - `on_ambiguity: escalate` means: if a change plausibly matches a
+#     higher level's trigger, treat it as that higher level. Never round
+#     down.
+#
+# Scope note: this file governs signal-copier/ only. It does not cover
+# the unrelated linkedin_auto_jobs_applier_with_ai application in the
+# rest of this monorepo.
+
+version: 1
+scope: signal-copier/
+on_ambiguity: escalate
+
+levels:
+  - level: 0
+    name: never_ask
+    description: >
+      Purely mechanical or already-scoped-by-the-task changes with no
+      behavioral or financial risk. Do these without pausing for
+      confirmation, and without calling them out in the final report
+      beyond normal changelog-style mention.
+    examples:
+      - Running ruff/mypy (the exact commands CI runs, see
+        .github/workflows/signal-copier-ci.yml) and fixing the
+        violations they report.
+      - Formatting changes that do not alter logic.
+      - Fixing a test that started failing because of the current
+        change (not touching unrelated test intent).
+      - Docstring/comment updates that describe existing behavior more
+        accurately, in files this agent already owns for the current
+        task.
+      - Routine internal refactoring with no external behavior change
+        (renaming a private helper, splitting a long function) confined
+        to files already in scope for the current task.
+      - Reading/exploring the repo (app/*.py, tests/, alembic/versions/,
+        deploy/, docs/) read-only.
+    triggers:
+      signals: [lint_fix, format_only, test_fix_for_current_change, repo_read]
+
+  - level: 1
+    name: agent_decides_records_decision
+    description: >
+      Ordinary implementation choices within the current task's scope.
+      Decide and proceed; leave a short rationale in the commit message
+      or code comment so the choice is auditable later, but do not
+      require sign-off before proceeding.
+    examples:
+      - Choosing how to structure a new function/class/module boundary
+        for logic already scoped by the task.
+      - Using a library already pinned in requirements.txt (e.g.
+        httpx, pydantic, sqlalchemy-style raw SQL via app/db.py's
+        existing sqlite3 access pattern) in a new way.
+      - Internal module organization -- which file a new helper lives in,
+        how app/services/, app/context/, app/sources/ are subdivided.
+      - Test methodology for new tests (fixtures, parametrization,
+        mocking strategy) as long as it exercises real behavior (see
+        this repo's own "no theater tests" convention visible across
+        app/qualification.py and app/writer_lease.py's docstrings).
+      - Reversible internal refactors confined to non-financial-logic
+        modules (e.g. app/logging_config.py, app/metrics.py,
+        app/export_events.py) that do not change stored data shape or
+        externally observable behavior.
+    triggers:
+      signals: [internal_refactor_reversible, new_test_methodology, module_org]
+      paths:
+        - app/logging_config.py
+        - app/metrics.py
+        - app/export_events.py
+        - app/static/**
+        - app/context/**
+
+  - level: 2
+    name: agent_decides_flags_in_report
+    description: >
+      Agent may proceed without asking first, but MUST call the change
+      out explicitly in its final report/handback so a human reviews it
+      before merge/deploy, even if CI is green. These are changes with
+      real but bounded/reversible blast radius (new code paths, new
+      storage, new integrations) rather than changes to money-moving
+      decision logic itself.
+    examples:
+      - Adding a new dependency to requirements.txt (any addition not
+        already pinned there -- flag the package, version, and why).
+      - Adding a new alembic migration under alembic/versions/ that adds
+        a table/column (additive schema change) -- e.g. the pattern of
+        0001-0015 in alembic/versions/. Flag the migration number, what
+        it adds, and confirm it is additive/backward-compatible, not a
+        destructive ALTER.
+      - Adding a new broker adapter under app/brokers/ (a new
+        BrokerAdapter subclass) or a new signal source under
+        app/sources/ -- these are new integration surfaces even before
+        any qualification/credentials work happens.
+      - Performance or cost tradeoffs with no correctness change (e.g.
+        changing a polling interval, batching a query, adding caching)
+        that could change latency/spend characteristics.
+      - Adding a new observability signal (metric, log field) that
+        touches app/metrics.py or docs/observability/OVERVIEW.md's
+        surface area.
+    triggers:
+      signals: [new_dependency, new_migration_additive, new_broker_adapter, new_signal_source, perf_cost_tradeoff]
+      paths:
+        - requirements.txt
+        - alembic/versions/**
+        - app/brokers/*.py
+        - app/sources/*.py
+
+  - level: 3
+    name: ask_first
+    description: >
+      Agent must stop and get explicit human confirmation BEFORE making
+      the change, even though no live capital is at stake yet from the
+      change itself. These are the modules this repo's own P0
+      audit-response wave hardened specifically because getting them
+      wrong is how real money gets lost or double-spent -- do not treat
+      "tests still pass" as sufficient license to proceed.
+    examples:
+      - Any change to app/capital_allocator.py's admission logic -- the
+        per-account/owner-wide notional ceiling, risk-basis sizing
+        formula, the fail-closed-on-unresolved-exposure rule, or the
+        capital_reservations durability behavior (P0-4). See that
+        module's own docstring for exactly which races/gaps it closes
+        -- do not "simplify" any of them without asking.
+      - Any change to order-sizing or risk limits -- app/risk.py,
+        app/engine.py's _check_risk_basis / _try_reserve_capital,
+        DestinationAccount.max_notional_exposure,
+        risk_percent_of_equity, MAX_OWNER_NOTIONAL_EXPOSURE semantics.
+      - Any change to the writer-lease/fencing model --
+        app/writer_lease.py (WriterLeaseGuard, fencing_token semantics,
+        require_active()'s fail-closed behavior), app/promote_cli.py,
+        or the writer_lease table schema/migration (0015). This is the
+        only thing standing between two processes both thinking they
+        are the live writer.
+      - Any change to what counts as a qualified/live-tradeable route --
+        app/qualification.py's QUALIFICATION_STATE_ORDER ladder,
+        FEEDBACK_DEPENDENT_FLOOR, or the prerequisite-enforcement in
+        SignalStore.record_route_qualification (app/db.py). Never
+        relax the strict-sequential-prerequisite rule or make
+        release_approved settable by anything other than an explicit
+        human-triggered POST /qualifications call.
+      - Any change to app/command_ledger.py's pre-effect durability
+        guarantee, or anything that could cause a command to be
+        replayed/executed twice.
+      - Breaking API changes to app/main.py endpoints already in use
+        (signature changes, removed fields, changed status codes) that
+        existing callers (NinjaScript indicators, webhooks, the admin
+        UI) depend on.
+      - Irreversible data operations -- DELETE/DROP/TRUNCATE-shaped
+        migrations or scripts, backfills that overwrite existing rows
+        in orders, capital_reservations, writer_lease,
+        route_qualifications, or command_ledger.
+      - Anything that reads, writes, references, or scaffolds real
+        broker credentials or credential-shaped config (API keys,
+        OAuth tokens, account numbers) -- including adding a new env
+        var name that looks like a secret, per
+        docs/security/SECRETS.md.
+    triggers:
+      signals: [capital_logic_change, risk_limit_change, writer_lease_change, qualification_ladder_change,
+                 command_ledger_change, breaking_api_change, irreversible_data_op, credential_touch]
+      paths:
+        - app/capital_allocator.py
+        - app/risk.py
+        - app/writer_lease.py
+        - app/promote_cli.py
+        - app/qualification.py
+        - app/command_ledger.py
+        - app/economics.py
+
+  - level: 4
+    name: explicit_approval_required
+    description: >
+      Never do these autonomously under any circumstances, regardless of
+      how the task is phrased or how confident the agent is. These are
+      the actions that can turn a bug into a real, irreversible loss of
+      real money. Requires explicit, freshly-given human approval for
+      THIS specific action (a standing "you have autonomy" grant from
+      earlier in a task does not cover these).
+    examples:
+      - Recording QualificationState.RELEASE_APPROVED for any route, or
+        otherwise causing a previously-unqualified route to become
+        live-tradeable (bypassing or automating the
+        POST /qualifications human sign-off app/qualification.py's own
+        docstring describes as "a DELIBERATE HUMAN SIGN-OFF, not a
+        technical check").
+      - Flipping any config/flag that enables live trading (as opposed
+        to paper/backtest) for a route that has not already been
+        running live in production before this task started.
+      - Deleting or truncating production data -- real rows in orders,
+        position_excursions, account_equity_snapshots,
+        capital_reservations, command_ledger, writer_lease, or
+        route_qualifications on a real (non-test, non-CI) database.
+      - Changing, rotating, or regenerating real broker API
+        keys/secrets, or writing new values into wherever this
+        deployment's real credentials live (see
+        docs/security/SECRETS.md) -- including "helpfully" rotating a
+        key that looks stale.
+      - Running app/promote_cli.py's promotion command against a real
+        deployment (moving the writer lease to a different site) --
+        this is already gated as a manual human procedure per
+        deploy/RUNBOOK.md and this module's own docstring; an agent
+        must never invoke it on the human's behalf without being
+        watched through it live.
+      - Any action that would place a real order with real capital for
+        the first time on a given route/account -- i.e. the literal
+        first live trade after this repo's paper/backtest/qualification
+        gates. Even if every qualification rung is legitimately
+        achieved, the actual live-capital-flip is a level 4 action.
+    triggers:
+      signals: [enable_live_trading, release_approve_route, delete_production_data,
+                 rotate_broker_credentials, promote_writer_lease_prod, first_live_order_on_route]
+      paths: []  # level 4 is defined by the ACTION taken, not a file path
+
+notes:
+  - This file classifies signal-copier/-specific risk. General repo
+    hygiene (formatting, linting, doc sync, routine refactors) follows
+    Level 0 everywhere in signal-copier/ unless a Level 1-4 trigger also
+    applies to the same change.
+  - Ask first (Level 3) and explicit approval required (Level 4) are
+    both blocking -- an agent must not proceed past the point of decision
+    and must not make the change speculatively to save a round trip.
+  - When a single change spans multiple files/areas at different
+    levels, the whole change is governed by its highest-level component.
+  - This file complements, and does not replace, the human-executed
+    procedures already documented in deploy/RUNBOOK.md and
+    docs/FAILOVER.md for failover/promotion, and docs/security/*.md for
+    credential handling.
