@@ -83,6 +83,93 @@
  *     0/NaN-as-zero. Only rendered when 2+ accounts exist (a single
  *     account has no pair to correlate against).
  *
+ * Phase D (this batch, additive -- 2026-09 design review: "the private
+ * system should also understand strategy sleeves before the commercial
+ * layer receives them"): a "Strategy / sleeve portfolio risk" sub-section
+ * appended to the existing Risk panel (p09), below Phase B8's per-account
+ * stats and cross-account correlation -- NOT a new screen, NOT a
+ * duplicate of anything already built. Since this is a 2-(or few-)account
+ * private engine and an account is routed to one provider/source via
+ * routing rules, "strategy sleeve"/"provider"/"account" are treated as
+ * the same grouping axis. Every figure below is real, computed from data
+ * this file already reads elsewhere in this codebase (GET
+ * /accounts/{id}/equity-history, GET /accounts/{id}/economics, GET
+ * /accounts/{id}/statistics, GET /capital-allocation, GET /positions), or
+ * an honest `Components.renderCapabilityState`:
+ *   - Downside correlation: real Pearson correlation of two accounts'
+ *     real cumulative_pnl-delta series, computed client-side (this
+ *     codebase exposes no server-side "downside-only" variant of
+ *     GET /accounts/correlation to call), but using the EXACT SAME
+ *     alignment technique that endpoint's own `compute_pairwise_
+ *     correlation` uses server-side -- match by exact `captured_at`,
+ *     never an interpolated point -- restricted to the subset of matched
+ *     periods where BOTH accounts' real delta was negative. Same
+ *     MIN_CORRELATION_SAMPLES=10 floor app/statistics.py documents (see
+ *     that module's own docstring for why 10) -- below it, "insufficient
+ *     overlapping data", never a fabricated 0/NaN.
+ *   - Co-drawdown matrix: real, per account pair, the fraction of real
+ *     overlapping calendar days both accounts were simultaneously in a
+ *     real drawdown. "In drawdown" is computed with the exact same
+ *     running-peak walk app/statistics.py's `compute_max_drawdown` uses
+ *     (peak tracked forward, in-drawdown whenever the real value is below
+ *     that running peak) -- just recording every day that's true, rather
+ *     than only the single largest drop. Denominator is real overlapping
+ *     days (both accounts have a real snapshot that day), never total
+ *     calendar days, so a account pair with little real shared history
+ *     can't silently produce a diluted-looking fraction.
+ *   - Overlapping position exposure: real, from the exact same GET
+ *     /positions + per-lifecycle notional (`computeLifecycleRiskRows`,
+ *     shared with p10) this file already reads -- any (symbol, side)
+ *     pair open in 2+ accounts simultaneously right now, with real
+ *     combined notional where every position in the group has a known
+ *     entry price (a plain-account position or one with no entry price
+ *     yet is flagged, never silently dropped or priced at 0).
+ *   - Simultaneous capital demand: real, current-only cross-account sum
+ *     of GET /capital-allocation's real deployed+reserved notional --
+ *     explicitly labeled "current" because no historical intersection of
+ *     per-account capital-allocation snapshots is persisted anywhere in
+ *     this build (same gap already documented on tr02.js).
+ *   - Contribution to portfolio return: real per-account share of the
+ *     real summed GET /accounts/{id}/economics realized_pnl (only when
+ *     every account's read succeeded).
+ *   - Contribution to drawdown: real, but ONLY when every configured
+ *     account has real equity-history covering the same real overlapping
+ *     window (checked up front) -- the combined series is the real,
+ *     timestamp-aligned SUM of every account's real cumulative_pnl at
+ *     each shared real snapshot time; its drawdown is found with the same
+ *     running-peak walk as above, and because the combined series is
+ *     exactly the sum of the per-account series, each account's real
+ *     contribution (its own peak-to-trough delta at that same real
+ *     peak/trough time) sums EXACTLY to the combined drawdown -- an exact
+ *     decomposition, not an approximation.
+ *   - Marginal risk contribution: real portfolio-variance sensitivity,
+ *     `contribution_i = cov(delta_i, delta_portfolio) / var(delta_portfolio)`,
+ *     using ONLY the real, timestamp-aligned per-account P&L-delta series
+ *     built for the combined curve above (absolute P&L-delta terms, never
+ *     a fabricated percentage return -- same convention as
+ *     app/statistics.py). Because `delta_portfolio = sum_i delta_i`, these
+ *     contributions sum exactly to 1 (100%) -- a real, standard variance
+ *     decomposition, not an invented weighting scheme. Same
+ *     MIN_CORRELATION_SAMPLES=10 floor as above; below it, "not tracked"
+ *     rather than a near-zero-sample estimate that would be more noise
+ *     than signal.
+ *   - Diversification benefit: real -- (sum of each account's own real
+ *     `volatility_pnl_delta` from GET /accounts/{id}/statistics, already
+ *     shown in this same panel above) minus (real combined-portfolio
+ *     volatility, the sample stdev of the same aligned combined delta
+ *     series used above). Disclosed honestly: the per-account figure is
+ *     each account's own last-window (up to 30 snapshots) volatility,
+ *     while the combined figure spans the full real overlapping history
+ *     -- both real, but not always the identical window, and this panel
+ *     says so.
+ *   - Capacity: `unsupported` -- no liquidity/order-book/capacity concept
+ *     exists anywhere in this codebase (no bid/ask spread or depth is
+ *     tracked or exposed by any endpoint) to compute one from.
+ *   - Cash utilization: deliberately NOT duplicated here -- GET
+ *     /capital-allocation's real deployed-vs-ceiling figures are already
+ *     shown in full on tr02.js (`#/trade/positions`); this panel links
+ *     there instead of rebuilding the same table.
+ *
  * Deliberately NOT built in Phase B8 -- two DIFFERENT reasons, worth
  * telling apart for anyone later deciding whether/how to merge branches:
  *   - VaR / Expected Shortfall: NO REAL DATA MODEL EXISTS ANYWHERE IN
@@ -459,6 +546,128 @@
       });
   }
 
+  // ---- Phase D: strategy/sleeve portfolio-risk math helpers ----
+  // Mirrors app/statistics.py's own documented floor (MIN_CORRELATION_SAMPLES
+  // = 10, "Pearson's r is asymptotically unstable below ~10 points") -- this
+  // file has no server-side downside/aligned-N-way variant to call, so the
+  // same floor is applied to every client-side statistic below that reuses
+  // this alignment technique (downside correlation, marginal risk
+  // contribution).
+  const PORTFOLIO_MIN_SAMPLES = 10;
+
+  // Same exact-timestamp alignment `compute_pairwise_correlation` uses
+  // server-side (app/statistics.py) -- period-over-period cumulative_pnl
+  // delta, keyed by the delta's END captured_at (the only honest way to
+  // align two independently-ticking snapshot series without inventing an
+  // interpolated point).
+  function deltaSeriesByTimestamp(snapshots) {
+    const map = new Map();
+    for (let i = 1; i < snapshots.length; i++) {
+      const a = snapshots[i - 1];
+      const b = snapshots[i];
+      map.set(b.captured_at, Number(b.cumulative_pnl) - Number(a.cumulative_pnl));
+    }
+    return map;
+  }
+
+  // Pearson correlation of two equal-length real arrays -- `null` (never a
+  // fabricated 0/NaN) when either side has zero variance, same guard
+  // app/statistics.py's own `compute_pairwise_correlation` applies via its
+  // `except stats.StatisticsError` catch.
+  function pearsonCorrelation(xs, ys) {
+    const n = xs.length;
+    if (n < 2) return null;
+    const meanX = xs.reduce((s, v) => s + v, 0) / n;
+    const meanY = ys.reduce((s, v) => s + v, 0) / n;
+    let num = 0, dx2 = 0, dy2 = 0;
+    for (let i = 0; i < n; i++) {
+      const dx = xs[i] - meanX, dy = ys[i] - meanY;
+      num += dx * dy;
+      dx2 += dx * dx;
+      dy2 += dy * dy;
+    }
+    if (dx2 === 0 || dy2 === 0) return null;
+    return num / Math.sqrt(dx2 * dy2);
+  }
+
+  function sampleStdev(xs) {
+    const n = xs.length;
+    if (n < 2) return null;
+    const mean = xs.reduce((s, v) => s + v, 0) / n;
+    const variance = xs.reduce((s, v) => s + (v - mean) * (v - mean), 0) / (n - 1);
+    return Math.sqrt(variance);
+  }
+
+  function sampleCovariance(xs, ys) {
+    const n = xs.length;
+    if (n < 2 || ys.length !== n) return null;
+    const meanX = xs.reduce((s, v) => s + v, 0) / n;
+    const meanY = ys.reduce((s, v) => s + v, 0) / n;
+    let cov = 0;
+    for (let i = 0; i < n; i++) cov += (xs[i] - meanX) * (ys[i] - meanY);
+    return cov / (n - 1);
+  }
+
+  // Exactly app/statistics.py's `compute_max_drawdown` running-peak walk
+  // (peak tracked forward across the FULL real series, never a first/last
+  // approximation), just recording EVERY real calendar day the account is
+  // strictly below its own running peak, not only the single largest drop.
+  // `captured_at` is ISO-8601 (`YYYY-MM-DDTHH:MM:SS...`), so its first 10
+  // characters are the real UTC calendar day.
+  function inDrawdownDaySet(snapshots) {
+    const days = new Set();
+    if (!snapshots.length) return days;
+    let peak = Number(snapshots[0].cumulative_pnl);
+    for (const row of snapshots) {
+      const v = Number(row.cumulative_pnl);
+      if (v > peak) peak = v;
+      else if (v < peak) days.add(String(row.captured_at).slice(0, 10));
+    }
+    return days;
+  }
+
+  function realDaySet(snapshots) {
+    return new Set(snapshots.map((r) => String(r.captured_at).slice(0, 10)));
+  }
+
+  // Real intersection of every account's real `captured_at` set -- the
+  // honest real-overlapping-window this whole sub-section's combined-curve
+  // math needs (never assumes every account shares a fixed polling cadence).
+  function commonTimestamps(historiesBySnapshots) {
+    if (!historiesBySnapshots.length || historiesBySnapshots.some((h) => !h.length)) return [];
+    let common = new Set(historiesBySnapshots[0].map((r) => r.captured_at));
+    for (let i = 1; i < historiesBySnapshots.length; i++) {
+      const set = new Set(historiesBySnapshots[i].map((r) => r.captured_at));
+      common = new Set(Array.from(common).filter((t) => set.has(t)));
+    }
+    return Array.from(common).sort();
+  }
+
+  // Same running-peak walk as `inDrawdownDaySet`/`compute_max_drawdown`,
+  // but returns the real peak/trough timestamps of the single largest real
+  // drop in `series` (`[{captured_at, value}]`, oldest first, real values
+  // only) -- needed here (unlike the per-account panel above) so the exact
+  // same peak/trough moment can be used to decompose the combined drawdown
+  // back into each account's own real contribution.
+  function maxDrawdownWalk(series) {
+    if (series.length < 2) return null;
+    let peakValue = series[0].value;
+    let peakAt = series[0].captured_at;
+    let best = null;
+    for (let i = 1; i < series.length; i++) {
+      const row = series[i];
+      const dd = peakValue - row.value;
+      if (dd > 0 && (best === null || dd > best.drawdown)) {
+        best = { drawdown: dd, peakAt, troughAt: row.captured_at };
+      }
+      if (row.value > peakValue) {
+        peakValue = row.value;
+        peakAt = row.captured_at;
+      }
+    }
+    return best;
+  }
+
   // A UI-chosen staleness threshold applied to a REAL timestamp (time since
   // this source's last received signal, GET /signals -- the exact same
   // figure TR-09 already renders as its honestly-labeled "Lag," not a
@@ -516,6 +725,311 @@
     }
 
     return items;
+  }
+
+  // Phase D: "Strategy / sleeve portfolio risk" -- appended below the
+  // existing per-account stats + cross-account correlation content inside
+  // the Risk panel (p09). Accounts.length >= 2 already checked by the
+  // caller (same gate the existing correlation table uses -- a single
+  // account has no pair/portfolio to compute any of this from). `lifecycles`
+  // / `positions` are the same real GET /positions read this file already
+  // fetched above (`positionsRes`), never a second fetch.
+  async function renderPortfolioSleevePanel(ctx, container, accounts, statsResList, lifecycles, positions) {
+    const wrap = document.createElement("div");
+    wrap.id = "tr01-portfolio-sleeve";
+    wrap.innerHTML = `<h3 class="section-note" style="margin-top:20px;">Strategy / sleeve portfolio risk</h3>
+      <p class="section-note">This build is a private, few-account engine where an account is routed to one provider/source via routing rules -- "strategy sleeve", "provider" and "account" are treated as the same grouping axis below. Every figure is real (traced to GET /accounts/{id}/equity-history, GET /accounts/{id}/economics, GET /accounts/{id}/statistics, GET /capital-allocation or GET /positions) or an honest capability-state -- see this file's own module docstring (Phase D) for exactly how each one is computed.</p>`;
+    container.appendChild(wrap);
+
+    // A single shared fetch of every account's FULL real equity-history
+    // (never just the last-24h window the Glance KPI band uses) -- reused
+    // by downside correlation, co-drawdown, the combined curve, marginal
+    // risk contribution and diversification benefit below, so none of them
+    // re-fetches the same real series.
+    const historyResList = await Promise.all(
+      accounts.map((a) => ctx.fetchJSON(`/accounts/${encodeURIComponent(a.account_id)}/equity-history?limit=10000`))
+    );
+    const historiesOk = historyResList.every((r) => r.ok);
+    const histories = historyResList.map((r) => (r.ok && r.data && r.data.snapshots) || []);
+
+    const pairs = [];
+    for (let i = 0; i < accounts.length; i++) {
+      for (let j = i + 1; j < accounts.length; j++) pairs.push([i, j]);
+    }
+
+    // --- 1. Downside correlation ---
+    const downsideSection = document.createElement("div");
+    wrap.appendChild(downsideSection);
+    if (!historiesOk) {
+      downsideSection.innerHTML = `<h4 class="section-note">Downside correlation</h4><div class="tr01-cap"></div>`;
+      Components.renderCapabilityState(downsideSection.querySelector(".tr01-cap"), {
+        status: "not_tracked",
+        reason: "Could not load one or more accounts' full GET /accounts/{id}/equity-history this refresh.",
+      });
+    } else {
+      const deltaMaps = histories.map(deltaSeriesByTimestamp);
+      const rows = pairs.map(([i, j]) => {
+        const a = accounts[i].account_id, b = accounts[j].account_id;
+        const mapA = deltaMaps[i], mapB = deltaMaps[j];
+        const xs = [], ys = [];
+        for (const [ts, da] of mapA) {
+          if (!mapB.has(ts)) continue;
+          const db = mapB.get(ts);
+          // Downside-only: BOTH accounts' real delta negative in this same
+          // real overlapping period.
+          if (da < 0 && db < 0) {
+            xs.push(da);
+            ys.push(db);
+          }
+        }
+        const sampleCount = xs.length;
+        const corr = sampleCount >= PORTFOLIO_MIN_SAMPLES ? pearsonCorrelation(xs, ys) : null;
+        return [
+          `<span class="mono">${escapeHtml(a)}</span>`,
+          `<span class="mono">${escapeHtml(b)}</span>`,
+          fmtNum(sampleCount),
+          sampleCount >= PORTFOLIO_MIN_SAMPLES ? statVal(corr) : pill("insufficient overlapping data", "muted"),
+        ];
+      });
+      downsideSection.innerHTML = `<h4 class="section-note">Downside correlation</h4>
+        <p class="section-note">Real Pearson correlation of each account pair's real cumulative_pnl-delta series, restricted to real overlapping periods where BOTH accounts' delta was negative -- same overlapping-timestamp alignment and ${PORTFOLIO_MIN_SAMPLES}-sample floor as the cross-account correlation table above. "insufficient overlapping data" below that floor, never a fabricated 0/NaN.</p>
+        ${table(["Account A", "Account B", "Downside-overlapping samples", "Downside correlation"], rows, "No account pairs.")}`;
+    }
+
+    // --- 2. Co-drawdown matrix ---
+    const codrawdownSection = document.createElement("div");
+    wrap.appendChild(codrawdownSection);
+    if (!historiesOk) {
+      codrawdownSection.innerHTML = `<h4 class="section-note" style="margin-top:16px;">Co-drawdown matrix</h4><div class="tr01-cap"></div>`;
+      Components.renderCapabilityState(codrawdownSection.querySelector(".tr01-cap"), {
+        status: "not_tracked",
+        reason: "Could not load one or more accounts' full GET /accounts/{id}/equity-history this refresh.",
+      });
+    } else {
+      const drawdownDays = histories.map(inDrawdownDaySet);
+      const realDays = histories.map(realDaySet);
+      const rows = [];
+      for (const [i, j] of pairs) {
+        const overlapDays = new Set(Array.from(realDays[i]).filter((d) => realDays[j].has(d)));
+        const bothDrawdownDays = new Set(
+          Array.from(overlapDays).filter((d) => drawdownDays[i].has(d) && drawdownDays[j].has(d))
+        );
+        // A judgment-call floor of this panel's own (not app/statistics.py's
+        // -- that module has no day-granularity concept): at least 2 real
+        // overlapping calendar days, so a fraction isn't computed from a
+        // single day's coincidence.
+        const enough = overlapDays.size >= 2;
+        rows.push([
+          `<span class="mono">${escapeHtml(accounts[i].account_id)}</span>`,
+          `<span class="mono">${escapeHtml(accounts[j].account_id)}</span>`,
+          fmtNum(overlapDays.size),
+          fmtNum(bothDrawdownDays.size),
+          enough ? `${((bothDrawdownDays.size / overlapDays.size) * 100).toFixed(1)}%` : pill("insufficient overlapping data", "muted"),
+        ]);
+      }
+      codrawdownSection.innerHTML = `<h4 class="section-note" style="margin-top:16px;">Co-drawdown matrix</h4>
+        <p class="section-note">Real fraction of real overlapping calendar days both accounts were simultaneously in a real drawdown (below their own running peak -- same walk as this panel's max-drawdown figures above). Denominator is real overlapping days only, never total calendar days.</p>
+        ${table(["Account A", "Account B", "Overlapping days", "Simultaneous drawdown days", "Co-drawdown fraction"], rows, "No account pairs.")}`;
+    }
+
+    // --- 3. Overlapping position exposure ---
+    const overlapSection = document.createElement("div");
+    wrap.appendChild(overlapSection);
+    const riskRows = computeLifecycleRiskRows(lifecycles);
+    const riskRowByKey = new Map(riskRows.map((r) => [`${r.account_id}::${r.symbol}`, r]));
+    const groups = new Map();
+    for (const p of positions) {
+      if (!p.net_quantity) continue;
+      const side = p.net_quantity > 0 ? "long" : "short";
+      const key = `${p.symbol}::${side}`;
+      if (!groups.has(key)) {
+        groups.set(key, { symbol: p.symbol, side, accounts: new Set(), notionalKnown: 0, unknownCount: 0 });
+      }
+      const g = groups.get(key);
+      g.accounts.add(p.account_id);
+      const rr = riskRowByKey.get(`${p.account_id}::${p.symbol}`);
+      if (rr && rr.notional !== null) g.notionalKnown += rr.notional;
+      else g.unknownCount += 1;
+    }
+    const overlapGroups = Array.from(groups.values()).filter((g) => g.accounts.size > 1);
+    if (!overlapGroups.length) {
+      overlapSection.innerHTML = `<h4 class="section-note" style="margin-top:16px;">Overlapping position exposure</h4><p class="section-note">No symbol/side is currently open in more than one account.</p>`;
+    } else {
+      const rows = overlapGroups
+        .sort((a, b) => b.accounts.size - a.accounts.size || (a.symbol < b.symbol ? -1 : 1))
+        .map((g) => [
+          `<span class="mono">${escapeHtml(g.symbol)}</span>`,
+          escapeHtml(g.side),
+          Array.from(g.accounts).map((a) => `<span class="mono">${escapeHtml(a)}</span>`).join(", "),
+          g.unknownCount
+            ? `${fmtNum(g.notionalKnown)} known <span class="tr-unsupported-note" style="display:inline;">(+${g.unknownCount} position(s) with no known entry price, excluded)</span>`
+            : fmtNum(g.notionalKnown),
+        ]);
+      overlapSection.innerHTML = `<h4 class="section-note" style="margin-top:16px;">Overlapping position exposure</h4>
+        <p class="section-note">Every (symbol, side) currently open in 2+ accounts at once, with combined real notional (entry price x quantity) where known -- a plain-account position or one with no known entry price is flagged, never priced at 0.</p>
+        ${table(["Symbol", "Side", "Accounts", "Combined notional"], rows, "No overlapping positions.")}`;
+    }
+
+    // --- 4. Simultaneous capital demand (current-only) ---
+    const capitalSection = document.createElement("div");
+    wrap.appendChild(capitalSection);
+    const capitalRes = await ctx.fetchJSON("/capital-allocation");
+    if (!capitalRes.ok) {
+      capitalSection.innerHTML = `<h4 class="section-note" style="margin-top:16px;">Simultaneous capital demand</h4><div class="tr01-cap"></div>`;
+      Components.renderCapabilityState(capitalSection.querySelector(".tr01-cap"), {
+        status: "not_tracked",
+        reason: "Could not load GET /capital-allocation this refresh.",
+      });
+    } else {
+      const capAccounts = (capitalRes.data && capitalRes.data.accounts) || [];
+      const deployedTotal = capAccounts.reduce((s, a) => s + (a.deployed_notional || 0), 0);
+      const reservedTotal = capAccounts.reduce((s, a) => s + (a.reserved_notional || 0), 0);
+      capitalSection.innerHTML = `<h4 class="section-note" style="margin-top:16px;">Simultaneous capital demand</h4>
+        <p class="section-note">Real CURRENT cross-account sum of GET /capital-allocation's deployed+reserved notional across all ${fmtNum(capAccounts.length)} configured account(s) -- labeled "current" because this build persists no historical per-account capital-allocation snapshots to intersect into a real time series (same gap tr02.js's own capital-state panel already discloses).</p>
+        <div class="econ-stats"><div><span class="muted">Deployed + reserved, current, all accounts</span><br><span class="num">${fmtNum(deployedTotal + reservedTotal)}</span></div></div>`;
+    }
+
+    // --- 5/6/7: contribution to return/drawdown, marginal risk contribution, diversification benefit ---
+    const contribSection = document.createElement("div");
+    wrap.appendChild(contribSection);
+    const econRes = await Promise.all(
+      accounts.map((a) => ctx.fetchJSON(`/accounts/${encodeURIComponent(a.account_id)}/economics`))
+    );
+    const econOk = econRes.every((r) => r.ok);
+
+    // Combined, real timestamp-aligned equity curve -- only when EVERY
+    // configured account has real equity-history covering the same real
+    // window (checked via `commonTimestamps`, never assumed).
+    const commonTs = historiesOk ? commonTimestamps(histories) : [];
+    let combinedSeries = null;
+    let combinedDrawdown = null;
+    let perAccountDrawdownContribution = null;
+    if (commonTs.length >= 2) {
+      const valueMaps = histories.map((h) => new Map(h.map((r) => [r.captured_at, Number(r.cumulative_pnl)])));
+      combinedSeries = commonTs.map((ts) => ({
+        captured_at: ts,
+        value: valueMaps.reduce((sum, m) => sum + m.get(ts), 0),
+      }));
+      combinedDrawdown = maxDrawdownWalk(combinedSeries);
+      if (combinedDrawdown) {
+        perAccountDrawdownContribution = accounts.map((a, i) => {
+          const m = valueMaps[i];
+          return m.get(combinedDrawdown.peakAt) - m.get(combinedDrawdown.troughAt);
+        });
+      }
+    }
+
+    const contribRows = accounts.map((a, i) => {
+      const pnl = econOk ? econRes[i].data.realized_pnl || 0 : null;
+      const totalPnl = econOk ? econRes.reduce((s, r) => s + (r.data.realized_pnl || 0), 0) : null;
+      const pnlShare = econOk && totalPnl !== 0 ? pnl / totalPnl : null;
+      const ddContribution = perAccountDrawdownContribution ? perAccountDrawdownContribution[i] : null;
+      const ddShare = ddContribution !== null && combinedDrawdown && combinedDrawdown.drawdown !== 0 ? ddContribution / combinedDrawdown.drawdown : null;
+      return [
+        `<span class="mono">${escapeHtml(a.account_id)}</span>`,
+        econOk ? fmtNum(pnl) : pill("unknown", "muted"),
+        pnlShare !== null ? `${(pnlShare * 100).toFixed(1)}%` : pill("n/a", "muted"),
+        ddContribution !== null ? fmtNum(ddContribution) : pill("n/a", "muted"),
+        ddShare !== null ? `${(ddShare * 100).toFixed(1)}%` : pill("n/a", "muted"),
+      ];
+    });
+    const contribCaveat = !econOk
+      ? `<p class="tr-unsupported-note">Contribution to portfolio return is degraded this refresh -- GET /accounts/{id}/economics could not be read for one or more accounts.</p>`
+      : "";
+    const ddCaveat = !combinedDrawdown
+      ? `<p class="tr-unsupported-note">Contribution to drawdown: ${
+          commonTs.length < 2
+            ? "not tracked -- not every configured account has real equity-history covering the same real overlapping window yet."
+            : "not tracked -- the real combined series has no real drawdown (never below its own running peak) over the overlapping window."
+        }</p>`
+      : "";
+    contribSection.innerHTML = `<h4 class="section-note" style="margin-top:16px;">Contribution to portfolio return / drawdown</h4>
+      <p class="section-note">Return contribution: real per-account share of the real summed GET /accounts/{id}/economics realized_pnl. Drawdown contribution: real per-account peak-to-trough delta at the exact same real peak/trough moment of the real combined (timestamp-aligned sum) equity curve's own largest real drawdown -- these sum exactly to the combined drawdown by construction, never an approximation.</p>
+      ${contribCaveat}${ddCaveat}
+      ${table(["Account", "Realized P&amp;L", "Share of total P&amp;L", "Drawdown contribution", "Share of combined drawdown"], contribRows, "No accounts.")}`;
+
+    // --- 6. Marginal risk contribution ---
+    const marginalSection = document.createElement("div");
+    wrap.appendChild(marginalSection);
+    let alignedDeltas = null;
+    if (commonTs.length - 1 >= PORTFOLIO_MIN_SAMPLES) {
+      alignedDeltas = histories.map((h) => {
+        const byTs = new Map(h.map((r) => [r.captured_at, Number(r.cumulative_pnl)]));
+        const deltas = [];
+        for (let i = 1; i < commonTs.length; i++) deltas.push(byTs.get(commonTs[i]) - byTs.get(commonTs[i - 1]));
+        return deltas;
+      });
+    }
+    if (!alignedDeltas) {
+      marginalSection.innerHTML = `<h4 class="section-note" style="margin-top:16px;">Marginal risk contribution</h4><div class="tr01-cap"></div>`;
+      Components.renderCapabilityState(marginalSection.querySelector(".tr01-cap"), {
+        status: "not_tracked",
+        reason: `Fewer than ${PORTFOLIO_MIN_SAMPLES} real, timestamp-aligned overlapping P&L-delta periods exist across every configured account -- a near-zero-sample variance-sensitivity estimate would be more noise than signal (same floor as this panel's own correlation tables).`,
+      });
+    } else {
+      const n = alignedDeltas[0].length;
+      const portfolioDelta = Array.from({ length: n }, (_, i) => alignedDeltas.reduce((s, d) => s + d[i], 0));
+      const portfolioVar = sampleStdev(portfolioDelta) !== null ? sampleStdev(portfolioDelta) ** 2 : null;
+      let rows;
+      if (!portfolioVar || portfolioVar === 0) {
+        rows = null;
+      } else {
+        rows = accounts.map((a, i) => {
+          const cov = sampleCovariance(alignedDeltas[i], portfolioDelta);
+          const contribution = cov !== null ? cov / portfolioVar : null;
+          return [
+            `<span class="mono">${escapeHtml(a.account_id)}</span>`,
+            contribution !== null ? `${(contribution * 100).toFixed(1)}%` : pill("n/a", "muted"),
+          ];
+        });
+      }
+      if (!rows) {
+        marginalSection.innerHTML = `<h4 class="section-note" style="margin-top:16px;">Marginal risk contribution</h4><div class="tr01-cap"></div>`;
+        Components.renderCapabilityState(marginalSection.querySelector(".tr01-cap"), {
+          status: "not_tracked",
+          reason: "The real combined P&L-delta series has zero variance over this overlapping window -- a variance-sensitivity contribution is undefined when the denominator is zero.",
+        });
+      } else {
+        marginalSection.innerHTML = `<h4 class="section-note" style="margin-top:16px;">Marginal risk contribution</h4>
+          <p class="section-note">Real portfolio-variance sensitivity: contribution_i = cov(delta_i, delta_portfolio) / var(delta_portfolio), over ${fmtNum(n)} real, timestamp-aligned overlapping P&amp;L-delta periods across every configured account (absolute P&amp;L-delta terms, never a percentage return). Because delta_portfolio is exactly the sum of every account's delta_i, these sum to 100% by construction.</p>
+          ${table(["Account", "Marginal risk contribution"], rows, "No accounts.")}`;
+      }
+    }
+
+    // --- 7. Diversification benefit ---
+    const diversificationSection = document.createElement("div");
+    wrap.appendChild(diversificationSection);
+    const individualVols = statsResList.map((r) => (r.ok ? r.data.volatility_pnl_delta : null));
+    const allVolsKnown = individualVols.every((v) => v !== null && v !== undefined);
+    const combinedVol = alignedDeltas
+      ? sampleStdev(Array.from({ length: alignedDeltas[0].length }, (_, i) => alignedDeltas.reduce((s, d) => s + d[i], 0)))
+      : null;
+    if (!allVolsKnown || combinedVol === null) {
+      diversificationSection.innerHTML = `<h4 class="section-note" style="margin-top:16px;">Diversification benefit</h4><div class="tr01-cap"></div>`;
+      Components.renderCapabilityState(diversificationSection.querySelector(".tr01-cap"), {
+        status: "not_tracked",
+        reason: !allVolsKnown
+          ? "One or more accounts' real volatility_pnl_delta (GET /accounts/{id}/statistics) is null -- that account's real snapshot history is too short for a non-degenerate sample standard deviation yet."
+          : `Fewer than ${PORTFOLIO_MIN_SAMPLES} real, timestamp-aligned overlapping P&L-delta periods exist to compute a real combined-portfolio volatility.`,
+      });
+    } else {
+      const sumVols = individualVols.reduce((s, v) => s + v, 0);
+      const benefit = sumVols - combinedVol;
+      diversificationSection.innerHTML = `<h4 class="section-note" style="margin-top:16px;">Diversification benefit</h4>
+        <p class="section-note">Real (sum of each account's own real volatility_pnl_delta, shown in the per-account stats table above) minus (real combined-portfolio volatility -- sample stdev of the real, timestamp-aligned combined P&amp;L-delta series). Each per-account figure is that account's own last-window (up to 30 snapshots) volatility; the combined figure spans the full real overlapping history -- both real, but not always drawn from the identical window.</p>
+        <div class="econ-stats"><div><span class="muted">Sum of per-account volatility</span><br><span class="num">${fmtNum(sumVols)}</span></div><div><span class="muted">Combined-portfolio volatility</span><br><span class="num">${fmtNum(combinedVol)}</span></div><div><span class="muted">Diversification benefit</span><br><span class="num">${fmtNum(benefit)}</span></div></div>`;
+    }
+
+    // --- 8. Capacity and cash utilization ---
+    const capacitySection = document.createElement("div");
+    wrap.appendChild(capacitySection);
+    capacitySection.innerHTML = `<h4 class="section-note" style="margin-top:16px;">Capacity and cash utilization</h4>
+      <div><span class="section-note">Capacity: </span><span class="tr01-cap-capacity"></span></div>
+      <p class="section-note" style="margin-top:6px;">Cash utilization (deployed vs. ceiling, per account, real GET /capital-allocation) is already shown in full on <a href="#/trade/positions">Positions and allocations</a> -- not duplicated here.</p>`;
+    Components.renderCapabilityState(capacitySection.querySelector(".tr01-cap-capacity"), {
+      status: "unsupported",
+      reason: "No liquidity/order-book concept (bid/ask spread, market depth) is tracked or exposed by any endpoint in this codebase to compute a real capacity figure from.",
+    });
   }
 
   // Renders the KPI band + its Level-3 caveats, the attention queue, and
@@ -1070,6 +1584,21 @@
                  ${correlationHtml}
                  <div class="tr-unsupported-note">Not built here -- Value-at-Risk / Expected Shortfall: no real returns-distribution model exists anywhere in this codebase to take a real quantile of. Risk-limit-utilization / drawdown-circuit-breaker state (PAUSE_NEW_ENTRIES/REQUIRE_REVIEW) and persisted placement-rate-limit headroom: these are real and already built, but on a separate, not-yet-merged branch (app/drawdown_governor.py, app/placement_rate_limiter.py on claude/signal-copier-safety-features) -- not available on this branch. Liquidity-risk heatmap: no real liquidity data (spread, order-book depth) exists anywhere in this codebase.</div>`,
         });
+
+        // Phase D: "Strategy / sleeve portfolio risk" -- appended below the
+        // content StateMatrix.render just set, same append-after-innerHTML
+        // convention this file already uses for the notional donut/risk-bar
+        // charts in loadGlanceSection's p10 panel below.
+        if (accounts.length >= 2) {
+          const lifecyclesForPortfolio = (positionsRes.ok && positionsRes.data && positionsRes.data.managed_lifecycles) || [];
+          const positionsForPortfolio = (positionsRes.ok && positionsRes.data && positionsRes.data.positions) || [];
+          await renderPortfolioSleevePanel(ctx, panelEls.risk2, accounts, statsResList, lifecyclesForPortfolio, positionsForPortfolio);
+        } else {
+          panelEls.risk2.insertAdjacentHTML(
+            "beforeend",
+            `<h3 class="section-note" style="margin-top:20px;">Strategy / sleeve portfolio risk</h3><p class="section-note">Needs at least 2 accounts to compute -- only ${accounts.length} account configured.</p>`
+          );
+        }
       }
     }
 
