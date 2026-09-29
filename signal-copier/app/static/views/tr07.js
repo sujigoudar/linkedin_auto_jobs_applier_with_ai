@@ -30,6 +30,19 @@
 (function () {
   "use strict";
 
+  // See tr04.js for why this placeholder-slot pattern exists: capability-
+  // state badges render into a real DOM element, but this view builds
+  // table rows as one HTML string before insertion.
+  function capSlot(id) {
+    return `<span class="cap-state-slot" id="${id}"></span>`;
+  }
+  function mountCapStates(root, specs) {
+    for (const [id, opts] of specs) {
+      const el = root.querySelector(`#${id}`);
+      if (el) Components.renderCapabilityState(el, opts);
+    }
+  }
+
   function shell() {
     return `
       <section class="tr-panel" id="tr07-p01"><h2>Accounts</h2><div class="tr-panel-body"></div></section>
@@ -119,22 +132,30 @@
       return [
         `<a class="mono" href="#tr07-broker-${escapeAttr(a.broker)}" data-open-capability="${escapeAttr(a.broker)}">${escapeHtml(a.account_id)}</a>`,
         `<span class="mono">${escapeHtml(a.broker)}</span>`,
-        `<span class="tr-not-tracked">not tracked in this build</span>`,
-        `<span class="tr-not-tracked">not tracked in this build</span>`,
+        capSlot(`tr07-cap-venue-${escapeAttr(a.account_id)}`),
+        capSlot(`tr07-cap-env-${escapeAttr(a.account_id)}`),
         products,
         broker ? pill("registered adapter", "ok") : pill("no adapter registered", "bad"),
         typeof qualification === "string" ? qualification : qualification,
-        `<span class="tr-not-tracked">not tracked in this build</span>`,
+        capSlot(`tr07-cap-writer-${escapeAttr(a.account_id)}`),
       ];
     });
     StateMatrix.render(els.accounts, {
       state: "ready",
-      html: `<p class="section-note">Venue/API variant, Environment and Writer site are not tracked per account in this build. Products is approximated from each account's symbol_map (a rename map, not a real product allowlist) -- click an account to jump to its adapter's row in the Capability matrix below.</p>${table(
+      html: `<p class="section-note">Products is approximated from each account's symbol_map (a rename map, not a real product allowlist) -- click an account to jump to its adapter's row in the Capability matrix below.</p>${table(
         ["Account", "Adapter", "Venue/API", "Environment", "Products", "Connection", "Qualification", "Writer site"],
         accountRows,
         "No accounts."
       )}`,
     });
+    mountCapStates(
+      els.accounts,
+      accounts.flatMap((a) => [
+        [`tr07-cap-venue-${escapeAttr(a.account_id)}`, { status: "not_tracked", reason: "Venue/API variant is not tracked per account in this build." }],
+        [`tr07-cap-env-${escapeAttr(a.account_id)}`, { status: "not_tracked", reason: "Environment (simulation/paper/live) is not tracked per account in this build." }],
+        [`tr07-cap-writer-${escapeAttr(a.account_id)}`, { status: "not_tracked", reason: "Writer site is not tracked per account in this build." }],
+      ])
+    );
     els.accounts.querySelectorAll("[data-open-capability]").forEach((a) => {
       a.addEventListener("click", () => {
         const target = els.capabilities.querySelector(`#tr07-broker-${CSS.escape(a.getAttribute("data-open-capability"))}`);

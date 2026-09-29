@@ -35,6 +35,17 @@
 (function () {
   "use strict";
 
+  // See tr04.js for why this placeholder-slot pattern exists.
+  function capSlot(id) {
+    return `<span class="cap-state-slot" id="${id}"></span>`;
+  }
+  function mountCapStates(root, specs) {
+    for (const [id, opts] of specs) {
+      const el = root.querySelector(`#${id}`);
+      if (el) Components.renderCapabilityState(el, opts);
+    }
+  }
+
   function shell() {
     return `
       <section class="tr-panel" id="tr11-p01"><h2>Rule priority</h2><div class="tr-panel-body"></div></section>
@@ -96,8 +107,9 @@
     const accounts = accountsRes.data.accounts || [];
     const accountsById = new Map(accounts.map((a) => [a.account_id, a]));
 
-    StateMatrix.render(els.diff, {
-      state: "unsupported",
+    els.diff.removeAttribute("aria-busy");
+    Components.renderCapabilityState(els.diff, {
+      status: "unsupported",
       reason: "No routing-rule revision/version history is tracked in this build (config_routing_rules stores only the current row per id, no change log) -- there is nothing real to diff here.",
     });
 
@@ -137,16 +149,26 @@
       escapeHtml(r.source),
       r.destinations.length ? escapeHtml(r.destinations.join(", ")) : pill("none", "bad"),
       r.symbol_filter && r.symbol_filter.length ? escapeHtml(r.symbol_filter.join(", ")) : pill("all symbols", "muted"),
-      `<span class="tr-not-tracked">not tracked in this build</span>`,
+      capSlot(`tr11-cap-instrument-filter-${r.id}`),
     ]);
     StateMatrix.render(els.match, {
       state: "ready",
-      html: `<p class="section-note">Analyst scoping (analyst_ids) and an instrument-verified filter distinct from the raw symbol string are not tracked fields in this build's rule model.</p>${table(
+      html: table(
         ["Rule", "Source", "Assets", "Symbol filter", "Instrument filter"],
         matchRows,
         "No rules."
-      )}`,
+      ),
     });
+    mountCapStates(
+      els.match,
+      rules.map((r) => [
+        `tr11-cap-instrument-filter-${r.id}`,
+        {
+          status: "not_tracked",
+          reason: "Analyst scoping (analyst_ids) and an instrument-verified filter distinct from the raw symbol string are not tracked fields in this build's rule model.",
+        },
+      ])
+    );
 
     // --- Conflicts (real SIG-01 duplicate-destination detection) ---
     const bySourceDest = new Map(); // "source|account_id" -> [rule ids]

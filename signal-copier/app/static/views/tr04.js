@@ -69,6 +69,22 @@
 (function () {
   "use strict";
 
+  // Placeholder-slot helper: capability-state badges (Components.
+  // renderCapabilityState) render into a real DOM element, but this view
+  // builds most panels as one big HTML string (table rows, checklists)
+  // before it is inserted. `capSlot` reserves an id inside that string;
+  // `mountCapStates` is called once the string has been assigned to
+  // `.innerHTML` so it can find those ids and fill each one in.
+  function capSlot(id) {
+    return `<span class="cap-state-slot" id="${id}"></span>`;
+  }
+  function mountCapStates(root, specs) {
+    for (const [id, opts] of specs) {
+      const el = root.querySelector(`#${id}`);
+      if (el) Components.renderCapabilityState(el, opts);
+    }
+  }
+
   // One persistent Chart.js instance per canvas -- destroyed and
   // recreated on every load() the same way tr14.js/tr15.js/dashboard.html
   // already do, so repeated polls (ctx.registerPoll below) never leak
@@ -253,17 +269,35 @@
       const checklist = [
         ["Signal store reachable", boolPill(h.database_ok)],
         ["Ingestion-adjacent workers (reconciler/price monitor) making progress", boolPill(h.price_monitor_ok && h.reconciler_ok)],
-        ["Per-source connection status", pill("not exposed by this build", "muted")],
-        ["Trading authority (per source)", pill("not exposed by this build", "muted")],
+        ["Per-source connection status", capSlot("tr04-cap-conn-status")],
+        ["Trading authority (per source)", capSlot("tr04-cap-trading-authority")],
       ];
       StateMatrix.render(els.status, {
         state: "ready",
-        html: `<p class="section-note">Independently evaluated conditions -- not collapsed into one badge. Per-source connection/authority checks are not yet exposed by any endpoint in this build (see TR-09 Signal providers and collectors for that surface, in a later batch).</p>${table(
+        html: `<p class="section-note">Independently evaluated conditions -- not collapsed into one badge.</p>${table(
           ["Condition", "Status"],
           checklist,
           "No conditions."
         )}`,
       });
+      mountCapStates(els.status, [
+        [
+          "tr04-cap-conn-status",
+          {
+            status: "not_tracked",
+            reason: "Per-source connection status is not exposed by any endpoint in this build.",
+            remediation: "See TR-09 Signal providers and collectors (a later batch) for that surface.",
+          },
+        ],
+        [
+          "tr04-cap-trading-authority",
+          {
+            status: "not_tracked",
+            reason: "Trading authority (per source) is not exposed by any endpoint in this build.",
+            remediation: "See TR-09 Signal providers and collectors (a later batch) for that surface.",
+          },
+        ],
+      ]);
     }
 
     const signalsRes = await ctx.fetchJSON("/signals?limit=100");
@@ -326,7 +360,7 @@
         escapeHtml(s.side || "—"),
         `<span class="mono">${escapeHtml(s.symbol)}</span>`,
         pill("accepted (recorded)", "ok"),
-        `<span class="tr-not-tracked">rejected/ignored instructions are not persisted in this build</span>`,
+        capSlot(`tr04-cap-disposition-${escapeAttr(s.id)}`),
       ]);
       StateMatrix.render(els.disposition, {
         state: "ready",
@@ -336,9 +370,23 @@
           "No authorized signals have been received."
         ),
       });
+      mountCapStates(
+        els.disposition,
+        signals.map((s) => [
+          `tr04-cap-disposition-${escapeAttr(s.id)}`,
+          {
+            status: "not_tracked",
+            reason: "Rejected/ignored instructions are not persisted in this build.",
+          },
+        ])
+      );
     }
 
-    StateMatrix.render(els.backlog, { state: "unsupported", reason: "No ingestion queue-depth/backlog metric is exposed by any endpoint in this build -- signals are processed synchronously per request (see app/engine.py), so there is no queue to report depth for." });
+    els.backlog.removeAttribute("aria-busy");
+    Components.renderCapabilityState(els.backlog, {
+      status: "unsupported",
+      reason: "No ingestion queue-depth/backlog metric is exposed by any endpoint in this build -- signals are processed synchronously per request (see app/engine.py), so there is no queue to report depth for.",
+    });
 
     // --- Signal analytics charts (real, over the same filtered `signals`
     // the disposition table above renders) ---

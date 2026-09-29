@@ -38,6 +38,19 @@
 (function () {
   "use strict";
 
+  // See tr04.js for why this placeholder-slot pattern exists: capability-
+  // state badges render into a real DOM element, but most panels here are
+  // built as one HTML string before insertion.
+  function capSlot(id) {
+    return `<span class="cap-state-slot" id="${id}"></span>`;
+  }
+  function mountCapStates(root, specs) {
+    for (const [id, opts] of specs) {
+      const el = root.querySelector(`#${id}`);
+      if (el) Components.renderCapabilityState(el, opts);
+    }
+  }
+
   function shell() {
     return `
       <section class="tr-panel" id="tr05-p01"><h2>Original/revisions</h2><div class="tr-panel-body"></div></section>
@@ -108,12 +121,22 @@
     ];
     StateMatrix.render(els.parsed, {
       state: "ready",
-      html: `<p class="section-note">Source span, parser version, per-field validation and fallback provenance are not tracked per field in this build -- those columns are omitted rather than fabricated; only the field and its normalized value are real.</p>${table(
+      html: `${capSlot("tr05-cap-parsed-fields")}${table(
         ["Field", "Normalized value"],
         parsedRows.map(([f, v]) => [`<span class="mono">${f}</span>`, v]),
         "No parsed fields."
       )}`,
     });
+    mountCapStates(els.parsed, [
+      [
+        "tr05-cap-parsed-fields",
+        {
+          status: "not_tracked",
+          reason:
+            "Source span, parser version, per-field validation and fallback provenance are not tracked per field in this build -- those columns are omitted rather than fabricated; only the field and its normalized value are real.",
+        },
+      ],
+    ]);
 
     // --- Risk/stop/horizon plan ---
     StateMatrix.render(els.plan, {
@@ -124,9 +147,18 @@
                <div><span class="muted">Stop loss</span><br><span class="num">${signal.stop_loss === null || signal.stop_loss === undefined ? "not set on this signal" : fmtNum(signal.stop_loss)}</span></div>
                <div><span class="muted">Take profit</span><br><span class="num">${signal.take_profit === null || signal.take_profit === undefined ? "not set on this signal" : fmtNum(signal.take_profit)}</span></div>
              </div>
-             <div class="tr-unsupported-note">Horizon (a time-based exit target) is not a field this signal model carries -- not tracked in this build.</div>
+             ${capSlot("tr05-cap-horizon")}
              <p class="section-note">This is a preview of what was parsed, not a live reservation or order -- see Execution links below for what, if anything, actually executed.</p>`,
     });
+    mountCapStates(els.plan, [
+      [
+        "tr05-cap-horizon",
+        {
+          status: "not_tracked",
+          reason: "Horizon (a time-based exit target) is not a field this signal model carries.",
+        },
+      ],
+    ]);
 
     // --- Instrument resolution + Routing preview (need accounts/rules/brokers) ---
     const [rulesRes, accountsRes, brokersRes] = await Promise.all([
@@ -260,15 +292,27 @@
       html: `
         <div class="tr-controls-row">
           <button type="button" id="tr05-reclassify" ${canReclassify ? "" : "disabled"}>Reclassify in sandbox</button>
-          <span class="section-note">${
+          ${
             canReclassify
-              ? "No-effects dry-run against the current parser grammar. Shows an assessment here -- does not create or replace this signal."
-              : "Unsupported for this signal: it did not come through the free-text parser, so there is no source text to reclassify (structured-payload sources have nothing this sandbox can re-parse)."
-          }</span>
+              ? `<span class="section-note">No-effects dry-run against the current parser grammar. Shows an assessment here -- does not create or replace this signal.</span>`
+              : capSlot("tr05-cap-reclassify")
+          }
         </div>
         <div id="tr05-reclassify-result"></div>
       `,
     });
+    if (!canReclassify) {
+      mountCapStates(el, [
+        [
+          "tr05-cap-reclassify",
+          {
+            status: "unsupported",
+            reason:
+              "Unsupported for this signal: it did not come through the free-text parser, so there is no source text to reclassify (structured-payload sources have nothing this sandbox can re-parse).",
+          },
+        ],
+      ]);
+    }
     const btn = el.querySelector("#tr05-reclassify");
     if (btn && canReclassify) {
       btn.addEventListener("click", async () => {
@@ -290,8 +334,8 @@
       });
     }
     const unsupported = document.createElement("div");
-    StateMatrix.render(unsupported, {
-      state: "unsupported",
+    Components.renderCapabilityState(unsupported, {
+      status: "unsupported",
       reason: "Compare parser versions (TR-05-A02) has no backing capability in this build -- there is no versioned parser registry to compare against.",
     });
     el.appendChild(unsupported);

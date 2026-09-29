@@ -48,6 +48,17 @@
     return el.outerHTML;
   }
 
+  // See tr04.js for why this placeholder-slot pattern exists.
+  function capSlot(id) {
+    return `<span class="cap-state-slot" id="${id}"></span>`;
+  }
+  function mountCapStates(root, specs) {
+    for (const [id, opts] of specs) {
+      const el = root.querySelector(`#${id}`);
+      if (el) Components.renderCapabilityState(el, opts);
+    }
+  }
+
   function shell() {
     return `
       <section class="tr-panel" id="tr16-p01"><h2>Site role/writer identity</h2><div class="tr-panel-body"></div></section>
@@ -185,14 +196,14 @@
       [
         "Old-writer fencing",
         "manual (human-executed runbook)",
-        "not tracked",
+        capSlot("tr16-cap-fencing"),
         "deploy/RUNBOOK.md “Before promotion” checklist, step 1",
         "no automated fencing/epoch mechanism exists in this build",
       ],
       [
         "Broker-confirmed position state",
         "manual",
-        "not tracked",
+        capSlot("tr16-cap-position-state"),
         "deploy/RUNBOOK.md step 1",
         "no live broker-position readback is exposed by any GET endpoint in this build (same gap as Reconciliation and trading incidents, TR-13's broker/store comparison)",
       ],
@@ -201,11 +212,30 @@
       state: "ready",
       html: table(["Component", "Mode", "Last usable progress", "Evidence", "Blocker"], checklistRows, "No verified deployment or recovery evidence is recorded."),
     });
+    mountCapStates(els.checklist, [
+      [
+        "tr16-cap-fencing",
+        {
+          status: "not_tracked",
+          reason: "No automated fencing/epoch mechanism exists in this build.",
+        },
+      ],
+      [
+        "tr16-cap-position-state",
+        {
+          status: "not_tracked",
+          reason:
+            "No live broker-position readback is exposed by any GET endpoint in this build (same gap as Reconciliation and trading incidents, TR-13's broker/store comparison).",
+        },
+      ],
+    ]);
 
     // --- Actions: no backing capability for any of the 3 ---
-    StateMatrix.render(els.actions, {
-      state: "unsupported",
-      reason: "TR-16-A01 (Inspect backup), TR-16-A02 (Open non-live restore job) and TR-16-A03 (Prepare promotion review) have no backing capability: this build has no site/release-manifest/backup-generation registry and no fencing-evidence store anywhere in app/db.py. Per this screen's own acceptance note there is deliberately no automatic-promote control regardless -- promotion stays the manual, human-executed deploy/RUNBOOK.md procedure, never a GUI action.",
+    els.actions.removeAttribute("aria-busy");
+    Components.renderCapabilityState(els.actions, {
+      status: "unsupported",
+      reason: "TR-16-A01 (Inspect backup), TR-16-A02 (Open non-live restore job) and TR-16-A03 (Prepare promotion review) have no backing capability: this build has no site/release-manifest/backup-generation registry and no fencing-evidence store anywhere in app/db.py.",
+      remediation: "Promotion stays the manual, human-executed deploy/RUNBOOK.md procedure, never a GUI action -- per this screen's own acceptance note there is deliberately no automatic-promote control regardless.",
     });
 
     ctx.setChrome({ asOf: new Date().toISOString() });

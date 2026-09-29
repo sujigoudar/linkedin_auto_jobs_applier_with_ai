@@ -31,10 +31,31 @@
 (function () {
   "use strict";
 
-  function unsupportedNote(reason) {
-    const el = document.createElement("div");
-    StateMatrix.render(el, { state: "unsupported", reason });
-    return el.outerHTML;
+  // Placeholder-slot pattern (see tr04.js): a capability-state badge
+  // renders into a real DOM element, but this view composes each panel's
+  // markup (form fields plus a gap note) as one HTML string before it is
+  // inserted. `unsupportedNote` reserves a slot and queues its opts;
+  // `flushCapStates` mounts everything queued so far once the panel's
+  // string has actually been assigned to `.innerHTML`.
+  let capIdCounter = 0;
+  let pendingCapStates = [];
+  function capSlot(id) {
+    return `<span class="cap-state-slot" id="${id}"></span>`;
+  }
+  function mountCapStates(root, specs) {
+    for (const [id, opts] of specs) {
+      const el = root.querySelector(`#${id}`);
+      if (el) Components.renderCapabilityState(el, opts);
+    }
+  }
+  function unsupportedNote(reason, remediation) {
+    const id = `tr10-cap-${capIdCounter++}`;
+    pendingCapStates.push([id, { status: "unsupported", reason, remediation }]);
+    return capSlot(id);
+  }
+  function flushCapStates(container) {
+    mountCapStates(container, pendingCapStates);
+    pendingCapStates = [];
   }
 
   function shell() {
@@ -84,6 +105,7 @@
         ${unsupportedNote("Transport instance selection (transport_instance_id) -- a shared collector-instance registry with duplicate-bot detection -- is not tracked in this build. Each provider ID maps directly to at most one bot process/env-var set, checked manually.")}
       `,
     });
+    flushCapStates(els.transport);
 
     StateMatrix.render(els.channel, {
       state: "ready",
@@ -93,10 +115,12 @@
         ${unsupportedNote("Channel/product identity (channel_product_id) and a reviewed, versioned analyst-mapping registry (analyst_mapping) are not tracked in this build. Real analyst entries (below) exist per provider, but display-name matching is not independently reviewed/versioned.")}
       `,
     });
+    flushCapStates(els.channel);
     renderAnalystSection();
 
-    StateMatrix.render(els.rights, {
-      state: "unsupported",
+    els.rights.removeAttribute("aria-busy");
+    Components.renderCapabilityState(els.rights, {
+      status: "unsupported",
       reason: "No rights/resale-grant model exists anywhere in this codebase (no rights_grant_id field) -- there is nothing real to display or collect here.",
     });
 
@@ -235,22 +259,34 @@
         StateMatrix.render(els.comparison, { state: "empty", emptyMessage: "Run parser validation above to see per-message dispositions here." });
         return;
       }
-      const rows = lastDispositions.map((d) => [
+      const rows = lastDispositions.map((d, i) => [
         `<span class="mono">${escapeHtml(d.text)}</span>`,
-        `<span class="tr-not-tracked">not tracked in this build</span>`,
+        capSlot(`tr10-cap-expected-${i}`),
         d.outcome === "matched" || d.signal ? pill(escapeHtml(d.signal ? d.signal.side : d.outcome), "ok") : pill(escapeHtml(d.outcome), "bad"),
-        `<span class="tr-not-tracked">not tracked in this build</span>`,
+        capSlot(`tr10-cap-unconsumed-${i}`),
         d.signal ? escapeHtml(d.signal.symbol) : pill("n/a", "muted"),
-        `<span class="tr-not-tracked">not tracked in this build</span>`,
+        capSlot(`tr10-cap-difference-${i}`),
       ]);
       StateMatrix.render(els.comparison, {
         state: "ready",
-        html: `<p class="section-note">"Expected action", "Unconsumed fields" and "Difference" have no ground-truth/labeled-dataset store in this build -- shown honestly as not tracked rather than fabricated.</p>${table(
+        html: table(
           ["Message/revision", "Expected action", "Parser action", "Unconsumed fields", "Instrument", "Difference"],
           rows,
           "No dispositions."
-        )}`,
+        ),
       });
+      const noGroundTruth = {
+        status: "not_tracked",
+        reason: `"Expected action", "Unconsumed fields" and "Difference" have no ground-truth/labeled-dataset store in this build.`,
+      };
+      mountCapStates(
+        els.comparison,
+        lastDispositions.flatMap((_, i) => [
+          [`tr10-cap-expected-${i}`, noGroundTruth],
+          [`tr10-cap-unconsumed-${i}`, noGroundTruth],
+          [`tr10-cap-difference-${i}`, noGroundTruth],
+        ])
+      );
     }
     renderComparison();
 
@@ -277,6 +313,7 @@
           <div id="tr10-save-result"></div>
           <p class="section-note">If routing rules exist here, editing them is done on <a href="#/trade/routing">Routing and allocation rules (TR-11)</a> -- not duplicated on this form.</p>`,
       });
+      flushCapStates(els.review);
       els.review.querySelector("#tr10-save").addEventListener("click", async () => {
         const errorEl = els.review.querySelector("#tr10-form-error");
         errorEl.textContent = "";

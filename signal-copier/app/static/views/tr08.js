@@ -46,10 +46,31 @@
     `;
   }
 
-  function unsupportedNote(reason) {
-    const el = document.createElement("div");
-    StateMatrix.render(el, { state: "unsupported", reason });
-    return el.outerHTML;
+  // Placeholder-slot pattern (see tr04.js): a capability-state badge
+  // renders into a real DOM element, but this view composes each panel's
+  // markup (form fields plus a gap note) as one HTML string before it is
+  // inserted. `unsupportedNote` reserves a slot and queues its opts;
+  // `flushCapStates` mounts everything queued so far once the panel's
+  // string has actually been assigned to `.innerHTML`.
+  let capIdCounter = 0;
+  let pendingCapStates = [];
+  function capSlot(id) {
+    return `<span class="cap-state-slot" id="${id}"></span>`;
+  }
+  function mountCapStates(root, specs) {
+    for (const [id, opts] of specs) {
+      const el = root.querySelector(`#${id}`);
+      if (el) Components.renderCapabilityState(el, opts);
+    }
+  }
+  function unsupportedNote(reason, remediation) {
+    const id = `tr08-cap-${capIdCounter++}`;
+    pendingCapStates.push([id, { status: "unsupported", reason, remediation }]);
+    return capSlot(id);
+  }
+  function flushCapStates(container) {
+    mountCapStates(container, pendingCapStates);
+    pendingCapStates = [];
   }
 
   async function load(ctx) {
@@ -93,6 +114,7 @@
         ${unsupportedNote("Environment (simulation/paper/live) is not a tracked field on an account in this build -- there is no per-environment provider mapping to verify against.")}
       `,
     });
+    flushCapStates(els.adapter);
 
     StateMatrix.render(els.identity, {
       state: "ready",
@@ -102,9 +124,11 @@
         ${unsupportedNote("External broker account reference (external_account_ref) and venue/API variant (venue_id) are not tracked fields in this build's account model.")}
       `,
     });
+    flushCapStates(els.identity);
 
-    StateMatrix.render(els.credential, {
-      state: "unsupported",
+    els.credential.removeAttribute("aria-busy");
+    Components.renderCapabilityState(els.credential, {
+      status: "unsupported",
       reason: "Secret reference (credential_ref) is not stored per account in this build -- broker credentials remain environment variables set separately, outside this form, per this project's \"never store secrets in config\" rule (see README.md's Security notes). No raw secret is ever returned or accepted here.",
     });
 
@@ -116,6 +140,7 @@
         ${unsupportedNote("Position mode (netting/hedged/spot) is not a tracked field in this build's account model.")}
       `,
     });
+    flushCapStates(els.products);
 
     async function renderCapabilities(adapterName) {
       const broker = brokers.find((b) => b.name === adapterName);
@@ -140,6 +165,7 @@
         )}
         ${unsupportedNote("Live identity/scope/position read-only checks against this specific (not-yet-saved) account are not available -- no credentials are entered in this form, and this build has no connectivity-check endpoint for an unconfigured account.")}`,
       });
+      flushCapStates(els.capabilities);
     }
 
     function currentDraft() {
