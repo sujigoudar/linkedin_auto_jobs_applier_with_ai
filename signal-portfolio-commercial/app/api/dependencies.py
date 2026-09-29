@@ -20,6 +20,7 @@ the first place).
 """
 from __future__ import annotations
 
+import hmac
 from collections.abc import Iterator
 
 from fastapi import Depends, HTTPException, Request
@@ -68,7 +69,12 @@ def get_current_scope(request: Request, db: Session = Depends(get_db_session)) -
 
     if request.method not in ("GET", "HEAD", "OPTIONS"):
         csrf_header = request.headers.get("X-CSRF-Token")
-        if not csrf_header or csrf_header != web_session.csrf_token:
+        # Constant-time comparison -- a plain `!=` here would leak, via
+        # response-timing, how many leading bytes of a guessed
+        # X-CSRF-Token match the real one, the same class of bug
+        # `relay_auth.py`/`stripe_webhook.py` already avoid with
+        # `hmac.compare_digest` for their own secrets.
+        if not csrf_header or not hmac.compare_digest(csrf_header, web_session.csrf_token):
             raise HTTPException(status_code=403, detail="missing or invalid CSRF token")
 
     try:

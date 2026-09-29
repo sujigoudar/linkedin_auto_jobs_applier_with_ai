@@ -205,3 +205,38 @@ def test_cookie_authenticated_mutation_without_csrf_header_is_refused(db_session
 
     assert response.status_code == 403
     assert "CSRF" in response.text
+
+
+def test_cookie_authenticated_mutation_with_wrong_csrf_token_is_refused(db_session):
+    """A well-formed but wrong CSRF header (the shape a guessing/timing
+    attack would send) must still be flatly rejected -- `get_current_scope`
+    compares it against the real token with `hmac.compare_digest`, never
+    a short-circuiting `!=`, precisely so a near-miss guess is denied
+    exactly like a completely wrong one, in constant time."""
+    client = _client(db_session)
+    signup = client.post(
+        "/auth/signup",
+        data={"email": "csrf-wrong@example.com", "password": "pw-12345678", "tenant_display_name": "T", "accept_terms": "1"},
+    )
+    token = _extract_query_param(signup.headers["location"], "token")
+    client.get(f"/auth/verify?token={token}")
+
+    response = client.post(
+        "/app/copy/does-not-exist/cancel",
+        headers={"X-CSRF-Token": "x" * 43},
+    )
+    assert response.status_code == 403
+    assert "CSRF" in response.text
+
+
+def test_csrf_comparison_uses_constant_time_compare():
+    """Static guard against reintroducing a timing side-channel: the
+    cookie-mutation CSRF check must go through `hmac.compare_digest`,
+    never a plain `==`/`!=` on the two token strings directly."""
+    import inspect
+
+    from app.api import dependencies
+
+    source = inspect.getsource(dependencies.get_current_scope)
+    assert "hmac.compare_digest" in source
+    assert "csrf_header != web_session.csrf_token" not in source
