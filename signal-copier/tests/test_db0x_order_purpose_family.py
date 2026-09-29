@@ -353,6 +353,7 @@ async def test_paper_broker_fee_per_fill_is_explicit_zero_not_untracked():
 async def test_other_brokers_still_report_no_fee_and_no_balance_where_undeclared():
     """Every other adapter must keep reporting these as genuinely
     unsupported -- never silently inherit PaperBroker's real tracking."""
+    pytest.importorskip("ccxt")  # optional dependency -- not installed in CI (see requirements.txt)
     from app.brokers.ccxt_broker import CCXTBroker
 
     ccxt_broker = CCXTBroker(exchange_id="binance")
