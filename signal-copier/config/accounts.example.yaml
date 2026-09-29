@@ -12,9 +12,15 @@ accounts:
     enabled: true
     max_notional_exposure: 5000   # optional, opt-in (E03): reject an entry that would push this
                                    # account's confirmed open notional (quantity * price, summed
-                                   # across symbols at cost) over this ceiling -- only checked
-                                   # when the signal carries a price. See
+                                   # across symbols at cost) over this ceiling. A signal with no
+                                   # price, or an account whose open exposure can't be fully
+                                   # resolved from confirmed fills, is REJECTED, not skipped. See
                                    # app/capital_allocator.py's module docstring for exact scope.
+    risk_percent_of_equity: 0.02  # optional, opt-in (E03): reject an entry whose risk-to-stop
+                                   # (|entry_price - stop_loss| * quantity) would exceed this
+                                   # fraction (0-1) of the account's real, freshly-fetched equity.
+                                   # Requires stop_loss on the signal and a broker that can report
+                                   # equity (has_balance_capability) -- fails closed otherwise.
     symbol_map:
       BTCUSDT: BTC/USDT      # TradingView-style symbol -> ccxt unified symbol
       ETHUSDT: ETH/USDT

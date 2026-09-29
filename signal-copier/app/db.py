@@ -175,7 +175,8 @@ CREATE TABLE IF NOT EXISTS config_accounts (
     symbol_map TEXT NOT NULL DEFAULT '{}',
     enabled INTEGER NOT NULL DEFAULT 1,
     managed_lifecycle INTEGER NOT NULL DEFAULT 0,
-    max_notional_exposure REAL
+    max_notional_exposure REAL,
+    risk_percent_of_equity REAL
 );
 
 CREATE TABLE IF NOT EXISTS config_routing_rules (
@@ -570,6 +571,7 @@ _COLUMN_MIGRATIONS = [
     ("sessions", "credential_epoch", "TEXT"),
     ("idempotency_records", "fingerprint", "TEXT"),
     ("config_accounts", "max_notional_exposure", "REAL"),
+    ("config_accounts", "risk_percent_of_equity", "REAL"),
     ("orders", "submitted_at", "TEXT"),
     ("orders", "protection_confirmed_at", "TEXT"),
     ("orders", "purpose", "TEXT"),
@@ -1459,7 +1461,8 @@ class SignalStore:
         with self._connect() as conn:
             rows = conn.execute(
                 """SELECT account_id, broker, multiplier, fixed_quantity, symbol_map, enabled,
-                          managed_lifecycle, max_notional_exposure FROM config_accounts ORDER BY account_id"""
+                          managed_lifecycle, max_notional_exposure, risk_percent_of_equity
+                   FROM config_accounts ORDER BY account_id"""
             ).fetchall()
         return [
             {
@@ -1471,6 +1474,7 @@ class SignalStore:
                 "enabled": bool(r[5]),
                 "managed_lifecycle": bool(r[6]),
                 "max_notional_exposure": r[7],
+                "risk_percent_of_equity": r[8],
             }
             for r in rows
         ]
@@ -1485,18 +1489,20 @@ class SignalStore:
         enabled: bool = True,
         managed_lifecycle: bool = False,
         max_notional_exposure: float | None = None,
+        risk_percent_of_equity: float | None = None,
     ) -> None:
         with self._connect() as conn:
             conn.execute(
                 """INSERT INTO config_accounts
                    (account_id, broker, multiplier, fixed_quantity, symbol_map, enabled, managed_lifecycle,
-                    max_notional_exposure)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    max_notional_exposure, risk_percent_of_equity)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT (account_id) DO UPDATE SET
                      broker = excluded.broker, multiplier = excluded.multiplier,
                      fixed_quantity = excluded.fixed_quantity, symbol_map = excluded.symbol_map,
                      enabled = excluded.enabled, managed_lifecycle = excluded.managed_lifecycle,
-                     max_notional_exposure = excluded.max_notional_exposure""",
+                     max_notional_exposure = excluded.max_notional_exposure,
+                     risk_percent_of_equity = excluded.risk_percent_of_equity""",
                 (
                     account_id,
                     broker,
@@ -1506,6 +1512,7 @@ class SignalStore:
                     int(enabled),
                     int(managed_lifecycle),
                     max_notional_exposure,
+                    risk_percent_of_equity,
                 ),
             )
 

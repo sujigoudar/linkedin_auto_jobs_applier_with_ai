@@ -352,6 +352,16 @@ class _Settings(BaseSettings):
     # deployment.
     EXPORT_OUTBOX_SIZE_CEILING_BYTES: int = 256 * 1024 * 1024
 
+    # E03 (owner-wide exposure): this service is single-tenant -- one
+    # RoutingConfig, one set of destination accounts, one owner. An
+    # opt-in ceiling on the SUM of every configured account's confirmed +
+    # pending notional exposure (see app/capital_allocator.py's
+    # `owner_wide_exposure`), independent of and in addition to any
+    # per-account `max_notional_exposure`. `None` (the default) means no
+    # owner-wide ceiling is enforced -- existing single-account behavior
+    # is unchanged unless this is explicitly set.
+    MAX_OWNER_NOTIONAL_EXPOSURE: float | None = None
+
 
 _settings = _Settings()
 
@@ -376,6 +386,8 @@ LEGACY_DASHBOARD_ENABLED = _settings.LEGACY_DASHBOARD_ENABLED
 
 TELEGRAM_BOT_TOKEN = _settings.TELEGRAM_BOT_TOKEN
 TELEGRAM_CHAT_ID = _settings.TELEGRAM_CHAT_ID
+
+MAX_OWNER_NOTIONAL_EXPOSURE = _settings.MAX_OWNER_NOTIONAL_EXPOSURE
 
 DISCORD_BOT_TOKEN = _settings.DISCORD_BOT_TOKEN
 DISCORD_CHANNEL_ID = _settings.DISCORD_CHANNEL_ID

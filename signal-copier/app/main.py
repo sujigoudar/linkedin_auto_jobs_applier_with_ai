@@ -1056,8 +1056,16 @@ async def get_capital_allocation(_owner: dict = Depends(require_owner_read)) -> 
       has opted out of E03's exposure gate entirely (the default).
     - `available_notional`: `max_notional_exposure - deployed_notional -
       reserved_notional`, `null` (never a guess) when no ceiling is
-      configured for this account -- there is no real capacity figure to
-      report without one.
+      configured for this account, OR when `unresolved_symbols` below is
+      non-empty (a known-incomplete `deployed_notional` makes any
+      "headroom" figure unreliable -- see app/capital_allocator.py's
+      `ExposureReport`).
+    - `unresolved_symbols`: symbols this account holds a confirmed-fill
+      history for that `confirmed_open_notional` could not resolve an
+      average cost for -- non-empty means `deployed_notional` genuinely
+      UNDERSTATES this account's real open exposure (never treated as
+      zero by the real E03 admission gate itself, which refuses new
+      admissions for this account while this is non-empty).
 
     `deployed_notional` and `reserved_notional` are never double-counted
     against each other: the former only ever counts a symbol once a fill is
@@ -1068,10 +1076,20 @@ async def get_capital_allocation(_owner: dict = Depends(require_owner_read)) -> 
     notional` in one sum, never twice)."""
     accounts_out = []
     for account_id, account in routing_config.accounts.items():
-        deployed = confirmed_open_notional(store, account_id)
+        exposure = confirmed_open_notional(store, account_id)
+        deployed = exposure.notional
         reserved = engine.capital_allocator.pending_reservation(account_id)
         max_exposure = account.max_notional_exposure
-        available = None if max_exposure is None else max_exposure - deployed - reserved
+        # `available_notional` is only ever a real figure when this
+        # account's exposure is fully resolved -- a non-empty
+        # `unresolved_symbols` means `deployed` is a known understatement,
+        # so reporting a headroom number here would misrepresent real
+        # capacity. See app/capital_allocator.py's ExposureReport.
+        available = (
+            None
+            if max_exposure is None or exposure.has_unresolved
+            else max_exposure - deployed - reserved
+        )
         accounts_out.append(
             {
                 "account_id": account_id,
@@ -1079,6 +1097,7 @@ async def get_capital_allocation(_owner: dict = Depends(require_owner_read)) -> 
                 "reserved_notional": reserved,
                 "max_notional_exposure": max_exposure,
                 "available_notional": available,
+                "unresolved_symbols": exposure.unresolved_symbols,
             }
         )
     return {"accounts": accounts_out}
@@ -1146,15 +1165,23 @@ async def get_sizing_preview(
         )
         accounts_out = []
         for account_id, account in routing_config.accounts.items():
-            deployed = confirmed_open_notional(store, account_id)
+            exposure = confirmed_open_notional(store, account_id)
+            deployed = exposure.notional
             reserved = engine.capital_allocator.pending_reservation(account_id)
             max_exposure = account.max_notional_exposure
             expected_quantity = size_for_account(real_signal, account)
             notional = expected_quantity * real_signal.price if real_signal.price is not None else None
+            # A ceiling check against a known-incomplete `deployed` figure
+            # would understate real exposure -- report unknown rather than
+            # a falsely-reassuring `False` (see ExposureReport.has_unresolved).
             would_exceed_ceiling = (
-                (deployed + reserved + notional) > max_exposure
-                if max_exposure is not None and notional is not None
-                else None
+                None
+                if exposure.has_unresolved
+                else (
+                    (deployed + reserved + notional) > max_exposure
+                    if max_exposure is not None and notional is not None
+                    else None
+                )
             )
             accounts_out.append(
                 {
@@ -1165,13 +1192,15 @@ async def get_sizing_preview(
                     "reserved_notional": reserved,
                     "max_notional_exposure": max_exposure,
                     "would_exceed_ceiling": would_exceed_ceiling,
+                    "unresolved_symbols": exposure.unresolved_symbols,
                 }
             )
         return {"signal_id": signal_id, "signal_price": real_signal.price, "accounts": accounts_out}
 
     accounts_out = []
     for account_id, account in routing_config.accounts.items():
-        deployed = confirmed_open_notional(store, account_id)
+        exposure = confirmed_open_notional(store, account_id)
+        deployed = exposure.notional
         reserved = engine.capital_allocator.pending_reservation(account_id)
         max_exposure = account.max_notional_exposure
         scenario_rows = []
@@ -1185,9 +1214,13 @@ async def get_sizing_preview(
             expected_quantity = size_for_account(hypothetical_signal, account)
             notional = expected_quantity * price if price is not None else None
             would_exceed_ceiling = (
-                (deployed + reserved + notional) > max_exposure
-                if max_exposure is not None and notional is not None
-                else None
+                None
+                if exposure.has_unresolved
+                else (
+                    (deployed + reserved + notional) > max_exposure
+                    if max_exposure is not None and notional is not None
+                    else None
+                )
             )
             scenario_rows.append(
                 {
@@ -1206,6 +1239,7 @@ async def get_sizing_preview(
                 "deployed_notional": deployed,
                 "reserved_notional": reserved,
                 "max_notional_exposure": max_exposure,
+                "unresolved_symbols": exposure.unresolved_symbols,
                 "scenarios": scenario_rows,
             }
         )
@@ -1635,10 +1669,11 @@ class AccountRequest(BaseModel):
     enabled: bool = True
     managed_lifecycle: bool = False
     max_notional_exposure: float | None = Field(default=None, gt=0)
+    risk_percent_of_equity: float | None = Field(default=None, gt=0, le=1)
 
-    _reject_bool_multiplier = field_validator("multiplier", "fixed_quantity", "max_notional_exposure", mode="before")(
-        _reject_bool_scaling_value
-    )
+    _reject_bool_multiplier = field_validator(
+        "multiplier", "fixed_quantity", "max_notional_exposure", "risk_percent_of_equity", mode="before"
+    )(_reject_bool_scaling_value)
 
 
 @app.get("/accounts")
@@ -1684,6 +1719,7 @@ async def create_or_update_account(request: AccountRequest, _owner: dict = Depen
         enabled=request.enabled,
         managed_lifecycle=request.managed_lifecycle,
         max_notional_exposure=request.max_notional_exposure,
+        risk_percent_of_equity=request.risk_percent_of_equity,
     )
     _reload_routing_config()
     return {"account_id": request.account_id, "status": "saved"}
@@ -1869,15 +1905,23 @@ async def simulate_routing_rules(request: RoutingSimulateRequest, _owner: dict =
                 "status": "not_applicable",
                 "reason": "this signal is already rejected before the real engine would reach the capital-admission step (see entry_admission/asset_class above).",
             }
-        elif account.max_notional_exposure is None or request.price is None:
+        elif (
+            account.max_notional_exposure is None
+            and account.risk_percent_of_equity is None
+            and engine.max_owner_notional_exposure is None
+        ):
             capital_check = {
                 "status": "skipped",
-                "reason": "no max_notional_exposure configured for this account, or the hypothetical signal has no price -- the real engine's own _try_reserve_capital skips this check the exact same way (see app/capital_allocator.py).",
+                "reason": "no capital/risk exposure gate (max_notional_exposure, risk_percent_of_equity, or an owner-wide ceiling) is configured for this account -- the real engine's own _try_reserve_capital is a no-op the exact same way (see app/capital_allocator.py).",
             }
         else:
             quantity = account.fixed_quantity if account.fixed_quantity is not None else (
                 (request.quantity if request.quantity is not None else 1.0) * account.multiplier
             )
+            # A gate IS configured, so a missing price is now a real
+            # rejection (fail-closed), not a skip -- `_try_reserve_capital`
+            # itself makes that call; this dry run just reports whatever it
+            # genuinely decides, never a separately reimplemented "skip".
             admitted, notional, rejection = await engine._try_reserve_capital(account, synthetic_signal, quantity)
             if admitted:
                 # Real admit() really reserved `notional` against the real
@@ -1889,7 +1933,7 @@ async def simulate_routing_rules(request: RoutingSimulateRequest, _owner: dict =
             capital_check = {
                 "status": "would_admit" if admitted else "would_reject",
                 "requested_notional": notional,
-                "deployed_notional": confirmed_open_notional(store, account.account_id),
+                "deployed_notional": confirmed_open_notional(store, account.account_id).notional,
                 "reserved_notional": engine.capital_allocator.pending_reservation(account.account_id),
                 "max_notional_exposure": account.max_notional_exposure,
                 "reason": None if admitted else rejection.message if rejection else None,

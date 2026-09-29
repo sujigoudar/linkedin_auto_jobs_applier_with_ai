@@ -146,9 +146,19 @@ class DestinationAccount:
     #: matters. Off by default — existing accounts behave exactly as
     #: before unless explicitly opted in.
     managed_lifecycle: bool = False
-    #: E03 (bounded): an opt-in notional-exposure ceiling for this account
-    #: (None = no limit, the existing default behavior). See
-    #: app/capital_allocator.py's module docstring for exactly what this
-    #: does and doesn't enforce -- only checked when the admitting signal
-    #: carries a price.
+    #: E03: an opt-in notional-exposure ceiling for this account (None = no
+    #: limit, the existing default behavior). See app/capital_allocator.py's
+    #: module docstring for exactly what this does and doesn't enforce --
+    #: whenever this (or any other gate below) is configured, a signal
+    #: with no resolvable price now REJECTS rather than skipping the check.
     max_notional_exposure: Optional[float] = None
+    #: E03 (risk-basis sizing): an opt-in ceiling on risk-to-stop as a
+    #: percentage (0-1) of this account's real, freshly-fetched equity
+    #: (None = not enforced, the default). A new entry whose
+    #: |entry_price - stop_loss| * quantity would exceed
+    #: `equity * risk_percent_of_equity` is rejected. Fails closed --
+    #: rejects, never silently skips -- whenever the admitting signal has
+    #: no `stop_loss`, or the account's broker can't report a real
+    #: `equity` figure right now. See app/capital_allocator.py's module
+    #: docstring and app/engine.py's `_check_risk_basis`.
+    risk_percent_of_equity: Optional[float] = None

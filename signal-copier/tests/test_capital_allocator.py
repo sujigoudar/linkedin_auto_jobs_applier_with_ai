@@ -28,7 +28,10 @@ def test_confirmed_open_notional_from_a_single_open_position(tmp_path):
     store = SignalStore(tmp_path / "test.db")
     _fill(store, "AAPL", Side.BUY, 10.0, 100.0)
 
-    assert confirmed_open_notional(store, ACCOUNT_ID) == pytest.approx(1000.0)
+    report = confirmed_open_notional(store, ACCOUNT_ID)
+    assert report.notional == pytest.approx(1000.0)
+    assert report.unresolved_symbols == []
+    assert report.has_unresolved is False
 
 
 def test_confirmed_open_notional_sums_across_symbols(tmp_path):
@@ -36,7 +39,7 @@ def test_confirmed_open_notional_sums_across_symbols(tmp_path):
     _fill(store, "AAPL", Side.BUY, 10.0, 100.0)
     _fill(store, "MSFT", Side.BUY, 5.0, 200.0)
 
-    assert confirmed_open_notional(store, ACCOUNT_ID) == pytest.approx(1000.0 + 1000.0)
+    assert confirmed_open_notional(store, ACCOUNT_ID).notional == pytest.approx(1000.0 + 1000.0)
 
 
 def test_confirmed_open_notional_zero_after_full_close(tmp_path):
@@ -44,7 +47,42 @@ def test_confirmed_open_notional_zero_after_full_close(tmp_path):
     _fill(store, "AAPL", Side.BUY, 10.0, 100.0)
     _fill(store, "AAPL", Side.SELL, 10.0, 110.0)
 
-    assert confirmed_open_notional(store, ACCOUNT_ID) == pytest.approx(0.0)
+    report = confirmed_open_notional(store, ACCOUNT_ID)
+    assert report.notional == pytest.approx(0.0)
+    assert report.unresolved_symbols == []
+
+
+def test_confirmed_open_notional_reports_unresolved_symbols_not_zero(tmp_path):
+    """The fix for 'unresolved exposure contributes nothing': a fill this
+    replay can't use (here, a missing filled_price) leaves that symbol's
+    real notional unknown -- it must NEVER be silently summed as 0.0
+    alongside genuinely resolved symbols. This asserts the exact bug the
+    audit named is closed: `unresolved_symbols` surfaces it instead."""
+    store = SignalStore(tmp_path / "test.db")
+    signal = Signal(source="test", symbol="AAPL", side=Side.BUY)
+    store.save_signal(signal)
+    store.save_order_result(
+        OrderResult(
+            account_id=ACCOUNT_ID,
+            status=OrderStatus.FILLED,
+            signal_id=signal.id,
+            filled_quantity=10.0,
+            filled_price=None,  # unresolvable fill: no price to compute a cost basis from
+        ),
+        broker="paper",
+        symbol="AAPL",
+        side=Side.BUY,
+    )
+    # A separate, fully resolved position exists too -- it must not mask
+    # the unresolved one.
+    _fill(store, "MSFT", Side.BUY, 5.0, 200.0)
+
+    report = confirmed_open_notional(store, ACCOUNT_ID)
+    assert report.has_unresolved is True
+    assert "AAPL" in report.unresolved_symbols
+    # The resolved MSFT position still contributes its real notional --
+    # unresolved-ness of one symbol doesn't erase another's known total.
+    assert report.notional == pytest.approx(1000.0)
 
 
 def test_admit_allows_within_ceiling_and_rejects_over_it():

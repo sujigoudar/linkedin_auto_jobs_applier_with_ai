@@ -132,6 +132,7 @@ def load_routing_config(routing_path: Path, accounts_path: Path) -> RoutingConfi
                 enabled=spec.get("enabled", True),
                 managed_lifecycle=spec.get("managed_lifecycle", False),
                 max_notional_exposure=spec.get("max_notional_exposure"),
+                risk_percent_of_equity=spec.get("risk_percent_of_equity"),
             )
 
     rules: list[RoutingRule] = []
@@ -165,6 +166,7 @@ def load_routing_config_from_store(store) -> RoutingConfig:
             enabled=row["enabled"],
             managed_lifecycle=row["managed_lifecycle"],
             max_notional_exposure=row["max_notional_exposure"],
+            risk_percent_of_equity=row["risk_percent_of_equity"],
         )
         for row in store.list_config_accounts()
     }

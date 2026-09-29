@@ -275,16 +275,27 @@ actual available capital still isn't caught before submission — closing
 that gap would mean wiring `get_account_balance` into the admission path
 itself, which is a separate, larger change not attempted here.
 
-An account can still opt into one narrower ceiling: `max_notional_exposure`
-(`app/capital_allocator.py`) rejects an entry that would push this
-account's confirmed open notional (quantity × price, summed at cost
-across every symbol it holds) over that number — an atomic,
-per-account admission gate, so two signals for the same account arriving
-concurrently can't both spend the same remaining capacity. It's opt-in
-(`None` by default, meaning no ceiling), only checked when the admitting
-signal actually carries a price, and doesn't do currency conversion,
-per-analyst overlap accounting, or an owner-wide ceiling across
-accounts — see that module's docstring for the exact scope.
+An account can still opt into narrower gates (`app/capital_allocator.py`):
+`max_notional_exposure` rejects an entry that would push this account's
+confirmed open notional (quantity × price, summed at cost across every
+symbol it holds) over that number; `risk_percent_of_equity` rejects an
+entry whose risk-to-stop (|entry price − stop_loss| × quantity) would
+exceed that percentage of the account's real, freshly-fetched equity; and
+a process-wide `MAX_OWNER_NOTIONAL_EXPOSURE` setting (`app/config.py`)
+rejects an entry that would push the SUM of every configured account's
+confirmed + pending notional over that number (this service is
+single-tenant, so "every configured account" already is "owner-wide").
+All three are atomic per-account (and, for the owner-wide one,
+per-process) admission gates, so two signals arriving concurrently can't
+both spend the same remaining capacity. Every one is opt-in (`None` by
+default, meaning no gate); a signal with no resolvable price is REJECTED
+(not silently skipped) whenever any gate is configured, and an account
+whose open exposure this service's fill replay couldn't fully resolve
+blocks new admissions for that account until it resolves, rather than
+treating the unresolved part as zero. None of this does currency
+conversion, per-analyst overlap accounting, cross-account netting, or
+stress-loss modeling — see `app/capital_allocator.py`'s module docstring
+for the exact, current scope.
 
 **If I have two accounts of the same type (e.g. two options-capable
 accounts), where does an incoming options trade get placed?** Routing is

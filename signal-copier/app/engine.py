@@ -76,7 +76,7 @@ from signal_platform_contracts import Environment, EventEnvelope, EvidenceClass
 
 from app import config
 from app.brokers.base import BrokerAdapter
-from app.capital_allocator import CapitalAllocator, confirmed_open_notional
+from app.capital_allocator import CapitalAllocator, confirmed_open_notional, owner_wide_exposure
 from app.db import SignalStore
 from app.export_events import (
     build_execution_applied_envelope,
@@ -138,6 +138,14 @@ class SignalCopierEngine:
         # previous process against this same database -- see that
         # module's own docstring.
         self.capital_allocator = CapitalAllocator(store=store)
+        # E03 (owner-wide exposure): opt-in global ceiling, see
+        # app/config.py's MAX_OWNER_NOTIONAL_EXPOSURE and
+        # app/capital_allocator.py's `owner_wide_exposure`. Read once at
+        # construction (same pattern every other config.py value this
+        # engine depends on already uses) -- None (the default) means the
+        # owner-wide gate is never evaluated, no change from before this
+        # existed.
+        self.max_owner_notional_exposure: float | None = config.MAX_OWNER_NOTIONAL_EXPOSURE
         # Wired in after construction (app/lifecycle/manager.py's own
         # __init__ can't take this: main.py often constructs a
         # PositionLifecycleManager before this Engine, and so before this
@@ -609,13 +617,106 @@ class SignalCopierEngine:
 
         return results
 
+    def _reject(self, account: DestinationAccount, order_signal: Signal, message: str) -> OrderResult:
+        return OrderResult(
+            account_id=account.account_id, status=OrderStatus.REJECTED, signal_id=order_signal.id, message=message
+        )
+
+    async def _check_risk_basis(
+        self, account: DestinationAccount, order_signal: Signal, quantity: float
+    ) -> tuple[bool, OrderResult | None]:
+        """E03 (risk-basis sizing): `account.risk_percent_of_equity` gates
+        this entry's risk-to-stop (|entry_price - stop_loss| * quantity)
+        against that percentage of the account's real, just-fetched
+        equity. Fails closed -- REJECTS -- for every one of:
+        - no `stop_loss` on the signal (nothing to compute risk-to-stop
+          against; never assumed to be "no stop" == "no risk").
+        - no broker registered for this account, or that broker doesn't
+          implement `get_account_balance` at all (`has_balance_capability`
+          False) -- there is no real equity figure to check against.
+        - `get_account_balance` returns `None`, or a real `AccountBalance`
+          whose `equity` field is itself `None` (broker reachable but this
+          particular figure genuinely unavailable, e.g. a spot account
+          with no unified equity concept) -- same fail-closed treatment as
+          a broker error: an unresolved risk gate is never a passed one.
+        This call always fetches fresh (no cache), so there is no
+        "stale equity" figure this could silently reuse -- see this
+        module's own `_try_reserve_capital` caller for why a fresh fetch
+        per admission is preferred over a cached one that could grow
+        stale."""
+        if account.risk_percent_of_equity is None:
+            # Defensive/fail-closed, unreachable from `_try_reserve_capital`
+            # (its own caller only invokes this when the field IS set) --
+            # kept so this function is safe standalone and so mypy can
+            # narrow the attribute to `float` below.
+            return False, self._reject(
+                account, order_signal, f"account '{account.account_id}' has no risk_percent_of_equity configured"
+            )
+        risk_percent_of_equity = account.risk_percent_of_equity
+        if order_signal.stop_loss is None:
+            return False, self._reject(
+                account,
+                order_signal,
+                f"account '{account.account_id}' has risk_percent_of_equity configured but this signal "
+                "carries no stop_loss -- risk-to-stop can't be computed, refusing rather than admitting "
+                "an unsized risk",
+            )
+        if order_signal.price is None:
+            # Defensive/fail-closed: every real caller (`_try_reserve_capital`)
+            # already rejects a priceless signal before this is ever reached
+            # whenever ANY gate (including this one) is configured -- this
+            # branch exists so this function is safe to call on its own
+            # (never assumes a caller invariant it can't verify) and so
+            # mypy can narrow `order_signal.price` to `float` below.
+            return False, self._reject(
+                account,
+                order_signal,
+                f"account '{account.account_id}' has risk_percent_of_equity configured but this signal "
+                "carries no price -- risk-to-stop can't be computed, refusing",
+            )
+        stop_loss = order_signal.stop_loss
+        price = order_signal.price
+        broker = self.brokers.get(account.broker)
+        if broker is None or not broker.has_balance_capability:
+            return False, self._reject(
+                account,
+                order_signal,
+                f"account '{account.account_id}' has risk_percent_of_equity configured but its broker "
+                f"'{account.broker}' has no way to report real account equity -- refusing rather than "
+                "sizing risk against an unverified/guessed equity figure",
+            )
+        balance = await broker.get_account_balance(account)
+        if balance is None or balance.equity is None:
+            return False, self._reject(
+                account,
+                order_signal,
+                f"account '{account.account_id}' has risk_percent_of_equity configured but its broker "
+                "could not report a current equity figure right now -- refusing rather than sizing risk "
+                "against a stale or invented one",
+            )
+        equity = balance.equity
+        risk_notional = abs(price - stop_loss) * abs(quantity)
+        risk_ceiling = equity * risk_percent_of_equity
+        if risk_notional > risk_ceiling:
+            return False, self._reject(
+                account,
+                order_signal,
+                f"account '{account.account_id}' risk-to-stop ceiling ({risk_percent_of_equity:.4f} of "
+                f"equity {equity:.2f} = {risk_ceiling:.2f}) would be exceeded by this entry's risk "
+                f"({risk_notional:.2f}) -- refusing",
+            )
+        return True, None
+
     async def _try_reserve_capital(
         self, account: DestinationAccount, order_signal: Signal, quantity: float
     ) -> tuple[bool, float, OrderResult | None]:
-        """E03 (bounded): admit this entry against `account.max_notional_exposure`,
-        if configured. Returns (admitted, notional_reserved, rejection_or_None).
-        `notional_reserved` is always the caller's responsibility to release
-        via `self.capital_allocator.release(account.account_id, notional)`
+        """E03: admit this entry against every gate configured for this
+        account and, if configured, this owner: `account.
+        max_notional_exposure`, `account.risk_percent_of_equity`, and
+        `self.max_owner_notional_exposure`. Returns (admitted,
+        notional_reserved, rejection_or_None). `notional_reserved` is
+        always the caller's responsibility to release via
+        `self.capital_allocator.release(account.account_id, notional)`
         once the broker call this admission was gating has returned AND the
         result isn't a PENDING order with a real broker_order_id -- that one
         case defers the release instead, carrying `notional` forward
@@ -626,35 +727,110 @@ class SignalCopierEngine:
         toward neither this reservation nor confirmed exposure. See both
         callers and app/capital_allocator.py's "Known gap" section for why
         every OTHER outcome still releases immediately (0.0 is a safe no-op
-        release when nothing was actually reserved, i.e. the check was
-        skipped)."""
-        if account.max_notional_exposure is None or order_signal.price is None:
-            return True, 0.0, None
-        notional = abs(quantity) * order_signal.price
-        confirmed = confirmed_open_notional(self.store, account.account_id)
-        admitted = await self.capital_allocator.admit(
-            account.account_id,
-            notional,
-            confirmed_exposure=confirmed,
-            max_exposure=account.max_notional_exposure,
-            signal_id=order_signal.id,
+        release when nothing was actually reserved, i.e. no gate was
+        configured).
+
+        Fail-closed, not fail-open, in every one of these cases (a release
+        audit finding this module previously got wrong for the first two):
+        - No gate at all configured for this account or owner-wide: no
+          check to make, admits unconditionally, same as before any of
+          this existed.
+        - SOME gate IS configured but the signal has no `price`: used to
+          silently SKIP the whole check (an unbounded admission, no
+          different from having no ceiling at all). Now REJECTED outright
+          -- this build has no independent current-market-price source to
+          fall back to, and guessing one would be worse than refusing.
+        - This account has open exposure this replay could not resolve
+          (`ExposureReport.unresolved_symbols`, e.g. a fill row with a
+          missing/invalid quantity or price): used to contribute 0.0 to
+          confirmed exposure, i.e. treated as no exposure at all. Now
+          REJECTED -- new admissions are blocked for this account until
+          the position resolves (see app/capital_allocator.py's module
+          docstring, point 2, for why this is safer than inventing a
+          worst-case notional estimate here)."""
+        has_gate = (
+            account.max_notional_exposure is not None
+            or account.risk_percent_of_equity is not None
+            or self.max_owner_notional_exposure is not None
         )
-        if not admitted:
-            return (
-                False,
-                notional,
-                OrderResult(
-                    account_id=account.account_id,
-                    status=OrderStatus.REJECTED,
-                    signal_id=order_signal.id,
-                    message=(
-                        f"account '{account.account_id}' notional exposure ceiling "
-                        f"({account.max_notional_exposure}) would be exceeded by this entry "
-                        f"(confirmed={confirmed:.2f}, requested={notional:.2f}) -- refusing"
-                    ),
-                ),
+        if not has_gate:
+            return True, 0.0, None
+        if order_signal.price is None:
+            return False, 0.0, self._reject(
+                account,
+                order_signal,
+                f"account '{account.account_id}' has a capital/risk exposure gate configured "
+                "(max_notional_exposure, risk_percent_of_equity, and/or an owner-wide ceiling) but this "
+                "signal carries no price -- notional can't be computed and this build has no independent "
+                "current-market-price source to fall back to, so admission is refused rather than "
+                "silently skipping the check (see app/capital_allocator.py)",
             )
-        return True, notional, None
+        notional = abs(quantity) * order_signal.price
+
+        owner_gated = self.max_owner_notional_exposure is not None
+        if owner_gated:
+            await self.capital_allocator.owner_lock.acquire()
+        try:
+            async with self.capital_allocator.account_lock(account.account_id):
+                exposure = confirmed_open_notional(self.store, account.account_id)
+                if exposure.has_unresolved:
+                    return False, notional, self._reject(
+                        account,
+                        order_signal,
+                        f"account '{account.account_id}' has open exposure for symbol(s) "
+                        f"{exposure.unresolved_symbols} this replay could not resolve an average cost for -- "
+                        "true current notional exposure is unknown and can't safely be treated as zero, "
+                        "refusing new admissions for this account until it resolves",
+                    )
+
+                if account.max_notional_exposure is not None:
+                    pending = self.capital_allocator.pending_reservation(account.account_id)
+                    if exposure.notional + pending + notional > account.max_notional_exposure:
+                        return False, notional, self._reject(
+                            account,
+                            order_signal,
+                            f"account '{account.account_id}' notional exposure ceiling "
+                            f"({account.max_notional_exposure}) would be exceeded by this entry "
+                            f"(confirmed={exposure.notional:.2f}, pending={pending:.2f}, "
+                            f"requested={notional:.2f}) -- refusing",
+                        )
+
+                if account.risk_percent_of_equity is not None:
+                    ok, rejection = await self._check_risk_basis(account, order_signal, quantity)
+                    if not ok:
+                        return False, notional, rejection
+
+                if owner_gated:
+                    owner_exposure = owner_wide_exposure(self.store, self.routing.accounts.values(), self.capital_allocator)
+                    if owner_exposure.has_unresolved:
+                        return False, notional, self._reject(
+                            account,
+                            order_signal,
+                            "owner-wide exposure ceiling is configured but at least one account has open "
+                            f"exposure this replay could not resolve ({owner_exposure.unresolved_symbols}) -- "
+                            "true owner-wide notional exposure is unknown, refusing new admissions until it "
+                            "resolves",
+                        )
+                    # `owner_gated` (from `self.max_owner_notional_exposure is
+                    # not None` above) guarantees this is a float here, but
+                    # mypy can't narrow through the boolean flag -- assert
+                    # rather than silently risk a `None` ceiling comparing
+                    # as "always fits" if that ever changed.
+                    assert self.max_owner_notional_exposure is not None
+                    if owner_exposure.notional + notional > self.max_owner_notional_exposure:
+                        return False, notional, self._reject(
+                            account,
+                            order_signal,
+                            f"owner-wide notional exposure ceiling ({self.max_owner_notional_exposure}) would "
+                            f"be exceeded by this entry (owner-wide confirmed+pending="
+                            f"{owner_exposure.notional:.2f}, requested={notional:.2f}) -- refusing",
+                        )
+
+                self.capital_allocator.reserve_locked(account.account_id, notional, signal_id=order_signal.id)
+                return True, notional, None
+        finally:
+            if owner_gated:
+                self.capital_allocator.owner_lock.release()
 
     def _resolve_close(
         self, signal: Signal, account: DestinationAccount, symbol: str
