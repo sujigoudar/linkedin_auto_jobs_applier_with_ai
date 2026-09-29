@@ -40,6 +40,53 @@ class TargetAction(str, enum.Enum):
     ACTIVATE_TRAIL = "activate_trail"
 
 
+class StopTargetEventType(str, enum.Enum):
+    """PU-A4: every REAL, already-occurring state-changing moment this
+    codebase's own `PositionLifecycleManager` produces for a position's
+    stop/target lifecycle — see app/db.py's `stop_target_events` table and
+    `PositionLifecycleManager`'s own call sites for exactly where each of
+    these is appended. Deliberately does NOT include a "breakeven" or
+    "trail_activated" event type: as of this pass, nothing in this
+    branch's live signal path (`app/engine.py`'s `_handle_managed_entry`)
+    ever constructs a `Target(action=ACTIVATE_TRAIL)`, a non-null
+    `TrailingPolicy`, or a move-to-breakeven command (that capability
+    exists only on the sibling `claude/signal-copier-safety-features`
+    branch, as `app/signal_commands.py`'s `MOVE_STOP`/"breakeven" handling
+    and `app/protection_auditor.py`'s `ProtectionAuditor` — neither file
+    exists here). Adding a distinct event type for a trigger this branch's
+    code can't actually reach would be a fabricated event, not a real one.
+    """
+
+    #: A protective stop got broker-confirmed resting (STOP_CONFIRMED) --
+    #: whether that's the very first stop for this position or a fresh
+    #: resubmission after a cancel (see
+    #: `PositionLifecycleManager._place_stop_locked`'s single success
+    #: branch, which is exactly Phase A2's `StopRecord.confirmed_at`
+    #: moment).
+    STOP_PLACED = "stop_placed"
+    #: An already-resting stop's PRICE changed in place (a logical
+    #: `TIGHTEN_STOP` target firing, or a trailing-stop ratchet) -- see
+    #: `PositionLifecycleManager._replace_stop_price`'s in-place-amend
+    #: success branch. Never emitted for a same-price resize (e.g.
+    #: `retry_unprotected_positions`' periodic re-attempt, or a
+    #: quantity-only resize after a partial exit) -- those aren't a
+    #: tightening, they're the same price still resting or a difference
+    #: this event type doesn't describe.
+    STOP_TIGHTENED = "stop_tightened"
+    #: A stop submission came back rejected/errored, or in the ambiguous
+    #: "FILLED-on-submission or no broker_order_id" state
+    #: `_place_stop_locked` treats as unprotected rather than fabricate
+    #: confirmed coverage -- see that method's two failure branches.
+    PROTECTION_FAILED = "protection_failed"
+    #: A logical profit target (a real `Target(action=SELL)`, e.g. the
+    #: single take-profit target `app/engine.py`'s `_handle_managed_entry`
+    #: builds from `signal.take_profit`) actually fired -- its exit order
+    #: reached FILLED or PENDING and `target.fired` was set True -- see
+    #: `PositionLifecycleManager.on_price_update`'s `TargetAction.SELL`
+    #: branch.
+    TARGET_HIT = "target_hit"
+
+
 @dataclass
 class Target:
     """A logical, app-managed profit action — not necessarily a standing broker order.

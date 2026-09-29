@@ -362,6 +362,43 @@ CREATE TABLE IF NOT EXISTS account_equity_snapshots (
 CREATE INDEX IF NOT EXISTS idx_account_equity_snapshots_account_captured
     ON account_equity_snapshots (account_id, captured_at);
 
+-- PU-A4: a real, append-only event log of a managed position's
+-- stop/target lifecycle -- see app/lifecycle/models.py's
+-- `StopTargetEventType` for exactly which event types exist and why (and
+-- which catalog-requested ones, like a breakeven move or a trail
+-- activation, are a documented gap rather than a fabricated event on this
+-- branch). Written by app/lifecycle/manager.py's own call sites at the
+-- exact moment each real state change happens -- never backfilled or
+-- reconstructed after the fact. Rows are NEVER updated or deleted (this
+-- table has no UPDATE/DELETE statement anywhere in this codebase): the
+-- data prerequisite for stop/target analytics (stop-tightening frequency,
+-- TP hit rates, etc.) must be a durable, ordered history, not a
+-- "current state" row a later write could silently overwrite.
+--
+-- `price`/`previous_price` are both nullable and event-type-dependent:
+-- for STOP_PLACED, `price` is the newly-confirmed stop price and
+-- `previous_price` is whatever this same StopRecord's last
+-- broker-confirmed price was before this call (NULL for a true initial
+-- placement); for STOP_TIGHTENED, `price` is the new (tighter) price and
+-- `previous_price` is the price it replaced; for PROTECTION_FAILED,
+-- `price` is the price that was attempted and `previous_price` mirrors
+-- STOP_PLACED's meaning; for TARGET_HIT, `price` is the target's own
+-- trigger price and `previous_price` is always NULL (a target firing has
+-- no "previous target price" to report).
+CREATE TABLE IF NOT EXISTS stop_target_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    account_id TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    at TEXT NOT NULL,
+    price REAL,
+    previous_price REAL,
+    source TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_stop_target_events_account_symbol_at
+    ON stop_target_events (account_id, symbol, at);
+
 CREATE INDEX IF NOT EXISTS idx_orders_executed_at ON orders (executed_at);
 CREATE INDEX IF NOT EXISTS idx_orders_account_id ON orders (account_id);
 CREATE INDEX IF NOT EXISTS idx_signals_received_at ON signals (received_at);
@@ -1032,6 +1069,61 @@ class SignalStore:
                 "unrealized_pnl": r[4],
                 "cumulative_pnl": r[5],
                 "unpriced_open_symbols": json.loads(r[6]) if r[6] else [],
+            }
+            for r in rows
+        ]
+
+    def record_stop_target_event(
+        self,
+        account_id: str,
+        symbol: str,
+        *,
+        event_type: str,
+        at: datetime,
+        price: float | None,
+        previous_price: float | None,
+        source: str,
+    ) -> None:
+        """PU-A4: append one real stop/target lifecycle event -- see
+        `stop_target_events`'s schema comment. Always an append: this is a
+        durable history, and the same (account_id, symbol) can legitimately
+        accumulate many rows over one position's life (an initial
+        placement, zero or more tightenings, a target hit) or across
+        multiple independent episodes over time."""
+        with self._connect() as conn:
+            conn.execute(
+                """INSERT INTO stop_target_events
+                   (account_id, symbol, event_type, at, price, previous_price, source)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (account_id, symbol, event_type, at.isoformat(), price, previous_price, source),
+            )
+
+    def list_stop_target_events(
+        self, account_id: str, symbol: str, *, limit: int = 500
+    ) -> list[dict]:
+        """This position's real stop/target lifecycle event history, oldest
+        first (the natural order for a later charting pass) -- the query
+        surface app/main.py's `GET /positions/{account_id}/{symbol}/stop-events`
+        exposes."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT id, account_id, symbol, event_type, at, price, previous_price, source
+                   FROM stop_target_events
+                   WHERE account_id = ? AND symbol = ?
+                   ORDER BY at ASC, id ASC
+                   LIMIT ?""",
+                (account_id, symbol, limit),
+            ).fetchall()
+        return [
+            {
+                "id": r[0],
+                "account_id": r[1],
+                "symbol": r[2],
+                "event_type": r[3],
+                "at": r[4],
+                "price": r[5],
+                "previous_price": r[6],
+                "source": r[7],
             }
             for r in rows
         ]

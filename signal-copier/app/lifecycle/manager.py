@@ -73,6 +73,7 @@ from app.lifecycle.models import (
     PositionPlan,
     ProtectionStatus,
     StopRecord,
+    StopTargetEventType,
     Target,
     TargetAction,
     TrailingPolicy,
@@ -142,7 +143,10 @@ class PositionLifecycleManager:
                 continue
             lifecycle.stop.desired_price = desired_price
             account = DestinationAccount(account_id=lifecycle.plan.account_id, broker=lifecycle.plan.broker)
-            await self._replace_stop_price(lifecycle, account)
+            # PU-A4: a periodic background retry, not something a live
+            # trading signal drove this instant -- distinct `source` from
+            # the tighten/trailing/entry paths below.
+            await self._replace_stop_price(lifecycle, account, source="reconciliation")
             retried += 1
         return retried
 
@@ -277,6 +281,34 @@ class PositionLifecycleManager:
             closed_at=datetime.now(timezone.utc),
         )
 
+    def _record_stop_target_event(
+        self,
+        lifecycle: PositionLifecycle,
+        event_type: StopTargetEventType,
+        *,
+        price: float | None,
+        previous_price: float | None,
+        source: str,
+    ) -> None:
+        """PU-A4: append one real stop/target lifecycle event for this
+        position to `SignalStore.stop_target_events` -- a no-op with no
+        store wired in (same convention as `_persist`). Callers pass
+        `price`/`previous_price` in that exact order -- see this method's
+        callers for each event type's meaning of the two fields (documented
+        on `StopTargetEventType` and the `stop_target_events` table)."""
+        if self.store is None:
+            return
+        account_id, symbol = lifecycle.key
+        self.store.record_stop_target_event(
+            account_id,
+            symbol,
+            event_type=event_type.value,
+            at=datetime.now(timezone.utc),
+            price=price,
+            previous_price=previous_price,
+            source=source,
+        )
+
     def validate_plan(self, plan: PositionPlan) -> str | None:
         """Design section 11: no provider stop, no released fallback -> NO ENTRY.
         The caller resolves fallbacks (provider -> strategy -> asset-level) and
@@ -407,7 +439,9 @@ class PositionLifecycleManager:
             tx.set_owned(filled_quantity)
             if lifecycle.plan.initial_stop is not None and broker is not None:
                 lifecycle.stop.desired_price = lifecycle.plan.initial_stop
-                await self._place_stop_locked(lifecycle, account, broker, filled_quantity, lifecycle.plan.initial_stop)
+                await self._place_stop_locked(
+                    lifecycle, account, broker, filled_quantity, lifecycle.plan.initial_stop, source="signal"
+                )
 
         self._persist(lifecycle)
         return lifecycle
@@ -669,6 +703,20 @@ class PositionLifecycleManager:
                 results.append(result)
                 if result.status in (OrderStatus.FILLED, OrderStatus.PENDING):
                     target.fired = True
+                    # PU-A4: a real logical profit target actually firing --
+                    # its exit order is at least genuinely in flight (see
+                    # PRO-03's comment just above on why `fired` itself is
+                    # only set here). `price` is the target's own trigger
+                    # level; there is no meaningful "previous target price"
+                    # for a one-shot trigger, so `previous_price` is always
+                    # None for this event type.
+                    self._record_stop_target_event(
+                        lifecycle,
+                        StopTargetEventType.TARGET_HIT,
+                        price=target.trigger_price,
+                        previous_price=None,
+                        source="signal",
+                    )
             elif target.action == TargetAction.TIGHTEN_STOP:
                 target.fired = True
                 await self._tighten_stop_to(lifecycle, account, target.trigger_price)
@@ -840,7 +888,7 @@ class PositionLifecycleManager:
                 # still-working entry order may yet deliver more units.
                 lifecycle.closed = not lifecycle.has_unresolved_entry
             elif had_stop and lifecycle.stop.desired_price is not None:
-                await self._restore_stop_coverage(lifecycle, account, broker, remaining, amended_stop)
+                await self._restore_stop_coverage(lifecycle, account, broker, remaining, amended_stop, source=source)
 
             self._apply_exit_fill(lifecycle, account, symbol, actual_filled)
             return exit_result
@@ -912,7 +960,14 @@ class PositionLifecycleManager:
                 # still-working entry order may yet deliver more units.
                 lifecycle.closed = not lifecycle.has_unresolved_entry
             elif lifecycle.stop.desired_price is not None and broker is not None:
-                await self._restore_stop_coverage(lifecycle, account, broker, remaining, stop_amended)
+                # PU-A4: `pending.source` is exactly the `source` the
+                # original `request_exit` call was given (e.g. "target",
+                # "time_exit") -- still readable off `pending` here even
+                # though `lifecycle.pending_exit` itself is cleared just
+                # above, since `pending` already holds that same object.
+                await self._restore_stop_coverage(
+                    lifecycle, account, broker, remaining, stop_amended, source=pending.source or "signal"
+                )
 
         if delta > 0:
             self._apply_exit_fill(lifecycle, account, symbol, delta)
@@ -984,6 +1039,8 @@ class PositionLifecycleManager:
         broker: BrokerAdapter,
         remaining: float,
         stop_amended: bool,
+        *,
+        source: str = "signal",
     ) -> None:
         """PRO-06: once an exit's real outcome is known, bring stop coverage
         to exactly `remaining`. If the stop was amended down in place before
@@ -1013,7 +1070,9 @@ class PositionLifecycleManager:
                 lifecycle.stop.protected_quantity,
             )
             return
-        await self._place_stop_locked(lifecycle, account, broker, remaining, lifecycle.stop.desired_price)
+        await self._place_stop_locked(
+            lifecycle, account, broker, remaining, lifecycle.stop.desired_price, source=source
+        )
 
     async def _place_stop_locked(
         self,
@@ -1022,10 +1081,16 @@ class PositionLifecycleManager:
         broker: BrokerAdapter,
         quantity: float,
         price: float,
+        *,
+        source: str = "signal",
     ) -> None:
         """Submit (or resubmit) the protective stop. Caller must already hold this
         position's arbiter lock (or be in the single-threaded on_entry_fill path,
         where nothing else can be racing yet)."""
+        # PU-A4: captured BEFORE this call mutates anything below -- the
+        # real "previous" broker-confirmed price for whichever event this
+        # attempt ends up emitting (None for a true initial placement).
+        previous_confirmed_price = lifecycle.stop.broker_confirmed_price
         lifecycle.stop.status = ProtectionStatus.STOP_PENDING
         result = await broker.place_protective_stop(account, lifecycle.plan.symbol, quantity, price, lifecycle.exit_side)
         if result is None or result.status in (OrderStatus.ERROR, OrderStatus.REJECTED):
@@ -1042,6 +1107,13 @@ class PositionLifecycleManager:
                 account.account_id,
                 lifecycle.plan.symbol,
                 account.broker,
+            )
+            self._record_stop_target_event(
+                lifecycle,
+                StopTargetEventType.PROTECTION_FAILED,
+                price=price,
+                previous_price=previous_confirmed_price,
+                source=source,
             )
             return
         if result.status == OrderStatus.FILLED or not result.broker_order_id:
@@ -1069,6 +1141,13 @@ class PositionLifecycleManager:
                 result.status.value,
                 result.broker_order_id,
             )
+            self._record_stop_target_event(
+                lifecycle,
+                StopTargetEventType.PROTECTION_FAILED,
+                price=price,
+                previous_price=previous_confirmed_price,
+                source=source,
+            )
             return
         # A broker accepting the order (however it reports that — PENDING/resting is the
         # normal case) is what "broker confirmed" means for a standing stop order; it isn't
@@ -1081,6 +1160,17 @@ class PositionLifecycleManager:
         # PU-A2: the real moment the broker confirmed this stop is resting --
         # app/execution_quality.py's "protection acknowledgment" stage.
         lifecycle.stop.confirmed_at = datetime.now(timezone.utc)
+        # PU-A4: this same real moment is also this position's stop/target
+        # event log's STOP_PLACED entry -- reusing PU-A2's `confirmed_at`
+        # timestamp/call site rather than duplicating the "is this really
+        # confirmed" logic above.
+        self._record_stop_target_event(
+            lifecycle,
+            StopTargetEventType.STOP_PLACED,
+            price=price,
+            previous_price=previous_confirmed_price,
+            source=source,
+        )
 
     async def _tighten_stop_to(self, lifecycle: PositionLifecycle, account: DestinationAccount, price: float) -> None:
         current = lifecycle.stop.desired_price
@@ -1090,7 +1180,7 @@ class PositionLifecycleManager:
             if lifecycle.plan.side == Side.SELL and price >= current:
                 return
         lifecycle.stop.desired_price = price
-        await self._replace_stop_price(lifecycle, account)
+        await self._replace_stop_price(lifecycle, account, source="signal")
 
     async def _update_trailing(self, lifecycle: PositionLifecycle, account: DestinationAccount, price: float) -> None:
         """A trail must never loosen whatever is already protecting this
@@ -1119,9 +1209,11 @@ class PositionLifecycleManager:
             return
         trailing.floor_price = candidate_floor
         lifecycle.stop.desired_price = candidate_floor
-        await self._replace_stop_price(lifecycle, account)
+        await self._replace_stop_price(lifecycle, account, source="signal")
 
-    async def _replace_stop_price(self, lifecycle: PositionLifecycle, account: DestinationAccount) -> None:
+    async def _replace_stop_price(
+        self, lifecycle: PositionLifecycle, account: DestinationAccount, *, source: str = "signal"
+    ) -> None:
         broker = self.brokers.get(account.broker)
         if broker is None or lifecycle.stop.desired_price is None:
             return
@@ -1142,6 +1234,14 @@ class PositionLifecycleManager:
                 lifecycle.pending_exit.requested_quantity,
             )
             return
+
+        # PU-A4: captured before anything below mutates it -- the real
+        # price this replace is REPLACING (None if no stop has ever been
+        # broker-confirmed for this position yet, which the `broker_order_id`
+        # check just below means can't actually happen on this call path,
+        # but is still the honest value if it somehow were).
+        previous_confirmed_price = lifecycle.stop.broker_confirmed_price
+        desired_price = lifecycle.stop.desired_price
 
         async with self.arbiter.transition(account.account_id, lifecycle.plan.symbol) as tx:
             quantity = tx.owned
@@ -1185,6 +1285,21 @@ class PositionLifecycleManager:
                     lifecycle.stop.submitted_price = lifecycle.stop.desired_price
                     lifecycle.stop.broker_confirmed_price = lifecycle.stop.desired_price
                     lifecycle.stop.protected_quantity = quantity
+                    if previous_confirmed_price is not None and previous_confirmed_price != desired_price:
+                        # PU-A4: an already-resting stop's PRICE actually
+                        # changed in place -- only `_tighten_stop_to`/
+                        # `_update_trailing` ever change `desired_price`
+                        # before calling this method (retry_unprotected_
+                        # positions re-submits the SAME price, so this
+                        # condition is false for it, and correctly emits no
+                        # tightening event for a same-price retry).
+                        self._record_stop_target_event(
+                            lifecycle,
+                            StopTargetEventType.STOP_TIGHTENED,
+                            price=desired_price,
+                            previous_price=previous_confirmed_price,
+                            source=source,
+                        )
                     self._persist(lifecycle)
                     return
 
@@ -1198,7 +1313,9 @@ class PositionLifecycleManager:
                     return
                 lifecycle.stop.broker_order_id = None
 
-            await self._place_stop_locked(lifecycle, account, broker, quantity, lifecycle.stop.desired_price)
+            await self._place_stop_locked(
+                lifecycle, account, broker, quantity, lifecycle.stop.desired_price, source=source
+            )
         self._persist(lifecycle)
 
 

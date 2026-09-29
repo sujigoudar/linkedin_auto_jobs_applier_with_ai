@@ -909,6 +909,31 @@ async def list_position_excursions(
     return {"excursions": store.list_position_excursions(account_id=account_id, symbol=symbol, limit=limit)}
 
 
+@app.get("/positions/{account_id}/{symbol}/stop-events")
+async def list_stop_target_events(
+    account_id: str,
+    symbol: str,
+    limit: int = Query(default=500, ge=1, le=5000),
+    _owner: dict = Depends(require_owner_read),
+) -> dict:
+    """PU-A4: this position's real, append-only stop/target lifecycle
+    event history, oldest first -- see app/lifecycle/models.py's
+    `StopTargetEventType` for exactly which event types exist (and which
+    catalog-requested ones -- a breakeven move, a trailing-stop
+    activation -- are a documented gap on this branch rather than a
+    fabricated event) and app/lifecycle/manager.py's own call sites for
+    where each one is appended. The data prerequisite for a later
+    stop/target analytics chart (stop-tightening frequency, TP hit rate,
+    etc.), not itself a chart."""
+    if account_id not in routing_config.accounts:
+        raise HTTPException(status_code=404, detail=f"no account '{account_id}'")
+    return {
+        "account_id": account_id,
+        "symbol": symbol,
+        "events": store.list_stop_target_events(account_id, symbol, limit=limit),
+    }
+
+
 @app.get("/accounts/{account_id}/economics")
 async def get_account_economics(account_id: str, _owner: dict = Depends(require_owner_read)) -> dict:
     """E06: authoritative realized P&L, cost basis and completed-trade win
