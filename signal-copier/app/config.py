@@ -212,6 +212,17 @@ class _Settings(BaseSettings):
     # see app/pricing.py's module docstring).
     PRICE_MONITOR_INTERVAL_SECONDS: float = 15.0
 
+    # How often app/protection_auditor.py's ProtectionAuditor independently
+    # re-derives whether every open position is actually protected, straight
+    # from each broker's own order book -- see that module's docstring for
+    # why this is deliberately separate from (and doesn't trust) the same
+    # bookkeeping app/lifecycle/manager.py uses to decide it. Slower than
+    # RECONCILE_INTERVAL_SECONDS by default: it reads more from the broker
+    # per pass (a full open-orders list per position, not just one order's
+    # status), and a delayed catch of a rare bookkeeping bug is still a
+    # catch that never existed at all before this module.
+    PROTECTION_AUDIT_INTERVAL_SECONDS: float = 300.0
+
     # How often app/provider_scout.py re-evaluates every signal source/analyst
     # that ISN'T yet a tracked provider_subscriptions row against
     # PROVIDER_VALUE_* below, looking for a free provider worth promoting.
@@ -276,6 +287,47 @@ class _Settings(BaseSettings):
     #: `signal_platform_contracts.Environment` member NAME. Same
     #: safest-default reasoning as RELAY_EVIDENCE_CLASS above.
     RELAY_ENVIRONMENT: str = "LOCAL_SIM"
+
+    # Persistent placement-rate limits (admission control on OUTBOUND
+    # order-placement frequency -- see app/placement_rate_limiter.py; a
+    # different concern from app/rate_limit.py's C06 ingress-only HTTP
+    # abuse control on the webhook/SMS routes). Every value is None
+    # (unset/unlimited) by default, so no existing deployment or test is
+    # affected until an operator opts in by configuring one.
+    RATE_LIMIT_MAX_TRADES_PER_HOUR_GLOBAL: float | None = None
+    RATE_LIMIT_MAX_TRADES_PER_DAY_GLOBAL: float | None = None
+    RATE_LIMIT_MAX_TRADES_PER_HOUR_ACCOUNT: float | None = None
+    RATE_LIMIT_MAX_TRADES_PER_DAY_ACCOUNT: float | None = None
+    RATE_LIMIT_MAX_TRADES_PER_HOUR_PROVIDER: float | None = None
+    RATE_LIMIT_MAX_TRADES_PER_DAY_PROVIDER: float | None = None
+    RATE_LIMIT_MAX_TRADES_PER_HOUR_ANALYST: float | None = None
+    RATE_LIMIT_MAX_TRADES_PER_DAY_ANALYST: float | None = None
+    RATE_LIMIT_MAX_TRADES_PER_HOUR_SYMBOL: float | None = None
+    RATE_LIMIT_MAX_TRADES_PER_DAY_SYMBOL: float | None = None
+    RATE_LIMIT_MAX_OPEN_POSITIONS_ACCOUNT: int | None = None
+    RATE_LIMIT_MAX_OPEN_POSITIONS_GLOBAL: int | None = None
+    RATE_LIMIT_MAX_SAME_SYMBOL_POSITIONS_ACCOUNT: int | None = None
+
+    # Daily/peak-equity drawdown circuit breakers -- see
+    # app/drawdown_governor.py. Thresholds are absolute currency-unit loss
+    # amounts: the REALIZED_PLUS_UNREALIZED equity basis this measures is
+    # itself a cumulative P&L figure (there is no live total-account-value
+    # feed available synchronously at admission time), not a total account
+    # balance, so a percentage-of-equity threshold would be ill-defined
+    # near zero/fresh accounts -- see that module's own docstring. None
+    # (unset) by default for every threshold; the DEFAULT action when a
+    # threshold IS configured is never emergency liquidation (see that
+    # module -- liquidation is never implemented here at all).
+    DRAWDOWN_START_OF_DAY_WARN_THRESHOLD: float | None = None
+    DRAWDOWN_START_OF_DAY_REDUCE_SIZE_THRESHOLD: float | None = None
+    DRAWDOWN_START_OF_DAY_REDUCE_SIZE_MULTIPLIER: float = 0.5
+    DRAWDOWN_START_OF_DAY_PAUSE_THRESHOLD: float | None = None
+    DRAWDOWN_START_OF_DAY_REVIEW_THRESHOLD: float | None = None
+    DRAWDOWN_PEAK_EQUITY_WARN_THRESHOLD: float | None = None
+    DRAWDOWN_PEAK_EQUITY_REDUCE_SIZE_THRESHOLD: float | None = None
+    DRAWDOWN_PEAK_EQUITY_REDUCE_SIZE_MULTIPLIER: float = 0.5
+    DRAWDOWN_PEAK_EQUITY_PAUSE_THRESHOLD: float | None = None
+    DRAWDOWN_PEAK_EQUITY_REVIEW_THRESHOLD: float | None = None
 
     #: A SEPARATE shared secret from RELAY_SIGNING_SECRET above, for a
     #: SEPARATE trust boundary: signal-portfolio-commercial's own public
@@ -361,6 +413,7 @@ RITHMIC_SOURCE_ACCOUNT_ID = _settings.RITHMIC_SOURCE_ACCOUNT_ID
 
 RECONCILE_INTERVAL_SECONDS = _settings.RECONCILE_INTERVAL_SECONDS
 PRICE_MONITOR_INTERVAL_SECONDS = _settings.PRICE_MONITOR_INTERVAL_SECONDS
+PROTECTION_AUDIT_INTERVAL_SECONDS = _settings.PROTECTION_AUDIT_INTERVAL_SECONDS
 PROVIDER_SCOUT_INTERVAL_SECONDS = _settings.PROVIDER_SCOUT_INTERVAL_SECONDS
 PROVIDER_VALUE_MIN_SAMPLE_SIZE = _settings.PROVIDER_VALUE_MIN_SAMPLE_SIZE
 PROVIDER_VALUE_WIN_RATE_THRESHOLD = _settings.PROVIDER_VALUE_WIN_RATE_THRESHOLD
@@ -376,5 +429,30 @@ RELAY_BATCH_SIZE = _settings.RELAY_BATCH_SIZE
 RELAY_PRODUCER_ID = _settings.RELAY_PRODUCER_ID
 RELAY_EVIDENCE_CLASS = _settings.RELAY_EVIDENCE_CLASS
 RELAY_ENVIRONMENT = _settings.RELAY_ENVIRONMENT
+
+RATE_LIMIT_MAX_TRADES_PER_HOUR_GLOBAL = _settings.RATE_LIMIT_MAX_TRADES_PER_HOUR_GLOBAL
+RATE_LIMIT_MAX_TRADES_PER_DAY_GLOBAL = _settings.RATE_LIMIT_MAX_TRADES_PER_DAY_GLOBAL
+RATE_LIMIT_MAX_TRADES_PER_HOUR_ACCOUNT = _settings.RATE_LIMIT_MAX_TRADES_PER_HOUR_ACCOUNT
+RATE_LIMIT_MAX_TRADES_PER_DAY_ACCOUNT = _settings.RATE_LIMIT_MAX_TRADES_PER_DAY_ACCOUNT
+RATE_LIMIT_MAX_TRADES_PER_HOUR_PROVIDER = _settings.RATE_LIMIT_MAX_TRADES_PER_HOUR_PROVIDER
+RATE_LIMIT_MAX_TRADES_PER_DAY_PROVIDER = _settings.RATE_LIMIT_MAX_TRADES_PER_DAY_PROVIDER
+RATE_LIMIT_MAX_TRADES_PER_HOUR_ANALYST = _settings.RATE_LIMIT_MAX_TRADES_PER_HOUR_ANALYST
+RATE_LIMIT_MAX_TRADES_PER_DAY_ANALYST = _settings.RATE_LIMIT_MAX_TRADES_PER_DAY_ANALYST
+RATE_LIMIT_MAX_TRADES_PER_HOUR_SYMBOL = _settings.RATE_LIMIT_MAX_TRADES_PER_HOUR_SYMBOL
+RATE_LIMIT_MAX_TRADES_PER_DAY_SYMBOL = _settings.RATE_LIMIT_MAX_TRADES_PER_DAY_SYMBOL
+RATE_LIMIT_MAX_OPEN_POSITIONS_ACCOUNT = _settings.RATE_LIMIT_MAX_OPEN_POSITIONS_ACCOUNT
+RATE_LIMIT_MAX_OPEN_POSITIONS_GLOBAL = _settings.RATE_LIMIT_MAX_OPEN_POSITIONS_GLOBAL
+RATE_LIMIT_MAX_SAME_SYMBOL_POSITIONS_ACCOUNT = _settings.RATE_LIMIT_MAX_SAME_SYMBOL_POSITIONS_ACCOUNT
+
+DRAWDOWN_START_OF_DAY_WARN_THRESHOLD = _settings.DRAWDOWN_START_OF_DAY_WARN_THRESHOLD
+DRAWDOWN_START_OF_DAY_REDUCE_SIZE_THRESHOLD = _settings.DRAWDOWN_START_OF_DAY_REDUCE_SIZE_THRESHOLD
+DRAWDOWN_START_OF_DAY_REDUCE_SIZE_MULTIPLIER = _settings.DRAWDOWN_START_OF_DAY_REDUCE_SIZE_MULTIPLIER
+DRAWDOWN_START_OF_DAY_PAUSE_THRESHOLD = _settings.DRAWDOWN_START_OF_DAY_PAUSE_THRESHOLD
+DRAWDOWN_START_OF_DAY_REVIEW_THRESHOLD = _settings.DRAWDOWN_START_OF_DAY_REVIEW_THRESHOLD
+DRAWDOWN_PEAK_EQUITY_WARN_THRESHOLD = _settings.DRAWDOWN_PEAK_EQUITY_WARN_THRESHOLD
+DRAWDOWN_PEAK_EQUITY_REDUCE_SIZE_THRESHOLD = _settings.DRAWDOWN_PEAK_EQUITY_REDUCE_SIZE_THRESHOLD
+DRAWDOWN_PEAK_EQUITY_REDUCE_SIZE_MULTIPLIER = _settings.DRAWDOWN_PEAK_EQUITY_REDUCE_SIZE_MULTIPLIER
+DRAWDOWN_PEAK_EQUITY_PAUSE_THRESHOLD = _settings.DRAWDOWN_PEAK_EQUITY_PAUSE_THRESHOLD
+DRAWDOWN_PEAK_EQUITY_REVIEW_THRESHOLD = _settings.DRAWDOWN_PEAK_EQUITY_REVIEW_THRESHOLD
 
 CATALOG_FIT_SIM_SIGNING_SECRET = _settings.CATALOG_FIT_SIM_SIGNING_SECRET

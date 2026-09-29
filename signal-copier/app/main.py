@@ -66,6 +66,7 @@ from app.providers import SettingsOverride, load_provider_registry_from_store
 from app.provider_scout import ProviderScout
 from app.provider_value import compute_provider_value_report
 from app.rate_limit import CATALOG_FIT_SIM_RATE_LIMIT, INGRESS_RATE_LIMIT, limiter
+from app.protection_auditor import ProtectionAuditor
 from app.reconciliation import OrderReconciler
 from app.relay_scheduler import RelayScheduler
 from app.services.catalog_fit_sim_auth import (
@@ -75,6 +76,8 @@ from app.services.catalog_fit_sim_auth import (
     verify_catalog_fit_sim_signature,
 )
 from app.routing import load_routing_config_from_store
+from app.signal_commands import CanonicalCommand
+from app.signal_episode import EpisodeCorrelator
 from app.sources.text_parser import classify_batch
 from app.sources.discord import DiscordSource
 from app.sources.mt4_mt5 import MetaApiSource
@@ -188,12 +191,21 @@ webhook_source = WebhookSource(on_signal=engine.handle_signal)
 sms_source = TwilioSMSSource(on_signal=engine.handle_signal)
 whatsapp_source = WhatsAppSource(on_signal=engine.handle_signal)
 ninjatrader_source = NinjaTraderSource(on_signal=engine.handle_signal)
+protection_auditor = ProtectionAuditor(
+    brokers=brokers,
+    lifecycle_manager=lifecycle_manager,
+    accounts=routing_config.accounts,
+    store=store,
+    interval_seconds=config.PROTECTION_AUDIT_INTERVAL_SECONDS,
+)
 reconciler = OrderReconciler(
     store=store,
     brokers=brokers,
     interval_seconds=config.RECONCILE_INTERVAL_SECONDS,
     lifecycle_manager=lifecycle_manager,
     capital_allocator=engine.capital_allocator,
+    accounts=routing_config.accounts,
+    protection_auditor=protection_auditor,
 )
 price_monitor = PriceMonitor(
     lifecycle_manager=lifecycle_manager,
@@ -212,8 +224,55 @@ relay_scheduler = RelayScheduler(store=store, interval_seconds=config.RELAY_POLL
 # Pull-based sources only start if fully configured via env vars.
 _background_sources: list[SourceAdapter] = []
 if config.TELEGRAM_BOT_TOKEN and config.TELEGRAM_CHAT_ID:
+    # SignalEpisode correlation (app/signal_episode.py) for telegram's
+    # revision commands ("close half", "move sl to breakeven", "cancel"):
+    # a bare revision message names no symbol of its own, so
+    # `TelegramSource.symbol_for_command` resolves it from the analyst's
+    # own open episode history -- exactly one open episode for
+    # (provider="telegram", analyst) is unambiguous; zero or several is not
+    # (see EpisodeCorrelator's own AMBIGUOUS posture), and this never
+    # guesses in that case.
+    telegram_episode_correlator = EpisodeCorrelator(sqlite_store=store)
+
+    def _telegram_symbol_for_command(analyst: str | None) -> str | None:
+        if not analyst:
+            return None
+        candidates = telegram_episode_correlator.store.open_episodes_for("telegram", analyst)
+        if len(candidates) != 1:
+            return None
+        return candidates[0].instrument
+
+    async def _telegram_on_command(command: CanonicalCommand) -> None:
+        # Applied to every managed_lifecycle destination account telegram
+        # is actually routed to (app/routing.py's RoutingConfig) -- the
+        # same fan-out a normal telegram Signal already gets via
+        # engine.handle_signal, never a single hardcoded account.
+        rule_accounts = [
+            account_id for rule in routing_config.rules if rule.source == "telegram" for account_id in rule.destinations
+        ]
+        for account_id in rule_accounts:
+            account = routing_config.accounts.get(account_id)
+            if account is None or not account.enabled or not account.managed_lifecycle:
+                continue
+            result = await engine.apply_canonical_command(command, account)
+            logger.info(
+                "telegram canonical command %s for account=%s symbol=%s -> status=%s message=%s",
+                command.command_type.value,
+                account_id,
+                command.symbol,
+                result.status.value,
+                result.message,
+            )
+
     _background_sources.append(
-        TelegramSource(engine.handle_signal, config.TELEGRAM_BOT_TOKEN, config.TELEGRAM_CHAT_ID)
+        TelegramSource(
+            engine.handle_signal,
+            config.TELEGRAM_BOT_TOKEN,
+            config.TELEGRAM_CHAT_ID,
+            on_command=_telegram_on_command,
+            symbol_for_command=_telegram_symbol_for_command,
+            episode_correlator=telegram_episode_correlator,
+        )
     )
 if config.DISCORD_BOT_TOKEN and config.DISCORD_CHANNEL_ID:
     _background_sources.append(
@@ -265,6 +324,7 @@ async def lifespan(app: FastAPI):
             logger.exception("failed to start source '%s'", source.name)
     await reconciler.start()
     await price_monitor.start()
+    await protection_auditor.start()
     await provider_scout.start()
     if config.RELAY_INGRESS_URL:
         # Same "pull-based, only starts if fully configured" convention
@@ -280,6 +340,7 @@ async def lifespan(app: FastAPI):
     if config.RELAY_INGRESS_URL:
         await relay_scheduler.stop()
     await provider_scout.stop()
+    await protection_auditor.stop()
     await price_monitor.stop()
     await reconciler.stop()
     for source in _background_sources:
@@ -413,6 +474,11 @@ async def health() -> dict:
         if config.RELAY_INGRESS_URL
         else None
     )
+    # Informational only, same reasoning as provider_scout_ok above: a
+    # deployment with no managed-lifecycle positions open yet has nothing
+    # for this to audit, so it would otherwise report perpetually "not
+    # fresh" and falsely degrade overall status.
+    protection_audit_ok = _fresh(protection_auditor.last_success_at, config.PROTECTION_AUDIT_INTERVAL_SECONDS)
     return {
         # OPS-01: `status` was hardcoded to "ok" regardless of the flags
         # right next to it -- a fresh startup (before either worker's
@@ -424,6 +490,7 @@ async def health() -> dict:
         "reconciler_ok": reconciler_ok,
         "provider_scout_ok": provider_scout_ok,
         "relay_ok": relay_ok,
+        "protection_audit_ok": protection_audit_ok,
     }
 
 
@@ -877,6 +944,44 @@ async def list_positions(_owner: dict = Depends(require_owner_read)) -> dict:
     asynchronously), not a live read of any broker's account state.
     """
     return {"positions": store.list_open_positions(), "managed_lifecycles": _managed_lifecycle_snapshot()}
+
+
+@app.get("/protection-audit")
+async def get_protection_audit_summary(_owner: dict = Depends(require_owner_read)) -> dict:
+    """Every finding from app/protection_auditor.py's most recent pass over
+    every open position, PLUS every orphan position app/reconciliation.py's
+    independent broker-position scan has found -- both computed directly
+    from each broker's own order/position data, never from
+    PositionLifecycleManager's own internal bookkeeping (see
+    app/protection_auditor.py's module docstring for exactly why that
+    independence matters). `incidents` is the subset that's still
+    unresolved (ambiguous, unrepairable, or a repair attempt failed) --
+    what actually needs a human's attention, as opposed to `findings`,
+    which includes every already-fine position too."""
+    return {
+        "findings": [f.to_dict() for f in protection_auditor.list_findings()],
+        "incidents": [f.to_dict() for f in protection_auditor.list_incidents()],
+        "orphan_positions": [o.to_dict() for o in reconciler.list_orphan_positions()],
+        "last_audit_at": protection_auditor.last_success_at.isoformat() if protection_auditor.last_success_at else None,
+    }
+
+
+@app.get("/positions/{account_id}/{symbol}/protection-audit")
+async def get_position_protection_audit(
+    account_id: str, symbol: str, _owner: dict = Depends(require_owner_read)
+) -> dict:
+    """Independently re-verify (right now, not from the last scheduled
+    pass's cache) whether this one position is actually protected at its
+    broker -- see app/protection_auditor.py's module docstring. 404 for an
+    account this deployment doesn't have configured; a live re-check even
+    for a position that isn't currently open (a flat broker position with
+    leftover resting orders is itself a real finding -- see
+    `AuditStatus.STALE_ORDER`)."""
+    account = routing_config.accounts.get(account_id)
+    if account is None:
+        raise HTTPException(status_code=404, detail=f"no account '{account_id}'")
+    finding = await protection_auditor.audit_position(account, symbol)
+    return finding.to_dict()
 
 
 @app.get("/accounts/{account_id}/economics")

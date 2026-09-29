@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from app.models import DestinationAccount, OrderResult, OrderStatus, Side, Signal
+from app.models import BrokerOpenOrder, DestinationAccount, OrderResult, OrderStatus, Side, Signal
 from app.brokers.base import BrokerAdapter
 
 
@@ -40,6 +40,16 @@ class PaperBroker(BrokerAdapter):
         self.fills: list[OrderResult] = []
         self._stop_orders: dict[str, _StopOrder] = {}
         self._next_stop_id = 1
+        # (account_id, symbol) -> its own fills, most-recent-last -- OrderResult
+        # itself carries no symbol, so `self.fills` alone can't answer
+        # `get_trade_history`'s per-symbol question; kept as a second,
+        # append-only index over the exact same fills rather than a
+        # separate/parallel record of what happened.
+        self._fills_by_key: dict[tuple[str, str], list[OrderResult]] = {}
+
+    def _record_fill(self, account_id: str, symbol: str, result: OrderResult) -> None:
+        self.fills.append(result)
+        self._fills_by_key.setdefault((account_id, symbol), []).append(result)
 
     async def place_order(
         self, signal: Signal, account: DestinationAccount, quantity: float, symbol: str
@@ -63,7 +73,7 @@ class PaperBroker(BrokerAdapter):
             filled_price=signal.price or 0.0,
             message="filled by paper broker",
         )
-        self.fills.append(result)
+        self._record_fill(account.account_id, symbol, result)
         return result
 
     async def place_protective_stop(
@@ -147,7 +157,34 @@ class PaperBroker(BrokerAdapter):
                 filled_price=price,
                 message=f"paper stop filled at simulated price {price}",
             )
-            self.fills.append(result)
+            self._record_fill(stop.account_id, stop.symbol, result)
             results.append(result)
 
         return results
+
+    async def list_open_orders(self, account: DestinationAccount, symbol: str) -> list[BrokerOpenOrder] | None:
+        return [
+            BrokerOpenOrder(
+                account_id=order.account_id,
+                symbol=order.symbol,
+                broker_order_id=order.order_id,
+                side=order.side,
+                quantity=order.quantity,
+                price=order.stop_price,
+                role="stop",
+            )
+            for order in self._stop_orders.values()
+            if order.account_id == account.account_id and order.symbol == symbol
+        ]
+
+    async def get_trade_history(
+        self, account: DestinationAccount, symbol: str, since: object | None = None
+    ) -> list[OrderResult] | None:
+        return list(reversed(self._fills_by_key.get((account.account_id, symbol), [])))
+
+    async def list_broker_positions(self, account: DestinationAccount) -> dict[str, float] | None:
+        return {
+            symbol: quantity
+            for symbol, quantity in self.positions.get(account.account_id, {}).items()
+            if quantity != 0.0
+        }

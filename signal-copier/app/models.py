@@ -118,6 +118,33 @@ class AccountBalance:
 
 
 @dataclass
+class BrokerOpenOrder:
+    """A real, currently-resting order exactly as the broker itself reports
+    it -- independent of anything this service believes it submitted or
+    tracks internally. See app/brokers/base.py's `list_open_orders`, and
+    app/protection_auditor.py, which is the reason this exists: verifying
+    protection against the broker's own order book requires a real
+    description of what's actually resting there, not just a position
+    quantity.
+
+    `role` is a best-effort classification of what this order IS for
+    (a protective stop vs. a profit target vs. something else), reported
+    by the adapter when the broker's own API makes that determinable
+    (e.g. Alpaca's `order_type`/`side` for a bracket leg); adapters that
+    can't determine it leave it at "other" rather than guessing --
+    app/protection_auditor.py treats "other" as ambiguous, never as "not
+    a stop."""
+
+    account_id: str
+    symbol: str
+    broker_order_id: str
+    side: Side
+    quantity: float
+    price: Optional[float] = None
+    role: str = "other"  # "stop" | "target" | "entry" | "other"
+
+
+@dataclass
 class DestinationAccount:
     """One account a signal can be routed to, plus how to size the trade."""
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import abc
 
-from app.models import AccountBalance, AssetClass, DestinationAccount, OrderResult, Side, Signal
+from app.models import AccountBalance, AssetClass, BrokerOpenOrder, DestinationAccount, OrderResult, Side, Signal
 
 
 class BrokerAdapter(abc.ABC):
@@ -149,6 +149,55 @@ class BrokerAdapter(abc.ABC):
         `max_notional_exposure` means."""
         return None
 
+    # --- Independent verification capabilities (app/protection_auditor.py,
+    # app/reconciliation.py's orphan/late-fill checks) ---
+    #
+    # These exist ONLY so a position's real protection/ownership can be
+    # re-derived directly from the broker's own records, by code that does
+    # NOT also own placing or tracking those same orders -- see
+    # app/protection_auditor.py's module docstring for why a verifier that
+    # shares a bug with the thing it's checking can't actually catch that
+    # bug. Same "return None/empty means genuinely unsupported, never
+    # fabricate a substitute" contract as every other optional capability
+    # above.
+
+    async def list_open_orders(self, account: DestinationAccount, symbol: str) -> list[BrokerOpenOrder] | None:
+        """Every currently-resting order the broker itself reports for this
+        account+symbol (stops, targets, unfilled entries) -- independent of
+        what this service believes it submitted. Return None if this broker
+        has no verified way to enumerate its own resting orders; the caller
+        must not treat that as "no orders" (a real deficit and "can't tell"
+        must never look the same)."""
+        return None
+
+    async def get_trade_history(
+        self, account: DestinationAccount, symbol: str, since: object | None = None
+    ) -> list[OrderResult] | None:
+        """Real executions (fills) the broker itself recorded for this
+        account+symbol, independent of this service's own `orders` table --
+        used to catch a fill this service's own bookkeeping missed entirely
+        (e.g. a local order marked canceled/rejected while the broker's own
+        history shows it actually filled). `since`, if given, is a hint the
+        adapter may use to narrow the query; an adapter that can't honor it
+        may just ignore it and return more than requested. Return None if
+        this broker has no verified way to read execution history -- never
+        an empty list standing in for "unsupported."""
+        return None
+
+    async def list_broker_positions(self, account: DestinationAccount) -> dict[str, float] | None:
+        """Every real, currently-held position on this account, symbol ->
+        net quantity (positive long, negative short) -- independent of
+        anything this service itself tracks. Unlike `get_broker_position`
+        (which only answers for a symbol this service already knows to ask
+        about), this is what makes a genuinely UNKNOWN-to-this-service
+        position ("the broker holds AAPL and nothing here has ever heard of
+        it") detectable at all -- see app/reconciliation.py's orphan-
+        position detection. Return None if this broker has no verified way
+        to enumerate its full holdings; the caller must not treat that as
+        "no positions."
+        """
+        return None
+
     # --- Capability introspection (computed, not declared) ---
     #
     # These answer "does this adapter have a REAL implementation of X" by
@@ -187,6 +236,18 @@ class BrokerAdapter(abc.ABC):
     @property
     def has_balance_capability(self) -> bool:
         return type(self).get_account_balance is not BrokerAdapter.get_account_balance
+
+    @property
+    def has_open_orders_capability(self) -> bool:
+        return type(self).list_open_orders is not BrokerAdapter.list_open_orders
+
+    @property
+    def has_trade_history_capability(self) -> bool:
+        return type(self).get_trade_history is not BrokerAdapter.get_trade_history
+
+    @property
+    def has_bulk_position_capability(self) -> bool:
+        return type(self).list_broker_positions is not BrokerAdapter.list_broker_positions
 
     def can_protect_a_managed_position(self) -> bool:
         """Whether `PositionLifecycleManager` can actually keep a position

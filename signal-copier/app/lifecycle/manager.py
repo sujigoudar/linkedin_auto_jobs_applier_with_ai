@@ -208,6 +208,172 @@ class PositionLifecycleManager:
             if lifecycle.pending_entry is not None and not lifecycle.pending_entry.remainder_resolved
         ]
 
+    async def move_stop(self, account: DestinationAccount, symbol: str, price: float) -> OrderResult:
+        """`app/signal_commands.py`'s MOVE_STOP command, backed by the SAME
+        stop-replace machinery `on_price_update`'s trailing/target logic
+        already uses (`_tighten_stop_to` / `_replace_stop_price`) -- no
+        second, parallel way to touch a resting stop. Never loosens
+        protection (see `_tighten_stop_to`'s own "never loosen" rule): a
+        `price` worse than the current desired stop for this position's
+        side is refused outright, same as a stale/incorrect provider
+        instruction would be."""
+        lifecycle = self._lifecycles.get((account.account_id, symbol))
+        if lifecycle is None or lifecycle.closed:
+            return OrderResult(
+                account_id=account.account_id, status=OrderStatus.REJECTED, signal_id="", message="no active lifecycle for this position"
+            )
+        if not math.isfinite(price) or price <= 0:
+            return OrderResult(
+                account_id=account.account_id, status=OrderStatus.REJECTED, signal_id="", message=f"invalid stop price {price!r}"
+            )
+        broker = self.brokers.get(account.broker)
+        if broker is None:
+            return OrderResult(
+                account_id=account.account_id, status=OrderStatus.ERROR, signal_id="", message=f"no broker adapter registered for '{account.broker}'"
+            )
+
+        before = lifecycle.stop.desired_price
+        await self._tighten_stop_to(lifecycle, account, price)
+
+        if lifecycle.stop.desired_price == before:
+            # _tighten_stop_to's own "never loosen" guard silently no-ops
+            # when `price` isn't an improvement -- surface that as an
+            # explicit, non-silent REJECTED rather than letting the caller
+            # think a move happened.
+            return OrderResult(
+                account_id=account.account_id,
+                status=OrderStatus.REJECTED,
+                signal_id="",
+                message=f"requested stop {price} would not tighten the existing stop ({before}); refused",
+            )
+        if lifecycle.stop.broker_confirmed_price == price:
+            return OrderResult(
+                account_id=account.account_id,
+                status=OrderStatus.FILLED,
+                signal_id="",
+                broker_order_id=lifecycle.stop.broker_order_id,
+                message=f"stop moved to {price}",
+            )
+        return OrderResult(
+            account_id=account.account_id,
+            status=OrderStatus.ERROR,
+            signal_id="",
+            message=f"could not confirm the stop replacement to {price} with the broker",
+        )
+
+    async def move_stop_to_breakeven(self, account: DestinationAccount, symbol: str) -> OrderResult:
+        """Resolve "breakeven" to a real price (`plan.entry_price` -- the
+        initiating signal's stated entry price, see `PositionPlan.entry_price`'s
+        docstring for exactly what that is and isn't) and delegate to
+        `move_stop`. Refuses outright, rather than guessing 0/None/the
+        current stop, when no entry price was ever captured."""
+        lifecycle = self._lifecycles.get((account.account_id, symbol))
+        if lifecycle is None or lifecycle.closed:
+            return OrderResult(
+                account_id=account.account_id, status=OrderStatus.REJECTED, signal_id="", message="no active lifecycle for this position"
+            )
+        entry_price = lifecycle.plan.entry_price
+        if entry_price is None or not math.isfinite(entry_price) or entry_price <= 0:
+            return OrderResult(
+                account_id=account.account_id,
+                status=OrderStatus.REJECTED,
+                signal_id="",
+                message="no known entry price for this position -- cannot resolve 'breakeven' to a real stop price",
+            )
+        return await self.move_stop(account, symbol, entry_price)
+
+    async def cancel_entry(self, account: DestinationAccount, symbol: str) -> OrderResult:
+        """`app/signal_commands.py`'s CANCEL_ENTRY command. Only ever acts
+        on an entry that hasn't (fully) filled yet:
+
+        - No lifecycle at all, or a lifecycle with nothing confirmed owned
+          and no pending entry: nothing was ever really submitted (or it
+          was already cleaned up) -- unregister the plan, a real no-op-safe
+          action.
+        - A pending entry (`register_pending_entry` -- the broker's own
+          response was PENDING, see `PendingEntry`'s docstring): attempts
+          `broker.cancel_order` on that resting order. If confirmed, keeps
+          whatever partial fill already happened (resolved the same way
+          `resolve_pending_entry` always does -- protected, never silently
+          discarded) and cancels the remainder. If the broker can't confirm
+          the cancellation, this refuses to touch anything further: the
+          order may already be filling (same "a cancel that might have
+          raced a real fill is not success" posture as `request_exit`'s own
+          stop-cancel step).
+        - Already fully filled (no pending entry, something owned): there
+          is nothing left to cancel -- this is a CLOSE, not a CANCEL, and
+          is refused so a caller doesn't mistake one for the other.
+        """
+        lifecycle = self._lifecycles.get((account.account_id, symbol))
+        if lifecycle is None:
+            return OrderResult(
+                account_id=account.account_id, status=OrderStatus.REJECTED, signal_id="", message="no entry to cancel for this position"
+            )
+        if lifecycle.closed:
+            return OrderResult(
+                account_id=account.account_id, status=OrderStatus.REJECTED, signal_id="", message="position already closed -- nothing to cancel"
+            )
+
+        pending = lifecycle.pending_entry
+        if pending is None:
+            if lifecycle.confirmed_owned_quantity > 0:
+                return OrderResult(
+                    account_id=account.account_id,
+                    status=OrderStatus.REJECTED,
+                    signal_id="",
+                    message="entry already filled; nothing to cancel -- use a close command instead",
+                )
+            self.unregister_plan(account.account_id, symbol)
+            return OrderResult(
+                account_id=account.account_id, status=OrderStatus.FILLED, signal_id="", message="entry plan cancelled before any fill"
+            )
+
+        if pending.broker_order_id is None:
+            # An unresolved entry whose response was lost entirely (see
+            # register_pending_entry's docstring) -- there is no live
+            # broker order id to cancel. Only safe if nothing has ever been
+            # confirmed filled for it; otherwise this must not pretend to
+            # cancel a position that may partly/fully exist.
+            if pending.confirmed_filled_quantity > 0:
+                return OrderResult(
+                    account_id=account.account_id,
+                    status=OrderStatus.REJECTED,
+                    signal_id="",
+                    message="entry response was lost but a partial fill was already confirmed; refusing to cancel -- reconcile against the broker first",
+                )
+            self.unregister_plan(account.account_id, symbol)
+            return OrderResult(
+                account_id=account.account_id,
+                status=OrderStatus.FILLED,
+                signal_id="",
+                message="entry plan cancelled (no broker order id was ever known)",
+            )
+
+        broker = self.brokers.get(account.broker)
+        if broker is None:
+            return OrderResult(
+                account_id=account.account_id, status=OrderStatus.ERROR, signal_id="", message=f"no broker adapter registered for '{account.broker}'"
+            )
+        cancelled = await broker.cancel_order(account, pending.broker_order_id)
+        if not cancelled:
+            return OrderResult(
+                account_id=account.account_id,
+                status=OrderStatus.ERROR,
+                signal_id="",
+                message=(
+                    f"could not confirm cancellation of entry order {pending.broker_order_id}; "
+                    "it may already be filling -- refusing to assume it's cancelled"
+                ),
+            )
+        await self.resolve_pending_entry(account, symbol, pending.confirmed_filled_quantity, remainder_cancelled=True)
+        kept = pending.confirmed_filled_quantity
+        message = (
+            f"entry order cancelled; {kept} already confirmed filled and protected"
+            if kept > 0
+            else "entry order cancelled before any fill"
+        )
+        return OrderResult(account_id=account.account_id, status=OrderStatus.FILLED, signal_id="", message=message)
+
     def restore_from_store(self) -> None:
         """Rebuild in-memory lifecycles + arbiter ledgers from persisted
         state — call once at startup, before any signal is handled. Answers
@@ -1016,6 +1182,86 @@ class PositionLifecycleManager:
         lifecycle.stop.protected_quantity = quantity
         lifecycle.stop.status = ProtectionStatus.STOP_CONFIRMED
 
+    async def resync_stop_from_audit(
+        self,
+        account: DestinationAccount,
+        symbol: str,
+        true_quantity: float,
+        price: float,
+        exit_side: Side,
+    ) -> OrderResult | None:
+        """Repair entry point for app/protection_auditor.py: place or
+        in-place-replace a protective stop sized to `true_quantity` --
+        a quantity ProtectionAuditor derived directly from the broker's
+        OWN position readback, never from this manager's internal
+        `CloseArbiter` ledger or `StopRecord`. That distinction is the
+        whole point: if this manager's internal bookkeeping is exactly
+        what's wrong (the bug ProtectionAuditor exists to catch), resizing
+        to `tx.owned` (what `_replace_stop_price` does for the NORMAL
+        resize path) would just re-place a stop sized to the same wrong
+        number. This reuses the exact same broker calls
+        (`place_protective_stop` / `replace_stop_quantity`) and the exact
+        same `StopRecord` field updates as the normal path -- it is not a
+        second order-placement path, only a different, externally-verified
+        source for the target quantity.
+
+        Refuses (returns None, places nothing) if this position is halted
+        -- see CloseArbiter.halt, which app/protection_auditor.py itself
+        uses for a genuinely ambiguous/UNKNOWN finding. A halted position
+        must not be silently "fixed" underneath the halt; that halt exists
+        specifically to force a human to look at it."""
+        broker = self.brokers.get(account.broker)
+        if broker is None:
+            return None
+
+        async with self.arbiter.transition(account.account_id, symbol) as tx:
+            if tx.is_halted:
+                logger.warning(
+                    "resync_stop_from_audit refused for account=%s symbol=%s: position is halted (%s)",
+                    account.account_id,
+                    symbol,
+                    tx.halt_reason,
+                )
+                return None
+
+            lifecycle = self._lifecycles.get((account.account_id, symbol))
+            existing_order_id = lifecycle.stop.broker_order_id if lifecycle is not None else None
+
+            result: OrderResult | None = None
+            if existing_order_id:
+                replaced = await broker.replace_stop_quantity(account, existing_order_id, true_quantity, price)
+                if replaced is not None and replaced.status not in (OrderStatus.ERROR, OrderStatus.REJECTED):
+                    result = replaced
+
+            if result is None:
+                result = await broker.place_protective_stop(account, symbol, true_quantity, price, exit_side)
+
+            if result is None or result.status in (OrderStatus.ERROR, OrderStatus.REJECTED):
+                if lifecycle is not None:
+                    lifecycle.stop.status = ProtectionStatus.UNPROTECTED
+                    lifecycle.stop.protected_quantity = 0.0
+                    self._persist(lifecycle)
+                return result
+            if result.status == OrderStatus.FILLED or not result.broker_order_id:
+                # Same ambiguous-outcome handling as `_place_stop_locked` --
+                # not confirmed resting coverage, don't report it as such.
+                if lifecycle is not None:
+                    lifecycle.stop.status = ProtectionStatus.UNPROTECTED
+                    lifecycle.stop.protected_quantity = 0.0
+                    lifecycle.stop.broker_order_id = None
+                    self._persist(lifecycle)
+                return result
+
+            if lifecycle is not None:
+                lifecycle.stop.desired_price = price
+                lifecycle.stop.submitted_price = price
+                lifecycle.stop.broker_confirmed_price = price
+                lifecycle.stop.broker_order_id = result.broker_order_id
+                lifecycle.stop.protected_quantity = true_quantity
+                lifecycle.stop.status = ProtectionStatus.STOP_CONFIRMED
+                self._persist(lifecycle)
+            return result
+
     async def _tighten_stop_to(self, lifecycle: PositionLifecycle, account: DestinationAccount, price: float) -> None:
         current = lifecycle.stop.desired_price
         if current is not None:
@@ -1152,6 +1398,7 @@ def _lifecycle_to_state(lifecycle: PositionLifecycle, ledger: dict) -> dict:
             "asset_class": plan.asset_class.value,
             "broker": plan.broker,
             "initial_stop": plan.initial_stop,
+            "entry_price": plan.entry_price,
             "targets": [
                 {
                     "trigger_price": t.trigger_price,
@@ -1217,6 +1464,7 @@ def _lifecycle_from_state(row: dict) -> PositionLifecycle:
         asset_class=AssetClass(plan_row["asset_class"]),
         broker=plan_row.get("broker", ""),
         initial_stop=plan_row.get("initial_stop"),
+        entry_price=plan_row.get("entry_price"),
         targets=[
             Target(
                 trigger_price=t["trigger_price"],

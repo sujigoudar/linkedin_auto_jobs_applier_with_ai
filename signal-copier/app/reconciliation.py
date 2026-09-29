@@ -15,6 +15,32 @@ Alpaca and IBKR — see their modules for how). Brokers without it are
 silently skipped on every pass; their PENDING orders just stay PENDING and
 optimistic in the position tracker, same as before this module existed.
 
+## Orphan-position detection and late-fill reconstruction
+
+Two more independent cross-checks, each only running for a broker that
+actually exposes the extra read-back capability involved (see
+app/brokers/base.py's `list_broker_positions`/`get_trade_history` — both
+optional, both default "unsupported," same as every other capability in
+this codebase):
+
+- `_detect_orphan_positions`: a broker-reported position with NO matching
+  local order/signal record at all (see `SignalStore.has_any_order_for`)
+  is classified `ORPHAN_POSITION` and recorded via `list_orphan_positions`
+  — never given a fabricated signal/provider attribution, and never
+  auto-protected (there is no existing, disclosed policy in this codebase
+  for what an unmanaged position's protection should even look like — see
+  `OrphanPositionRecord`'s own docstring).
+- `_reconcile_late_fills`: a local order this service believes ended
+  REJECTED (which also covers "canceled" — see `_correct_position`'s own
+  docstring) is cross-checked against the broker's own trade/execution
+  history; if the broker's history shows that exact order actually
+  filled, the real execution is reconstructed from the broker's own data,
+  the tracked position is corrected, and — since an execution nobody
+  tracked is also a position nobody is protecting —
+  `ProtectionAuditor.audit_position` (if wired in) is run immediately
+  against the resulting position rather than waiting for its own next
+  scheduled pass.
+
 ## Managed-lifecycle pending exits
 
 When a `PositionLifecycleManager` is wired in (`lifecycle_manager=`), this
@@ -31,6 +57,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 from signal_platform_contracts import Environment, EvidenceClass
@@ -42,8 +69,41 @@ from app.db import SignalStore
 from app.export_events import build_execution_applied_envelope
 from app.lifecycle.manager import PositionLifecycleManager
 from app.models import AssetClass, DestinationAccount, OrderResult, OrderStatus, Side
+from app.protection_auditor import ProtectionAuditor
 
 logger = logging.getLogger(__name__)
+
+_EPSILON = 1e-9
+
+
+@dataclass
+class OrphanPositionRecord:
+    """A real, broker-confirmed position with NO local order/signal record
+    at all -- never assigned a signal id, provider, or analyst it didn't
+    actually come from (see `_detect_orphan_positions`). This codebase has
+    no existing "unmanaged position" protection policy to fall back on
+    (checked: `DestinationAccount` has `managed_lifecycle`, which governs
+    positions THIS service opened, not ones it merely discovers already
+    existing at the broker), so the conservative default is exactly what
+    this record is: log + flag for a human, never a guessed attribution
+    and never an automatic protective order placed against a position
+    whose origin, sizing intent, and risk tolerance this service has no
+    actual record of."""
+
+    account_id: str
+    symbol: str
+    broker: str
+    quantity: float
+    detected_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+
+    def to_dict(self) -> dict:
+        return {
+            "account_id": self.account_id,
+            "symbol": self.symbol,
+            "broker": self.broker,
+            "quantity": self.quantity,
+            "detected_at": self.detected_at.isoformat(),
+        }
 
 
 class OrderReconciler:
@@ -54,6 +114,8 @@ class OrderReconciler:
         interval_seconds: float = 30.0,
         lifecycle_manager: PositionLifecycleManager | None = None,
         capital_allocator: CapitalAllocator | None = None,
+        accounts: dict[str, DestinationAccount] | None = None,
+        protection_auditor: ProtectionAuditor | None = None,
     ):
         self.store = store
         self.brokers = brokers
@@ -66,10 +128,28 @@ class OrderReconciler:
         # `reserved_notional` is then just never released here, same as
         # before this reservation-timing fix existed.
         self.capital_allocator = capital_allocator
+        #: Every configured account -- what `_detect_orphan_positions` scans
+        #: for a broker-reported position with no local record. None (not
+        #: wired) means orphan detection is a no-op, same "safe smaller
+        #: default, not a failure" as every other optional dependency here.
+        self.accounts = accounts or {}
+        #: Run immediately against a position `_reconcile_late_fills`
+        #: reconstructs -- see that method's docstring. None means the
+        #: reconstruction still happens, just without the immediate check
+        #: (the position waits for ProtectionAuditor's own next scheduled
+        #: pass instead, if one is even running).
+        self.protection_auditor = protection_auditor
         self._task: asyncio.Task | None = None
         #: See PriceMonitor.last_success_at (app/pricing.py) -- same contract,
         #: surfaced by app/main.py's /health.
         self.last_success_at: datetime | None = None
+        #: In-memory, most-recent-detected-per-(account,symbol) -- same
+        #: "queryable, not persisted" convention as
+        #: app/protection_auditor.py's own findings.
+        self._orphan_positions: dict[tuple[str, str], OrphanPositionRecord] = {}
+
+    def list_orphan_positions(self) -> list[OrphanPositionRecord]:
+        return list(self._orphan_positions.values())
 
     async def start(self) -> None:
         # OPS-02: a second start() call used to unconditionally spawn a
@@ -178,7 +258,140 @@ class OrderReconciler:
             # pending order was ever involved -- only asking the broker
             # for its own current position can.
             corrected += await self._reconcile_broker_positions()
+        corrected += await self._reconcile_late_fills()
+        await self._detect_orphan_positions()
         return corrected
+
+    async def _detect_orphan_positions(self) -> int:
+        """A broker-reported position with NO matching local record at all
+        -- see this module's own docstring and `OrphanPositionRecord`.
+        Scans every account in `self.accounts` (never limited to
+        managed-lifecycle ones -- an orphan is, by definition, NOT
+        something this service already knows to be watching) on a broker
+        that exposes `list_broker_positions`; a broker without that
+        capability is silently skipped, same "disclosed capability gap,
+        not a false negative reported as false" convention as every other
+        optional broker capability in this module."""
+        found = 0
+        for account_id, account in self.accounts.items():
+            broker = self.brokers.get(account.broker)
+            if broker is None or not broker.has_bulk_position_capability:
+                continue
+            try:
+                broker_positions = await broker.list_broker_positions(account)
+            except Exception:  # noqa: BLE001 - one broker's failure must not block the rest
+                logger.exception("list_broker_positions failed for account=%s", account_id)
+                continue
+            if broker_positions is None:
+                continue
+
+            for symbol, quantity in broker_positions.items():
+                if abs(quantity) < _EPSILON:
+                    continue
+                key = (account_id, symbol)
+                locally_known = (
+                    abs(self.store.get_position(account_id, symbol)) > _EPSILON
+                    or self.store.has_any_order_for(account_id, symbol)
+                    or (self.lifecycle_manager is not None and self.lifecycle_manager.get_lifecycle(account_id, symbol) is not None)
+                )
+                if locally_known:
+                    self._orphan_positions.pop(key, None)
+                    continue
+                record = OrphanPositionRecord(account_id=account_id, symbol=symbol, broker=account.broker, quantity=quantity)
+                self._orphan_positions[key] = record
+                logger.error(
+                    "orphan position detected: account=%s symbol=%s broker=%s quantity=%s -- broker reports "
+                    "this position but this service has no order/signal record of it at all",
+                    account_id,
+                    symbol,
+                    account.broker,
+                    quantity,
+                )
+                found += 1
+        return found
+
+    async def _reconcile_late_fills(self) -> int:
+        """Cross-check every order this service believes ended REJECTED
+        against the broker's own trade/execution history for that same
+        `broker_order_id` -- see this module's own docstring. Only runs
+        for a broker that exposes `get_trade_history`; a broker without it
+        is silently skipped, same convention as the rest of this module."""
+        reconstructed = 0
+        for order in self.store.list_rejected_orders_with_broker_id():
+            broker = self.brokers.get(order["broker"])
+            if broker is None or not broker.has_trade_history_capability:
+                continue
+
+            account = DestinationAccount(account_id=order["account_id"], broker=order["broker"])
+            try:
+                history = await broker.get_trade_history(account, order["symbol"])
+            except Exception:  # noqa: BLE001 - one broker's failure must not block the rest
+                logger.exception(
+                    "get_trade_history failed for account=%s symbol=%s", order["account_id"], order["symbol"]
+                )
+                continue
+            if not history:
+                continue
+
+            real_fill = next(
+                (
+                    h
+                    for h in history
+                    if h.broker_order_id == order["broker_order_id"] and h.status == OrderStatus.FILLED
+                ),
+                None,
+            )
+            if real_fill is None or real_fill.filled_quantity is None:
+                continue
+
+            # Idempotency: only reconstruct once. Once applied, this order
+            # row's own status is flipped to 'filled' below, so it drops
+            # out of `list_rejected_orders_with_broker_id` on the next pass
+            # -- there is no separate "already reconstructed" flag to
+            # maintain.
+            already_applied = order["filled_quantity"] or 0.0
+            new_total = real_fill.filled_quantity
+            delta = new_total - already_applied
+            if abs(delta) < _EPSILON:
+                # The broker's history agrees with what was already applied
+                # (e.g. a partial fill correctly recorded before the
+                # remainder was genuinely rejected) -- nothing to reconstruct.
+                continue
+
+            side = Side(order["side"]) if order["side"] else None
+            signed_delta = (delta if side == Side.BUY else -delta) if side is not None else 0.0
+
+            logger.error(
+                "late-fill reconstruction: order id=%s account=%s symbol=%s broker_order_id=%s was recorded "
+                "REJECTED but broker trade history shows a real fill of %s (previously applied: %s) -- "
+                "correcting tracked position by %s",
+                order["id"],
+                order["account_id"],
+                order["symbol"],
+                order["broker_order_id"],
+                new_total,
+                already_applied,
+                signed_delta,
+            )
+            self.store.correct_position_and_update_order_status(
+                order["id"], order["account_id"], order["symbol"], signed_delta, real_fill
+            )
+            reconstructed += 1
+
+            # The dangerous direction: an execution nobody tracked is a
+            # position nobody is protecting. Check it immediately rather
+            # than waiting for ProtectionAuditor's own next scheduled pass.
+            if self.protection_auditor is not None:
+                try:
+                    await self.protection_auditor.audit_position(account, order["symbol"])
+                except Exception:  # noqa: BLE001 - the reconstruction above already committed; an audit failure must not undo it
+                    logger.exception(
+                        "immediate post-late-fill protection audit failed for account=%s symbol=%s",
+                        order["account_id"],
+                        order["symbol"],
+                    )
+
+        return reconstructed
 
     async def _reconcile_broker_positions(self) -> int:
         assert self.lifecycle_manager is not None  # only caller (reconcile_once) checks this first
