@@ -56,28 +56,33 @@ as an Alembic revision with real `sa` column definitions).
 
 ## Why `0001_initial_schema.py` exists and what it is (and isn't)
 
-`alembic/versions/0001_initial_schema.py`'s `upgrade()` is literally
-`op.get_bind().connection.executescript(SCHEMA)` — it runs the exact
-same `SCHEMA` string `SignalStore` always has. Its own docstring is
-explicit about what this is for:
-
-> "This is NOT how this database actually got here for any existing
-> deployment: every database this app has ever created got its schema
-> from `app/db.py`'s SCHEMA executescript + the (now-frozen)
-> `_COLUMN_MIGRATIONS` list, never from this file."
+`alembic/versions/0001_initial_schema.py`'s `upgrade()` runs a **frozen,
+hardcoded DDL string baked into that file** (`_SCHEMA_0001`) — not
+`app/db.py`'s live `SCHEMA`. Like every revision after it, `0001` is an
+independent, point-in-time snapshot: it captures the schema exactly as
+it stood before `0002`'s `orders.reserved_notional` column existed, i.e.
+`SCHEMA` with every column/table added by `0002`–`0015` subtracted back
+out. It is deliberately **not** a live mirror of `SCHEMA` — importing
+`SCHEMA` directly here would re-introduce every later column and table
+at revision `0001`, so `0002`'s `add_column` (and every later
+`create_table`) would collide with something already there and the
+"genuinely empty database" upgrade path would fail partway through
+(historically this failed at `0002` with `sqlite3.OperationalError:
+duplicate column name: reserved_notional`).
 
 It exists for two real purposes:
 
 1. `alembic upgrade head` against a genuinely empty database — someone
    provisioning one purely through the Alembic CLI, bypassing
    `SignalStore` entirely — produces the exact same schema
-   `SignalStore`'s own bootstrap does.
+   `SignalStore`'s own bootstrap does, **once every revision through
+   head has run**, the same way `0002`–`0015` build on top of it.
 2. Every actual `SignalStore`-created database (fresh or pre-existing)
-   is stamped at this revision **without re-running it** (see
+   is stamped at head **without re-running any revision** (see
    `_stamp_alembic_head_if_needed` below) — its schema is already
-   exactly this, by construction, so re-running `CREATE TABLE` would
-   be redundant (and, for a statement without `IF NOT EXISTS`, an
-   error).
+   exactly what the full chain would produce, by construction, so
+   re-running `CREATE TABLE`/`ALTER TABLE` would be redundant (and, for
+   a statement without `IF NOT EXISTS`, an error).
 
 `downgrade()` raises `NotImplementedError` deliberately — this
 codebase has no downgrade path for the initial schema, "the same
@@ -155,8 +160,9 @@ going forward.
 2. Do **not** add anything to `_COLUMN_MIGRATIONS` — it is frozen.
 3. Write a new Alembic revision (`alembic revision -m "..."`) whose
    `upgrade()` performs the equivalent change with real `op.*`/`sa.*`
-   calls (not another `executescript(SCHEMA)` call — that pattern is
-   reserved for `0001`).
+   calls — never `executescript(SCHEMA)` or any other reference to the
+   live `SCHEMA` string; every revision, including `0001`, is a frozen,
+   independent DDL snapshot of just its own incremental change.
 4. Update `docs/database/SCHEMA.md` (and, if the change affects one of
    the tricky columns that document covers, `docs/database/
    DATA_DICTIONARY.md`) and this file's head-revision table.

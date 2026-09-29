@@ -7,7 +7,8 @@ import sqlite3
 
 
 from alembic import command
-from app.db import SCHEMA, SignalStore, _alembic_config
+from alembic.config import Config as AlembicConfig
+from app.db import SCHEMA, SignalStore, _ALEMBIC_DIR, _alembic_config
 from app.models import Side, Signal
 
 
@@ -69,3 +70,85 @@ def test_alembic_config_points_at_this_specific_database(tmp_path):
     db_path = tmp_path / "specific.db"
     cfg = _alembic_config(db_path)
     assert cfg.get_main_option("sqlalchemy.url") == f"sqlite:///{db_path}"
+
+
+def _table_columns(db_path) -> dict[str, set[str]]:
+    """table name -> set of column names, for every real table (never the
+    sqlite_* bookkeeping tables or alembic's own alembic_version)."""
+    conn = sqlite3.connect(db_path)
+    try:
+        tables = [
+            name
+            for (name,) in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table' "
+                "AND name NOT LIKE 'sqlite_%' AND name != 'alembic_version'"
+            ).fetchall()
+        ]
+        return {
+            table: {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+            for table in tables
+        }
+    finally:
+        conn.close()
+
+
+def test_alembic_upgrade_head_from_genuinely_empty_database_matches_bootstrap(tmp_path):
+    """Regression test for the bug where `0001_initial_schema.py`'s
+    `upgrade()` imported and ran `app/db.py`'s LIVE `SCHEMA` string --
+    which already contains every column/table added by every later
+    revision -- instead of a frozen snapshot of its own. That made a
+    genuinely empty database's `alembic upgrade head` create the full,
+    final `orders` table (with `reserved_notional` and everything else
+    0002-0015 add) already at revision 0001, so `0002`'s own
+    `add_column("orders", "reserved_notional", ...)` collided with a
+    column already there and raised `sqlite3.OperationalError: duplicate
+    column name: reserved_notional` -- and every later `create_table`
+    revision (0003, 0004, 0006, 0007, 0009, 0011, 0013, 0014, 0015) would
+    have hit the identical "already exists" failure had execution ever
+    reached it.
+
+    This never affected a real `SignalStore`-backed deployment (that
+    path runs `SCHEMA` directly via its own idempotent bootstrap, then
+    stamps head without replaying migrations -- see
+    `test_fresh_database_is_stamped_at_head` above) -- only a database
+    provisioned purely through the Alembic CLI, which is exactly what
+    this test does: it never constructs a `SignalStore` at all, going
+    straight through `alembic.command.upgrade` the same way a human
+    following this project's own docs, or CI/infra tooling, would.
+    """
+    alembic_db_path = tmp_path / "alembic_cli_only.db"
+    cfg = AlembicConfig()
+    cfg.set_main_option("script_location", str(_ALEMBIC_DIR))
+    cfg.set_main_option("sqlalchemy.url", f"sqlite:///{alembic_db_path}")
+
+    # The bug: this used to raise OperationalError partway through the
+    # chain. It must now run cleanly through every revision to head.
+    command.upgrade(cfg, "head")
+
+    conn = sqlite3.connect(alembic_db_path)
+    version_row = conn.execute("SELECT version_num FROM alembic_version").fetchone()
+    conn.close()
+    assert version_row == ("0015",)  # reached real head, not stuck partway through
+
+    bootstrap_db_path = tmp_path / "bootstrap.db"
+    SignalStore(bootstrap_db_path)  # the real, SignalStore-backed path
+
+    alembic_schema = _table_columns(alembic_db_path)
+    bootstrap_schema = _table_columns(bootstrap_db_path)
+
+    # `signals.import_batch` (added only via app/db.py's frozen, pre-Alembic
+    # `_COLUMN_MIGRATIONS` list, never via a numbered Alembic revision) is a
+    # separate, pre-existing gap unrelated to the 0001-snapshot bug this
+    # test guards against -- excluded here rather than silently ignored.
+    bootstrap_schema["signals"] = bootstrap_schema["signals"] - {"import_batch"}
+
+    assert alembic_schema.keys() == bootstrap_schema.keys(), (
+        "the CLI-only alembic upgrade path and SignalStore's own bootstrap "
+        "must create the exact same set of tables"
+    )
+    for table in alembic_schema:
+        assert alembic_schema[table] == bootstrap_schema[table], (
+            f"table {table!r} has different columns via the alembic-only path "
+            f"vs. SignalStore's bootstrap: {alembic_schema[table]!r} != "
+            f"{bootstrap_schema[table]!r}"
+        )
