@@ -135,6 +135,34 @@
   let capitalBarChart = null;
   let pnlProxyChart = null;
 
+  // --- Saved views (TR-02 Saved views panel) ---
+  //
+  // Real, persisted named filter sets (GET/POST/DELETE /saved-views,
+  // app/db.py's `saved_views` table) -- but this screen still has NO real
+  // server-side query-param filtering (see the scope-controls note
+  // rendered below, unchanged from before this batch): `GET /positions`
+  // always returns the full authorized snapshot. So a "saved view" here
+  // is honestly a CLIENT-side filter-state blob: the exact real values of
+  // this screen's own Account/Instrument/Side controls at save time,
+  // re-applied to the already-fetched `positions`/`managed_lifecycles`
+  // rows on "Apply" -- never a server-side query this endpoint doesn't
+  // actually perform.
+  let filterState = { account_id: "", symbol: "", side: "" };
+  let cachedPositions = [];
+  let cachedLifecycleByKey = new Map();
+
+  function applyFilters(positions) {
+    return positions.filter((p) => {
+      if (filterState.account_id && p.account_id !== filterState.account_id) return false;
+      if (filterState.symbol && !p.symbol.toUpperCase().includes(filterState.symbol.toUpperCase())) return false;
+      if (filterState.side) {
+        const sign = p.net_quantity > 0 ? "long" : p.net_quantity < 0 ? "short" : "flat";
+        if (sign !== filterState.side) return false;
+      }
+      return true;
+    });
+  }
+
   function renderCapitalStateBar(wrap, accounts) {
     if (capitalBarChart) {
       capitalBarChart.destroy();
@@ -217,6 +245,184 @@
     });
   }
 
+  function renderGridAndExposure(els) {
+    const positions = applyFilters(cachedPositions);
+    if (!cachedPositions.length) {
+      StateMatrix.render(els.grid, {
+        state: "empty",
+        emptyMessage: "No verified positions in this scope.",
+        nextRoute: "/trade",
+        nextLabel: "Go to Trading command center",
+      });
+      StateMatrix.render(els.exposure, { state: "empty", emptyMessage: "No verified positions in this scope." });
+      return;
+    }
+    if (!positions.length) {
+      StateMatrix.render(els.grid, {
+        state: "empty",
+        emptyMessage: "No positions match the current filters.",
+      });
+      StateMatrix.render(els.exposure, { state: "empty", emptyMessage: "No positions match the current filters." });
+      return;
+    }
+    const rows = positions.map((p) => {
+      const lc = cachedLifecycleByKey.get(`${p.account_id}::${p.symbol}`);
+      const pendingEntry = lc && lc.pending_entry ? `${fmtNum(lc.pending_entry.requested_quantity)} pending` : "not tracked (plain account)";
+      const workingStop = lc ? (lc.stop_price !== null && lc.stop_price !== undefined ? fmtNum(lc.stop_price) : pill(lc.stop_status || "unprotected", "warn")) : "not tracked (plain account)";
+      const stateCell = lc ? (lc.halted ? pill(lc.halt_reason || "halted", "bad") : pill(lc.stop_status || "managed", "ok")) : pill("plain (unmanaged)", "muted");
+      return [
+        `<span class="mono">${escapeHtml(p.account_id)}</span>`,
+        `<span class="mono">${escapeHtml(p.symbol)}</span>`,
+        `<span class="tr-not-tracked">not tracked</span>`,
+        sideOf(p.net_quantity),
+        `<span class="num">${fmtNum(lc ? lc.owned_quantity : p.net_quantity)}</span>`,
+        pendingEntry,
+        `<span class="tr-not-exposed">not exposed</span>`,
+        workingStop,
+        `<span class="tr-basis-note">realized P&amp;L (closed fills), not a live basis</span>`,
+        stateCell,
+        `<a href="#/trade/positions/${encodeURIComponent(p.account_id)}/${encodeURIComponent(p.symbol)}">Open position</a>`,
+      ];
+    });
+    StateMatrix.render(els.grid, {
+      state: "ready",
+      html: table(
+        ["Account", "Instrument ID", "Analyst", "Side", "Owned", "Pending entry", "Possible closes", "Working stop", "P&amp;L basis", "State", ""],
+        rows,
+        "No positions match the current filters."
+      ),
+    });
+
+    const filteredKeys = new Set(positions.map((p) => `${p.account_id}::${p.symbol}`));
+    const unresolved = Array.from(cachedLifecycleByKey.entries()).filter(
+      ([key, l]) => filteredKeys.has(key) && (l.pending_exit || l.pending_entry)
+    ).length;
+    StateMatrix.render(els.exposure, {
+      state: "ready",
+      html: `<div class="econ-stats">
+               <div><span class="muted">M-TR-02-01 Known position count</span><br><span class="num">${positions.length}</span></div>
+               <div><span class="muted">M-TR-02-02 Unresolved positions</span><br><span class="num">${unresolved}</span></div>
+             </div>`,
+    });
+  }
+
+  function renderScope(els, accounts) {
+    const accountOptions = accounts
+      .map((a) => `<option value="${escapeHtml(a.account_id)}"${filterState.account_id === a.account_id ? " selected" : ""}>${escapeHtml(a.account_id)}</option>`)
+      .join("");
+    StateMatrix.render(els.scope, {
+      state: "ready",
+      html: `<p class="section-note">Read/navigation page. These filters run entirely CLIENT-side over the full authorized snapshot GET /positions already returns (Analyst/Product/Protection are not real fields on a position in this schema -- see this file's module docstring -- so only Account/Instrument/Side are filterable here); no real server-side query-param filtering exists yet.</p>
+             <form class="inline-form" onsubmit="return false;">
+               <label>Account
+                 <select id="tr02-filter-account"><option value="">All accounts</option>${accountOptions}</select>
+               </label>
+               <label>Instrument
+                 <input id="tr02-filter-symbol" type="text" placeholder="e.g. AAPL" value="${escapeHtml(filterState.symbol)}" autocomplete="off">
+               </label>
+               <label>Side
+                 <select id="tr02-filter-side">
+                   <option value="">All sides</option>
+                   <option value="long"${filterState.side === "long" ? " selected" : ""}>Long</option>
+                   <option value="short"${filterState.side === "short" ? " selected" : ""}>Short</option>
+                   <option value="flat"${filterState.side === "flat" ? " selected" : ""}>Flat</option>
+                 </select>
+               </label>
+               <span class="actions"><button type="button" class="ghost" id="tr02-filter-clear">Clear filters</button></span>
+             </form>
+             <p>Accounts in scope: ${accounts.length ? accounts.map((a) => `<span class="mono">${escapeHtml(a.account_id)}</span>`).join(", ") : "<em>none configured</em>"}</p>`,
+    });
+    const accountSel = els.scope.querySelector("#tr02-filter-account");
+    const symbolInput = els.scope.querySelector("#tr02-filter-symbol");
+    const sideSel = els.scope.querySelector("#tr02-filter-side");
+    const clearBtn = els.scope.querySelector("#tr02-filter-clear");
+    if (accountSel) accountSel.addEventListener("change", () => { filterState.account_id = accountSel.value; renderGridAndExposure(els); });
+    if (symbolInput) symbolInput.addEventListener("input", () => { filterState.symbol = symbolInput.value; renderGridAndExposure(els); });
+    if (sideSel) sideSel.addEventListener("change", () => { filterState.side = sideSel.value; renderGridAndExposure(els); });
+    if (clearBtn)
+      clearBtn.addEventListener("click", () => {
+        filterState = { account_id: "", symbol: "", side: "" };
+        renderScope(els, accounts);
+        renderGridAndExposure(els);
+      });
+  }
+
+  // Real GET/POST/DELETE /saved-views calls -- these are real mutating
+  // (POST/DELETE) requests, so they go through the SAME `postJSON`/
+  // `deleteJSON` helpers (dashboard.html's globals, shared by every other
+  // routed view's script tag on this page) every other mutating control in
+  // this app uses -- CSRF-token-attached, session-expiry-aware -- never a
+  // bespoke fetch call that would skip that handling. `ctx.fetchJSON` (the
+  // non-throwing GET-only helper) is used for the read.
+  async function renderSavedViews(ctx, els) {
+    StateMatrix.render(els.saved, { state: "loading" });
+    const res = await ctx.fetchJSON("/saved-views?screen=positions");
+    if (res.status === 401 || res.status === 403) {
+      StateMatrix.render(els.saved, { state: "denied", deniedCode: res.status });
+      return;
+    }
+    if (!res.ok) {
+      StateMatrix.render(els.saved, { state: "error", message: "Could not load saved views." });
+      return;
+    }
+    const views = (res.data && res.data.saved_views) || [];
+    const rows = views.map((v) => [
+      escapeHtml(v.name),
+      `<span class="muted">account=${escapeHtml(v.filters.account_id || "any")}, symbol=${escapeHtml(v.filters.symbol || "any")}, side=${escapeHtml(v.filters.side || "any")}</span>`,
+      `<button type="button" class="tr02-apply-view" data-id="${v.id}">Apply</button>
+       <button type="button" class="tr02-delete-view" data-id="${v.id}">Delete</button>`,
+    ]);
+    StateMatrix.render(els.saved, {
+      state: "ready",
+      html: `<p class="section-note">Real, persisted named filter sets (GET/POST/DELETE /saved-views, app/db.py's saved_views table). Since this screen has no real server-side query-param filtering yet, "Apply" re-populates the Account/Instrument/Side controls above from the saved view's real stored filter state and re-filters the already-fetched positions -- it does not re-query the server.</p>
+             <form class="inline-form" onsubmit="return false;">
+               <label>Name
+                 <input id="tr02-save-name" type="text" placeholder="Name this view" autocomplete="off">
+               </label>
+               <span class="actions"><button type="button" id="tr02-save-current">Save current filters</button></span>
+             </form>
+             ${table(["Name", "Filters", ""], rows, "No saved views yet.")}`,
+    });
+
+    const saveBtn = els.saved.querySelector("#tr02-save-current");
+    const nameInput = els.saved.querySelector("#tr02-save-name");
+    if (saveBtn) {
+      saveBtn.addEventListener("click", async () => {
+        const name = (nameInput.value || "").trim();
+        if (!name) return;
+        saveBtn.disabled = true;
+        try {
+          await postJSON("/saved-views", { name, screen: "positions", filters: { ...filterState } });
+          await renderSavedViews(ctx, els);
+        } catch (err) {
+          StateMatrix.render(els.saved, { state: "error", message: `Could not save this view: ${err.message}` });
+        } finally {
+          saveBtn.disabled = false;
+        }
+      });
+    }
+    els.saved.querySelectorAll(".tr02-apply-view").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const v = views.find((view) => String(view.id) === btn.dataset.id);
+        if (!v) return;
+        filterState = { account_id: v.filters.account_id || "", symbol: v.filters.symbol || "", side: v.filters.side || "" };
+        renderScope(els, els.__accounts || []);
+        renderGridAndExposure(els);
+      });
+    });
+    els.saved.querySelectorAll(".tr02-delete-view").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        btn.disabled = true;
+        try {
+          await deleteJSON(`/saved-views/${encodeURIComponent(btn.dataset.id)}`);
+          await renderSavedViews(ctx, els);
+        } catch (err) {
+          StateMatrix.render(els.saved, { state: "error", message: `Could not delete this view: ${err.message}` });
+        }
+      });
+    });
+  }
+
   async function load(ctx) {
     const els = {
       scope: ctx.container.querySelector("#tr02-p01 .tr-panel-body"),
@@ -241,64 +447,15 @@
     }
 
     const accounts = (accountsRes.ok && accountsRes.data && accountsRes.data.accounts) || [];
-    StateMatrix.render(els.scope, {
-      state: "ready",
-      html: `<p class="section-note">Read/navigation page. Filters (Account, Analyst, Instrument, Product, Protection) live server-side allowlisted sorting/pagination is not yet wired here -- this batch renders the full authorized snapshot; a later batch may add real query-param filtering once TR-02's own read model exists.</p>
-             <p>Accounts in scope: ${accounts.length ? accounts.map((a) => `<span class="mono">${escapeHtml(a.account_id)}</span>`).join(", ") : "<em>none configured</em>"}</p>`,
-    });
+    els.__accounts = accounts;
+    renderScope(els, accounts);
 
-    const positions = (positionsRes.data && positionsRes.data.positions) || [];
+    cachedPositions = (positionsRes.data && positionsRes.data.positions) || [];
     const lifecycles = (positionsRes.data && positionsRes.data.managed_lifecycles) || [];
-    const lifecycleByKey = new Map(lifecycles.map((l) => [`${l.account_id}::${l.symbol}`, l]));
+    cachedLifecycleByKey = new Map(lifecycles.map((l) => [`${l.account_id}::${l.symbol}`, l]));
+    renderGridAndExposure(els);
 
-    if (!positions.length) {
-      StateMatrix.render(els.grid, {
-        state: "empty",
-        emptyMessage: "No verified positions in this scope.",
-        nextRoute: "/trade",
-        nextLabel: "Go to Trading command center",
-      });
-      StateMatrix.render(els.exposure, { state: "empty", emptyMessage: "No verified positions in this scope." });
-    } else {
-      const rows = positions.map((p) => {
-        const lc = lifecycleByKey.get(`${p.account_id}::${p.symbol}`);
-        const pendingEntry = lc && lc.pending_entry ? `${fmtNum(lc.pending_entry.requested_quantity)} pending` : "not tracked (plain account)";
-        const workingStop = lc ? (lc.stop_price !== null && lc.stop_price !== undefined ? fmtNum(lc.stop_price) : pill(lc.stop_status || "unprotected", "warn")) : "not tracked (plain account)";
-        const stateCell = lc ? (lc.halted ? pill(lc.halt_reason || "halted", "bad") : pill(lc.stop_status || "managed", "ok")) : pill("plain (unmanaged)", "muted");
-        return [
-          `<span class="mono">${escapeHtml(p.account_id)}</span>`,
-          `<span class="mono">${escapeHtml(p.symbol)}</span>`,
-          `<span class="tr-not-tracked">not tracked</span>`,
-          sideOf(p.net_quantity),
-          `<span class="num">${fmtNum(lc ? lc.owned_quantity : p.net_quantity)}</span>`,
-          pendingEntry,
-          `<span class="tr-not-exposed">not exposed</span>`,
-          workingStop,
-          `<span class="tr-basis-note">realized P&amp;L (closed fills), not a live basis</span>`,
-          stateCell,
-          `<a href="#/trade/positions/${encodeURIComponent(p.account_id)}/${encodeURIComponent(p.symbol)}">Open position</a>`,
-        ];
-      });
-      StateMatrix.render(els.grid, {
-        state: "ready",
-        html: table(
-          ["Account", "Instrument ID", "Analyst", "Side", "Owned", "Pending entry", "Possible closes", "Working stop", "P&amp;L basis", "State", ""],
-          rows,
-          "No verified positions in this scope."
-        ),
-      });
-
-      const unresolved = lifecycles.filter((l) => l.pending_exit || l.pending_entry).length;
-      StateMatrix.render(els.exposure, {
-        state: "ready",
-        html: `<div class="econ-stats">
-                 <div><span class="muted">M-TR-02-01 Known position count</span><br><span class="num">${positions.length}</span></div>
-                 <div><span class="muted">M-TR-02-02 Unresolved positions</span><br><span class="num">${unresolved}</span></div>
-               </div>`,
-      });
-    }
-
-    StateMatrix.render(els.saved, { state: "unsupported", reason: "Saved views are not implemented in this build -- no persistence for named filter sets exists yet." });
+    await renderSavedViews(ctx, els);
 
     // --- Phase B7: Capital utilization (see this file's module docstring
     // for full provenance/scope) ---

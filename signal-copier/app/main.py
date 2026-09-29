@@ -12,6 +12,7 @@ import hashlib
 import hmac
 import json
 import logging
+import sqlite3
 from collections import defaultdict
 from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta, timezone
@@ -2509,6 +2510,50 @@ async def get_backtest_run(run_id: int, _owner: dict = Depends(require_owner)) -
         raise HTTPException(status_code=404, detail="backtest run not found")
     run = {**run, **_build_equity_curve_and_drawdown(run["trades"])}
     return run
+
+
+class SavedViewRequest(BaseModel):
+    name: str
+    screen: str = "positions"
+    filters: dict
+
+
+@app.get("/saved-views")
+async def list_saved_views(screen: str | None = None, _owner: dict = Depends(require_owner_read)) -> dict:
+    """TR-02: every real, persisted saved view (app/db.py's `saved_views`
+    table) -- optionally narrowed to one screen (`?screen=positions`).
+    `filters` is exactly the client-side filter-control state that screen
+    saved it with; this codebase has no server-side query-param filtering
+    for positions yet, so applying a saved view is the caller's own job
+    (re-populate its controls from `filters`), not something this endpoint
+    does."""
+    return {"saved_views": store.list_saved_views(screen=screen)}
+
+
+@app.post("/saved-views")
+async def create_saved_view(request: SavedViewRequest, _owner: dict = Depends(require_owner)) -> dict:
+    """Persist one real named filter set. `name` must be unique across all
+    saved views (this engine is single-owner -- no per-user scoping exists
+    anywhere in this schema); reusing an existing name is refused with 409
+    rather than silently overwriting it (delete the old one first if that's
+    really what's wanted)."""
+    try:
+        view_id = store.save_saved_view(
+            name=request.name, screen=request.screen, filters=request.filters, created_at=datetime.now(timezone.utc)
+        )
+    except sqlite3.IntegrityError as exc:
+        raise HTTPException(status_code=409, detail=f"a saved view named '{request.name}' already exists") from exc
+    return {"id": view_id, "status": "created"}
+
+
+@app.delete("/saved-views/{view_id}")
+async def delete_saved_view(view_id: int, _owner: dict = Depends(require_owner)) -> dict:
+    """Deletes one real saved view. A `view_id` that never existed (or was
+    already deleted) is a real 404, never a silently-successful no-op."""
+    deleted = store.delete_saved_view(view_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="saved view not found")
+    return {"id": view_id, "status": "deleted"}
 
 
 @app.get("/backtest/runs/{run_id}/trades/{signal_id}/market-path")

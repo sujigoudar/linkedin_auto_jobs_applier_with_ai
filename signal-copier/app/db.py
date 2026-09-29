@@ -470,6 +470,41 @@ CREATE TABLE IF NOT EXISTS backtest_runs (
 CREATE INDEX IF NOT EXISTS idx_backtest_runs_created_at ON backtest_runs (created_at);
 CREATE INDEX IF NOT EXISTS idx_backtest_runs_config_hash ON backtest_runs (config_hash);
 
+-- TR-02 Saved views: a real, persisted named filter set for a routed
+-- screen -- see app/static/views/tr02.js's module docstring for the exact
+-- gap this closes (that screen's "Saved views" panel previously disclosed
+-- "not implemented in this build").
+--
+-- This engine is single-owner (one OWNER_PASSWORD, no per-user accounts
+-- anywhere in this schema -- see config_accounts/sessions), so there is no
+-- real per-user scoping column to add; `name` alone is the real identity
+-- a saved view is looked up/overwritten by, enforced UNIQUE so two saves
+-- under the same name can never silently coexist as ambiguous rows.
+--
+-- `screen` identifies which routed view (`Router.register`'s own route
+-- key, e.g. "positions" for TR-02's `#/trade/positions`) this view's
+-- filters apply to -- a plain TEXT column (not an enum/FK) so a future
+-- screen can start writing its own rows here without a schema change,
+-- while `idx_saved_views_screen` keeps a per-screen listing real-time
+-- cheap.
+--
+-- `filters_json` is the exact, real client-side filter-control state TR-02
+-- (or a future screen) actually had selected at save time -- this
+-- codebase has no server-side query-param filtering for positions yet
+-- (see tr02.js's own scope-controls note), so this is honestly a
+-- CLIENT-side filter-state blob, applied by the view after fetching its
+-- normal full snapshot -- never a server-side query it silently implies
+-- exists.
+CREATE TABLE IF NOT EXISTS saved_views (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,
+    screen TEXT NOT NULL,
+    filters_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_saved_views_screen ON saved_views (screen);
+
 CREATE INDEX IF NOT EXISTS idx_orders_executed_at ON orders (executed_at);
 CREATE INDEX IF NOT EXISTS idx_orders_account_id ON orders (account_id);
 CREATE INDEX IF NOT EXISTS idx_signals_received_at ON signals (received_at);
@@ -1834,6 +1869,49 @@ class SignalStore:
             "stressed_summary": json.loads(row[6]) if row[6] else None,
             "cost_stress_note": row[7],
         }
+
+    def save_saved_view(self, *, name: str, screen: str, filters: dict, created_at: datetime) -> int:
+        """Persist one real named filter set. `name` is UNIQUE at the
+        schema level -- a caller trying to reuse an existing name gets a
+        real `sqlite3.IntegrityError` (app/main.py turns that into a 409),
+        never a silent overwrite."""
+        with self._connect() as conn:
+            cursor = conn.execute(
+                "INSERT INTO saved_views (name, screen, filters_json, created_at) VALUES (?, ?, ?, ?)",
+                (name, screen, json.dumps(filters), created_at.isoformat()),
+            )
+            assert cursor.lastrowid is not None
+            return cursor.lastrowid
+
+    def list_saved_views(self, *, screen: str | None = None) -> list[dict]:
+        """Every persisted saved view, optionally narrowed to one screen --
+        most recently created first."""
+        query = "SELECT id, name, screen, filters_json, created_at FROM saved_views"
+        params: list = []
+        if screen is not None:
+            query += " WHERE screen = ?"
+            params.append(screen)
+        query += " ORDER BY created_at DESC, id DESC"
+        with self._connect() as conn:
+            rows = conn.execute(query, params).fetchall()
+        return [
+            {
+                "id": r[0],
+                "name": r[1],
+                "screen": r[2],
+                "filters": json.loads(r[3]),
+                "created_at": r[4],
+            }
+            for r in rows
+        ]
+
+    def delete_saved_view(self, view_id: int) -> bool:
+        """Deletes one saved view by id. Returns whether a row actually
+        existed to delete (app/main.py turns a `False` into a real 404
+        rather than a silently-successful no-op)."""
+        with self._connect() as conn:
+            cursor = conn.execute("DELETE FROM saved_views WHERE id = ?", (view_id,))
+            return cursor.rowcount > 0
 
     def list_orders_for_signal(self, signal_id: str) -> list[dict]:
         """Every order already recorded against this exact signal id — what
