@@ -3197,6 +3197,9 @@ def cancel_copy_mandate_page(
 # it).
 
 
+CSRF_COOKIE_NAME = "cp_csrf"
+
+
 def _set_session_cookie(request: Request, response, session_id: str) -> None:
     # SEC-05 (same reasoning as signal-copier's own app/main.py login
     # route): `request.url.scheme` alone is wrong behind a TLS-
@@ -3204,6 +3207,25 @@ def _set_session_cookie(request: Request, response, session_id: str) -> None:
     # operator override for that deployment.
     response.set_cookie(
         SESSION_COOKIE_NAME, session_id, httponly=True, samesite="strict", path="/",
+        secure=request.url.scheme == "https" or config.FORCE_SECURE_COOKIES,
+    )
+
+
+def _set_csrf_cookie(request: Request, response, csrf_token: str) -> None:
+    """The other half of the CSRF fix documented in
+    app/api/dependencies.py's own `get_current_scope` docstring:
+    `create_web_session`'s own returned `csrf_token` used to be minted
+    and immediately discarded -- never delivered to the browser at all,
+    so every cookie-authenticated form POST was unconditionally rejected
+    with 403. Deliberately NOT `httponly` (unlike the session cookie
+    itself): `_base.html`'s own injection script reads this cookie via
+    `document.cookie` to fill in each form's hidden `csrf_token` field --
+    an httponly cookie would be invisible to that script. This is still
+    real CSRF protection: the attack this defends against is a
+    cross-site form auto-submitting the browser's session cookie, not a
+    same-site script reading its own site's own non-httponly cookie."""
+    response.set_cookie(
+        CSRF_COOKIE_NAME, csrf_token, httponly=False, samesite="strict", path="/",
         secure=request.url.scheme == "https" or config.FORCE_SECURE_COOKIES,
     )
 
@@ -3237,12 +3259,13 @@ def sign_in_submit(
             request, "id01_auth.html", {"error": "This identity has no tenant membership.", "notice": None}, status_code=403
         )
 
-    session_id, _csrf_token = create_web_session(
+    session_id, csrf_token = create_web_session(
         session, user_id=user.user_id, tenant_id=membership.tenant_id, role=membership.role
     )
     safe_return_route = return_route if return_route.startswith("/") else "/app"
     response = RedirectResponse(url=safe_return_route, status_code=303)
     _set_session_cookie(request, response, session_id)
+    _set_csrf_cookie(request, response, csrf_token)
     return response
 
 
@@ -3301,9 +3324,10 @@ def verify_email_page(request: Request, token: str | None = None, pending: str |
     if membership is None:
         return templates.TemplateResponse(request, "id02_verify.html", {"state": "verified_no_membership", "verify_url": None, "error": None})
 
-    session_id, _csrf_token = create_web_session(session, user_id=user.user_id, tenant_id=membership.tenant_id, role=membership.role)
+    session_id, csrf_token = create_web_session(session, user_id=user.user_id, tenant_id=membership.tenant_id, role=membership.role)
     response = templates.TemplateResponse(request, "id02_verify.html", {"state": "verified", "verify_url": None, "error": None})
     _set_session_cookie(request, response, session_id)
+    _set_csrf_cookie(request, response, csrf_token)
     return response
 
 
@@ -3353,6 +3377,7 @@ def logout_submit(request: Request, session: Session = Depends(get_db_session)):
         delete_web_session(session, session_id=session_id)
     response = RedirectResponse(url="/auth", status_code=303)
     response.delete_cookie(SESSION_COOKIE_NAME, path="/")
+    response.delete_cookie(CSRF_COOKIE_NAME, path="/")
     return response
 
 
