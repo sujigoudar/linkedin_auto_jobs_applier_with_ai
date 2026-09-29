@@ -464,7 +464,8 @@ CREATE TABLE IF NOT EXISTS backtest_runs (
     summary_json TEXT NOT NULL,
     trades_json TEXT NOT NULL,
     stressed_summary_json TEXT,
-    cost_stress_note TEXT
+    cost_stress_note TEXT,
+    capital_contention_json TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_backtest_runs_created_at ON backtest_runs (created_at);
@@ -536,6 +537,7 @@ _COLUMN_MIGRATIONS = [
     # review workflow -- see Signal.import_batch's docstring in
     # app/models.py for why this is the one field added for it.
     ("signals", "import_batch", "TEXT"),
+    ("backtest_runs", "capital_contention_json", "TEXT"),
 ]
 
 
@@ -1802,19 +1804,27 @@ class SignalStore:
         trades: list[dict],
         stressed_summary: dict | None = None,
         cost_stress_note: str | None = None,
+        capital_contention: dict | None = None,
     ) -> int:
         """TR-15: persist one completed POST /backtest replay -- the exact
         real request/summary/trades that endpoint already computes, never
         re-derived. Always an append (never an upsert): each run is its own
         real, reproducible record, even if a later run shares the same
         `config_hash` (a genuine repeat of the identical inputs) -- run
-        history is a durable log, not a "latest result per config" cache."""
+        history is a durable log, not a "latest result per config" cache.
+
+        `capital_contention` is the real
+        `app/backtest/replay.py`'s `CapitalContentionReport` this run
+        computed (as a dict), covering B7's real cross-signal
+        capital-sharing overlay -- `None` only for a run persisted before
+        this field existed (a pre-existing on-disk database backfilled via
+        `_COLUMN_MIGRATIONS`), never a fabricated placeholder."""
         with self._connect() as conn:
             cursor = conn.execute(
                 """INSERT INTO backtest_runs
                    (config_hash, created_at, request_json, summary_json, trades_json,
-                    stressed_summary_json, cost_stress_note)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    stressed_summary_json, cost_stress_note, capital_contention_json)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     config_hash,
                     created_at.isoformat(),
@@ -1823,6 +1833,7 @@ class SignalStore:
                     json.dumps(trades),
                     json.dumps(stressed_summary) if stressed_summary is not None else None,
                     cost_stress_note,
+                    json.dumps(capital_contention) if capital_contention is not None else None,
                 ),
             )
             # lastrowid is None only for a statement that isn't a rowid-table
@@ -1839,7 +1850,7 @@ class SignalStore:
         with self._connect() as conn:
             rows = conn.execute(
                 """SELECT id, config_hash, created_at, request_json, summary_json,
-                          stressed_summary_json, cost_stress_note
+                          stressed_summary_json, cost_stress_note, capital_contention_json
                    FROM backtest_runs
                    ORDER BY created_at DESC, id DESC
                    LIMIT ?""",
@@ -1854,6 +1865,7 @@ class SignalStore:
                 "summary": json.loads(r[4]),
                 "stressed_summary": json.loads(r[5]) if r[5] else None,
                 "cost_stress_note": r[6],
+                "capital_contention": json.loads(r[7]) if r[7] else None,
             }
             for r in rows
         ]
@@ -1865,7 +1877,7 @@ class SignalStore:
         with self._connect() as conn:
             row = conn.execute(
                 """SELECT id, config_hash, created_at, request_json, summary_json, trades_json,
-                          stressed_summary_json, cost_stress_note
+                          stressed_summary_json, cost_stress_note, capital_contention_json
                    FROM backtest_runs WHERE id = ?""",
                 (run_id,),
             ).fetchone()
@@ -1880,6 +1892,7 @@ class SignalStore:
             "trades": json.loads(row[5]),
             "stressed_summary": json.loads(row[6]) if row[6] else None,
             "cost_stress_note": row[7],
+            "capital_contention": json.loads(row[8]) if row[8] else None,
         }
 
     def save_saved_view(self, *, name: str, screen: str, filters: dict, created_at: datetime) -> int:

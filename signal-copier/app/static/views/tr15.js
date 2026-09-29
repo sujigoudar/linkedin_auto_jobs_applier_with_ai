@@ -292,6 +292,48 @@
     return table(["Signal ID", "Symbol", "Entry time", "Bar where stop AND target both fell in range"], rows, "No ambiguous bars in this run (see app/backtest/simulator.py's module docstring for what AMBIGUOUS means and why it's never resolved by assumption).");
   }
 
+  function renderCapitalContentionSection(run) {
+    const cc = run.capital_contention;
+    if (!cc || cc.status !== "implemented") {
+      return notTrackedNote(
+        (cc && cc.reason) ||
+          "This run didn't check cross-signal capital contention -- pick a real configured account (with a real max_notional_exposure) in Run configuration and re-run to see this account's real capital-sharing effects here."
+      );
+    }
+    const naive = cc.naive_summary || {};
+    const aware = cc.contention_aware_summary || {};
+    const rejectedRows = (cc.rejected_signal_ids || []).map((sid) => {
+      // The persisted run.trades list is always the NAIVE replay's trades
+      // (used for symbol/entry_time only -- those don't change under
+      // contention); the real CAPITAL_REJECTED note lives in
+      // cc.rejected_notes (the naive trade was never actually rejected, so
+      // it never carries this note).
+      const t = (run.trades || []).find((tr) => String(tr.signal_id) === String(sid));
+      const note = (cc.rejected_notes || {})[sid] || "";
+      return [
+        `<span class="mono">${escapeHtml(String(sid))}</span>`,
+        t ? escapeHtml(t.symbol) : "—",
+        t ? escapeHtml(t.entry_time) : "—",
+        escapeHtml(note),
+      ];
+    });
+    return `
+      <p class="section-note">Real cross-signal capital-sharing overlay (app/backtest/replay.py's <span class="mono">run_with_capital_contention</span>) for account <span class="mono">${escapeHtml(cc.account_id)}</span>, ceiling (max_notional_exposure) ${fmtNum(cc.max_notional_exposure)} -- signals replayed in real chronological order sharing this one ceiling, admitted/rejected by app/capital_allocator.py's own <span class="mono">CapitalAllocator.admit()</span> (the exact same gate live trading uses before submitting a real order), never a separate re-implementation.</p>
+      ${table(
+        ["Metric", "Naive replay (each signal sized independently)", "Contention-aware replay (shared ceiling)"],
+        [
+          ["Total P&L", fmtNum(naive.total_pnl), fmtNum(aware.total_pnl)],
+          ["Wins", fmtNum(naive.wins), fmtNum(aware.wins)],
+          ["Losses", fmtNum(naive.losses), fmtNum(aware.losses)],
+          ["Capital-rejected", "0 (naive replay never checks contention)", fmtNum(aware.capital_rejected)],
+        ],
+        "No data."
+      )}
+      <p class="section-note">${cc.reduced_or_rejected_count} signal(s) that the naive replay resolved were rejected outright here because this account's real ceiling was already committed to earlier-admitted, still-open overlapping signal(s) at the moment they arrived.</p>
+      ${table(["Signal ID", "Symbol", "Entry time", "Why rejected"], rejectedRows, "No signal was rejected by capital contention in this run.")}
+    `;
+  }
+
   function renderCostsSection(run) {
     if (!run.stressed_summary) {
       return notTrackedNote(
@@ -470,7 +512,10 @@
         ${renderCostsSection(run)}
 
         <h3 class="section-note" style="margin-top:16px;">Capital utilization</h3>
-        ${unsupportedNote("app/backtest/replay.py's own module docstring: this engine has \"no shared-account capital modeling\" -- every signal is replayed independently at its own quantity, with no shared capital ceiling across concurrent positions, so there is no real percentage-of-capital-deployed figure to report here (fabricating one would imply a portfolio-level simulation this engine doesn't do).")}
+        ${unsupportedNote("app/backtest/replay.py's own module docstring: the default run() still has \"no shared-account capital modeling\" -- every signal is replayed independently at its own quantity, with no shared capital ceiling across concurrent positions, so there is no real percentage-of-capital-deployed figure to report here (fabricating one would imply a portfolio-level simulation this engine doesn't do). See Capital-contention effects below for the real, opt-in, bounded overlay this run may have checked instead.")}
+
+        <h3 class="section-note" style="margin-top:16px;">Capital-contention effects (B7)</h3>
+        ${renderCapitalContentionSection(run)}
 
         <h3 class="section-note" style="margin-top:16px;">MAE / MFE (maximum adverse/favorable excursion)</h3>
         ${notTrackedNote("app/backtest/replay.py's ReplayedTrade records only entry_price/exit_price, not the intra-trade high/low price path a real MAE/MFE figure needs -- this engine walks bar-by-bar to find the FIRST resolving bar but never records the running excursion, so there is no real number to show rather than an estimated one.")}
@@ -655,6 +700,15 @@
     }
     const signals = (signalsRes.data && signalsRes.data.signals) || [];
 
+    // B7: real configured accounts (GET /accounts, app/db.py's
+    // config_accounts) -- used only to populate the Run configuration
+    // account picker below for the capital-contention overlay. A failed or
+    // empty fetch just leaves the picker empty (no account_id sent -> the
+    // backend's own honest not_tracked disclosure below still applies), it
+    // never blocks the rest of this screen.
+    const accountsRes = await ctx.fetchJSON("/accounts");
+    const configAccounts = (accountsRes.ok && accountsRes.data && accountsRes.data.accounts) || [];
+
     // --- History catalog: real, already-received immutable signals ---
     if (!signals.length) {
       StateMatrix.render(els.history, {
@@ -705,6 +759,14 @@
         <h3 class="section-note" style="margin-top:12px;">E07 (bounded): optional linear cost stress</h3>
         <label>Slippage (bps)<input type="number" id="tr15-slippage-bps" value="0" min="0" step="any"></label>
         <label>Fee per trade<input type="number" id="tr15-fee-per-trade" value="0" min="0" step="any"></label>
+        <h3 class="section-note" style="margin-top:12px;">B7 (bounded): optional cross-signal capital-contention check</h3>
+        <label>Account (app/db.py's config_accounts -- optional)
+          <select id="tr15-account-id">
+            <option value="">— none (contention check not run for this replay) —</option>
+            ${configAccounts.map((a) => `<option value="${escapeAttr(a.account_id)}">${escapeHtml(a.account_id)}${a.max_notional_exposure !== null && a.max_notional_exposure !== undefined ? ` (max_notional_exposure ${fmtNum(a.max_notional_exposure)})` : " (no max_notional_exposure configured)"}</option>`).join("")}
+          </select>
+        </label>
+        <p class="section-note">Picking a real configured account replays this run's signals in real chronological order against that account's own real <span class="mono">max_notional_exposure</span> ceiling, reusing app/capital_allocator.py's own <span class="mono">CapitalAllocator.admit()</span> -- the same gate live trading uses (see app/backtest/replay.py's <span class="mono">run_with_capital_contention</span>). No account picked, or the picked account has no ceiling configured, is disclosed honestly below rather than assuming a default ceiling.</p>
         <div class="form-error" id="tr15-form-error"></div>
         <div class="tr-controls-row">
           <button type="button" id="tr15-preview">Preview</button>
@@ -740,6 +802,7 @@
       const maxHold = parseFloat(els.config.querySelector("#tr15-max-hold").value) || 30;
       const slippageBps = parseFloat(els.config.querySelector("#tr15-slippage-bps").value) || 0;
       const feePerTrade = parseFloat(els.config.querySelector("#tr15-fee-per-trade").value) || 0;
+      const accountId = els.config.querySelector("#tr15-account-id").value.trim();
       const csvPaths = {};
       els.config.querySelectorAll("[data-csv-row]").forEach((row) => {
         const sym = row.querySelector(".tr15-csv-symbol").value.trim();
@@ -763,6 +826,7 @@
           max_hold_days: maxHold,
           slippage_bps: slippageBps,
           fee_per_trade: feePerTrade,
+          account_id: accountId || null,
         },
       };
     }

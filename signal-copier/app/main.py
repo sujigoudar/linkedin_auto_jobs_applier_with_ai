@@ -8,6 +8,7 @@ started in the lifespan handler.
 """
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import hmac
 import json
@@ -33,7 +34,7 @@ from app.auth import SESSION_COOKIE_NAME, RequireOwner, auth_configured, create_
 from app.backtest.cost_stress import apply_cost_stress
 from app.backtest.fit_simulator import simulate_provider_fit
 from app.backtest.models import CsvPriceHistoryProvider
-from app.backtest.replay import BacktestEngine
+from app.backtest.replay import BacktestEngine, CapitalContentionReport
 from app.brokers.alpaca import AlpacaBroker
 from app.brokers.base import BrokerAdapter
 from app.brokers.ccxt_broker import CCXTBroker, build_ccxt_brokers
@@ -2396,6 +2397,13 @@ class BacktestRequest(BaseModel):
     #: omitting both fields.
     slippage_bps: float = Field(default=0.0, ge=0)
     fee_per_trade: float = Field(default=0.0, ge=0)
+    #: B7: which real configured account (app/db.py's `config_accounts`)
+    #: this run's signals would have routed to, for the real cross-signal
+    #: capital-contention overlay -- see app/backtest/replay.py's
+    #: `run_with_capital_contention`. None (the default) means this run
+    #: doesn't check capital contention at all; the response/persisted run
+    #: honestly discloses that as `not_tracked`, never a fabricated result.
+    account_id: str | None = None
 
 
 def _build_equity_curve_and_drawdown(trades: list[dict]) -> dict:
@@ -2473,9 +2481,49 @@ def compute_backtest_config_hash(request: "BacktestRequest") -> str:
         "slippage_bps": request.slippage_bps,
         "fee_per_trade": request.fee_per_trade,
         "csv_fingerprints": csv_fingerprints,
+        # B7: which account (if any) the capital-contention overlay checked
+        # this run against genuinely changes this run's real output (the
+        # persisted capital_contention field) -- two requests that only
+        # differ here must not collide onto the same hash.
+        "account_id": request.account_id,
     }
     canonical = json.dumps(payload, sort_keys=True)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+async def _compute_capital_contention(
+    engine: BacktestEngine, rows: list[dict], account_id: str | None
+) -> CapitalContentionReport:
+    """B7: real, honest gate in front of `BacktestEngine.
+    run_with_capital_contention` -- only actually runs the contention-aware
+    replay when this run names a REAL configured account
+    (`app/db.py`'s `config_accounts`) that itself carries a real
+    `max_notional_exposure` (`app/capital_allocator.py`'s opt-in ceiling).
+    Every other case is disclosed as `not_tracked` with the specific real
+    reason, never silently defaulted to an invented ceiling -- see this
+    function's callers' own docstrings for why that matters."""
+    if not account_id:
+        return CapitalContentionReport.not_tracked(
+            "No account_id was given for this backtest run -- set Account in Run configuration to a "
+            "real configured account id to check this run's signals against that account's real "
+            "configured capital ceiling (app/capital_allocator.py's max_notional_exposure)."
+        )
+    account_row = next((a for a in store.list_config_accounts() if a["account_id"] == account_id), None)
+    if account_row is None:
+        return CapitalContentionReport.not_tracked(
+            f"Account {account_id!r} is not a configured account (app/db.py's config_accounts) -- there is "
+            "no real account here to check a capital ceiling against."
+        )
+    max_notional_exposure = account_row["max_notional_exposure"]
+    if max_notional_exposure is None:
+        return CapitalContentionReport.not_tracked(
+            f"Account {account_id!r} has no max_notional_exposure configured (app/capital_allocator.py's "
+            "opt-in ceiling, None by default) -- there is no real ceiling to check cross-signal capital "
+            "contention against for this run."
+        )
+    return await engine.run_with_capital_contention(
+        rows, account_id=account_id, max_notional_exposure=max_notional_exposure
+    )
 
 
 @app.post("/backtest")
@@ -2539,6 +2587,9 @@ async def run_backtest(request: BacktestRequest, _owner: dict = Depends(require_
         response["stressed_summary"] = stressed_summary
         response["cost_stress_note"] = cost_stress_note
 
+    capital_contention = await _compute_capital_contention(engine, rows, request.account_id)
+    response["capital_contention"] = dataclasses.asdict(capital_contention)
+
     config_hash = compute_backtest_config_hash(request)
     request_payload = json.loads(request.model_dump_json())
     run_id = store.save_backtest_run(
@@ -2549,6 +2600,7 @@ async def run_backtest(request: BacktestRequest, _owner: dict = Depends(require_
         trades=trades_payload,
         stressed_summary=stressed_summary,
         cost_stress_note=cost_stress_note,
+        capital_contention=response["capital_contention"],
     )
     response["run_id"] = run_id
     response["config_hash"] = config_hash
