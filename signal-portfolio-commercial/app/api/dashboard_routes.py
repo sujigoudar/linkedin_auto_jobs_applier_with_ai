@@ -219,6 +219,7 @@ from app.services.staff_access import (
     list_staff_memberships,
     revoke_staff_member,
 )
+from app.services.token_revocation import revoke_all_tokens_for_user
 from app.services.api_key import (
     ApiKeyNotFoundError,
     InvalidApiKeyRequestError,
@@ -1526,6 +1527,29 @@ def revoke_staff_page(
     return RedirectResponse(url="/ops/access", status_code=303)
 
 
+@router.post("/ops/access/{user_id}/revoke-api-tokens")
+def revoke_staff_api_tokens_page(
+    user_id: str,
+    request: Request,
+    scope: TenantScope = Depends(get_current_scope),
+    session: Session = Depends(get_db_session),
+):
+    """AD-16's own "Session audit" panel -- resolves that panel's own
+    previously-disclosed gap ("only cookie-based web sessions can be
+    explicitly revoked ... today"): "log out everywhere" for a staff
+    member's Bearer-token JWTs, denylisting every currently-active `jti`
+    this build has recorded issuing for `user_id` in this tenant
+    (`app/services/token_revocation.py`). Owner-only, same guard as
+    every other action on this page -- unlike `revoke_staff_member`,
+    this never touches the membership row itself, so it's safe to call
+    on the owner's own account too (e.g. after a suspected compromise)."""
+    _require_staff_access(scope)
+    set_tenant_scope(session, scope.tenant_id)
+    revoke_all_tokens_for_user(session, tenant_id=scope.tenant_id, user_id=user_id, acting_user_id=scope.user_id)
+    session.commit()
+    return RedirectResponse(url="/ops/access", status_code=303)
+
+
 _ALL_SUPPORT_CASE_CATEGORIES = ["billing", "delivery", "connection", "performance", "safety", "access"]
 
 
@@ -2760,6 +2784,7 @@ def display_preferences_page(
     scope: TenantScope = Depends(get_current_scope),
     session: Session = Depends(get_db_session),
     error: str | None = None,
+    revoked_token_count: int | None = None,
 ):
     """CU-13 "Profile, security and display preferences" -- see this
     route module's own docstring above for what is and is not
@@ -2776,6 +2801,7 @@ def display_preferences_page(
             "all_densities": _ALL_DISPLAY_DENSITIES,
             "all_reduce_motion_values": _ALL_REDUCE_MOTION_VALUES,
             "error": error,
+            "revoked_token_count": revoked_token_count,
         },
     )
 
@@ -2820,11 +2846,35 @@ def save_display_preferences_page(
                 "all_densities": _ALL_DISPLAY_DENSITIES,
                 "all_reduce_motion_values": _ALL_REDUCE_MOTION_VALUES,
                 "error": str(exc),
+                "revoked_token_count": None,
             },
             status_code=400,
         )
     session.commit()
     return RedirectResponse(url="/app/settings", status_code=303)
+
+
+@router.post("/app/settings/revoke-api-tokens")
+def revoke_own_api_tokens_page(
+    scope: TenantScope = Depends(get_current_scope),
+    session: Session = Depends(get_db_session),
+):
+    """CU-13's own "Sessions/security" panel -- resolves this page's
+    own previously-disclosed "there is no session store in this build
+    ... Revoke session is not implemented" gap for the Bearer-token JWT
+    side: "log out everywhere" for the caller's own account, denylisting
+    every currently-active `jti` this build has recorded issuing for
+    them (`app/services/token_revocation.py`). Works the same whether
+    the caller reached this page via the cookie session (the common
+    case -- that cookie session itself is untouched, only Bearer JWTs
+    are affected) or a Bearer token directly."""
+    _require_display_preferences(scope)
+    set_tenant_scope(session, scope.tenant_id)
+    revoked_count = revoke_all_tokens_for_user(
+        session, tenant_id=scope.tenant_id, user_id=scope.user_id, acting_user_id=scope.user_id
+    )
+    session.commit()
+    return RedirectResponse(url=f"/app/settings?revoked_token_count={revoked_count}", status_code=303)
 
 
 def _require_managed_operations(scope: TenantScope) -> None:

@@ -26,7 +26,7 @@ from fastapi import Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
 from app.models.tenancy import MembershipRole
-from app.services.auth import InvalidTokenError, TenantScope, decode_token
+from app.services.auth import InvalidTokenError, TenantScope, verify_token
 from app.services.local_auth import get_web_session
 
 SESSION_COOKIE_NAME = "cp_session"
@@ -57,7 +57,7 @@ def get_current_scope(request: Request, db: Session = Depends(get_db_session)) -
     if auth_header.startswith("Bearer "):
         token = auth_header[len("Bearer "):]
         try:
-            return decode_token(token)
+            return verify_token(token, db)
         except InvalidTokenError as exc:
             raise HTTPException(status_code=401, detail=str(exc)) from exc
 

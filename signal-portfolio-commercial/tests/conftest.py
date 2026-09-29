@@ -72,6 +72,7 @@ import app.models.rights  # noqa: F401
 import app.models.sleeve  # noqa: F401
 import app.models.support_case  # noqa: F401
 import app.models.tenancy  # noqa: F401
+import app.models.token_revocation  # noqa: F401
 import app.models.webhook_event  # noqa: F401
 import app.models.workspace_settings  # noqa: F401
 

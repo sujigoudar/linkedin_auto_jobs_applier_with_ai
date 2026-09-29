@@ -216,11 +216,16 @@ def main() -> int:
             register_export_stream(
                 session, tenant_id=args.tenant_id, source_stream=source_stream, environment=config.ENVIRONMENT,
             )
+        # `session=session` so this operator-provisioned token is recorded
+        # in `issued_tokens` -- otherwise it would be a JWT nobody could
+        # ever "log out everywhere" for (app/services/token_revocation.py).
+        token = issue_token(
+            args.tenant_id, args.user_id, MembershipRole.OWNER, ttl_seconds=86400, session=session
+        )
         session.commit()
     finally:
         session.close()
 
-    token = issue_token(args.tenant_id, args.user_id, MembershipRole.OWNER, ttl_seconds=86400)
     if args.token_file is not None:
         with open(args.token_file, "w") as f:
             f.write(token)

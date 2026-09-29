@@ -6,13 +6,34 @@ import jwt
 import pytest
 
 from app.models.tenancy import MembershipRole
-from app.services.auth import InvalidTokenError, TenantScope, decode_token, issue_token
+from app.services.auth import InvalidTokenError, decode_token, issue_token
 
 
 def test_a_freshly_issued_token_decodes_to_its_own_claims():
     token = issue_token("tenant-a", "user-a", MembershipRole.OWNER)
     scope = decode_token(token)
-    assert scope == TenantScope(tenant_id="tenant-a", user_id="user-a", role=MembershipRole.OWNER)
+    assert scope.tenant_id == "tenant-a"
+    assert scope.user_id == "user-a"
+    assert scope.role == MembershipRole.OWNER
+    assert scope.jti  # a real, non-empty jti claim on every issued token
+
+
+def test_two_tokens_issued_with_identical_claims_get_different_jtis():
+    token_a = issue_token("tenant-a", "user-a", MembershipRole.OWNER)
+    token_b = issue_token("tenant-a", "user-a", MembershipRole.OWNER)
+    assert decode_token(token_a).jti != decode_token(token_b).jti
+
+
+def test_a_token_missing_its_jti_claim_is_rejected():
+    from app import config
+
+    forged = jwt.encode(
+        {"tenant_id": "tenant-a", "user_id": "user-a", "role": "owner"},
+        config.LOCAL_JWT_SECRET,
+        algorithm="HS256",
+    )
+    with pytest.raises(InvalidTokenError):
+        decode_token(forged)
 
 
 def test_a_tampered_signature_is_rejected():
