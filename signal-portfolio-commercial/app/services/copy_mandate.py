@@ -10,6 +10,18 @@ that isn't both real AND currently eligible (an ACTIVE portfolio
 selection, a DECLARED platform connection) -- reusing CU-02's/CU-07's
 own ownership-and-state checks rather than a duplicate technique.
 
+It also gates on `app/services/onboarding.py`'s own
+`OnboardingStage`/`advance()` state machine, via
+`app/services/onboarding_progress.py`'s `require_stage_at_least`: a
+customer whose real, live signals (entitlement verified, alert
+preferences set, ...) haven't reached `ALERT_PREFERENCES_SET` is
+refused a mandate draft, closing the gap where that state machine was
+correct but never actually consulted by any call site. `COPY_ACTIVATED`
+has no call site to gate here at all -- `CopyMandateState` has no
+ACTIVE value, and CU-09's own "Confirm authorized activation" action
+isn't implemented in this module (see below); there is nothing yet
+that reaches it to gate.
+
 CU-10's own real actions (Pause new entries, Review owned-position
 wind-down, Request handoff) all require a mandate that has reached
 ACTIVE -- a state this model doesn't have at all, since real
@@ -29,6 +41,8 @@ from sqlalchemy.orm import Session
 from app.models.copy_mandate import CopyMandate, CopyMandateState, CopyMandateStartMode
 from app.models.platform_connection import PlatformConnectionState
 from app.models.portfolio_selection import PortfolioSelectionState
+from app.services.onboarding import OnboardingStage
+from app.services.onboarding_progress import OnboardingIncompleteError, require_stage_at_least
 from app.services.platform_connection import get_own_platform_connection
 from app.services.portfolio_selection import get_own_portfolio_selection
 
@@ -96,6 +110,21 @@ def create_copy_mandate_draft(
         raise InvalidCopyMandateError(
             f"CONNECTION_NOT_OWNED_OR_NOT_DECLARED: {connection_id!r} is not a declared connection of this customer"
         )
+
+    #: Ownership/state of the NAMED selection and connection are checked
+    #: above first (a cheap, specific rejection); only once those pass
+    #: does this customer's own onboarding progress get checked -- the
+    #: real gap this closes (see this module's own docstring): a
+    #: request with a real, eligible selection/connection but an
+    #: incomplete onboarding must still be refused here, not silently
+    #: admitted just because `OnboardingStage`/`advance()` were never
+    #: consulted by any call site.
+    try:
+        require_stage_at_least(
+            session, tenant_id=tenant_id, user_id=user_id, required=OnboardingStage.ALERT_PREFERENCES_SET
+        )
+    except OnboardingIncompleteError as exc:
+        raise InvalidCopyMandateError(str(exc)) from exc
 
     try:
         allocation_amount_decimal = Decimal(allocation_amount)

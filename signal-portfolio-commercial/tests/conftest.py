@@ -58,6 +58,7 @@ import app.models.ledger  # noqa: F401
 import app.models.local_auth  # noqa: F401
 import app.models.managed_program  # noqa: F401
 import app.models.notification_preferences  # noqa: F401
+import app.models.onboarding_progress  # noqa: F401
 import app.models.platform_connection  # noqa: F401
 import app.models.portfolio_selection  # noqa: F401
 import app.models.portfolio_version  # noqa: F401

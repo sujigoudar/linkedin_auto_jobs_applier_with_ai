@@ -14,6 +14,7 @@ from app.api.dependencies import get_db_session
 from app.main import create_app
 from app.models.tenancy import MembershipRole
 from app.services.auth import issue_token
+from tests._onboarding_fixtures import complete_onboarding_prerequisites
 
 
 def _client(db_session):
@@ -1493,6 +1494,7 @@ def test_customer_detail_shows_real_eligibility_and_cases_over_real_http(db_sess
 
 def test_customer_detail_shows_a_real_copy_mandate_over_real_http(db_session):
     _seed_customer_membership(db_session)
+    complete_onboarding_prerequisites(db_session, tenant_id="tenant-a", user_id="user-a")
     product = _seed_published_product(db_session, slug="ad11-mandate-product")
     customer_headers = _auth_headers(role=MembershipRole.CUSTOMER)
     client = _client(db_session)
@@ -2656,6 +2658,7 @@ def test_create_copy_mandate_draft_over_real_http(db_session):
     from app.models.product import Product, ProductLifecycleState
 
     _seed_customer_membership(db_session)
+    complete_onboarding_prerequisites(db_session, tenant_id="tenant-a", user_id="user-a")
     product = Product(
         tenant_id="tenant-a", product_name="HTTP Mandate Product", slug="http-mandate-product",
         lifecycle_state=ProductLifecycleState.PUBLISHED,
@@ -2724,6 +2727,7 @@ def test_create_then_cancel_copy_mandate_over_real_http(db_session):
     from app.models.product import Product, ProductLifecycleState
 
     _seed_customer_membership(db_session)
+    complete_onboarding_prerequisites(db_session, tenant_id="tenant-a", user_id="user-a")
     product = Product(
         tenant_id="tenant-a", product_name="Manage Mandate Product", slug="manage-mandate-product",
         lifecycle_state=ProductLifecycleState.PUBLISHED,
@@ -2789,6 +2793,7 @@ def test_cancel_copy_mandate_is_a_scoped_not_found_for_another_customer(db_sessi
     from app.models.tenancy import Membership, MembershipRole as Role, UserIdentity
 
     _seed_customer_membership(db_session, user_id="user-a")
+    complete_onboarding_prerequisites(db_session, tenant_id="tenant-a", user_id="user-a")
     product = Product(
         tenant_id="tenant-a", product_name="Cross Mandate Product", slug="cross-mandate-product",
         lifecycle_state=ProductLifecycleState.PUBLISHED,
@@ -2855,6 +2860,7 @@ def test_customer_overview_page_shows_the_real_empty_state(db_session):
 
 def test_customer_overview_page_shows_the_real_row_after_a_full_selection_connection_mandate_chain(db_session):
     _seed_customer_membership(db_session)
+    complete_onboarding_prerequisites(db_session, tenant_id="tenant-a", user_id="user-a")
     product = _seed_published_product(db_session)
     client = _client(db_session)
     headers = _auth_headers(role=MembershipRole.CUSTOMER)
