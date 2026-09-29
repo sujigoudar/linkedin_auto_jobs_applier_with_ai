@@ -508,4 +508,62 @@
   .tr-panel:first-of-type {
     grid-column: auto !important;
   }
+
+  /* Data-dense tables audit (design review, 2026-09): TR-06/07/09/13's
+     capability matrices, scorecards and reconciliation tables already
+     scroll horizontally below 640px (`.tr-panel`/`section.panel` both
+     already set `overflow-x: auto` -- see dashboard.html's inline
+     styles), which is an acceptable, common pattern for a dense
+     operator tool. The real break was that there was NO visual sign
+     any of that content existed at all: a table's later columns were
+     simply clipped at the panel edge with nothing suggesting more was
+     reachable by swiping, and a scrolled-right row lost the identity
+     cell (account/adapter/provider) that says what row it even is.
+     Scoped with :has(table) so only panels that actually contain a
+     table are touched -- chart/form panels (which already reflow fine)
+     get no visual change. */
+  .tr-panel:has(table),
+  section.panel:has(table) {
+    /* CSS-only "scroll shadow": two solid-panel-color layers pinned to
+       the scrolling content's own start/end (background-attachment:
+       local, so they travel with the table) mask two fixed shadow
+       layers (background-attachment: scroll, so they stay put relative
+       to the panel) at rest -- the shadow can only actually show once
+       there is real hidden content to reveal, and disappears again at
+       the opposite scroll extreme. No JS/overflow detection needed. */
+    background-image:
+      linear-gradient(to right, var(--panel) 0%, rgba(0, 0, 0, 0) 100%),
+      linear-gradient(to left, var(--panel) 0%, rgba(0, 0, 0, 0) 100%),
+      linear-gradient(to right, rgba(0, 0, 0, 0.45), rgba(0, 0, 0, 0) 70%),
+      linear-gradient(to left, rgba(0, 0, 0, 0.45), rgba(0, 0, 0, 0) 70%);
+    background-repeat: no-repeat;
+    background-size: 22px 100%, 22px 100%, 14px 100%, 14px 100%;
+    background-position: 0 0, 100% 0, 0 0, 100% 0;
+    background-attachment: local, local, scroll, scroll;
+  }
+  /* Redundant, non-color cue (the fade above is decorative only): a
+     small text+glyph hint, not relied on alone, so a table's scrollability
+     is never communicated by color/shadow alone. */
+  .tr-panel:has(table)::before,
+  section.panel:has(table)::before {
+    content: "\21c4 scroll for more columns";
+    display: block;
+    font-size: 0.7rem;
+    color: var(--muted);
+    margin-bottom: var(--space-2);
+  }
+
+  /* Keep each row's identity column (its first cell -- account id,
+     adapter, provider, order id) pinned while the rest of a wide row
+     scrolls underneath it, so a scrolled-right row stays attributable. */
+  .tr-panel table th:first-child,
+  .tr-panel table td:first-child,
+  section.panel table th:first-child,
+  section.panel table td:first-child {
+    position: sticky;
+    left: 0;
+    z-index: 1;
+    background: var(--panel);
+    box-shadow: 1px 0 0 var(--border);
+  }
 }
