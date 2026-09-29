@@ -20,7 +20,7 @@ from typing import Any, Callable
 
 import httpx
 from fastapi import Cookie, Depends, FastAPI, Form, Header, HTTPException, Query, Request, Response
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
@@ -582,7 +582,7 @@ async def logout(response: Response, scr_session: str | None = Cookie(default=No
 
 
 @app.get("/")
-async def dashboard() -> FileResponse:
+async def dashboard() -> HTMLResponse:
     """One static HTML page with vanilla JS — no build step, no frontend
     framework, no new dependency. It polls the read-only JSON endpoints
     (/positions, /brokers, /signals, /orders) and renders them as tables,
@@ -601,8 +601,23 @@ async def dashboard() -> FileResponse:
     feature, not new risk. See README.md's "Managing config through the
     GUI/API" section for what's still NOT covered (pull-based bot
     sources like Telegram/Discord still need env vars + a restart to
-    add)."""
-    return FileResponse(STATIC_DIR / "dashboard.html")
+    add).
+
+    The page itself stays a single static file with no templating engine
+    -- the ONE thing that varies per request is LEGACY_DASHBOARD_ENABLED
+    (see app/config.py and app/static/dashboard.html's `#legacy-content`
+    section), read fresh from `config` on every request (never cached)
+    so a test's `monkeypatch.setattr(config, "LEGACY_DASHBOARD_ENABLED", ...)`
+    takes effect on its very next request, same as every other config
+    read elsewhere in this file. A plain string substitution of one
+    placeholder is simpler and safer here than pulling in a template
+    engine for a single boolean."""
+    html = (STATIC_DIR / "dashboard.html").read_text(encoding="utf-8")
+    html = html.replace(
+        "__LEGACY_DASHBOARD_ENABLED__",
+        "true" if config.LEGACY_DASHBOARD_ENABLED else "false",
+    )
+    return HTMLResponse(content=html)
 
 
 @app.post("/webhook/{source_name}")

@@ -71,6 +71,18 @@ class _Settings(BaseSettings):
 
     LOG_LEVEL: str = "INFO"
 
+    # TR-0x redesign transition flag (see app/static/dashboard.html's
+    # #legacy-content section): the legacy "all panels on one page"
+    # dashboard is superseded by the 16 hash-routed TR-0X screens, which a
+    # prior design review confirmed have reached parity+more. Off by
+    # default -- the empty-hash `/` route and the legacy nav link both
+    # redirect straight to `#/trade` instead of showing the legacy panels.
+    # An operator who still needs the legacy view for development sets
+    # this true; nothing about the legacy panels' own markup, JS handlers,
+    # or backend endpoints is removed -- this only gates whether the page
+    # routes a visitor to them.
+    LEGACY_DASHBOARD_ENABLED: bool = False
+
     # Standby mode (see deploy/RUNBOOK.md): when true, this process serves only
     # GET/HEAD/OPTIONS -- no signal ingestion, no background reconciliation/price
     # polling, no financial command can reach the engine, regardless of what any
@@ -322,6 +334,8 @@ FORCE_SECURE_COOKIES = _settings.FORCE_SECURE_COOKIES
 LOG_LEVEL = _settings.LOG_LEVEL
 
 STANDBY_MODE = _settings.STANDBY_MODE
+
+LEGACY_DASHBOARD_ENABLED = _settings.LEGACY_DASHBOARD_ENABLED
 
 TELEGRAM_BOT_TOKEN = _settings.TELEGRAM_BOT_TOKEN
 TELEGRAM_CHAT_ID = _settings.TELEGRAM_CHAT_ID

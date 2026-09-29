@@ -219,6 +219,17 @@
 <link rel="stylesheet" href="/static/vendor/tabulator.min.css">
 </head>
 <body>
+  <script>
+    // TR-0x transition flag (see app/config.py's LEGACY_DASHBOARD_ENABLED
+    // and app/main.py's `dashboard()` route, which substitutes the real
+    // value in on every `GET /` -- never cached/built in). The comparison
+    // form (rather than a bare `true`/`false` token) means this script is
+    // still valid, and safely defaults OFF, even when this file is loaded
+    // directly from its own static mount (`/static/dashboard.html`, see
+    // app/main.py's own comment on that dual-serving) where no
+    // substitution ever runs.
+    window.LEGACY_DASHBOARD_ENABLED = "__LEGACY_DASHBOARD_ENABLED__" === "true";
+  </script>
   <div id="login-overlay" hidden>
     <h1>Signal Copier</h1>
     <div class="subtitle">Owner sign-in required.</div>
@@ -1283,8 +1294,27 @@ async function refreshAll() {
   $("last-updated").textContent = `last updated ${new Date().toLocaleTimeString()}`;
 }
 
-$("legacy-nav-link").addEventListener("click", (e) => {
+// TR-0x transition (see window.LEGACY_DASHBOARD_ENABLED above, and
+// Router.init's onNoRoute below): with the flag off, the legacy panels
+// are no longer reachable -- the link stays visible (never a silent dead
+// end) but redirects straight to the command center, and its label/title
+// say why and how a developer re-enables it, rather than just quietly
+// doing nothing.
+const legacyNavLinkEl = $("legacy-nav-link");
+if (window.LEGACY_DASHBOARD_ENABLED) {
+  legacyNavLinkEl.title = "The legacy all-panels-on-one-page dashboard.";
+} else {
+  legacyNavLinkEl.textContent = "Legacy dashboard (dev only)";
+  legacyNavLinkEl.title =
+    "Superseded by the Trade screens above and disabled by default. " +
+    "Set LEGACY_DASHBOARD_ENABLED=true on the server to use it for development.";
+}
+legacyNavLinkEl.addEventListener("click", (e) => {
   e.preventDefault();
+  if (!window.LEGACY_DASHBOARD_ENABLED) {
+    location.hash = "/trade";
+    return;
+  }
   location.hash = "";
   if (window.Router) Router.resolve();
 });
@@ -1361,6 +1391,22 @@ Router.init({
   },
   fetchJSON: routeFetchJSON,
   onSessionExpired: () => showLogin("Your session expired -- please sign in again."),
+  // TR-0x transition (see window.LEGACY_DASHBOARD_ENABLED above): router.js
+  // calls this every time `resolve()` would otherwise fall through to the
+  // legacy panels (any hash that isn't `#/trade...`, including the empty
+  // hash on a bare `/` load). With the flag off, redirect straight to the
+  // command center instead of ever showing #legacy-content -- a second
+  // hashchange, so it re-enters `resolve()` and takes the normal `/trade`
+  // branch rather than duplicating any of that logic here.
+  onNoRoute: () => {
+    if (!window.LEGACY_DASHBOARD_ENABLED && Router.currentPath() !== "/trade") {
+      // router.js already unhid #legacy-content just before calling this;
+      // re-hide it immediately so there's no visible flash before the
+      // hashchange below re-enters resolve() on the `/trade` branch.
+      $("legacy-content").hidden = true;
+      location.hash = "/trade";
+    }
+  },
 });
 
 checkSession();

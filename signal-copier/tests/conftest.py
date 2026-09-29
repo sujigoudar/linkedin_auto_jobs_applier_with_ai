@@ -54,6 +54,15 @@ def live_server(tmp_path):
             "SESSION_SECRET": "test-session-secret",
             "WEBHOOK_SHARED_SECRET": "test-webhook-secret",
             "DATABASE_PATH": str(tmp_path / "e2e.db"),
+            # TR-0x transition flag (see app/config.py): off by default in
+            # production now that the redesign has parity, but this shared
+            # real-browser fixture backs tests across many files -- at
+            # least test_tr01_tr04_trading_screens.py's real-browser test
+            # still exercises the legacy dashboard directly
+            # (#legacy-content/#legacy-nav-link), so the test server keeps
+            # it reachable rather than adjusting that test's own
+            # assertions.
+            "LEGACY_DASHBOARD_ENABLED": "true",
         }
     )
     proc = subprocess.Popen(
