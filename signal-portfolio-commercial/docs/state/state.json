@@ -1,0 +1,68 @@
+{
+  "app": "signal-portfolio-commercial",
+  "snapshot_source": "real git history, HEAD at 72efeae0ae7a603f562e65f5515c46253de0b960 on claude/signal-copier-redesign",
+  "readiness": "pre-1.0, development branch, LOCAL_SIM/paper mode only -- not ready for any live/real activity",
+  "recent_real_work": [
+    {
+      "commit": "72efeae",
+      "title": "Revocable JWT sessions: real jti-keyed denylist, fail-closed verification, UI",
+      "status": "done",
+      "evidence": "tests/test_token_revocation.py, 5 new tests, manual fail-closed regression check"
+    },
+    {
+      "commit": "f752904",
+      "title": "AD-18 evidence manifest export",
+      "status": "done",
+      "evidence": "app/services/evidence_manifest.py unit tests, load-bearing tamper-detection test"
+    },
+    {
+      "commit": "9ddc681",
+      "title": "CURRENT+PREVIOUS dual-secret verification for secret rotation",
+      "status": "done",
+      "evidence": "tests covering PREVIOUS-only acceptance, PREVIOUS unset rejection, unknown secret rejection, fail-closed on both blank"
+    },
+    {
+      "commit": "64d596d",
+      "title": "CU-06: real max drawdown + win rate from real FIFO-lot equity/episodes",
+      "status": "done",
+      "evidence": "7 tests including test_max_drawdown_uses_the_true_running_peak_not_just_the_previous_point"
+    },
+    {
+      "commit": "e95fc35",
+      "title": "PU-03: render fit simulator equity curve as a real Chart.js line chart",
+      "status": "done",
+      "evidence": "2 new HTTP tests (seeded JSON match, honest empty state)"
+    },
+    {
+      "commit": "e303af9",
+      "title": "Add real local sign-in/sign-up/verify/recovery system (ID-01/ID-02/ID-03)",
+      "status": "done",
+      "evidence": "end-to-end tests, signup-scoped-to-CUSTOMER assertion; email delivery explicitly not wired"
+    }
+  ],
+  "ci": {
+    "workflow": ".github/workflows/signal-portfolio-commercial-ci.yml",
+    "steps": ["ruff check .", "mypy app --ignore-missing-imports", "pytest -q", "alembic upgrade head against a fresh disposable Postgres cluster (separate step)"]
+  },
+  "scale": {
+    "alembic_revisions": 37,
+    "app_loc_approx": 15653,
+    "test_functions_approx": 822
+  },
+  "known_stub_or_simulation_only": [
+    "PAMM/MAM accounting (app/services/pamm_accounting.py, mam_allocation.py) -- simulation only, production uses the real broker's own rule",
+    "Collective2 publisher (app/services/collective2_publisher.py) -- builds, never transmits; TIF=2 remains genuinely BLOCKED (egress-policy-denied vendor doc fetch)",
+    "eToro adapter (app/services/etoro_adapter.py) -- demo-only structurally enforced, builds, never transmits",
+    "CopyFactory close-only classifier (app/services/copyfactory_close_only.py) -- classification logic only, does not call CopyFactory",
+    "Stripe webhook verification (app/services/stripe_webhook.py) -- real signature-scheme reimplementation against synthetic payloads, no real Stripe account/SDK call",
+    "Model gateway (app/services/model_gateway.py) -- permission boundary only, no real LLM provider called"
+  ],
+  "owner_only_action_cards_outstanding": [
+    "CARD-1 legal entity / jurisdiction / assets",
+    "CARD-2 source rights contracts",
+    "CARD-3 platform agreements",
+    "CARD-4 payment processor / tax / bank (merchant approval)",
+    "CARD-5 customer agreements / disclosures",
+    "CARD-6 final financial production release decision"
+  ]
+}

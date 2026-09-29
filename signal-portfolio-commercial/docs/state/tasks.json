@@ -1,0 +1,76 @@
+{
+  "app": "signal-portfolio-commercial",
+  "note": "Real, honestly-scoped open items pulled from this app's own disclosed gaps (ops/commercial_state.json, INTEGRATION_ACCEPTANCE_STATUS.md, and service-module docstrings) -- not invented busywork. Each item names its real blocker where one exists.",
+  "tasks": [
+    {
+      "id": "TASK-01",
+      "title": "Collective2 API4 real transport + StrategyId/symbol resolution",
+      "status": "blocked",
+      "blocker": "No C2 sandbox or credentials exist in this environment; CARD-3 platform agreements not yet obtained",
+      "source": "app/services/collective2_publisher.py, ops/commercial_state.json 06_collective2_publisher"
+    },
+    {
+      "id": "TASK-02",
+      "title": "Resolve Collective2 TIF value 2 documentation conflict with real vendor confirmation",
+      "status": "blocked",
+      "blocker": "collective2.com is not on this environment's allowed egress domain list; a WebFetch attempt was explicitly refused, not retried",
+      "source": "app/services/collective2_publisher.py module docstring"
+    },
+    {
+      "id": "TASK-03",
+      "title": "eToro real application registration + live/read-only verification path",
+      "status": "blocked",
+      "blocker": "No eToro application/credentials exist in this environment",
+      "source": "app/services/etoro_adapter.py, ops/commercial_state.json 07_etoro_copyfactory_adapters"
+    },
+    {
+      "id": "TASK-04",
+      "title": "Real Stripe account wiring (Checkout/Billing/Customer Portal, webhook endpoint exposure)",
+      "status": "blocked",
+      "blocker": "No real Stripe account exists; CARD-4 payment processor / merchant approval not yet obtained",
+      "source": "app/services/stripe_webhook.py, ops/commercial_state.json 08_subscriptions_billing"
+    },
+    {
+      "id": "TASK-05",
+      "title": "Real AllocationProgram persistence + real broker integration for PAMM/MAM",
+      "status": "open",
+      "blocker": "No real broker integration exists yet; current accounting is simulation-only by design (spec's own scope boundary)",
+      "source": "app/services/pamm_accounting.py, mam_allocation.py, ops/commercial_state.json 10_pamm_mam_domain_model"
+    },
+    {
+      "id": "TASK-06",
+      "title": "Portfolio research: correlation/complementarity statistics, remaining 3 recipes, walk-forward/holdout evaluation, capacity stress",
+      "status": "blocked",
+      "blocker": "Needs real authorized historical sleeve data this environment doesn't have; fabricating it would violate this build's own rules",
+      "source": "ops/commercial_state.json 04_portfolio_research_engine"
+    },
+    {
+      "id": "TASK-07",
+      "title": "Publication cohorts/consent/audience determination, follower allocation, capacity/fairness tracking",
+      "status": "open",
+      "blocker": "none structural -- deferred scope, not externally blocked",
+      "source": "ops/commercial_state.json 05_publication_customer_copy_lifecycle"
+    },
+    {
+      "id": "TASK-08",
+      "title": "Wire entitlement.py into real Phase 05/06/07 call sites (nothing calls authorize_new_entry/authorize_risk_reducing_management yet)",
+      "status": "open",
+      "blocker": "depends on TASK-01/TASK-03/TASK-04 landing real transport first",
+      "source": "app/services/entitlement.py, ops/commercial_state.json 08_subscriptions_billing"
+    },
+    {
+      "id": "TASK-09",
+      "title": "Real model/LLM provider wiring behind app/services/model_gateway.py's permission boundary",
+      "status": "open",
+      "blocker": "Omit-when-unselected by spec's own rule; only build when a real model feature is actually selected",
+      "source": "app/services/model_gateway.py, ops/commercial_state.json 11_llm_assistance"
+    },
+    {
+      "id": "TASK-10",
+      "title": "Dedicated production migrator Postgres role (CREATEROLE + schema ownership) instead of superuser",
+      "status": "open",
+      "blocker": "none structural -- local/paper stack currently uses the Postgres superuser for migrations by design; production deployment does not exist yet",
+      "source": "docker-compose.yml, deploy/entrypoint-commercial.sh"
+    }
+  ]
+}
