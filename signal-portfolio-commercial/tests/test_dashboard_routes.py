@@ -374,7 +374,12 @@ def _seed_ready_product_for_review(db_session, *, tenant_id="tenant-a", slug="re
     db_session.add(pv)
     db_session.flush()
     db_session.add(
-        PortfolioVersionSleeve(portfolio_version_id=pv.portfolio_version_id, sleeve_id=sleeve.sleeve_id, weight=Decimal("1.0"))
+        PortfolioVersionSleeve(
+            portfolio_version_id=pv.portfolio_version_id,
+            sleeve_id=sleeve.sleeve_id,
+            weight=Decimal("1.0"),
+            tenant_id=tenant_id,
+        )
     )
     db_session.add(
         RightsGrant(
@@ -2185,6 +2190,7 @@ def _seed_publication_intent(db_session, *, tenant_id="tenant-a", portfolio_vers
     db_session.add(pv)
     db_session.flush()
     intent = PublicationIntent(
+        tenant_id=tenant_id,
         environment=Environment.LOCAL_SIM,
         portfolio_version_id=portfolio_version_id,
         episode_id="ep-http-1",
@@ -3286,6 +3292,7 @@ def _seed_customer_alert_fixture(
     db_session.flush()
 
     intent = PublicationIntent(
+        tenant_id=tenant_id,
         environment=Environment.LOCAL_SIM,
         portfolio_version_id=portfolio_version_id,
         episode_id=episode_id,

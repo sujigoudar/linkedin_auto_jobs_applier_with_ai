@@ -75,6 +75,7 @@ def _ready_product(session, *, tenant_id, slug):
             portfolio_version_id=portfolio_version.portfolio_version_id,
             sleeve_id=sleeve.sleeve_id,
             weight=Decimal("1.0"),
+            tenant_id=tenant_id,
         )
     )
     grant = RightsGrant(

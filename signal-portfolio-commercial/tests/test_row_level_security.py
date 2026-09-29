@@ -5,11 +5,22 @@ independently" (docs/02). Runs as `app_role` (see tests/conftest.py's
 `tenant_session_factory`), a genuine non-superuser login, since
 Postgres superusers bypass RLS regardless of FORCE ROW LEVEL SECURITY.
 """
+from datetime import datetime, timedelta, timezone
+from decimal import Decimal
+
 import pytest
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy import text
 
 from app.db import set_tenant_scope
+from app.models.portfolio_version import PortfolioVersion, PortfolioVersionSleeve
+from app.models.publication import (
+    Environment,
+    PublicationAction,
+    PublicationIntent,
+    QuantityBasis,
+)
+from app.models.sleeve import Sleeve
 from app.models.tenancy import CustomerProfile, Membership, MembershipRole, Tenant, UserIdentity
 
 
@@ -140,3 +151,168 @@ def test_a_tenant_scoped_session_cannot_update_another_tenants_row_via_raw_sql(d
     # tenant-b's real row is untouched.
     untouched = db_session.get(CustomerProfile, "tenant-b")
     assert untouched.display_name == "B Co"
+
+
+def _seed_two_tenants_with_publication_data(db_session):
+    """One `PortfolioVersion` (+ its one `PortfolioVersionSleeve` row)
+    and one `PublicationIntent` per tenant -- the exact shape
+    `alembic/versions/85f9e0e6c123_publication_intent_and_sleeve_tenant_id.py`'s
+    backfill targets."""
+    now = datetime.now(timezone.utc)
+    db_session.add_all(
+        [
+            Tenant(tenant_id="tenant-a", display_name="A", environment="LOCAL_SIM"),
+            Tenant(tenant_id="tenant-b", display_name="B", environment="LOCAL_SIM"),
+        ]
+    )
+    db_session.flush()
+
+    for tenant_id, suffix in (("tenant-a", "a"), ("tenant-b", "b")):
+        sleeve = Sleeve(
+            sleeve_id=f"sleeve-{suffix}",
+            tenant_id=tenant_id,
+            provider="acme",
+            analyst="jane",
+            strategy_horizon="swing",
+            asset_class="EQUITY",
+            parser_version="v1",
+            execution_policy_id="ep-1",
+            cost_model_id="cm-1",
+            capacity_policy_id="cap-1",
+            risk_unit_id="ru-1",
+            history_origin="acme",
+        )
+        db_session.add(sleeve)
+        db_session.flush()
+
+        pv = PortfolioVersion(
+            portfolio_version_id=f"pv-{suffix}",
+            tenant_id=tenant_id,
+            portfolio_id=f"p-{suffix}",
+            version_number=1,
+            cash_weight=0,
+            research_cutoff=now,
+            max_subscriber_capacity=100,
+            consent_disclosure_version="v1",
+        )
+        db_session.add(pv)
+        db_session.flush()
+
+        db_session.add(
+            PortfolioVersionSleeve(
+                portfolio_version_id=f"pv-{suffix}",
+                sleeve_id=f"sleeve-{suffix}",
+                weight=Decimal("1.0"),
+                tenant_id=tenant_id,
+            )
+        )
+        db_session.add(
+            PublicationIntent(
+                intent_id=f"intent-{suffix}",
+                tenant_id=tenant_id,
+                environment=Environment.LOCAL_SIM,
+                portfolio_version_id=f"pv-{suffix}",
+                episode_id="ep-1",
+                revision=1,
+                action=PublicationAction.OPEN,
+                channel="collective2",
+                external_strategy_id=f"strategy-{suffix}",
+                instrument_id="AAPL",
+                quantity="10",
+                quantity_basis=QuantityBasis.UNITS,
+                price_basis="market",
+                policy_hash=f"policy-hash-{suffix}",
+                audience_snapshot_hash=f"audience-hash-{suffix}",
+                source_revision_ids=[f"src-rev-{suffix}"],
+                rights_grant_ids=[f"grant-{suffix}"],
+                body_hash=f"body-hash-{suffix}",
+                idempotency_key=f"idem-{suffix}",
+                valid_from=now,
+                expires_at=now + timedelta(hours=1),
+            )
+        )
+    db_session.commit()
+
+
+def test_a_tenant_scoped_session_cannot_read_another_tenants_publication_intent_by_primary_key(
+    db_session, tenant_session_factory
+):
+    """The RLS backstop `85f9e0e6c123` adds: even though
+    `PublicationIntent` is otherwise only ever scoped by an application-
+    level join through `PortfolioVersion` (app/services/publication_admin.py,
+    customer_alerts.py, operations_overview.py), a direct `session.get`
+    by primary key -- bypassing that join entirely -- must still come
+    back empty for another tenant's row, not return it."""
+    _seed_two_tenants_with_publication_data(db_session)
+
+    session = tenant_session_factory()
+    try:
+        set_tenant_scope(session, "tenant-a")
+        own = session.get(PublicationIntent, "intent-a")
+        assert own is not None
+
+        other = session.get(PublicationIntent, "intent-b")
+        assert other is None
+    finally:
+        session.rollback()
+        session.close()
+
+
+def test_a_tenant_scoped_session_cannot_read_another_tenants_publication_intent_via_raw_sql(
+    db_session, tenant_session_factory
+):
+    """Same claim as the primary-key read above, but via a raw SQL
+    SELECT naming the other tenant's row explicitly by primary key --
+    RLS is enforced by Postgres on the table itself, not merely by the
+    ORM's own `get()` happening to filter."""
+    _seed_two_tenants_with_publication_data(db_session)
+
+    session = tenant_session_factory()
+    try:
+        set_tenant_scope(session, "tenant-a")
+        rows = session.execute(
+            text("SELECT intent_id FROM publication_intents WHERE intent_id = :iid"),
+            {"iid": "intent-b"},
+        ).all()
+        assert rows == []
+    finally:
+        session.rollback()
+        session.close()
+
+
+def test_a_tenant_scoped_session_cannot_read_another_tenants_portfolio_version_sleeve_by_primary_key(
+    db_session, tenant_session_factory
+):
+    """Same backstop claim for `portfolio_version_sleeves`
+    (app/services/portfolio_rights.py otherwise scopes it only via a
+    join through `PortfolioVersion`) -- a direct read by its own
+    (portfolio_version_id, sleeve_id) primary key for another tenant's
+    row must come back empty."""
+    _seed_two_tenants_with_publication_data(db_session)
+
+    session = tenant_session_factory()
+    try:
+        set_tenant_scope(session, "tenant-a")
+        own = session.get(PortfolioVersionSleeve, ("pv-a", "sleeve-a"))
+        assert own is not None
+
+        other = session.get(PortfolioVersionSleeve, ("pv-b", "sleeve-b"))
+        assert other is None
+    finally:
+        session.rollback()
+        session.close()
+
+
+def test_no_tenant_scope_set_means_no_publication_intents_or_sleeves_visible(db_session, tenant_session_factory):
+    """Fail-closed, same claim as
+    `test_no_tenant_scope_set_means_no_rows_visible_not_all_rows` above,
+    for the two tables this backstop was added to."""
+    _seed_two_tenants_with_publication_data(db_session)
+
+    session = tenant_session_factory()
+    try:
+        assert session.query(PublicationIntent).all() == []
+        assert session.query(PortfolioVersionSleeve).all() == []
+    finally:
+        session.rollback()
+        session.close()

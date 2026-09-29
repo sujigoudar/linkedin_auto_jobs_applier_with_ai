@@ -267,6 +267,7 @@ def _seed_portfolio_version_with_one_sleeve(session, *, tenant_id, grant_asset="
             portfolio_version_id=portfolio_version.portfolio_version_id,
             sleeve_id=sleeve.sleeve_id,
             weight=Decimal("1.0"),
+            tenant_id=tenant_id,
         )
     )
     session.add(

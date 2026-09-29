@@ -16,7 +16,8 @@ schema grew) `release_reviews`, `research_runs`, `eligibility_assessments`,
 `price_versions`, `managed_programs`, `audit_events`, `workspace_settings`,
 `portfolio_selections`, `notification_preferences`, `customer_display_preferences`,
 `platform_connections`, `copy_mandates`, `export_stream_registrations`,
-`inbox_events`, `incidents` (see `app/db.py`'s `_TENANT_SCOPED_TABLES`) — carries a
+`inbox_events`, `incidents`, `publication_intents`, `portfolio_version_sleeves`
+(see `app/db.py`'s `_TENANT_SCOPED_TABLES`) — carries a
 `tenant_id` column. Application code is trusted to filter by tenant, but a single
 missed `WHERE tenant_id = ...` in any query path, present or future, would leak one
 tenant's ledger, customer PII, or research into another tenant's session.
@@ -74,3 +75,15 @@ application-level `WHERE` clause:
   future engineer adding tenant scoping to a new table must add it to
   `_TENANT_SCOPED_TABLES` (and to the next migration's own frozen snapshot), not
   assume the generic policy already covers it.
+
+## Addendum: `publication_intents` / `portfolio_version_sleeves`
+
+Both tables were originally scoped only indirectly, via an inner join through
+`portfolio_versions` (which IS RLS-protected) in every query that touches them —
+never leaking in practice, but with no database-level backstop the way every other
+tenant table has. `alembic/versions/85f9e0e6c123_publication_intent_and_sleeve_tenant_id.py`
+adds `tenant_id` to both (add nullable → backfill from
+`portfolio_versions.tenant_id` via that same join path → alter to NOT NULL — the
+standard safe two-step migration for a NOT NULL column on a populated table) and
+brings both under the generic `tenant_isolation` policy. This is purely additive:
+the join-based query logic that already scoped them correctly is unchanged.
