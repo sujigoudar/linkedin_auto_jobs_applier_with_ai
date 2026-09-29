@@ -107,3 +107,16 @@ class CapitalAllocator:
 
     def release(self, account_id: str, notional: float) -> None:
         self._pending[account_id] = max(0.0, self._pending[account_id] - notional)
+
+    def pending_reservation(self, account_id: str) -> float:
+        """Phase B7: this account's real, current in-memory provisional
+        reservation (notional admitted via `admit()` and not yet released) --
+        the one figure this module tracks that `confirmed_open_notional`
+        above does NOT already cover (that function only ever replays
+        confirmed fills). Read-only: never mutates `_pending`, unlike
+        `admit`/`release`. Exposed as a plain accessor (rather than reading
+        `_pending` directly from outside this module) so a read-only GET
+        endpoint (app/main.py's `/capital-allocation`) has a stable, narrow
+        surface onto this otherwise process-internal ledger instead of
+        reaching into a "private" attribute."""
+        return self._pending[account_id]

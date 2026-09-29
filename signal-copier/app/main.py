@@ -53,6 +53,7 @@ from app.context import fred as fred_context
 from app.context import fx as fx_context
 from app.context import sec_edgar
 from app.db import SignalStore, alembic_code_head
+from app.capital_allocator import confirmed_open_notional
 from app.economics import compute_account_economics
 from app.equity_history import EquitySnapshotter
 from app.execution_quality import compute_execution_quality
@@ -968,6 +969,59 @@ async def get_account_balance(account_id: str, _owner: dict = Depends(require_ow
     if balance is None:
         return AccountBalance(account_id=account_id).to_dict()
     return balance.to_dict()
+
+
+@app.get("/capital-allocation")
+async def get_capital_allocation(_owner: dict = Depends(require_owner_read)) -> dict:
+    """Phase B7: this engine's own real, CURRENT (point-in-time, never
+    historical) capital-reservation state per configured account, straight
+    off `app/capital_allocator.py`'s single shared `CapitalAllocator`
+    instance (`engine.capital_allocator`) -- previously process-internal
+    only (used by `app/engine.py`'s admission-control path, no GET route
+    read it). This is the one new read-only endpoint this batch adds, kept
+    narrowly scoped to that module's own real state:
+
+    - `deployed_notional`: `confirmed_open_notional` -- this account's real
+      open notional exposure, replayed from the same confirmed-fill journal
+      `app/economics.py` already trusts (identical figure the E03 admission
+      gate itself reads before deciding).
+    - `reserved_notional`: `CapitalAllocator.pending_reservation` -- real,
+      provisional notional this process has admitted for in-flight orders
+      on this account that have not yet resolved to FILLED/REJECTED/ERROR
+      (see that module's own "PENDING reservation timing" section). This
+      figure is in-memory and process-lifetime only, same as the allocator
+      itself -- it resets on a restart, it is never a persisted ledger.
+    - `max_notional_exposure`: this account's configured ceiling
+      (`DestinationAccount.max_notional_exposure`), `null` when the account
+      has opted out of E03's exposure gate entirely (the default).
+    - `available_notional`: `max_notional_exposure - deployed_notional -
+      reserved_notional`, `null` (never a guess) when no ceiling is
+      configured for this account -- there is no real capacity figure to
+      report without one.
+
+    `deployed_notional` and `reserved_notional` are never double-counted
+    against each other: the former only ever counts a symbol once a fill is
+    confirmed (see `confirmed_open_notional`'s own docstring), the latter
+    only ever counts notional for an order that has NOT yet reached that
+    confirmed state -- the same non-overlapping split `app/engine.py`'s
+    `admit()` call itself relies on (`confirmed_exposure + pending + new
+    notional` in one sum, never twice)."""
+    accounts_out = []
+    for account_id, account in routing_config.accounts.items():
+        deployed = confirmed_open_notional(store, account_id)
+        reserved = engine.capital_allocator.pending_reservation(account_id)
+        max_exposure = account.max_notional_exposure
+        available = None if max_exposure is None else max_exposure - deployed - reserved
+        accounts_out.append(
+            {
+                "account_id": account_id,
+                "deployed_notional": deployed,
+                "reserved_notional": reserved,
+                "max_notional_exposure": max_exposure,
+                "available_notional": available,
+            }
+        )
+    return {"accounts": accounts_out}
 
 
 @app.get("/accounts/{account_id}/execution-quality")
