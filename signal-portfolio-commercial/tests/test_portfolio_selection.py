@@ -1,6 +1,8 @@
 """CU-02 "My portfolios" -- app/services/portfolio_selection.py's own
 tests. Real Postgres, real tenant-scoped session."""
 import pytest
+from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 
 from app.models.product import Product, ProductLifecycleState
 from app.models.tenancy import Membership, MembershipRole, Tenant, UserIdentity
@@ -142,3 +144,40 @@ def test_cancelling_then_reselecting_the_same_product_is_allowed(db_session):
     )
     db_session.commit()
     assert new_selection.state.value == "active"
+
+
+def test_db_level_unique_index_rejects_a_second_active_row_inserted_directly(db_session):
+    """Regression test for the partial unique index's predicate bug: the
+    index is meant to be a database-level backstop against two ACTIVE
+    rows for the same (tenant_id, user_id, product_id) even outside the
+    app-level pre-check in create_portfolio_selection -- e.g. a race
+    between two concurrent requests. It previously read
+    `WHERE state = 'active'` (the enum's `.value`), which never matched
+    any stored row since `Enum(..., native_enum=False)` stores by NAME
+    ('ACTIVE'), so it silently enforced nothing. This bypasses the ORM
+    pre-check entirely (raw SQL inserts) so a regression of the
+    predicate itself, not just of the service-layer check, is caught."""
+    _seed_membership(db_session)
+    product = _published_product(db_session)
+
+    db_session.execute(
+        text(
+            "INSERT INTO portfolio_selections "
+            "(selection_id, tenant_id, user_id, product_id, state, created_at, updated_at) "
+            "VALUES (:id, :t, :u, :p, 'ACTIVE', now(), now())"
+        ),
+        {"id": "sel-direct-1", "t": "tenant-a", "u": "user-a", "p": product.product_id},
+    )
+    db_session.commit()
+
+    with pytest.raises(IntegrityError, match="uq_portfolio_selection_active_customer_product"):
+        db_session.execute(
+            text(
+                "INSERT INTO portfolio_selections "
+                "(selection_id, tenant_id, user_id, product_id, state, created_at, updated_at) "
+                "VALUES (:id, :t, :u, :p, 'ACTIVE', now(), now())"
+            ),
+            {"id": "sel-direct-2", "t": "tenant-a", "u": "user-a", "p": product.product_id},
+        )
+        db_session.commit()
+    db_session.rollback()

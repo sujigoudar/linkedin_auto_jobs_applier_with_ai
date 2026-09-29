@@ -17,11 +17,18 @@ real existing membership, never an arbitrary user_id under someone
 else's tenant. Unlike those two (one row per tenant/user), a customer
 can select more than one product, so `selection_id` is its own primary
 key. A partial unique index on (tenant_id, user_id, product_id) WHERE
-state = 'active' allows at most one ACTIVE selection per customer per
+state = 'ACTIVE' allows at most one ACTIVE selection per customer per
 product at a time -- not duplicated by resubmitting the same selection
 form -- while still letting a customer cancel and later re-select the
 same product (a new row, since the old CANCELLED one is never edited
-or deleted).
+or deleted). The predicate compares against 'ACTIVE', the enum
+MEMBER'S NAME, not its .value ('active') -- `Enum(..., native_enum=
+False)` binds/stores by name, matching this codebase's own convention
+(see migration 7a3f9c1d2e4b's evidence_class comment for the
+precedent). The index originally read `WHERE state = 'active'`
+(lowercase, the enum's `.value`), which never matched any stored row
+and so never rejected a duplicate; a later migration corrects the
+predicate to match the ORM's actual convention.
 
 Tenant-scoped and RLS-protected like the other tenant tables.
 """
@@ -64,7 +71,7 @@ class PortfolioSelection(Base):
             "user_id",
             "product_id",
             unique=True,
-            postgresql_where=text("state = 'active'"),
+            postgresql_where=text("state = 'ACTIVE'"),
         ),
     )
 
