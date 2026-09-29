@@ -1342,6 +1342,7 @@ def _lifecycle_to_state(lifecycle: PositionLifecycle, ledger: dict) -> dict:
             "asset_class": plan.asset_class.value,
             "broker": plan.broker,
             "initial_stop": plan.initial_stop,
+            "entry_signal_id": plan.entry_signal_id,
             "targets": [
                 {
                     "trigger_price": t.trigger_price,
@@ -1408,6 +1409,7 @@ def _lifecycle_from_state(row: dict) -> PositionLifecycle:
         asset_class=AssetClass(plan_row["asset_class"]),
         broker=plan_row.get("broker", ""),
         initial_stop=plan_row.get("initial_stop"),
+        entry_signal_id=plan_row.get("entry_signal_id", ""),
         targets=[
             Target(
                 trigger_price=t["trigger_price"],

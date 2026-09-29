@@ -275,6 +275,23 @@ class SignalCopierEngine:
                 ),
             )
 
+            # DB-0X (order purpose/family): known from the signal itself,
+            # before anything broker/lifecycle-specific has happened yet --
+            # every save_order_result call in this loop iteration shares
+            # this same classification (see app/db.py's SCHEMA comment on
+            # `orders.purpose`/`orders.family_id` for what each value
+            # means). An 'entry' order's family is simply its own
+            # originating signal id. A CLOSE's real family (the entry it's
+            # closing out) is only knowable for a managed_lifecycle account
+            # -- see the managed branch below, which looks it up from that
+            # position's own persisted `PositionPlan.entry_signal_id` and
+            # overrides this default; every other CLOSE (a plain account,
+            # or one of the early rejections below that never reach a
+            # broker/lifecycle at all) has no real entry to attribute it
+            # to, so it stays honestly `None`.
+            order_purpose = "close" if signal.side == Side.CLOSE else "entry"
+            order_family_id: str | None = signal.id if order_purpose == "entry" else None
+
             broker = self.brokers.get(account.broker)
             if broker is None:
                 result = OrderResult(
@@ -283,7 +300,7 @@ class SignalCopierEngine:
                     signal_id=signal.id,
                     message=f"no broker adapter registered for '{account.broker}'",
                 )
-                self.store.save_order_result(result)
+                self.store.save_order_result(result, purpose=order_purpose, family_id=order_family_id)
                 results.append(result)
                 continue
 
@@ -303,13 +320,30 @@ class SignalCopierEngine:
                         f"'{signal.asset_class.value}' — refusing to route this signal here"
                     ),
                 )
-                self.store.save_order_result(result, broker=account.broker)
+                self.store.save_order_result(
+                    result, broker=account.broker, purpose=order_purpose, family_id=order_family_id
+                )
                 results.append(result)
                 continue
 
             symbol = symbol_for_account(signal, account)
 
             if account.managed_lifecycle:
+                if order_purpose == "close":
+                    # DB-0X: the real family this close belongs to is
+                    # whatever entry signal started this same position --
+                    # persisted on its PositionPlan for exactly this (see
+                    # app/lifecycle/models.py's `entry_signal_id`). Looked
+                    # up BEFORE `_handle_managed_signal` runs: a successful
+                    # close may fully flatten and delete this lifecycle's
+                    # persisted state, so it must not be read back after.
+                    # No open lifecycle at all (e.g. "no open position to
+                    # close") leaves this at the safe, honest default set
+                    # above (None) -- there is no real family to report for
+                    # a close of nothing.
+                    existing_lifecycle = self.lifecycle_manager.get_lifecycle(account.account_id, symbol)
+                    if existing_lifecycle is not None and existing_lifecycle.plan.entry_signal_id:
+                        order_family_id = existing_lifecycle.plan.entry_signal_id
                 result, submitted_at, protection_confirmed_at = await self._handle_managed_signal(
                     signal, account, symbol
                 )
@@ -321,11 +355,19 @@ class SignalCopierEngine:
                     requested_quantity=None,
                     submitted_at=submitted_at,
                     protection_confirmed_at=protection_confirmed_at,
+                    purpose=order_purpose,
+                    family_id=order_family_id,
                 )
                 results.append(result)
                 continue
 
             if signal.side == Side.CLOSE:
+                # DB-0X: a plain (non-managed_lifecycle) account has no
+                # tracked lifecycle object linking this close back to
+                # whichever entry fill(s) produced the position it's
+                # closing -- `_resolve_and_submit_plain_close` itself saves
+                # this order with purpose='close' and family_id=None (the
+                # honest default already set above), not re-derived here.
                 result = await self._resolve_and_submit_plain_close(signal, account, symbol, broker)
                 results.append(result)
                 continue
@@ -353,7 +395,13 @@ class SignalCopierEngine:
                     ),
                 )
                 self.store.save_order_result(
-                    result, broker=account.broker, symbol=symbol, side=order_signal.side, requested_quantity=quantity
+                    result,
+                    broker=account.broker,
+                    symbol=symbol,
+                    side=order_signal.side,
+                    requested_quantity=quantity,
+                    purpose=order_purpose,
+                    family_id=order_family_id,
                 )
                 results.append(result)
                 continue
@@ -362,7 +410,13 @@ class SignalCopierEngine:
             if not admitted:
                 assert rejection is not None  # _try_reserve_capital always sets this when admitted is False
                 self.store.save_order_result(
-                    rejection, broker=account.broker, symbol=symbol, side=order_signal.side, requested_quantity=quantity
+                    rejection,
+                    broker=account.broker,
+                    symbol=symbol,
+                    side=order_signal.side,
+                    requested_quantity=quantity,
+                    purpose=order_purpose,
+                    family_id=order_family_id,
                 )
                 results.append(rejection)
                 continue
@@ -429,6 +483,8 @@ class SignalCopierEngine:
                 reserved_notional=reserved_notional,
                 export_envelope=export_envelope,
                 submitted_at=submitted_at,
+                purpose=order_purpose,
+                family_id=order_family_id,
             )
             results.append(result)
 
@@ -567,7 +623,11 @@ class SignalCopierEngine:
                         signal_id=signal.id,
                         message="no open position to close",
                     )
-                    self.store.save_order_result(result)
+                    # DB-0X: a plain account's close always reports
+                    # purpose='close'; family_id stays None -- there's no
+                    # tracked lifecycle to attribute it to (see this
+                    # method's own docstring / app/db.py's SCHEMA comment).
+                    self.store.save_order_result(result, purpose="close", family_id=None)
                     return result
 
                 order_signal, quantity = resolved
@@ -582,6 +642,8 @@ class SignalCopierEngine:
                     requested_quantity=quantity,
                     applied_quantity=applied_quantity,
                     submitted_at=submitted_at,
+                    purpose="close",
+                    family_id=None,
                 )
                 return result
             finally:
@@ -632,6 +694,11 @@ class SignalCopierEngine:
             broker=account.broker,
             initial_stop=signal.stop_loss,
             targets=targets,
+            # DB-0X: this position's own real entry signal id, carried for
+            # its whole lifetime so a later CLOSE for this same
+            # (account_id, symbol) can report the same `orders.family_id`
+            # -- see PositionPlan.entry_signal_id's own docstring.
+            entry_signal_id=signal.id,
         )
 
         error = self.lifecycle_manager.validate_plan(plan)
@@ -931,7 +998,18 @@ class SignalCopierEngine:
             # above) -- always attribute the row to it rather than trust
             # whatever id happened to come back from deeper in the call.
             result = replace(result, signal_id=close_signal.id)
-            self.store.save_order_result(result, broker=account.broker, symbol=symbol, side=resolved_side)
+            # DB-0X: real family link back to this position's own entry
+            # (see app/lifecycle/models.py's `PositionPlan.entry_signal_id`)
+            # -- already fetched above as `lifecycle_before_close`. None
+            # (never fabricated) when there's no lifecycle to read it from.
+            family_id = (
+                lifecycle_before_close.plan.entry_signal_id
+                if lifecycle_before_close is not None and lifecycle_before_close.plan.entry_signal_id
+                else None
+            )
+            self.store.save_order_result(
+                result, broker=account.broker, symbol=symbol, side=resolved_side, purpose="close", family_id=family_id
+            )
         else:
             # Goes through the same (account_id, symbol) lock as a provider-driven
             # CLOSE signal (see _resolve_and_submit_plain_close) -- a dashboard

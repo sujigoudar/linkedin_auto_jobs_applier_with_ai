@@ -130,6 +130,20 @@ class PositionPlan:
     trailing: TrailingPolicy | None = None
     time_exit: datetime | None = None
     max_risk: float | None = None
+    #: DB-0X (order purpose/family): the id of the real `Signal` that
+    #: started THIS position episode (set once, at `app/engine.py`'s
+    #: `_handle_managed_entry`, from the entry signal it's building this
+    #: plan from) -- carried for the lifetime of the position so a later
+    #: CLOSE for the same (account_id, symbol), which has no real signal
+    #: linking it back to its own entry otherwise, can still be recorded
+    #: under the same `orders.family_id` as its entry. `""` (never
+    #: fabricated) for a plan built with no real entry signal to attribute
+    #: (shouldn't happen on the real entry path, but a test/direct
+    #: construction may still omit it) -- see `_lifecycle_to_state`/
+    #: `_lifecycle_from_state`'s `.get(..., "")` for why a lifecycle
+    #: persisted before this field existed restores safely instead of
+    #: raising.
+    entry_signal_id: str = ""
 
 
 @dataclass

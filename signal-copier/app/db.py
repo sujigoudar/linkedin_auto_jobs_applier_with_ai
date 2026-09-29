@@ -95,6 +95,41 @@ CREATE TABLE IF NOT EXISTS orders (
     -- that releases it once this row's status is confirmed terminal. NULL
     -- for every other order (nothing to release).
     reserved_notional REAL,
+    -- DB-0X (order purpose/family): WHY this order was placed, set at the
+    -- exact call site that decided to place it (never inferred later from
+    -- side/status, which can't distinguish e.g. an entry from a close on
+    -- the same symbol/side) -- see app/engine.py's own call sites into
+    -- SignalStore.save_order_result. One of a small, real set: 'entry' (a
+    -- fresh position-opening order, from a BUY/SELL signal) or 'close' (a
+    -- position-reducing order, from a CLOSE signal or a manual
+    -- flatten/exit). 'protective_stop'/'stop_revision'/'target' are
+    -- reserved names for the same concept applied to a managed-lifecycle
+    -- position's stop/target orders -- but those are tracked in
+    -- `stop_target_events` (see that table's own comment), never as a row
+    -- in THIS table on this branch, so no call site populates them today;
+    -- adding a row here for them, instead of just reserving the name,
+    -- would be new order-persistence behavior this pass deliberately
+    -- doesn't take on. NULL for any order row saved before this column
+    -- existed (a real, pre-existing deployment's history) -- never
+    -- backfilled with a guess.
+    purpose TEXT,
+    -- DB-0X: an id shared by every order belonging to the SAME position
+    -- episode, so a caller (or a later report) can group an entry with its
+    -- eventual close without re-deriving that link from timing/quantity
+    -- heuristics. For an 'entry' order this is simply that entry's own
+    -- originating `signals.id` (== this row's own `signal_id` -- kept as a
+    -- separate column anyway so a future family can span more than one
+    -- signal without redefining `signal_id`'s own meaning). For a managed-
+    -- lifecycle 'close' this is the SAME value as its position's entry
+    -- order (see app/lifecycle/models.py's `PositionPlan.entry_signal_id`,
+    -- persisted for exactly this) -- a real, durable link this codebase
+    -- already had the data for. For a PLAIN (non-managed_lifecycle)
+    -- account's close, NULL: a plain position has no tracked lifecycle
+    -- object linking it back to whichever single or accumulated entry
+    -- fill(s) produced it (see app/engine.py's `_resolve_and_submit_
+    -- plain_close`), so there is no real family id to report -- an honest
+    -- gap, not a fabricated one.
+    family_id TEXT,
     FOREIGN KEY (signal_id) REFERENCES signals (id)
 );
 
@@ -422,6 +457,8 @@ _COLUMN_MIGRATIONS = [
     ("config_accounts", "max_notional_exposure", "REAL"),
     ("orders", "submitted_at", "TEXT"),
     ("orders", "protection_confirmed_at", "TEXT"),
+    ("orders", "purpose", "TEXT"),
+    ("orders", "family_id", "TEXT"),
 ]
 
 
@@ -524,6 +561,8 @@ class SignalStore:
         export_envelope: EventEnvelope | None = None,
         submitted_at: datetime | None = None,
         protection_confirmed_at: datetime | None = None,
+        purpose: str | None = None,
+        family_id: str | None = None,
     ) -> int:
         """Persist an order result and return its row id.
 
@@ -576,6 +615,13 @@ class SignalStore:
         module docstring for what each one is and isn't. Both `None` (never
         a fabricated fallback) when the caller never reached that stage --
         see app/engine.py's own call sites for exactly when each is set.
+
+        `purpose`/`family_id` (DB-0X, order purpose/family): see this
+        table's own SCHEMA comment in this module for exactly what each
+        value means and the real, disclosed gap for a plain account's
+        close. Both `None` for a caller that hasn't been updated to pass
+        them (or a genuinely unclassifiable row) -- never guessed from
+        `side`/`status` after the fact.
         """
         stored_filled_quantity = applied_quantity if applied_quantity is not None else result.filled_quantity
         with self._connect() as conn:
@@ -583,8 +629,8 @@ class SignalStore:
                 """INSERT INTO orders
                    (account_id, broker, symbol, side, requested_quantity, signal_id, status,
                     broker_order_id, filled_quantity, filled_price, message, executed_at, reserved_notional,
-                    submitted_at, protection_confirmed_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    submitted_at, protection_confirmed_at, purpose, family_id)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     result.account_id,
                     broker,
@@ -601,6 +647,8 @@ class SignalStore:
                     reserved_notional,
                     submitted_at.isoformat() if submitted_at else None,
                     protection_confirmed_at.isoformat() if protection_confirmed_at else None,
+                    purpose,
+                    family_id,
                 ),
             )
             if export_envelope is not None:
@@ -1715,7 +1763,8 @@ class SignalStore:
 
     def list_recent_orders(self, limit: int = 50, account_id: str | None = None) -> list[dict]:
         query = """SELECT id, account_id, broker, symbol, side, requested_quantity, signal_id,
-                          status, broker_order_id, filled_quantity, filled_price, message, executed_at
+                          status, broker_order_id, filled_quantity, filled_price, message, executed_at,
+                          purpose, family_id
                    FROM orders"""
         params: list = []
         if account_id:
@@ -1741,6 +1790,11 @@ class SignalStore:
                 "filled_price": r[10],
                 "message": r[11],
                 "executed_at": r[12],
+                # DB-0X: NULL (never fabricated) for any order row saved
+                # before these two columns existed -- see this table's own
+                # SCHEMA comment for exactly what each real value means.
+                "purpose": r[13],
+                "family_id": r[14],
             }
             for r in rows
         ]

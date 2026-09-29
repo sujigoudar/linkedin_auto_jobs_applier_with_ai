@@ -63,6 +63,7 @@ from app.logging_config import configure_structlog
 from app.metrics import render_metrics
 from app.errors import SignalValidationError
 from app.lifecycle.manager import PositionLifecycleManager
+from app.lifecycle.models import ProtectionStatus
 from app.models import AccountBalance, AssetClass
 from app.pricing import PriceMonitor
 from app.providers import SettingsOverride, load_provider_registry_from_store
@@ -892,7 +893,24 @@ async def list_positions(_owner: dict = Depends(require_owner_read)) -> dict:
     the broker's real book on brokers that only confirm fills
     asynchronously), not a live read of any broker's account state.
     """
-    return {"positions": store.list_open_positions(), "managed_lifecycles": _managed_lifecycle_snapshot()}
+    managed_lifecycles = _managed_lifecycle_snapshot()
+    return {
+        "positions": store.list_open_positions(),
+        "managed_lifecycles": managed_lifecycles,
+        # DB-0X: a real, derived aggregate -- an open managed-lifecycle
+        # position (owned_quantity > 0) whose `stop_status` isn't
+        # `stop_confirmed` right now, straight off the same per-position
+        # `stop_status` this response already carries above (never a
+        # separately-maintained count that could drift from it). Zero for
+        # a deployment with no managed_lifecycle accounts at all, same as
+        # an empty `managed_lifecycles` list -- not a sign nothing is
+        # tracked.
+        "stop_gap_count": sum(
+            1
+            for lc in managed_lifecycles
+            if lc["owned_quantity"] > 0 and lc["stop_status"] != ProtectionStatus.STOP_CONFIRMED.value
+        ),
+    }
 
 
 @app.get("/positions/excursions")
@@ -1264,6 +1282,47 @@ async def list_broker_capabilities(_owner: dict = Depends(require_owner_read)) -
                     sorted(a.value for a in broker.supported_asset_classes)
                     if broker.supported_asset_classes is not None
                     else None  # undeclared -- not verified as restricted, see BrokerAdapter's docstring
+                ),
+                # DB-0X (bounded, PaperBroker-only real value): a per-fill
+                # fee this broker adapter genuinely, explicitly charges --
+                # `None` ("not_tracked") for every other adapter, which has
+                # no real per-fill fee figure to report (see
+                # app/brokers/paper.py's own docstring on why a documented
+                # simulated fee is honest specifically for a fully
+                # internal, fully-controlled broker, and why fabricating
+                # one for a real external broker would not be). Read via
+                # `getattr` rather than a new `BrokerAdapter` method/field
+                # -- no other adapter declares this attribute at all, so
+                # this stays additive without touching app/brokers/base.py.
+                "fee_per_fill": getattr(broker, "fee_per_fill", None),
+                # DB-0X (bounded): this broker instance's own real, already-
+                # set attributes for paper/live and venue, where this
+                # codebase actually stores them as inspectable state --
+                # `None` ("not exposed") for an adapter (Alpaca, Schwab,
+                # Robinhood, SignalStack, NinjaTrader, MT4/MT5, Tastytrade,
+                # TradeStation, Tradovate, OANDA, Rithmic) that resolves
+                # its own paper/live distinction per-account from an
+                # environment variable at call time instead of storing it
+                # on the instance -- reporting a guess here would be worse
+                # than the honest gap. ccxt's own `sandbox`/`exchange_id`
+                # and IBKR's own `port` are real, public, already-existing
+                # attributes (never added for this), and PaperBroker is
+                # unambiguously always the "paper" environment/venue by
+                # construction.
+                "environment": (
+                    "paper"
+                    if broker.name == "paper"
+                    else "paper" if getattr(broker, "sandbox", None) is True
+                    else "live" if getattr(broker, "sandbox", None) is False
+                    else "paper" if getattr(broker, "port", None) in (7497, 4002)
+                    else "live" if getattr(broker, "port", None) in (7496, 4001)
+                    else None
+                ),
+                "venue": (
+                    "paper"
+                    if broker.name == "paper"
+                    else getattr(broker, "exchange_id", None)
+                    or ("ibkr" if hasattr(broker, "port") else None)
                 ),
             }
             for broker in brokers.values()
@@ -1734,7 +1793,18 @@ async def list_orders(
     limit: int = Query(default=50, ge=1, le=500), account_id: str | None = Query(default=None)
 , _owner: dict = Depends(require_owner_read)) -> dict:
     """Most recent order results, newest first — optionally filtered to one account."""
-    return {"orders": store.list_recent_orders(limit=limit, account_id=account_id)}
+    orders = store.list_recent_orders(limit=limit, account_id=account_id)
+    # DB-0X: a real, already-tracked count -- exactly the rows
+    # app/reconciliation.py's own poll loop treats as still needing a
+    # broker readback before their true terminal outcome is known (see
+    # SignalStore.list_pending_orders's own docstring: PENDING with a real
+    # broker_order_id to re-check). Account-wide (not limited to this
+    # page's `limit`), so it isn't silently undercounted by pagination;
+    # still narrowed to `account_id` when the caller asked for one.
+    unreconciled = [
+        row for row in store.list_pending_orders() if account_id is None or row["account_id"] == account_id
+    ]
+    return {"orders": orders, "unreconciled_order_count": len(unreconciled)}
 
 
 class ClassifyMessagesRequest(BaseModel):
