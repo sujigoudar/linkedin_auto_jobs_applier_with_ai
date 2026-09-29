@@ -1,0 +1,190 @@
+# Monorepo-root model-routing policy.
+#
+# Phase 9 of the Claude Code development-efficiency initiative (see
+# signal-copier/docs/agents/SKILL_BASELINE.md,
+# signal-copier/docs/agents/TOKEN_COST_AUDIT.md finding #9, and
+# signal-copier/docs/agents/SKILL_CATALOG.md's net recommendation #1).
+#
+# Purpose: classify a task BEFORE dispatching or continuing it, so
+# mechanical/deterministic work can run on a cheaper/faster model while
+# reasoning-heavy or correctness-critical work stays on the strongest
+# available model. This file is a policy an orchestrator or dispatching
+# agent reads and applies -- it does not itself change any model; the
+# orchestrator is responsible for actually setting the `model:` field
+# (per-subagent) or equivalent when it dispatches work classified here.
+#
+# Scope: this file covers the whole monorepo (signal-copier/,
+# signal-portfolio-commercial/, signal_platform_contracts/). It is
+# additive with each app's own .agent/autonomy.yaml (which governs WHAT
+# an agent may decide unilaterally, not WHICH MODEL does the deciding --
+# the two are orthogonal and both apply to the same piece of work).
+#
+# THE ONE NON-NEGOTIABLE RULE (read this before anything else below):
+#
+#   Work touching any of the following files, in EITHER app, or any
+#   Level-3/4 item in that app's own .agent/autonomy.yaml, MUST ALWAYS
+#   use STRONG-tier reasoning. It is NEVER routed to a cheaper model,
+#   regardless of how mechanical the task looks on the surface (e.g.
+#   "just add a docstring to capital_allocator.py" is still STRONG-tier,
+#   because verifying the docstring doesn't misdescribe or subtly
+#   relax the documented behavior IS the reasoning-heavy part).
+#
+#     - signal-copier/app/capital_allocator.py
+#     - signal-copier/app/risk.py
+#     - signal-copier/app/qualification.py
+#     - signal-copier/app/command_ledger.py
+#     - signal-copier/app/writer_lease.py
+#     - any Level-3 ("ask_first") or Level-4 ("explicit_approval_required")
+#       item in signal-copier/.agent/autonomy.yaml or
+#       signal-portfolio-commercial/.agent/autonomy.yaml (financial
+#       logic, tenant isolation/RLS, capital/risk limits, credential
+#       handling, irreversible data operations, live-trading flips, etc.
+#       -- see those files for the authoritative, per-app list)
+#
+#   This rule OVERRIDES every other classification in this file. If a
+#   task's file scope or action touches any of the above, classify it
+#   STRONG even if every other signal about the task (e.g. "just running
+#   a formatter") would otherwise say CHEAP/FAST. On ambiguity about
+#   whether a change touches one of these paths/triggers, escalate to
+#   STRONG -- never round down (same "on_ambiguity: escalate" convention
+#   each app's autonomy.yaml already uses).
+
+version: 1
+non_negotiable_strong_tier:
+  description: >
+    See the block above. Encoded here machine-readably so a dispatching
+    agent can check a proposed change's file list against this before
+    picking a tier.
+  always_strong_paths:
+    - "signal-copier/app/capital_allocator.py"
+    - "signal-copier/app/risk.py"
+    - "signal-copier/app/qualification.py"
+    - "signal-copier/app/command_ledger.py"
+    - "signal-copier/app/writer_lease.py"
+  always_strong_refs:
+    - "signal-copier/.agent/autonomy.yaml#level-3"
+    - "signal-copier/.agent/autonomy.yaml#level-4"
+    - "signal-portfolio-commercial/.agent/autonomy.yaml#level-3"
+    - "signal-portfolio-commercial/.agent/autonomy.yaml#level-4"
+  overrides: all_other_classifications_below
+  on_ambiguity: escalate_to_strong
+
+tiers:
+  cheap_fast:
+    name: CHEAP/FAST
+    description: >
+      Purely mechanical or deterministic work with an obvious single
+      correct answer and no financial-correctness or security reasoning
+      involved. Route to the cheapest capable model (e.g. Haiku-class).
+    examples:
+      - Code formatting (ruff --fix, black-equivalent, whitespace/import
+        ordering) with no logic change.
+      - Simple/literal search (grep/glob-shaped lookups, "find every
+        call site of X", "list every file matching pattern Y").
+      - Mechanical refactors with one obviously-correct answer (rename a
+        local variable, extract an already-fully-specified helper,
+        reformat an import block) -- NOT a refactor that requires
+        judgment about module boundaries or behavior preservation in a
+        complex function.
+      - Running a deterministic tool (ruff, mypy, pytest, pip-audit,
+        bandit, gitleaks -- via each app's own Makefile) and parsing/
+        summarizing its already-unambiguous output (pass/fail counts,
+        file:line locations) without needing to judge correctness.
+      - Metadata extraction (reading a manifest/YAML/JSON file and
+        reporting its contents verbatim, or a structural diff of two
+        such files).
+      - Formatting a final report into a structured template once the
+        underlying findings are already decided.
+    excluded_even_if_it_looks_mechanical:
+      - Anything touching a non_negotiable_strong_tier path -- see above.
+
+  standard:
+    name: STANDARD
+    description: >
+      Normal day-to-day engineering work with real but bounded judgment
+      calls, in files/areas NOT covered by the non-negotiable STRONG
+      list. Route to the default/standard model.
+    examples:
+      - "Normal feature implementation in non-financial-critical modules
+        (e.g. signal-copier's Level 0-2 autonomy areas: logging,
+        metrics, new broker/source adapters with no capital-sizing
+        logic, most of signal-portfolio-commercial's customer-facing
+        service code)."
+      - Normal debugging where the bug's blast radius is bounded and
+        understood (a failing test in a non-financial-critical module,
+        a UI rendering issue, a routine integration bug).
+      - Routine code review / PR review of ordinary feature work (not
+        the adversarial financial/security review pass -- see STRONG).
+      - Writing new tests for ordinary behavior (fixtures, parametrized
+        cases) that doesn't require reasoning about a financial edge
+        case's correctness.
+      - Documentation updates that describe existing behavior (outside
+        the security/architecture docs for the always-STRONG modules).
+
+  strong:
+    name: STRONG
+    description: >
+      Architecture-level decisions, difficult/non-obvious debugging,
+      security reasoning, complex trading/capital logic, concurrency,
+      final adversarial review, or genuinely ambiguous requirements.
+      Also: anything matching non_negotiable_strong_tier above, always,
+      with no exception. Route to the strongest available model.
+    examples:
+      - Architecture decisions (new component boundaries, a new ADR-
+        worthy choice, changing how signal -> routing -> risk -> broker
+        data flows).
+      - Difficult/non-obvious debugging (a race condition, an
+        intermittent test failure with an unclear cause, a data
+        corruption bug whose root cause isn't yet located).
+      - Security reasoning (auth/session/CSRF logic, tenant isolation/
+        RLS policy correctness, credential handling, anything in
+        docs/security/*.md's scope for either app).
+      - Complex trading/capital logic of any kind -- capital admission,
+        risk-basis sizing, quantity/qualification-ladder semantics,
+        writer-lease fencing, command-ledger durability (these mostly
+        also appear in non_negotiable_strong_tier by file path, but the
+        rule is the CONCEPT, not just the five listed files -- e.g. a
+        change to app/engine.py's _check_risk_basis / _try_reserve_capital
+        call sites is STRONG even though engine.py itself isn't in the
+        five-file list above).
+      - Concurrency (anything involving locks, async task lifecycle,
+        the writer-lease/fencing model, background-loop coordination).
+      - The final adversarial review pass on any change before merge/
+        deploy for financial-critical or tenant-isolation-critical code
+        -- this is exactly what this repo's existing financial-review,
+        customer-ux-review, and tenant-rights-review subagents
+        (.claude/agents/*.md) already do; keep them on STRONG, do not
+        downgrade them to save cost (per TOKEN_COST_AUDIT.md's own
+        caveat on finding #9).
+      - Ambiguous requirements (the task description itself is unclear
+        about scope, intent, or the correct tradeoff) -- when in doubt
+        about whether a task is ambiguous enough to need STRONG
+        reasoning, treat it as STRONG (same escalate-on-ambiguity
+        convention as the non-negotiable rule above).
+
+notes:
+  - This file classifies WORK, not FILES alone -- the same file can host
+    both a Level-0 cosmetic change (CHEAP/FAST, e.g. fixing a docstring
+    typo in a non-financial helper) and a Level-3 change (STRONG). Judge
+    the actual action being taken, not just which file it lands in --
+    except for the five non_negotiable_strong_tier files, where ANY
+    change (even "cosmetic") is STRONG, because those modules' own
+    docstrings document exactly why a seemingly-cosmetic change can
+    silently alter fail-closed/fail-open behavior.
+  - This file does not grant autonomy -- it only picks a model tier. A
+    STRONG-tier task may still require asking a human first, per each
+    app's own .agent/autonomy.yaml Level 3/4 rules; STRONG-tier
+    reasoning is necessary but not sufficient for proceeding
+    unilaterally.
+  - >
+    A single task spanning multiple tiers (e.g. "run ruff across the
+    repo, then review the three financial-critical findings it turned
+    up") should be split: the mechanical sweep at CHEAP/FAST, then the
+    findings that land in a non_negotiable_strong_tier path re-dispatched
+    at STRONG. Do not do the whole task at STRONG just because part of
+    it touches a strong-tier area, and do not do the whole task at
+    CHEAP/FAST because most of it is mechanical -- split it.
+  - A future signal-portfolio-commercial-specific model-routing
+    refinement (if one is ever needed beyond what's captured here) would
+    live at signal-portfolio-commercial/.agent/model-routing.yaml and
+    should treat this root file as the shared baseline, not duplicate it.
