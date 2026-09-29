@@ -56,15 +56,37 @@ allowance and legal-units checklist before every admission):
   worse (silently blocking all future admissions for that account) than
   the timing gap it would close -- this is a narrower, deliberately
   bounded slice of the original gap, not the whole thing.
-- This provisional ledger is in-memory and process-lifetime only, same
-  as e.g. app/pricing.py's PriceMonitor cache -- a restart has no
-  in-flight admissions to lose (nothing survives a request that never
-  returned), and confirmed exposure is always freshly recomputed from
-  the store, never from this ledger.
+- **P0-4: this provisional ledger is now durable across a restart.**
+  Previously this docstring claimed "a restart has no in-flight
+  admissions to lose (nothing survives a request that never returned)"
+  -- an external release audit correctly called that out as unsound: a
+  remote broker can accept an order (see e.g. `_try_reserve_capital`'s
+  own PENDING-with-broker_order_id case) and this process can still die
+  before anything else observes that acceptance. `admit()` now writes a
+  durable row to the `capital_reservations` table (see app/db.py's own
+  SCHEMA comment on it) the INSTANT admission succeeds -- before the
+  broker call it's gating even starts, not after the fact the way
+  `orders.reserved_notional` already was. `CapitalAllocator.__init__`
+  reloads every still-unresolved row, summed per account, into `_pending`
+  when constructed with a `store` -- so a fresh instance built against
+  the SAME database a crashed process was using resumes with exactly the
+  reservations that process couldn't finish resolving, not a clean
+  slate. Confirmed exposure is still always freshly recomputed from the
+  store, never from this ledger -- only the PROVISIONAL half changed.
+  `CapitalAllocator()` with no `store` (e.g. app/backtest/replay.py's
+  synthetic allocator) behaves exactly as before this change -- no table
+  writes, no restore, pure in-memory -- since a backtest has no real
+  broker and nothing to survive a restart for.
+
+  Not yet integrated with a `command_ledger`/command-id concept: at the
+  time this was written, no sibling branch work introducing one had
+  landed here yet (see `capital_reservations`' own SCHEMA comment for
+  the specific follow-up this leaves for whoever lands it).
 """
 from __future__ import annotations
 
 import asyncio
+import uuid
 from collections import defaultdict
 
 from app.db import SignalStore
@@ -92,21 +114,61 @@ def confirmed_open_notional(store: SignalStore, account_id: str) -> float:
 class CapitalAllocator:
     """One instance shared by the engine for its whole lifetime (like
     PositionLifecycleManager) -- per-account locks and provisional
-    reservations only mean anything shared across every call."""
+    reservations only mean anything shared across every call.
 
-    def __init__(self) -> None:
+    `store` (P0-4, optional): when given, every reservation `admit()`
+    grants is also durably recorded (see app/db.py's own
+    `capital_reservations` SCHEMA comment), and `__init__` reloads any
+    still-unresolved reservation left behind by a previous process
+    against this SAME database -- see this module's own docstring.
+    `None` (the default) keeps this exactly the in-memory-only ledger it
+    always was, for a caller with no real database to survive a restart
+    against (app/backtest/replay.py's synthetic allocator)."""
+
+    def __init__(self, store: SignalStore | None = None) -> None:
         self._locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
         self._pending: dict[str, float] = defaultdict(float)
+        self.store = store
+        if store is not None:
+            # P0-4: rebuild in-memory state from whatever this database
+            # still shows as unresolved -- NOT a clean slate. Any
+            # reservation a previous process made but never resolved
+            # (no confirming fill, no confirming rejection observed
+            # before it died) stays reserved here until reconciliation
+            # independently confirms its outcome, same as it would have
+            # if this process had never restarted at all.
+            for account_id, notional in store.sum_unresolved_capital_reservations().items():
+                self._pending[account_id] = notional
 
-    async def admit(self, account_id: str, notional: float, *, confirmed_exposure: float, max_exposure: float) -> bool:
+    async def admit(
+        self,
+        account_id: str,
+        notional: float,
+        *,
+        confirmed_exposure: float,
+        max_exposure: float,
+        signal_id: str | None = None,
+    ) -> bool:
         async with self._locks[account_id]:
             if confirmed_exposure + self._pending[account_id] + notional > max_exposure:
                 return False
+            if self.store is not None and notional:
+                # P0-4: durably reserved BEFORE this coroutine returns to
+                # its caller -- i.e. before the broker call `admit()` is
+                # gating ever starts. See this class's own docstring for
+                # why that ordering (not "record it after the broker
+                # call returns", which is all `orders.reserved_notional`
+                # already did) is the actual point.
+                self.store.create_capital_reservation(
+                    str(uuid.uuid4()), account_id, notional, signal_id=signal_id
+                )
             self._pending[account_id] += notional
             return True
 
     def release(self, account_id: str, notional: float) -> None:
         self._pending[account_id] = max(0.0, self._pending[account_id] - notional)
+        if self.store is not None:
+            self.store.resolve_one_capital_reservation(account_id, None, notional)
 
     def pending_reservation(self, account_id: str) -> float:
         """Phase B7: this account's real, current in-memory provisional

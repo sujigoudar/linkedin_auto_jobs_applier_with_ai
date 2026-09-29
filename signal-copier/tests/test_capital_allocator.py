@@ -94,3 +94,96 @@ def test_release_never_goes_negative():
         return await allocator.admit(ACCOUNT_ID, 1000.0, confirmed_exposure=0.0, max_exposure=1000.0)
 
     assert asyncio.run(run()) is True
+
+
+# P0-4: a restart must not assume "no in-flight admissions to lose" -- a
+# remote broker can accept an order before this process dies, so a
+# provisional reservation must survive a restart. These tests build a
+# FRESH CapitalAllocator instance from the same on-disk database (never
+# reusing the old Python object) to genuinely exercise that path, not
+# just the in-memory ledger.
+
+
+def test_reservation_survives_a_fresh_allocator_built_from_the_same_db(tmp_path):
+    """The core P0-4 obligation: admit a reservation through one
+    CapitalAllocator, then construct a completely new one (simulating a
+    process restart) against the SAME database file. The second admission
+    only fits under the ceiling if the first reservation was forgotten --
+    it must still be correctly rejected."""
+    db_path = tmp_path / "restart.db"
+    store = SignalStore(db_path)
+
+    async def run():
+        allocator = CapitalAllocator(store=store)
+        admitted = await allocator.admit(
+            ACCOUNT_ID, 800.0, confirmed_exposure=0.0, max_exposure=1000.0, signal_id="sig-1"
+        )
+        assert admitted is True
+        # Simulate the process dying right here: `allocator` (and its
+        # in-memory `_pending`) is simply abandoned, never released or
+        # torn down cleanly -- exactly what a crash looks like.
+
+        # "Restart": a brand-new CapitalAllocator, from the same store.
+        restarted_allocator = CapitalAllocator(store=store)
+        # If the 800.0 reservation had been forgotten, this 300.0 request
+        # (800 + 300 = 1100 > 1000) would wrongly be admitted.
+        second_admission = await restarted_allocator.admit(
+            ACCOUNT_ID, 300.0, confirmed_exposure=0.0, max_exposure=1000.0
+        )
+        assert second_admission is False
+        # And the durable ledger still shows the original reservation as
+        # the sole unresolved amount for this account.
+        assert restarted_allocator.pending_reservation(ACCOUNT_ID) == pytest.approx(800.0)
+
+    asyncio.run(run())
+
+
+def test_reservation_survives_restart_across_two_separate_store_instances(tmp_path):
+    """Same as above, but also constructs a fresh SignalStore against the
+    file (not just a fresh CapitalAllocator against the same live store
+    object) -- the closest thing to a genuine process restart this test
+    suite can exercise without actually forking a process."""
+    db_path = tmp_path / "restart2.db"
+    store_before_restart = SignalStore(db_path)
+
+    async def run():
+        allocator = CapitalAllocator(store=store_before_restart)
+        assert await allocator.admit(ACCOUNT_ID, 600.0, confirmed_exposure=0.0, max_exposure=1000.0) is True
+
+        # A brand new process would open a brand new SignalStore against
+        # this same file, and build its allocator from that.
+        store_after_restart = SignalStore(db_path)
+        restarted_allocator = CapitalAllocator(store=store_after_restart)
+        # 600 (durable) + 500 would be 1100 > 1000 -- must still reject.
+        assert (
+            await restarted_allocator.admit(ACCOUNT_ID, 500.0, confirmed_exposure=0.0, max_exposure=1000.0)
+            is False
+        )
+        # A request that fits alongside the surviving 600.0 reservation
+        # is still correctly admitted (this isn't just refusing
+        # everything -- the durable figure is being added, not some
+        # blanket rejection).
+        assert (
+            await restarted_allocator.admit(ACCOUNT_ID, 300.0, confirmed_exposure=0.0, max_exposure=1000.0) is True
+        )
+
+    asyncio.run(run())
+
+
+def test_released_reservation_does_not_survive_restart(tmp_path):
+    """A reservation that was properly released before the restart must
+    NOT reappear afterward -- durability only applies to still-unresolved
+    reservations, never to ones already resolved."""
+    db_path = tmp_path / "released.db"
+    store = SignalStore(db_path)
+
+    async def run():
+        allocator = CapitalAllocator(store=store)
+        assert await allocator.admit(ACCOUNT_ID, 900.0, confirmed_exposure=0.0, max_exposure=1000.0) is True
+        allocator.release(ACCOUNT_ID, 900.0)  # e.g. the order came back REJECTED
+
+        restarted_allocator = CapitalAllocator(store=store)
+        assert restarted_allocator.pending_reservation(ACCOUNT_ID) == pytest.approx(0.0)
+        assert await restarted_allocator.admit(ACCOUNT_ID, 900.0, confirmed_exposure=0.0, max_exposure=1000.0) is True
+
+    asyncio.run(run())

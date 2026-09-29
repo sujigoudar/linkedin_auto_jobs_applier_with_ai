@@ -133,8 +133,11 @@ class SignalCopierEngine:
         self._plain_close_locks: dict[tuple[str, str], asyncio.Lock] = defaultdict(asyncio.Lock)
         # E03 (bounded): per-account notional-exposure admission gate — see
         # app/capital_allocator.py's module docstring for exactly what this
-        # does and doesn't enforce.
-        self.capital_allocator = CapitalAllocator()
+        # does and doesn't enforce. P0-4: `store=store` makes its
+        # reservations durable and reloads any left unresolved by a
+        # previous process against this same database -- see that
+        # module's own docstring.
+        self.capital_allocator = CapitalAllocator(store=store)
         # Wired in after construction (app/lifecycle/manager.py's own
         # __init__ can't take this: main.py often constructs a
         # PositionLifecycleManager before this Engine, and so before this
@@ -630,7 +633,11 @@ class SignalCopierEngine:
         notional = abs(quantity) * order_signal.price
         confirmed = confirmed_open_notional(self.store, account.account_id)
         admitted = await self.capital_allocator.admit(
-            account.account_id, notional, confirmed_exposure=confirmed, max_exposure=account.max_notional_exposure
+            account.account_id,
+            notional,
+            confirmed_exposure=confirmed,
+            max_exposure=account.max_notional_exposure,
+            signal_id=order_signal.id,
         )
         if not admitted:
             return (

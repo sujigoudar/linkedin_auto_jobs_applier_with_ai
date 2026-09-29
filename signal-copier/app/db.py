@@ -506,6 +506,49 @@ CREATE TABLE IF NOT EXISTS saved_views (
 
 CREATE INDEX IF NOT EXISTS idx_saved_views_screen ON saved_views (screen);
 
+-- P0-4: a durable record of app/capital_allocator.py's provisional
+-- notional reservation, written BEFORE the broker call it's gating even
+-- starts (see CapitalAllocator.admit) -- not after, the way
+-- `orders.reserved_notional` already is (that column is only ever set by
+-- `save_order_result`, which only runs once the broker call has already
+-- returned). The gap this closes: a remote broker can accept an order
+-- and this process can still die before `save_order_result` ever
+-- commits, and `orders.reserved_notional`'s own release accounting (see
+-- app/reconciliation.py's `_correct_position`) has no row to work with
+-- at all in that case. A row here is written the instant admission
+-- succeeds, independent of whether the order row that follows ever gets
+-- written. `resolved_at IS NULL` means "still an uncertain external
+-- effect" -- released only once this exact admission's outcome is
+-- confirmed terminal (REJECTED/ERROR/FILLED, or a PENDING with nothing
+-- left to ever poll) at the same call sites that already call
+-- `CapitalAllocator.release` (see `resolve_one_capital_reservation`).
+-- `CapitalAllocator.__init__` sums every still-unresolved row here, per
+-- account, to rebuild its in-memory ledger on startup -- a restart must
+-- not start from "no in-flight admissions to lose": an order the broker
+-- already accepted before the crash stays reserved (uncertain) until
+-- reconciliation independently confirms its outcome, never silently
+-- forgotten.
+--
+-- NOTE for whoever lands P0-2's `command_ledger` table: this table's
+-- `id` is a reservation-local uuid, not that ledger's own command/intent
+-- id, because `command_ledger` wasn't on this branch yet when this was
+-- written. Once it lands, consider having `CapitalAllocator.admit` take
+-- and store the real command/intent id here instead of minting its own,
+-- so a reservation and its originating command share one identifier
+-- end-to-end -- this table's `signal_id` column is a good anchor for
+-- that reconciliation (both should already agree on the same signal).
+CREATE TABLE IF NOT EXISTS capital_reservations (
+    id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL,
+    notional REAL NOT NULL,
+    signal_id TEXT,
+    created_at TEXT NOT NULL,
+    resolved_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_capital_reservations_account_unresolved
+    ON capital_reservations (account_id) WHERE resolved_at IS NULL;
+
 CREATE INDEX IF NOT EXISTS idx_orders_executed_at ON orders (executed_at);
 CREATE INDEX IF NOT EXISTS idx_orders_account_id ON orders (account_id);
 CREATE INDEX IF NOT EXISTS idx_signals_received_at ON signals (received_at);
@@ -850,6 +893,77 @@ class SignalStore:
                 "FROM export_events WHERE delivered_at IS NULL"
             ).fetchone()
         return (row[0], row[1])
+
+    def create_capital_reservation(
+        self, reservation_id: str, account_id: str, notional: float, signal_id: str | None = None
+    ) -> None:
+        """P0-4: durably record a app/capital_allocator.py provisional
+        reservation the INSTANT it's admitted -- called from inside
+        `CapitalAllocator.admit`, before the broker call it's gating ever
+        starts (see this table's own SCHEMA comment for exactly why that
+        ordering is the point). `reservation_id` is minted by the caller
+        (a uuid4) so it can later resolve this exact row without a
+        round-trip; `signal_id` is best-effort context for a human
+        reading the table, never required for correctness."""
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO capital_reservations (id, account_id, notional, signal_id, created_at, resolved_at) "
+                "VALUES (?, ?, ?, ?, ?, NULL)",
+                (reservation_id, account_id, notional, signal_id, datetime.now(timezone.utc).isoformat()),
+            )
+
+    def resolve_one_capital_reservation(self, account_id: str, reservation_id: str | None, notional: float) -> None:
+        """Mark one durable reservation resolved -- called everywhere
+        `CapitalAllocator.release` already is, so a row here goes
+        unresolved for exactly as long as `_pending`'s own in-memory
+        figure would have carried it. Prefers `reservation_id` (an exact,
+        unambiguous match) when the caller has one; falls back to
+        matching any one still-unresolved row for this account with this
+        exact notional when it doesn't (a caller that only ever had the
+        notional value, e.g. `CapitalAllocator.release`'s own pre-existing
+        signature, which every call site already uses without a
+        reservation id) -- which specific row of several identical-amount
+        duplicates gets marked resolved doesn't matter, since the
+        invariant this supports is only ever a per-account SUM. A
+        `notional` of 0.0 never had a row to begin with (`admit` only
+        inserts one for a real, non-zero reservation) so this is a safe
+        no-op for it."""
+        if not notional:
+            return
+        with self._connect() as conn:
+            if reservation_id is not None:
+                conn.execute(
+                    "UPDATE capital_reservations SET resolved_at = ? WHERE id = ? AND resolved_at IS NULL",
+                    (datetime.now(timezone.utc).isoformat(), reservation_id),
+                )
+                return
+            row = conn.execute(
+                "SELECT id FROM capital_reservations WHERE account_id = ? AND notional = ? AND resolved_at IS NULL "
+                "LIMIT 1",
+                (account_id, notional),
+            ).fetchone()
+            if row is None:
+                return
+            conn.execute(
+                "UPDATE capital_reservations SET resolved_at = ? WHERE id = ?",
+                (datetime.now(timezone.utc).isoformat(), row[0]),
+            )
+
+    def sum_unresolved_capital_reservations(self) -> dict[str, float]:
+        """Every account's real, currently-outstanding durable reservation
+        total (SUM of `capital_reservations.notional` where
+        `resolved_at IS NULL`) -- what `CapitalAllocator.__init__` reloads
+        at startup to reconstruct its in-memory `_pending` ledger, so a
+        restart resumes with exactly the reservations a crash could have
+        left uncertain, never a clean slate. An account with no
+        unresolved rows is simply absent from the returned dict (the
+        caller's own `defaultdict(float)` already treats that as 0.0)."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT account_id, SUM(notional) FROM capital_reservations "
+                "WHERE resolved_at IS NULL GROUP BY account_id"
+            ).fetchall()
+        return {r[0]: r[1] for r in rows}
 
     def list_pending_orders(self) -> list[dict]:
         """Orders still PENDING with a broker_order_id to re-check (see
