@@ -1,0 +1,245 @@
+# Trigger-based context map for signal-portfolio-commercial/.
+#
+# Purpose: before starting work in an area, look up that area's keywords
+# below and read the listed docs FIRST, in order. This is a routing
+# table, not a substitute for reading the code itself.
+#
+# PROVENANCE NOTE (verify before trusting a path):
+#   Paths under docs/ were confirmed to exist by running, at the time
+#   this file was written:
+#     git fetch origin && git log --all --oneline -- signal-portfolio-commercial/docs
+#   which showed commits: 06464bb (spec pack + Phase 01 rights registry),
+#   4df64a7 (Phase 12 scope-ledger audit), ed530e5 (post-Phase-12
+#   addendum), 34adbfa (quality standards + testing docs), 472317b (ADRs +
+#   database + design + requirements docs). Paths under spec/docs/ are
+#   the pre-existing spec pack (present before this file was written,
+#   not part of the concurrent docs/ build-out) and were confirmed
+#   present on disk directly.
+#
+#   Several OTHER agents are concurrently building out docs/,
+#   .agent/{rules,workflows,quality-gates,permissions}.yaml,
+#   PROJECT_STATUS.yaml, and a slim top-level CLAUDE.md. Entries below
+#   marked `status: planned` reference a PLAUSIBLE future path by area,
+#   not a confirmed one — they did not exist at write time. Re-run the
+#   git log command above after that wave lands, then:
+#     - fix any planned path that landed somewhere different, and
+#     - prune this note once every entry below is status: confirmed.
+#   Do not trust a `planned` path's content; only its existence needs
+#   re-checking.
+
+version: 1
+last_verified_against_origin: 2026-09-29
+
+areas:
+
+  - id: billing_and_subscriptions
+    keywords:
+      [billing, subscription, plan, entitlement, invoice, stripe, pricing,
+       webhook_signature, charge, proration, checkout]
+    read_first:
+      - path: spec/docs/08_products_billing_and_entitlements.md
+        status: confirmed
+        why: Source spec for plans, entitlement, webhook contract.
+      - path: app/models/billing.py
+        status: confirmed
+        why: Subscription is tenant-scoped, not per-user — read the docstring before assuming otherwise.
+      - path: app/services/customer_billing.py
+        status: confirmed
+        why: CU-11 billing read; documents what is deliberately NOT computed (no live Stripe/invoices yet).
+      - path: app/services/stripe_webhook.py
+        status: confirmed
+        why: Signature/replay verification; no real Stripe SDK call exists — see .agent/autonomy.yaml level 4.
+      - path: docs/database/DATA_DICTIONARY.md
+        status: confirmed
+        why: Column-level definitions for billing tables.
+      - path: docs/requirements/FUNCTIONAL.md
+        status: confirmed
+        why: What billing behavior is actually implemented vs. spec'd.
+
+  - id: rights_and_publication
+    keywords:
+      [rights, rights_grant, licensing, publication, publisher, adapter,
+       collective2, etoro, channel, jurisdiction, commercial_publication,
+       copier]
+    read_first:
+      - path: spec/docs/01_rights_legal_and_launch_gates.md
+        status: confirmed
+        why: Rights model, per-use grants, launch-gate checkpoints.
+      - path: spec/docs/06_platform_adapters.md
+        status: confirmed
+        why: Collective2/eToro adapter contracts and demo-only transport rule.
+      - path: spec/contracts/RightsGrant.schema.json
+        status: confirmed
+        why: Canonical field/enum shapes app/models/rights.py must match.
+      - path: app/services/rights_registry.py
+        status: confirmed
+        why: check_rights() fail-closed semantics — read before any gate-adjacent change.
+      - path: app/services/portfolio_rights.py
+        status: confirmed
+        why: Portfolio-level "every sleeve must independently qualify" rule.
+      - path: app/services/collective2_publisher.py
+        status: confirmed
+        why: Builds-never-transmits boundary; TIF value BLOCKED pending vendor confirmation.
+      - path: app/services/etoro_adapter.py
+        status: confirmed
+        why: demo-only account_mode guard is structural, not just documented.
+      - path: docs/design/ATTRIBUTION.md
+        status: confirmed
+        why: How a published entry is attributed back to source/analyst.
+
+  - id: tenant_and_database
+    keywords:
+      [tenant, multi_tenant, schema, migration, alembic, rls,
+       row_level_security, isolation, postgres, index, constraint]
+    read_first:
+      - path: docs/adr/0001-row-level-security-multi-tenant-isolation.md
+        status: confirmed
+        why: The tenant-isolation pattern every new tenant-scoped table/column must follow (required by .agent/autonomy.yaml level 2 migration review).
+      - path: docs/database/SCHEMA.md
+        status: confirmed
+        why: Current table inventory.
+      - path: docs/database/MIGRATIONS.md
+        status: confirmed
+        why: Migration conventions, cross-checked against actual Alembic history.
+      - path: docs/database/DATA_DICTIONARY.md
+        status: confirmed
+        why: Column-level source of truth.
+      - path: docs/standards/NAMING.md
+        status: confirmed
+        why: Naming conventions for new tables/columns.
+
+  - id: accounting_and_economic_journal
+    keywords:
+      [ledger, four_book, economic_journal, accounting, evidence_class,
+       reconciliation, append_only, correction, source_book, model_book,
+       platform_book, follower_book]
+    read_first:
+      - path: spec/docs/04_metrics_accounting_and_truth.md
+        status: confirmed
+        why: Why the four books must stay independent; "an alert delivered is not an executed trade."
+      - path: docs/adr/0004-four-book-economic-ledger.md
+        status: confirmed
+        why: Design rationale for Book separation.
+      - path: docs/adr/0008-append-only-triggers-on-ledger-tables.md
+        status: confirmed
+        why: enforce_append_only is a real Postgres trigger, not just convention.
+      - path: docs/design/LEDGER_MODEL.md
+        status: confirmed
+        why: Full ledger design doc.
+      - path: app/models/ledger.py
+        status: confirmed
+        why: LedgerEntry field-by-field rationale (evidence_class, correction_of, sleeve_id, etc.).
+      - path: app/services/ledger.py
+        status: confirmed
+        why: append_entry/append_correction — the only sanctioned write path.
+      - path: docs/design/INGEST_PIPELINE.md
+        status: confirmed
+        why: How SOURCE-book entries get admitted at ingest time.
+
+  - id: managed_accounts_pamm_mam
+    keywords: [pamm, mam, managed_account, hwm, high_water_mark, nav,
+               unit_accounting, allocation, performance_fee]
+    read_first:
+      - path: spec/docs/07_managed_accounts_pamm_mam.md
+        status: confirmed
+        why: PAMM/unit accounting and MAM allocation spec; scope boundary (simulation-only fee formula).
+      - path: app/services/pamm_accounting.py
+        status: confirmed
+        why: compute_simple_hwm_fee — explicitly a test-only no-cashflow formula, not the real broker rule.
+      - path: app/services/mam_allocation.py
+        status: confirmed
+        why: Allocation math; same "simulation only" scope note as pamm_accounting.py.
+
+  - id: attribution_and_ingest
+    keywords: [attribution, analyst, fifo, lot, ingest, integration_inbox,
+               idempotent, bootstrap_snapshot]
+    read_first:
+      - path: docs/adr/0003-idempotent-ordered-ingest-inbox.md
+        status: confirmed
+      - path: docs/adr/0005-fifo-lot-analyst-attribution.md
+        status: confirmed
+      - path: docs/adr/0006-bootstrap-snapshot-protocol.md
+        status: confirmed
+      - path: docs/design/INGEST_PIPELINE.md
+        status: confirmed
+      - path: docs/design/ATTRIBUTION.md
+        status: confirmed
+      - path: app/services/analyst_attribution.py
+        status: confirmed
+      - path: app/services/integration_inbox.py
+        status: confirmed
+
+  - id: auth_and_sessions
+    keywords: [auth, login, session, jwt, revocation, local_auth, relay_role]
+    read_first:
+      - path: docs/adr/0007-local-auth-revocable-jwt-sessions.md
+        status: confirmed
+      - path: docs/adr/0002-relay-role-export-ingest-boundary.md
+        status: confirmed
+      - path: app/services/auth.py
+        status: confirmed
+      - path: app/services/token_revocation.py
+        status: confirmed
+
+  - id: testing_and_quality
+    keywords: [test, fixture, regression, e2e, test_matrix, coverage]
+    read_first:
+      - path: docs/standards/TESTING.md
+        status: confirmed
+      - path: docs/testing/TEST_MATRIX.md
+        status: confirmed
+      - path: docs/testing/FIXTURES.md
+        status: confirmed
+      - path: docs/testing/E2E.md
+        status: confirmed
+      - path: docs/testing/REGRESSIONS.md
+        status: confirmed
+
+  - id: coding_standards
+    keywords: [style, lint, format, error_handling, logging, performance,
+               naming]
+    read_first:
+      - path: docs/standards/CODING.md
+        status: confirmed
+      - path: docs/standards/ERROR_HANDLING.md
+        status: confirmed
+      - path: docs/standards/LOGGING.md
+        status: confirmed
+      - path: docs/standards/PERFORMANCE.md
+        status: confirmed
+      - path: docs/standards/NAMING.md
+        status: confirmed
+
+  - id: project_orientation
+    keywords: [status, overview, scope, what_is_built, current_state, gaps]
+    read_first:
+      - path: spec/docs/00_current_state_and_scope.md
+        status: confirmed
+      - path: spec/docs/14_existing_gaps_and_completion_order.md
+        status: confirmed
+      - path: docs/00_discovery.md
+        status: confirmed
+      - path: docs/12_validation_report.md
+        status: confirmed
+      - path: docs/12_addendum_post_phase12_work.md
+        status: confirmed
+      - path: PROJECT_STATUS.yaml
+        status: planned
+        why: >
+          Being built by a concurrent agent as the machine-readable
+          status summary. Did not exist at write time — verify it landed
+          at this path (repo root of signal-portfolio-commercial/)
+          before relying on it.
+      - path: ../CLAUDE.md
+        status: planned
+        why: >
+          A slim top-level CLAUDE.md is being built by a concurrent
+          agent. Verify it landed before relying on it for orientation.
+
+notes:
+  - >-
+    This map is a starting point, not a ceiling: always also read the
+    module/service file directly relevant to the change, and its
+    neighbors in the same directory.
+  - See .agent/autonomy.yaml for what an agent may decide unilaterally
+    once it has the context this map points to.
