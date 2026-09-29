@@ -1416,7 +1416,12 @@ Cloudflare for independent monitoring + off-host backup) and
 checklist, not automatic failover. `STANDBY_MODE=true` (see
 `app/config.py`) is the real, tested mechanism a standby uses to refuse
 every financial command independent of any single route's own auth logic
-(`tests/test_standby_mode.py`).
+(`tests/test_standby_mode.py`). See `docs/FAILOVER.md` for the
+database-backed cross-process/cross-host fencing-token mechanism
+(`app/writer_lease.py`) underneath the runbook, and
+`python -m app.promote_cli` for the only way a different site ever
+becomes the writer — always a deliberate, human-run action with explicit
+confirmation flags, never automatic.
 
 ## Security notes for when this goes live
 

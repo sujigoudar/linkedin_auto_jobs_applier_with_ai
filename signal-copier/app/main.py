@@ -8,6 +8,8 @@ started in the lifespan handler.
 """
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import dataclasses
 import hashlib
 import hmac
@@ -95,6 +97,7 @@ from app.sources.telegram import TelegramSource
 from app.sources.twitter import TwitterSource
 from app.sources.webhook import WebhookSource
 from app.sources.whatsapp import WhatsAppSource
+from app.writer_lease import FencedOutError, WriterLeaseGuard, WriterLeaseHeldByAnotherSiteError
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
@@ -183,6 +186,32 @@ for broker_name, broker_factory in _optional_brokers:
     except RuntimeError as exc:
         logger.info("%s broker not registered: %s", broker_name, exc)
 
+# Cross-process/cross-host single-writer fencing (see app/writer_lease.py,
+# docs/FAILOVER.md). Constructed unconditionally (even for a STANDBY_MODE
+# process, which never acquires a lease on it at all -- see below) so
+# `engine`/`lifecycle_manager`'s own construction is identical either way.
+writer_lease_guard = WriterLeaseGuard(
+    store,
+    site_id=config.WRITER_SITE_ID or None,
+    lease_seconds=config.WRITER_LEASE_SECONDS,
+)
+if not config.STANDBY_MODE:
+    # Acquired here, at import time -- not only inside `lifespan` below --
+    # so every command-execution path is already covered the moment this
+    # module exists, independent of whether/when an ASGI server's own
+    # lifespan startup actually runs (uvicorn always runs it once for a
+    # real deployment; a test harness building `TestClient(app)` WITHOUT
+    # entering it as a context manager, which many of this repo's own
+    # tests do, never triggers `lifespan` at all -- those requests must
+    # still be correctly fenced/covered). `WriterLeaseGuard.acquire()` is
+    # idempotent per guard instance (see its own docstring) -- a real
+    # process restart still gets a brand-new guard object here and
+    # genuinely reacquires/bumps the token; `lifespan`'s own call to the
+    # same guard object below is then just a cheap, harmless re-verify,
+    # not a second real acquisition. Raises WriterLeaseHeldByAnotherSiteError
+    # here (crashing import, and so startup) if a different site already
+    # holds the lease -- see that error's docstring.
+    writer_lease_guard.acquire()
 lifecycle_manager = PositionLifecycleManager(brokers=brokers, store=store)
 lifecycle_manager.restore_from_store()  # resume any managed-lifecycle positions from before a restart
 engine = SignalCopierEngine(
@@ -191,6 +220,7 @@ engine = SignalCopierEngine(
     store=store,
     lifecycle_manager=lifecycle_manager,
     provider_registry=provider_registry,
+    lease_guard=writer_lease_guard,
 )
 webhook_source = WebhookSource(on_signal=engine.handle_signal)
 sms_source = TwilioSMSSource(on_signal=engine.handle_signal)
@@ -257,6 +287,36 @@ if config.RITHMIC_USER and config.RITHMIC_SYSTEM_NAME and config.RITHMIC_GATEWAY
     )
 
 
+async def _writer_lease_heartbeat() -> None:
+    """Background renewal loop for the ACTIVE writer's own lease -- see
+    app/writer_lease.py's module docstring. Renewing does NOT gate any
+    command execution itself (that's `require_active()`, checked
+    independently on every command-execution path) -- this loop exists
+    so a genuinely healthy writer's `expires_at` keeps advancing, so a
+    promotion attempt elsewhere correctly sees "still valid" rather than
+    treating a merely-slow-to-be-declared-dead writer as safe to promote
+    over. If renewal ever fails (this process has been fenced out -- a
+    new token was issued elsewhere), this logs and keeps running: it does
+    NOT try to re-acquire (that would BE silent, unauthorized
+    self-promotion) -- `require_active()` on the next real command is
+    what actually stops this process from executing anything further."""
+    while True:
+        await asyncio.sleep(config.WRITER_LEASE_RENEW_SECONDS)
+        try:
+            writer_lease_guard.renew()
+        except FencedOutError:
+            logger.critical(
+                "writer lease heartbeat: this process (site=%s holder=%s) has been FENCED OUT -- "
+                "a new writer lease token exists. This process must not execute any further "
+                "financial commands (already enforced independently by every command-execution "
+                "path's own require_active() check) -- see docs/FAILOVER.md.",
+                writer_lease_guard.site_id,
+                writer_lease_guard.holder_id,
+            )
+        except Exception:  # noqa: BLE001 - a heartbeat failure must not crash the loop or the app
+            logger.exception("writer lease heartbeat failed (will retry next interval)")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     if config.STANDBY_MODE:
@@ -265,10 +325,34 @@ async def lifespan(app: FastAPI):
         # protective stop, all of which are things only the single active
         # writer may do (see deploy/RUNBOOK.md). This is enforced here, not
         # merely by omitting broker credentials, so a misconfigured standby
-        # can't silently become a second writer.
+        # can't silently become a second writer. A standby never touches
+        # writer_lease_guard at all -- it neither acquires nor renews a
+        # lease, so it can never itself be "the writer" from the fencing
+        # table's own point of view either.
         logger.warning("STANDBY_MODE is set -- not starting signal ingestion, reconciliation, or price polling")
         yield
         return
+
+    # Cross-process/cross-host fencing (app/writer_lease.py): acquired
+    # BEFORE any source/reconciler/price-monitor starts, so this process
+    # can reach zero command-execution paths before it holds a lease this
+    # database agrees is current. Raises WriterLeaseHeldByAnotherSiteError
+    # (uncaught here, deliberately -- crashes startup) if a DIFFERENT
+    # site already holds the lease: this is the actual enforcement that a
+    # second, misconfigured-as-active host can never start trading the
+    # same account "merely because the first heartbeat disappeared" --
+    # see that error's own docstring. The one and only way past this is
+    # the explicit `python -m app.promote_cli` action.
+    try:
+        writer_lease_guard.acquire()
+    except WriterLeaseHeldByAnotherSiteError:
+        logger.critical(
+            "refusing to start as active writer: the writer lease is already held by a different "
+            "site. See docs/FAILOVER.md -- this is not auto-resolved; run `python -m app.promote_cli` "
+            "deliberately if this really is a failover."
+        )
+        raise
+    _heartbeat_task = asyncio.create_task(_writer_lease_heartbeat())
 
     await webhook_source.start()
     for source in _background_sources:
@@ -291,6 +375,9 @@ async def lifespan(app: FastAPI):
 
     yield
 
+    _heartbeat_task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await _heartbeat_task
     if config.RELAY_INGRESS_URL:
         await relay_scheduler.stop()
     await equity_snapshotter.stop()
@@ -452,12 +539,27 @@ async def health() -> dict:
     except Exception:  # noqa: BLE001 - health check must never raise
         outbox_row_count, outbox_backlog_bytes = None, None
         outbox_backlog_ok = False
+    # Cross-process/cross-host fencing (app/writer_lease.py, docs/FAILOVER.md):
+    # None for a standby (it never holds a lease -- see `lifespan`); for the
+    # active writer, True only if this process's own fencing token is still
+    # the current one -- False means it's been fenced out (a new token was
+    # issued elsewhere) and every command-execution path is already
+    # refusing to act, independent of this flag. No site_id/holder_id/token
+    # exposed here (this endpoint is unauthenticated) -- see /metrics for
+    # authenticated operational detail.
+    writer_lease_ok: bool | None = None
+    if not config.STANDBY_MODE:
+        try:
+            writer_lease_guard.require_active()
+            writer_lease_ok = True
+        except Exception:  # noqa: BLE001 - health check must never raise
+            writer_lease_ok = False
     return {
         # OPS-01: `status` was hardcoded to "ok" regardless of the flags
         # right next to it -- a fresh startup (before either worker's
         # first successful pass) or a genuinely stuck worker still
         # reported "ok" overall while its own detail flag said otherwise.
-        "status": "ok" if (db_ok and price_monitor_ok and reconciler_ok) else "degraded",
+        "status": "ok" if (db_ok and price_monitor_ok and reconciler_ok and writer_lease_ok is not False) else "degraded",
         "database_ok": db_ok,
         "price_monitor_ok": price_monitor_ok,
         "reconciler_ok": reconciler_ok,
@@ -468,6 +570,7 @@ async def health() -> dict:
         "outbox_backlog_bytes": outbox_backlog_bytes,
         "outbox_backlog_row_count": outbox_row_count,
         "outbox_backlog_ceiling_bytes": config.EXPORT_OUTBOX_SIZE_CEILING_BYTES,
+        "writer_lease_ok": writer_lease_ok,
     }
 
 

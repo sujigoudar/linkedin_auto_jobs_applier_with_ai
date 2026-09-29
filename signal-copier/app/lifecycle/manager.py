@@ -94,6 +94,7 @@ from app.models import (
     Side,
     UncertaintyState,
 )
+from app.writer_lease import NullLeaseGuard, WriterLeaseGuard
 
 logger = logging.getLogger(__name__)
 
@@ -189,6 +190,19 @@ class PositionLifecycleManager:
         # wired in) is a safe no-op: reservations then just aren't
         # released here, same as before this fix existed.
         self.capital_allocator: CapitalAllocator | None = None
+        # Cross-process/cross-host single-writer fencing (app/writer_lease.py,
+        # docs/FAILOVER.md) -- set by app/engine.py's Engine.__init__ to the
+        # same guard it holds (this manager is often constructed first, by
+        # app/main.py, before that exists), same "wired in after
+        # construction, None-safe default" convention as capital_allocator
+        # above. Checked at the top of every entry point here that can
+        # reach a broker write, INCLUDING the ones driven by background
+        # loops (app/reconciliation.py's retry_unprotected_positions/
+        # resolve_pending_entry/resolve_pending_exit calls,
+        # app/price_monitor's on_price_update) rather than only a live
+        # signal/close call -- those never pass through app/engine.py's
+        # own top-level checks at all.
+        self.lease_guard: WriterLeaseGuard | NullLeaseGuard = NullLeaseGuard()
 
     def get_lifecycle(self, account_id: str, symbol: str) -> PositionLifecycle | None:
         return self._lifecycles.get((account_id, symbol))
@@ -210,6 +224,7 @@ class PositionLifecycleManager:
         periodic retry rather than depending on unrelated future activity.
         Safe to call repeatedly: an already-protected lifecycle, or one
         deferring to an unresolved exit, is a no-op."""
+        self.lease_guard.require_active()
         retried = 0
         for lifecycle in list(self._lifecycles.values()):
             if lifecycle.closed or lifecycle.confirmed_owned_quantity <= 0:
@@ -649,6 +664,7 @@ class PositionLifecycleManager:
         stay honestly unknown (None) rather than assumed to be 0. Only sets
         it once — a repeated/resumed call for an already-priced lifecycle
         never overwrites the original entry price."""
+        self.lease_guard.require_active()
         lifecycle = self._lifecycles[(account.account_id, symbol)]
         broker = self.brokers.get(account.broker)
 
@@ -738,6 +754,7 @@ class PositionLifecycleManager:
         stale checkpoint at the same time (see the F07 regression test,
         which delivers two identical observations while the first stop
         request is still in flight)."""
+        self.lease_guard.require_active()
         lock = self._pending_entry_locks[(account.account_id, symbol)]
         async with lock:
             lifecycle = self._lifecycles.get((account.account_id, symbol))
@@ -903,6 +920,14 @@ class PositionLifecycleManager:
         if self.arbiter.is_halted(account.account_id, symbol):
             return []
 
+        # Cross-process/cross-host fencing (app/writer_lease.py): checked
+        # here, after the honest price/MAE/MFE observation above (never
+        # gated -- see this method's own docstring) but before anything
+        # below that can reach a broker write (time-exit close, a target
+        # firing, tighten-stop, trailing) -- a fenced-out process must
+        # keep observing price for its own records, but never act on it.
+        self.lease_guard.require_active()
+
         if await self._consume_expired_time_exit(lifecycle):
             return []
 
@@ -974,6 +999,7 @@ class PositionLifecycleManager:
         trailing, a provider EXIT signal, a time exit, an emergency exit).
         Performs the stop-resize transition described in this module's
         docstring. Never sells more than `CloseArbiter` says is available."""
+        self.lease_guard.require_active()
         broker = self.brokers.get(account.broker)
         if broker is None:
             return OrderResult(account_id=account.account_id, status=OrderStatus.ERROR, signal_id="", message=f"no broker adapter registered for '{account.broker}'")
@@ -1146,6 +1172,7 @@ class PositionLifecycleManager:
         so nothing else can claim those shares (see `request_exit`'s
         docstring for why the design's worked partial-fill example -- 8 of
         15 confirmed, 7 still open -- restores against 54, not 47)."""
+        self.lease_guard.require_active()
         broker = self.brokers.get(account.broker)
         async with self.arbiter.transition(account.account_id, symbol) as tx:
             lifecycle = self._lifecycles.get((account.account_id, symbol))

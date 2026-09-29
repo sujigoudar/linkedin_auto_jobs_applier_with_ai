@@ -144,6 +144,7 @@ from app.models import (
 from app.providers import ProviderRegistry, SettingsOverride
 from app.risk import size_for_account, symbol_for_account
 from app.routing import RoutingConfig
+from app.writer_lease import NullLeaseGuard, WriterLeaseGuard
 
 logger = logging.getLogger(__name__)
 structured_logger = structlog.get_logger(__name__)
@@ -189,12 +190,27 @@ class SignalCopierEngine:
         store: SignalStore,
         lifecycle_manager: PositionLifecycleManager | None = None,
         provider_registry: ProviderRegistry | None = None,
+        lease_guard: WriterLeaseGuard | NullLeaseGuard | None = None,
     ):
         self.routing = routing
         self.brokers = brokers
         self.store = store
         self.lifecycle_manager = lifecycle_manager or PositionLifecycleManager(brokers)
         self.provider_registry = provider_registry or ProviderRegistry()
+        # Cross-process/cross-host single-writer fencing (see
+        # app/writer_lease.py, docs/FAILOVER.md): checked at the top of
+        # every command-execution entry point below (`handle_signal`,
+        # `close_position`) before any broker call can be reached, and
+        # also passed through to `self.lifecycle_manager` so its own
+        # entry points (on_price_update/request_exit/etc., which can be
+        # driven by background loops, not just a signal/close call) are
+        # covered too. Defaults to a no-op guard so every existing
+        # construction (tests, ad-hoc scripts) that doesn't wire real
+        # fencing is unaffected -- app/main.py is the one place that
+        # constructs a real WriterLeaseGuard, for the app's own live
+        # ACTIVE process.
+        self.lease_guard = lease_guard or NullLeaseGuard()
+        self.lifecycle_manager.lease_guard = self.lease_guard
         # Serializes a plain (non-managed_lifecycle) account's close resolution +
         # submission per (account_id, symbol) -- see _resolve_and_submit_plain_close.
         # managed_lifecycle accounts already get this from CloseArbiter; plain
@@ -357,6 +373,15 @@ class SignalCopierEngine:
             return results
 
     async def _handle_signal(self, signal: Signal) -> list[OrderResult]:
+        # Cross-process/cross-host fencing (app/writer_lease.py): checked
+        # before anything else in this method, including the SIG-01
+        # replay-lookup below -- a process that's been fenced out must
+        # refuse the whole call, not just the eventual broker.place_order.
+        # Raises FencedOutError (uncaught here, deliberately) rather than
+        # returning a REJECTED result -- this is a "this process must
+        # stop acting as writer" condition, not an ordinary per-signal
+        # rejection a caller should retry.
+        self.lease_guard.require_active()
         # SIG-01: this exact signal id may already have been processed --
         # e.g. a caller that retries handle_signal itself after a timeout
         # without knowing whether the first attempt's orders actually went
@@ -1686,6 +1711,13 @@ class SignalCopierEngine:
         being added on a route that can't protect it; they have no
         business blocking someone from *removing* existing risk.
         """
+        # Cross-process/cross-host fencing (app/writer_lease.py) -- same
+        # fail-closed check as `_handle_signal`, and for the same reason:
+        # this is the OTHER top-level entry point that can reach a broker
+        # write (the dashboard's "Exit now"/"Flatten" actions), so it
+        # needs its own independent check rather than relying on whatever
+        # called it having already checked.
+        self.lease_guard.require_active()
         broker = self.brokers.get(account.broker)
         if broker is None:
             return OrderResult(

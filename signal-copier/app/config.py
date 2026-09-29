@@ -91,6 +91,26 @@ class _Settings(BaseSettings):
     # never a config flip on an already-running process.
     STANDBY_MODE: bool = False
 
+    # Cross-process/cross-host single-writer fencing (app/writer_lease.py,
+    # docs/FAILOVER.md). WRITER_SITE_ID identifies THIS deployed site
+    # (e.g. "primary"/"standby-a") -- distinct per host in a real
+    # active/passive deployment; falls back to the hostname when unset
+    # (see app/writer_lease.py's default_site_id, whose docstring covers
+    # why an explicit, distinct value per site matters). Only read/used
+    # by the ACTIVE (non-STANDBY_MODE) startup path in app/main.py -- a
+    # standby never acquires a lease at all.
+    WRITER_SITE_ID: str = ""
+    # How long an acquired/renewed writer lease is valid for before
+    # `app/promote_cli.py` would treat it as genuinely expired. Renewed
+    # well before this elapses by app/main.py's own heartbeat loop under
+    # normal operation (see WRITER_LEASE_RENEW_SECONDS below).
+    WRITER_LEASE_SECONDS: float = 30.0
+    # How often the active writer renews its own lease. Must be
+    # meaningfully shorter than WRITER_LEASE_SECONDS (a missed renewal or
+    # two must not let the lease look expired to a promotion attempt
+    # elsewhere while this process is still genuinely alive and healthy).
+    WRITER_LEASE_RENEW_SECONDS: float = 10.0
+
     # Optional pull-based sources: each only starts if its required env vars are
     # all set (see .env.example). Push-based sources (webhook, SMS) need no
     # startup config beyond their own route.
@@ -381,6 +401,10 @@ FORCE_SECURE_COOKIES = _settings.FORCE_SECURE_COOKIES
 LOG_LEVEL = _settings.LOG_LEVEL
 
 STANDBY_MODE = _settings.STANDBY_MODE
+
+WRITER_SITE_ID = _settings.WRITER_SITE_ID
+WRITER_LEASE_SECONDS = _settings.WRITER_LEASE_SECONDS
+WRITER_LEASE_RENEW_SECONDS = _settings.WRITER_LEASE_RENEW_SECONDS
 
 LEGACY_DASHBOARD_ENABLED = _settings.LEGACY_DASHBOARD_ENABLED
 

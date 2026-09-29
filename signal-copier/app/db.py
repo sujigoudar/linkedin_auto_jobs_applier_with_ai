@@ -9,7 +9,7 @@ import json
 import sqlite3
 import uuid
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterator
 
@@ -26,6 +26,7 @@ from app.models import (
     Signal,
     UncertaintyState,
 )
+from app.writer_lease import LeaseStillValidError, WriterLeaseHeldByAnotherSiteError, WriterLeaseRecord
 from signal_platform_contracts import EventEnvelope
 
 _ALEMBIC_DIR = Path(__file__).resolve().parent.parent / "alembic"
@@ -366,6 +367,26 @@ CREATE TABLE IF NOT EXISTS close_claims (
     symbol TEXT NOT NULL,
     claimed_at TEXT NOT NULL,
     PRIMARY KEY (account_id, symbol)
+);
+
+-- Cross-process/cross-host single-writer fencing (see app/writer_lease.py
+-- and docs/FAILOVER.md). A single row (id=1): whichever site/process last
+-- acquired or was explicitly promoted holds the CURRENT `fencing_token`.
+-- The token only ever increases (see `promote_writer_lease` /
+-- `acquire_or_reacquire_writer_lease`) -- a process whose in-memory token
+-- no longer matches this row's is fenced out immediately, on its very
+-- next command-execution check, regardless of whether `expires_at` would
+-- otherwise still look unexpired to it. This is an additional, automatic
+-- guard on top of (never a replacement for) deploy/RUNBOOK.md's manual
+-- confirmation that a prior writer's host is actually stopped.
+CREATE TABLE IF NOT EXISTS writer_lease (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    fencing_token INTEGER NOT NULL,
+    site_id TEXT NOT NULL,
+    holder_id TEXT NOT NULL,
+    acquired_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    renewed_at TEXT NOT NULL
 );
 
 -- EXE-10: `seed_from_yaml_if_empty` (app/config_admin.py) used to treat an
@@ -2033,6 +2054,140 @@ class SignalStore:
             terminal_evidence=json.loads(row[11]),
             resolved_at=datetime.fromisoformat(row[12]) if row[12] else None,
         )
+
+    # --- Writer lease / fencing (app/writer_lease.py, docs/FAILOVER.md) ---
+
+    @staticmethod
+    def _writer_lease_row_to_record(row) -> WriterLeaseRecord:
+        return WriterLeaseRecord(
+            fencing_token=row[0],
+            site_id=row[1],
+            holder_id=row[2],
+            acquired_at=datetime.fromisoformat(row[3]),
+            expires_at=datetime.fromisoformat(row[4]),
+            renewed_at=datetime.fromisoformat(row[5]),
+        )
+
+    def get_writer_lease(self) -> WriterLeaseRecord | None:
+        """A read-only snapshot of the current lease row -- used both by
+        `WriterLeaseGuard.require_active()` (the per-command fencing
+        check) and by anything reporting status (`GET /health`,
+        `app/promote_cli.py`'s own preview)."""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT fencing_token, site_id, holder_id, acquired_at, expires_at, renewed_at "
+                "FROM writer_lease WHERE id = 1"
+            ).fetchone()
+        return self._writer_lease_row_to_record(row) if row is not None else None
+
+    def acquire_or_reacquire_writer_lease(
+        self, site_id: str, holder_id: str, lease_seconds: float, *, now: datetime | None = None
+    ) -> WriterLeaseRecord:
+        """Called once at startup by the ACTIVE (non-`STANDBY_MODE`)
+        process only (see `app/main.py`'s `lifespan`) -- never by a
+        standby. Three cases:
+
+        - No lease row exists yet (true first boot of this database):
+          claims fencing_token=1 for this site.
+        - A lease row exists for THIS SAME `site_id`: this is the one
+          configured active site restarting (a crash, a deploy, systemd
+          restarting the unit) -- not a failover. Reacquired
+          automatically, still bumping the fencing token so any zombie
+          instance of the previous process (e.g. a hung request that
+          never noticed the restart) is fenced too.
+        - A lease row exists for a DIFFERENT `site_id`: raises
+          `WriterLeaseHeldByAnotherSiteError`, unconditionally --
+          including when that lease already looks expired. Automatic
+          cross-site takeover is exactly the "second host trades merely
+          because the first heartbeat disappeared" failure mode this
+          module exists to close; the only way a different site ever
+          becomes the writer is the explicit `app/promote_cli.py`
+          action.
+        """
+        now = now or datetime.now(timezone.utc)
+        expires = now + timedelta(seconds=lease_seconds)
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT fencing_token, site_id, holder_id, acquired_at, expires_at, renewed_at "
+                "FROM writer_lease WHERE id = 1"
+            ).fetchone()
+            if row is None:
+                new_token = 1
+            else:
+                existing = self._writer_lease_row_to_record(row)
+                if existing.site_id != site_id:
+                    raise WriterLeaseHeldByAnotherSiteError(
+                        f"writer lease is held by site={existing.site_id!r} (token={existing.fencing_token}, "
+                        f"expires_at={existing.expires_at.isoformat()}) -- site={site_id!r} may not acquire it "
+                        "automatically; use app/promote_cli.py for a deliberate takeover"
+                    )
+                new_token = existing.fencing_token + 1
+            conn.execute(
+                "INSERT OR REPLACE INTO writer_lease "
+                "(id, fencing_token, site_id, holder_id, acquired_at, expires_at, renewed_at) "
+                "VALUES (1, ?, ?, ?, ?, ?, ?)",
+                (new_token, site_id, holder_id, now.isoformat(), expires.isoformat(), now.isoformat()),
+            )
+        return WriterLeaseRecord(new_token, site_id, holder_id, now, expires, now)
+
+    def renew_writer_lease(self, holder_id: str, fencing_token: int, lease_seconds: float, *, now: datetime | None = None) -> bool:
+        """Heartbeat: extends `expires_at` for the CURRENT holder/token
+        only. Returns False (never raises) when this holder/token is no
+        longer current -- `WriterLeaseGuard.renew()` turns that into a
+        `FencedOutError`."""
+        now = now or datetime.now(timezone.utc)
+        expires = now + timedelta(seconds=lease_seconds)
+        with self._connect() as conn:
+            cur = conn.execute(
+                "UPDATE writer_lease SET expires_at = ?, renewed_at = ? "
+                "WHERE id = 1 AND holder_id = ? AND fencing_token = ?",
+                (expires.isoformat(), now.isoformat(), holder_id, fencing_token),
+            )
+        return cur.rowcount > 0
+
+    def promote_writer_lease(
+        self, new_site_id: str, new_holder_id: str, lease_seconds: float, *, now: datetime | None = None
+    ) -> WriterLeaseRecord:
+        """The ONLY way a different site ever becomes the writer (or the
+        way the very first lease is created, if none exists yet) --
+        called exclusively from `app/promote_cli.py`'s deliberate,
+        human-run promotion command, never automatically. Verifies the
+        existing lease (if any) is genuinely expired -- `expires_at` in
+        the past as of `now` -- and raises `LeaseStillValidError`
+        otherwise, refusing to issue a new token over a possibly-live
+        writer. This one automated check (an expiry timestamp) is
+        explicitly NOT a substitute for deploy/RUNBOOK.md's manual
+        confirmation that the prior writer's host is actually stopped or
+        its brokerage credentials revoked -- see docs/FAILOVER.md; the
+        caller (`app/promote_cli.py`) is responsible for gating this call
+        behind that confirmation."""
+        now = now or datetime.now(timezone.utc)
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT fencing_token, site_id, holder_id, acquired_at, expires_at, renewed_at "
+                "FROM writer_lease WHERE id = 1"
+            ).fetchone()
+            if row is None:
+                new_token = 1
+            else:
+                existing = self._writer_lease_row_to_record(row)
+                if not existing.is_expired(now=now):
+                    raise LeaseStillValidError(
+                        f"current writer lease (site={existing.site_id!r}, token={existing.fencing_token}) "
+                        f"does not expire until {existing.expires_at.isoformat()} -- refusing to promote over "
+                        "a possibly-live writer"
+                    )
+                new_token = existing.fencing_token + 1
+            expires = now + timedelta(seconds=lease_seconds)
+            conn.execute(
+                "INSERT OR REPLACE INTO writer_lease "
+                "(id, fencing_token, site_id, holder_id, acquired_at, expires_at, renewed_at) "
+                "VALUES (1, ?, ?, ?, ?, ?, ?)",
+                (new_token, new_site_id, new_holder_id, now.isoformat(), expires.isoformat(), now.isoformat()),
+            )
+        return WriterLeaseRecord(new_token, new_site_id, new_holder_id, now, expires, now)
 
     # --- Live-editable config: accounts, routing rules, providers/analysts ---
     # See app/main.py's CRUD endpoints and app/routing.py's/app/providers.py's
