@@ -112,6 +112,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 from collections import defaultdict
 from dataclasses import replace
 from datetime import datetime, timezone
@@ -869,6 +870,28 @@ class SignalCopierEngine:
                 f"account '{account.account_id}' has risk_percent_of_equity configured but this signal "
                 "carries no price -- risk-to-stop can't be computed, refusing",
             )
+        if (
+            not math.isfinite(order_signal.price)
+            or order_signal.price <= 0
+            or not math.isfinite(order_signal.stop_loss)
+            or order_signal.stop_loss <= 0
+        ):
+            # Fail-closed defense-in-depth: sources are expected to reject a
+            # non-finite/zero/negative price or stop_loss before a Signal
+            # ever reaches here (app/sources/text_parser.py,
+            # app/sources/ninjatrader.py, app/sources/webhook.py's
+            # _optional_positive_float), but this admission path must never
+            # trust that blindly -- a price of 0 makes risk_notional 0 (an
+            # unbounded admission), a NaN price makes the `>` ceiling
+            # comparison below silently always False (never trips), and a
+            # negative price/stop_loss corrupts the risk-to-stop figure.
+            return False, self._reject(
+                account,
+                order_signal,
+                f"account '{account.account_id}' has risk_percent_of_equity configured but this signal's "
+                f"price ({order_signal.price!r}) or stop_loss ({order_signal.stop_loss!r}) is not a finite "
+                "positive number -- risk-to-stop can't be safely computed, refusing",
+            )
         stop_loss = order_signal.stop_loss
         price = order_signal.price
         broker = self.brokers.get(account.broker)
@@ -960,7 +983,26 @@ class SignalCopierEngine:
                 "current-market-price source to fall back to, so admission is refused rather than "
                 "silently skipping the check (see app/capital_allocator.py)",
             )
-        notional = abs(quantity) * order_signal.price
+        if not math.isfinite(order_signal.price) or order_signal.price <= 0:
+            # Fail-closed defense-in-depth, same rationale as the `price is
+            # None` check just above: sources are expected to reject a
+            # non-finite/zero/negative price before a Signal ever reaches
+            # this admission path, but this gate must never trust that
+            # blindly. Left unchecked: price=0 makes notional=0 (every
+            # notional/risk ceiling below is trivially satisfied regardless
+            # of real trade size), price=NaN makes every `>` ceiling
+            # comparison below silently evaluate False (never trips), and
+            # price<0 makes notional negative, corrupting
+            # CapitalAllocator._pending's running total for this account.
+            return False, 0.0, self._reject(
+                account,
+                order_signal,
+                f"account '{account.account_id}' has a capital/risk exposure gate configured but this "
+                f"signal's price ({order_signal.price!r}) is not a finite positive number -- notional "
+                "can't be safely computed, refusing rather than admitting an unbounded or corrupted "
+                "reservation",
+            )
+        notional = abs(quantity) * abs(order_signal.price)
 
         owner_gated = self.max_owner_notional_exposure is not None
         if owner_gated:

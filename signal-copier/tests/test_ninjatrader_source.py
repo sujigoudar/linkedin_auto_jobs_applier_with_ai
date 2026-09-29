@@ -3,6 +3,8 @@ events reported by ninjascript/SignalCopierAutoJournal.cs. Payload field
 names/semantics verified against Apex-Logics/TradVue's
 TradVueAutoJournal.cs's own BuildPayload -- see that module's docstring.
 """
+import math
+
 import pytest
 
 from app.errors import SignalValidationError
@@ -89,11 +91,31 @@ def test_raw_payload_is_retained(source):
         {"price": True},
         {"asset_class": "Options"},
         {"asset_class": None},
+        # A capital-gate bypass: a zero/negative/non-finite price used to
+        # pass through unchecked (only type was validated), producing a
+        # Signal whose notional/risk computations in app/engine.py would
+        # be silently wrong (0, negative, or never-tripping-a-ceiling via
+        # NaN) -- see app/engine.py's _try_reserve_capital/_check_risk_basis
+        # defense-in-depth for the other half of this fix.
+        {"price": 0},
+        {"price": 0.0},
+        {"price": -100.0},
+        {"price": math.nan},
+        {"price": math.inf},
+        {"price": -math.inf},
     ],
 )
 def test_invalid_payloads_are_rejected(source, overrides):
     with pytest.raises(SignalValidationError):
         source.parse(_payload(**overrides))
+
+
+def test_zero_negative_and_nan_price_are_rejected_not_silently_accepted(source):
+    """Explicit regression coverage (beyond the parametrized table above)
+    for the three concrete bypass shapes the audit finding named."""
+    for bad_price in (0, -1.0, math.nan):
+        with pytest.raises(SignalValidationError):
+            source.parse(_payload(price=bad_price))
 
 
 @pytest.mark.asyncio

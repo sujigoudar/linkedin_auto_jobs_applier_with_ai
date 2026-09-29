@@ -61,6 +61,8 @@ behavior.
 """
 from __future__ import annotations
 
+import math
+
 from app.errors import SignalValidationError
 from app.models import AssetClass, Side, Signal
 from app.sources.base import SourceAdapter
@@ -105,7 +107,12 @@ class NinjaTraderSource(SourceAdapter):
             raise SignalValidationError(f"unrecognized direction {direction!r} (expected 'Long' or 'Short')")
         if isinstance(qty, bool) or not isinstance(qty, (int, float)) or qty <= 0:
             raise SignalValidationError(f"invalid 'qty': {qty!r}")
-        if isinstance(price, bool) or not isinstance(price, (int, float)):
+        if (
+            isinstance(price, bool)
+            or not isinstance(price, (int, float))
+            or not math.isfinite(price)
+            or price <= 0
+        ):
             raise SignalValidationError(f"invalid 'price': {price!r}")
         asset_class = _ASSET_CLASS_MAP.get(str(raw_asset_class).lower()) if raw_asset_class else None
         if asset_class is None:

@@ -533,3 +533,127 @@ async def test_risk_basis_admits_when_risk_to_stop_fits_within_the_percentage_of
     results = await engine.handle_signal(signal)
 
     assert results[0].status in (OrderStatus.FILLED, OrderStatus.PENDING)
+
+
+# --- Zero/NaN/negative price: capital-gate bypass, defense-in-depth ---
+#
+# A price of 0 makes `notional = abs(quantity) * price` compute to 0, so
+# every notional/risk ceiling below is trivially satisfied regardless of
+# real trade size (zero signal). A NaN price makes every `>` ceiling
+# comparison silently evaluate False in Python (never trips). A negative
+# price makes notional negative, letting an oversized order through and
+# corrupting CapitalAllocator._pending's running total for concurrent
+# admissions on that account. Sources (text_parser.py, ninjatrader.py,
+# webhook.py) are expected to reject these before a Signal is ever built,
+# but this admission path (_try_reserve_capital / _check_risk_basis) must
+# never trust that blindly -- these tests go straight at the engine gate
+# itself, bypassing any source-level validation, and assert no capital was
+# ever reserved (not just that an exception was raised).
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad_price", [0.0, -50.0])
+async def test_try_reserve_capital_refuses_zero_or_negative_price_before_reserving(tmp_path, bad_price):
+    store = SignalStore(tmp_path / "test.db")
+    broker = PaperBroker()
+    account = DestinationAccount(account_id="acct1", broker="paper", max_notional_exposure=1.0)
+    engine = _engine(store, account, broker)
+
+    signal = Signal(source=SOURCE, symbol=SYMBOL, side=Side.BUY, quantity=10_000.0, price=bad_price)
+    admitted, notional, rejection = await engine._try_reserve_capital(account, signal, 10_000.0)
+
+    assert admitted is False
+    assert notional == 0.0
+    assert rejection is not None
+    assert "finite positive number" in rejection.message
+    # No reservation was made for this account: the allocator's pending
+    # total is still zero, not corrupted by a negative or zero notional.
+    assert engine.capital_allocator.pending_reservation("acct1") == 0.0
+
+
+@pytest.mark.asyncio
+async def test_try_reserve_capital_refuses_nan_price_before_reserving(tmp_path):
+    """NaN specifically: every `>` ceiling comparison against NaN
+    evaluates False, so an unguarded gate would never trip for it."""
+    store = SignalStore(tmp_path / "test.db")
+    broker = PaperBroker()
+    account = DestinationAccount(account_id="acct1", broker="paper", max_notional_exposure=1.0)
+    engine = _engine(store, account, broker)
+
+    signal = Signal(source=SOURCE, symbol=SYMBOL, side=Side.BUY, quantity=10_000.0, price=float("nan"))
+    admitted, notional, rejection = await engine._try_reserve_capital(account, signal, 10_000.0)
+
+    assert admitted is False
+    assert notional == 0.0
+    assert rejection is not None
+    assert engine.capital_allocator.pending_reservation("acct1") == 0.0
+
+
+@pytest.mark.asyncio
+async def test_zero_price_signal_end_to_end_is_rejected_not_filled(tmp_path):
+    """End-to-end (through handle_signal, not the private method directly):
+    a zero-price signal must be REJECTED and never reach the broker."""
+    store = SignalStore(tmp_path / "test.db")
+    broker = PaperBroker()
+    account = DestinationAccount(account_id="acct1", broker="paper", max_notional_exposure=1.0)
+    engine = _engine(store, account, broker)
+
+    signal = Signal(source=SOURCE, symbol=SYMBOL, side=Side.BUY, quantity=10_000.0, price=0.0)
+    results = await engine.handle_signal(signal)
+
+    assert results[0].status == OrderStatus.REJECTED
+    assert broker.fills == []
+    assert engine.capital_allocator.pending_reservation("acct1") == 0.0
+
+
+@pytest.mark.asyncio
+async def test_negative_price_signal_end_to_end_is_rejected_not_filled(tmp_path):
+    store = SignalStore(tmp_path / "test.db")
+    broker = PaperBroker()
+    account = DestinationAccount(account_id="acct1", broker="paper", max_notional_exposure=1.0)
+    engine = _engine(store, account, broker)
+
+    signal = Signal(source=SOURCE, symbol=SYMBOL, side=Side.BUY, quantity=10_000.0, price=-50.0)
+    results = await engine.handle_signal(signal)
+
+    assert results[0].status == OrderStatus.REJECTED
+    assert broker.fills == []
+    assert engine.capital_allocator.pending_reservation("acct1") == 0.0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad_price", [0.0, -50.0, float("nan")])
+async def test_check_risk_basis_refuses_zero_negative_or_nan_price(tmp_path, bad_price):
+    store = SignalStore(tmp_path / "test.db")
+    broker = _EquityBroker(equity=100_000.0)
+    account = DestinationAccount(
+        account_id="acct1", broker="paper", managed_lifecycle=True, risk_percent_of_equity=0.02
+    )
+    engine = _engine(store, account, broker)
+
+    signal = Signal(source=SOURCE, symbol=SYMBOL, side=Side.BUY, quantity=10.0, price=bad_price, stop_loss=90.0)
+    ok, rejection = await engine._check_risk_basis(account, signal, 10.0)
+
+    assert ok is False
+    assert rejection is not None
+    assert "finite positive number" in rejection.message
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad_stop_loss", [0.0, -10.0, float("nan")])
+async def test_check_risk_basis_refuses_zero_negative_or_nan_stop_loss(tmp_path, bad_stop_loss):
+    store = SignalStore(tmp_path / "test.db")
+    broker = _EquityBroker(equity=100_000.0)
+    account = DestinationAccount(
+        account_id="acct1", broker="paper", managed_lifecycle=True, risk_percent_of_equity=0.02
+    )
+    engine = _engine(store, account, broker)
+
+    signal = Signal(
+        source=SOURCE, symbol=SYMBOL, side=Side.BUY, quantity=10.0, price=100.0, stop_loss=bad_stop_loss
+    )
+    ok, rejection = await engine._check_risk_basis(account, signal, 10.0)
+
+    assert ok is False
+    assert rejection is not None
+    assert "finite positive number" in rejection.message
