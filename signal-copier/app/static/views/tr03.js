@@ -106,6 +106,66 @@
  * renderCapabilityState, not fake forms. The one real, already-wired
  * action is the existing `POST /positions/{account_id}/{symbol}/close`
  * full exit.
+ *
+ * --- Result attribution panel (this batch) ---
+ *
+ * A design review asked for the aggregate framework "provider theoretical
+ * result - latency - admission/risk filtering - missed/unfilled trades -
+ * slippage - fees +- exit-management effect = copied result" to also be
+ * shown PER POSITION, not just per-provider. A sibling batch already built
+ * the real, aggregate, per-provider version of the joinable part of this
+ * on tr09.js's "Signal vs. execution" panel (#tr09-p10) -- this panel is
+ * that SAME real join and the SAME sign conventions, applied to this one
+ * position's own entry order/signal instead of averaged across a
+ * provider. See `computeResultAttribution` below, and tr09.js's own
+ * `computeSignalExecutionGap` for the slippage/sizing-gap formulas this
+ * function deliberately mirrors rather than reimplementing differently.
+ *
+ * Real steps: signal terms (this order's own real originating Signal, via
+ * the same order.signal_id join the Orders panel above already uses),
+ * the sizing gap app/risk.py's `size_for_account` produces (signal.quantity
+ * vs. order.requested_quantity -- a disclosed sizing decision, never an
+ * "error"), the requested-vs-filled execution gap, signed slippage
+ * (tr09's exact BUY/SELL sign convention), and fees (real ONLY for the
+ * paper broker's own documented `fee_per_fill`, GET /brokers -- see
+ * tr14.js's own "Costs" panel for the identical real formula this mirrors:
+ * `fee_per_fill * count of real filled orders`).
+ *
+ * Two steps are honestly NOT computed as new math:
+ *   - Latency cost: this build's real per-order timestamps
+ *     (received_at/submitted_at/acknowledged_at/first_fill_at/
+ *     final_fill_at, app/execution_quality.py) measure real elapsed TIME
+ *     only -- none of them, nor `PositionLifecycle`/`PositionPlan`
+ *     (app/lifecycle/models.py), nor the `orders` table (app/db.py),
+ *     stores a real PRICE observed at decision time (the instant the
+ *     signal was received/would have been actable) distinct from the
+ *     signal's own `price` field it was parsed with. Without a real
+ *     decision-time price to diff against the real fill price, there is
+ *     no real $ latency cost to compute -- reusing the slippage figure
+ *     under a "latency" label would double-count the exact same number
+ *     under a different, false causal story (slippage is already
+ *     fill-vs-signal-price; a genuine latency cost would need
+ *     price-at-decision vs. price-at-fill, a different pair this codebase
+ *     doesn't capture). Rendered `not_tracked`, never approximated.
+ *   - Exit-management effect: real ONLY for a CLOSED managed-lifecycle
+ *     position that has at least one real STOP_TIGHTENED or TARGET_HIT
+ *     event (PU-A4's `stop_target_events` log, already fetched by this
+ *     page for the price chart above) -- computed as the real, signed,
+ *     side-aware difference between the real volume-weighted exit fill
+ *     price and the real price of this position's own earliest
+ *     STOP_PLACED event (its initial, un-tightened stop). A closed
+ *     position with zero real management events is real information too
+ *     (rendered as a real $0 effect with that reason stated plainly),
+ *     distinct from "still open" or "can't tell" (both `not_tracked`,
+ *     with their own distinct reasons).
+ *
+ * Net result reuses this page's own header KPI (`symbolEconomics.
+ * realized_pnl`, E06) verbatim -- never recomputed. The reconciliation
+ * line under the mini waterfall table states plainly, in dollars, how
+ * much of that total the real dollar-valued steps above (slippage, fees,
+ * exit-management) account for, and that the remainder reflects whatever
+ * steps above are honestly `not_tracked` (always at least latency cost) --
+ * never claims the steps sum exactly to the total.
  */
 (function () {
   "use strict";
@@ -184,6 +244,309 @@
         { label: "Uncommitted", value: uncommitted, tone: "crit" },
       ],
     };
+  }
+
+  function isFiniteNum(v) {
+    return typeof v === "number" && Number.isFinite(v);
+  }
+
+  /**
+   * Result attribution waterfall for THIS ONE position -- see this file's
+   * module docstring's "Result attribution panel" section for the full
+   * rationale and exactly which steps are real vs. honestly not_tracked.
+   * Pure (no DOM, no fetch) so it can be exercised directly in a test the
+   * same way `computeQuantityLedgerSegments`/`buildPriceChartPlan` already
+   * are, via `window.Views.tr03._internal`.
+   *
+   * Every input is data this page (or tr09.js, mirrored here) already
+   * fetches for real -- nothing here issues a new request or invents a
+   * figure. Returns `{ steps, reconciliation }`; each step is either
+   * `{ kind: "info", rows }` (a plain real fact, no dollar value),
+   * `{ kind: "real", value, unit, detail }`, or
+   * `{ kind: "capability", capability: {status, reason} }`.
+   */
+  function computeResultAttribution(input) {
+    const {
+      entrySignal,
+      entryOrder,
+      broker,
+      symbolEconomics,
+      lifecycle,
+      position,
+      entrySide,
+      stopPlaced,
+      stopTightened,
+      targetHits,
+      exitFills,
+    } = input;
+    const steps = [];
+
+    // --- 1. Signal terms (real, informational -- no dollar value) ---
+    if (entrySignal) {
+      steps.push({
+        id: "signal_terms",
+        label: "Signal terms (originating signal)",
+        kind: "info",
+        rows: [
+          ["Price", isFiniteNum(entrySignal.price) ? fmtNum(entrySignal.price) : "—"],
+          ["Stop loss", isFiniteNum(entrySignal.stop_loss) ? fmtNum(entrySignal.stop_loss) : "—"],
+          ["Take profit", isFiniteNum(entrySignal.take_profit) ? fmtNum(entrySignal.take_profit) : "—"],
+          ["Quantity", isFiniteNum(entrySignal.quantity) ? fmtNum(entrySignal.quantity) : "—"],
+        ],
+      });
+    } else {
+      steps.push({
+        id: "signal_terms",
+        label: "Signal terms (originating signal)",
+        kind: "capability",
+        capability: {
+          status: "not_tracked",
+          reason: entryOrder
+            ? `This position's entry order carries signal_id "${entryOrder.signal_id}", but that signal is outside the most recent 500 signals this page fetched -- not resolved here (same real gap the Identity panel above discloses).`
+            : "No entry order is recorded for this position yet, so there is no order.signal_id to resolve a real originating signal from.",
+        },
+      });
+    }
+
+    // --- 2. Requested-vs-filled quantity gap (real, mirrors tr09.js's
+    // computeSignalExecutionGap exactly: signal.quantity - requested_quantity
+    // is app/risk.py's size_for_account decision; requested_quantity -
+    // filled_quantity is what the broker/risk layer actually did with that
+    // request). LOAD-BEARING: sign convention verified by
+    // tests/test_tr03_result_attribution.py. ---
+    const sizingGapKnown = entrySignal && isFiniteNum(entrySignal.quantity) && entryOrder && isFiniteNum(entryOrder.requested_quantity);
+    const executionGapKnown = entryOrder && isFiniteNum(entryOrder.requested_quantity) && isFiniteNum(entryOrder.filled_quantity);
+    if (sizingGapKnown || executionGapKnown) {
+      const rows = [];
+      if (sizingGapKnown) {
+        const sizingGap = entrySignal.quantity - entryOrder.requested_quantity;
+        rows.push([
+          "Signal quantity -> requested quantity (sizing, app/risk.py size_for_account)",
+          `${fmtNum(sizingGap)} ${sizingGap === 0 ? "(no sizing change)" : sizingGap > 0 ? "(sized DOWN from the signal)" : "(sized UP from the signal)"}`,
+        ]);
+      } else {
+        rows.push(["Signal quantity -> requested quantity (sizing)", "no real signal quantity and/or order.requested_quantity to compare"]);
+      }
+      if (executionGapKnown) {
+        const executionGap = entryOrder.requested_quantity - entryOrder.filled_quantity;
+        rows.push([
+          "Requested quantity -> filled quantity (execution)",
+          `${fmtNum(executionGap)} ${executionGap === 0 ? "(filled in full)" : "(partially filled/unfilled)"}`,
+        ]);
+      } else {
+        rows.push(["Requested quantity -> filled quantity (execution)", "no real requested/filled quantity to compare"]);
+      }
+      steps.push({ id: "quantity_gap", label: "Requested vs. filled quantity gap", kind: "info", rows });
+    } else {
+      steps.push({
+        id: "quantity_gap",
+        label: "Requested vs. filled quantity gap",
+        kind: "capability",
+        capability: {
+          status: "not_tracked",
+          reason: "No entry order (or no real signal.quantity/order.requested_quantity/order.filled_quantity on it) is recorded for this position yet.",
+        },
+      });
+    }
+
+    // --- 3. Execution slippage (real, signed, side-aware -- EXACT same
+    // formula/sign convention as tr09.js's computeSignalExecutionGap:
+    // BUY: filled_price - signal.price (positive = paid more = adverse);
+    // SELL: signal.price - filled_price (positive = received less =
+    // adverse). Never computed for a non-buy/sell signal side, same as
+    // tr09.js. ---
+    let slippagePerUnit = null;
+    let slippageDollar = null;
+    if (entrySignal && entryOrder && isFiniteNum(entrySignal.price) && isFiniteNum(entryOrder.filled_price)) {
+      const side = (entrySignal.side || "").toLowerCase();
+      if (side === "buy") slippagePerUnit = entryOrder.filled_price - entrySignal.price;
+      else if (side === "sell") slippagePerUnit = entrySignal.price - entryOrder.filled_price;
+    }
+    if (slippagePerUnit !== null && isFiniteNum(entryOrder.filled_quantity)) {
+      slippageDollar = slippagePerUnit * entryOrder.filled_quantity;
+    }
+    if (slippagePerUnit !== null) {
+      steps.push({
+        id: "slippage",
+        label: "Execution slippage (fill vs. signal price)",
+        kind: "real",
+        value: slippagePerUnit,
+        unit: "price units/share, +adverse",
+        dollar: slippageDollar,
+        detail: `${fmtNum(slippagePerUnit)} price units (${slippagePerUnit > 0 ? "adverse" : slippagePerUnit < 0 ? "favorable" : "neutral"}) on the entry fill -- same signed formula tr09.js's provider-level average uses.${
+          slippageDollar !== null ? ` = ${fmtNum(slippageDollar)} over ${fmtNum(entryOrder.filled_quantity)} filled.` : ""
+        }`,
+      });
+    } else {
+      steps.push({
+        id: "slippage",
+        label: "Execution slippage (fill vs. signal price)",
+        kind: "capability",
+        capability: {
+          status: "not_tracked",
+          reason: "No real comparison exists -- either the entry order has no matching signal, the signal carries no real `price` (e.g. a market order), the order hasn't filled yet, or its signal's side is neither buy nor sell (a close signal has no consistent 'adverse direction' to compute against, same as tr09.js).",
+        },
+      });
+    }
+
+    // --- 4. Fees (real ONLY for the paper broker's own documented
+    // fee_per_fill -- same formula as tr14.js's Costs panel). ---
+    let feesDollar = null;
+    let feeFillCount = 0;
+    if (!broker || broker.fee_per_fill === null || broker.fee_per_fill === undefined) {
+      steps.push({
+        id: "fees",
+        label: "Fees",
+        kind: "capability",
+        capability: {
+          status: "not_tracked",
+          reason: `Broker '${broker ? broker.name : "(unregistered)"}' reports no fee_per_fill (GET /brokers) -- only the paper broker has a real, documented per-fill fee in this codebase (see app/brokers/paper.py and tr14.js's own Costs panel); no real external broker has a fee column anywhere in this schema.`,
+        },
+      });
+    } else {
+      feeFillCount = (input.symbolOrders || []).filter((o) => o.status === "filled").length;
+      feesDollar = broker.fee_per_fill * feeFillCount;
+      steps.push({
+        id: "fees",
+        label: "Fees",
+        kind: "real",
+        value: feesDollar,
+        unit: "$",
+        dollar: feesDollar,
+        detail: `${fmtNum(broker.fee_per_fill)}/fill (real, app/brokers/paper.py) x ${feeFillCount} real filled order(s) for this position = ${fmtNum(feesDollar)}.`,
+      });
+    }
+
+    // --- 5. Latency cost -- see module docstring; genuinely not
+    // computable in this build, never approximated from slippage. ---
+    steps.push({
+      id: "latency_cost",
+      label: "Latency cost",
+      kind: "capability",
+      capability: {
+        status: "not_tracked",
+        reason: "This build's real per-order timestamps (app/execution_quality.py's received_at/submitted_at/acknowledged_at/first_fill_at/final_fill_at, shown as real elapsed seconds on tr06.js's Execution latency panel) measure TIME only -- no order/lifecycle row anywhere stores a real price observed at decision time, distinct from the signal's own `price` field, to diff against the real fill price. Reusing the slippage figure above under a 'latency cost' label would double-count the same number under a false causal story, so this step is honestly not_tracked rather than approximated.",
+      },
+    });
+
+    // --- 6. Exit-management effect -- see module docstring. ---
+    let exitManagementDollar = null;
+    if (!lifecycle) {
+      steps.push({
+        id: "exit_management",
+        label: "Exit-management effect",
+        kind: "capability",
+        capability: {
+          status: "unsupported",
+          reason: "This is a plain (unmanaged) account position -- no stop/target event history (StopTargetEventType) exists for it at all in this build.",
+        },
+      });
+    } else {
+      const isClosed = position ? position.net_quantity === 0 : lifecycle.owned_quantity === 0;
+      if (!isClosed) {
+        steps.push({
+          id: "exit_management",
+          label: "Exit-management effect",
+          kind: "capability",
+          capability: {
+            status: "not_tracked",
+            reason: "This position is still open -- there is no real final exit price yet to compare against its initial stop/target.",
+          },
+        });
+      } else {
+        const hadManagement = (stopTightened && stopTightened.length > 0) || (targetHits && targetHits.length > 0);
+        if (!hadManagement) {
+          steps.push({
+            id: "exit_management",
+            label: "Exit-management effect",
+            kind: "real",
+            value: 0,
+            unit: "$",
+            dollar: 0,
+            detail: "This position closed with no real STOP_TIGHTENED or TARGET_HIT event in its history -- its exit was not affected by any stop-tightening or target management. This is real information (a genuine $0 effect), not a gap.",
+          });
+        } else {
+          const sortedStopPlaced = (stopPlaced || []).slice().sort((a, b) => String(a.at || "").localeCompare(String(b.at || "")));
+          const initialStopEvent = sortedStopPlaced.length ? sortedStopPlaced[0] : null;
+          let exitQty = 0;
+          let exitNotional = 0;
+          (exitFills || []).forEach((o) => {
+            if (isFiniteNum(o.filled_price) && isFiniteNum(o.filled_quantity)) {
+              exitQty += o.filled_quantity;
+              exitNotional += o.filled_price * o.filled_quantity;
+            }
+          });
+          const actualExitPrice = exitQty > 0 ? exitNotional / exitQty : null;
+          if (!initialStopEvent || actualExitPrice === null) {
+            steps.push({
+              id: "exit_management",
+              label: "Exit-management effect",
+              kind: "capability",
+              capability: {
+                status: "not_tracked",
+                reason: `This position closed with a real STOP_TIGHTENED/TARGET_HIT event, but this build lacks ${
+                  !initialStopEvent ? "a real initial STOP_PLACED event price" : "a real weighted exit fill price"
+                } to compare against.`,
+              },
+            });
+          } else {
+            const effectPerUnit = entrySide === "sell" ? initialStopEvent.price - actualExitPrice : actualExitPrice - initialStopEvent.price;
+            exitManagementDollar = effectPerUnit * exitQty;
+            steps.push({
+              id: "exit_management",
+              label: "Exit-management effect",
+              kind: "real",
+              value: effectPerUnit,
+              unit: "price units/share, +favorable",
+              dollar: exitManagementDollar,
+              detail: `Real, volume-weighted actual exit price ${fmtNum(actualExitPrice)} vs. this position's real initial (un-tightened) stop price ${fmtNum(
+                initialStopEvent.price
+              )} (its earliest real STOP_PLACED event) = ${fmtNum(effectPerUnit)}/unit (${
+                effectPerUnit > 0 ? "better" : effectPerUnit < 0 ? "worse" : "even"
+              } than the un-tightened initial stop/target) x ${fmtNum(exitQty)} exited = ${fmtNum(exitManagementDollar)}. This is a real price comparison, not a claim that price would certainly have reached the initial level.`,
+            });
+          }
+        }
+      }
+    }
+
+    // --- 7. Net result -- reused verbatim from this page's own header KPI
+    // / GET /accounts/{id}/economics, never recomputed here. ---
+    const netResult = symbolEconomics ? symbolEconomics.realized_pnl : 0;
+    steps.push({
+      id: "net_result",
+      label: "Net result (realized P&L, closed fills)",
+      kind: "real",
+      value: netResult,
+      unit: "$",
+      dollar: netResult,
+      detail: `${fmtNum(netResult)} -- the exact same figure as this page's header "Realized P&L (closed fills)" KPI (GET /accounts/{id}/economics), not recomputed here.`,
+    });
+
+    // --- Reconciliation: sum only the real dollar-valued steps (slippage,
+    // fees, exit-management) -- the quantity-gap steps are disclosures,
+    // not P&L drivers on their own, and latency cost is honestly
+    // not_tracked, so it never enters this sum. ---
+    const dollarParts = [];
+    if (slippageDollar !== null) dollarParts.push({ label: "slippage", value: -slippageDollar });
+    if (feesDollar !== null) dollarParts.push({ label: "fees", value: -feesDollar });
+    if (exitManagementDollar !== null) dollarParts.push({ label: "exit-management", value: exitManagementDollar });
+    const accountedFor = dollarParts.reduce((sum, p) => sum + p.value, 0);
+    const remainder = netResult - accountedFor;
+    const reconciliation = {
+      dollarParts,
+      accountedFor,
+      total: netResult,
+      remainder,
+      note:
+        dollarParts.length === 0
+          ? `No real dollar-valued step above could be computed for this position -- the ${fmtNum(netResult)} net result stands entirely unattributed by this panel (see the not_tracked steps above).`
+          : `Steps above account for ${fmtNum(accountedFor)} of the ${fmtNum(netResult)} net result; the remainder (${fmtNum(
+              remainder
+            )}) includes untracked effects (see the not_tracked steps above, most notably latency cost, which this build has no real way to compute) and/or FIFO P&L effects this simple per-step sum does not fully decompose.`,
+    };
+
+    return { steps, reconciliation };
   }
 
   // ---------------------------------------------------------------------
@@ -479,6 +842,58 @@
   }
 
   // ---------------------------------------------------------------------
+  // Result attribution panel rendering -- see computeResultAttribution
+  // above for the real data this reads. `capSlot`/`mountCapStates` is the
+  // same placeholder-slot idiom tr04.js/tr05.js/tr07.js/tr08.js/tr09.js
+  // already use for a capability-state badge inside a pre-built HTML
+  // string.
+  // ---------------------------------------------------------------------
+
+  function capSlot(id) {
+    return `<span class="cap-state-slot" id="${id}"></span>`;
+  }
+  function mountCapStates(root, specs) {
+    for (const [id, opts] of specs) {
+      const el = root.querySelector(`#${id}`);
+      if (el) Components.renderCapabilityState(el, opts);
+    }
+  }
+
+  function renderResultAttributionPanel(el, attribution) {
+    const capSpecs = [];
+    const stepBlocks = attribution.steps
+      .map((step) => {
+        if (step.kind === "info") {
+          return `<div class="tr03-attrib-step"><h3 class="section-note">${escapeHtml(step.label)}</h3>${table(["Field", "Value"], step.rows, "No detail.")}</div>`;
+        }
+        if (step.kind === "real") {
+          return `<div class="tr03-attrib-step"><h3 class="section-note">${escapeHtml(step.label)}</h3><p>${escapeHtml(step.detail)}</p></div>`;
+        }
+        const slotId = `tr03-attrib-cap-${step.id}`;
+        capSpecs.push([slotId, step.capability]);
+        return `<div class="tr03-attrib-step"><h3 class="section-note">${escapeHtml(step.label)}</h3>${capSlot(slotId)}</div>`;
+      })
+      .join("");
+
+    const recon = attribution.reconciliation;
+    const waterfallRows = recon.dollarParts.map((p) => [escapeHtml(p.label), fmtNum(p.value)]);
+    waterfallRows.push(["Accounted-for subtotal", fmtNum(recon.accountedFor)]);
+    waterfallRows.push(["Net result (real, header P&L)", fmtNum(recon.total)]);
+    waterfallRows.push(["Remainder (untracked effects)", fmtNum(recon.remainder)]);
+
+    el.innerHTML = `
+      <p class="section-note" style="margin-top:0;">Real per-position breakdown of the copied-execution gap tr09.js already reports in aggregate, per provider (#tr09-p10) -- same real data, same sign conventions, applied to this one position's own entry order/signal. Every step is either a real, disclosed figure or an honest <span class="mono">not_tracked</span>/<span class="mono">unsupported</span> gap, never an approximation.</p>
+      ${stepBlocks}
+      <div class="tr03-attrib-step">
+        <h3 class="section-note">Dollar reconciliation (running total)</h3>
+        ${table(["Component", "$"], waterfallRows, "No dollar-valued steps.")}
+        <p class="section-note">${escapeHtml(recon.note)}</p>
+      </div>
+    `;
+    mountCapStates(el, capSpecs);
+  }
+
+  // ---------------------------------------------------------------------
   // Orders/fills grouped by real order family (orders.family_id, falling
   // back to an order's own signal_id only for a pre-migration row).
   // ---------------------------------------------------------------------
@@ -591,6 +1006,7 @@
       <section class="tr-panel" id="tr03-p02"><h2>Quantity ledger</h2><div class="tr-panel-body"></div></section>
       <section class="tr-panel" id="tr03-p04"><h2>Orders and fills</h2><div class="tr-panel-body"></div></section>
       <section class="tr-panel" id="tr03-p07"><h2>Price excursion (MAE/MFE)</h2><div class="tr-panel-body"></div></section>
+      <section class="tr-panel" id="tr03-p08"><h2>Result attribution</h2><div class="tr-panel-body"></div></section>
       <section class="tr-panel" id="tr03-p05"><h2>Protection transfer and reconciliation</h2><div class="tr-panel-body"></div></section>
       <section class="tr-panel" id="tr03-p06"><h2>Controls</h2><div class="tr-panel-body"></div></section>
     `;
@@ -606,22 +1022,23 @@
       ledger: ctx.container.querySelector("#tr03-p02 .tr-panel-body"),
       maeMfe: ctx.container.querySelector("#tr03-p07 .tr-panel-body"),
       orders: ctx.container.querySelector("#tr03-p04 .tr-panel-body"),
+      attribution: ctx.container.querySelector("#tr03-p08 .tr-panel-body"),
       transfer: ctx.container.querySelector("#tr03-p05 .tr-panel-body"),
       controls: ctx.container.querySelector("#tr03-p06 .tr-panel-body"),
     };
-    for (const el of [els.identity, els.chart, els.ledger, els.maeMfe, els.orders, els.transfer, els.controls]) {
+    for (const el of [els.identity, els.chart, els.ledger, els.maeMfe, els.orders, els.attribution, els.transfer, els.controls]) {
       StateMatrix.render(el, { state: "loading" });
     }
 
     const positionsRes = await ctx.fetchJSON("/positions");
     if (positionsRes.status === 401 || positionsRes.status === 403) {
-      for (const el of [els.identity, els.chart, els.ledger, els.maeMfe, els.orders, els.transfer, els.controls]) {
+      for (const el of [els.identity, els.chart, els.ledger, els.maeMfe, els.orders, els.attribution, els.transfer, els.controls]) {
         StateMatrix.render(el, { state: "denied", deniedCode: positionsRes.status });
       }
       return;
     }
     if (!positionsRes.ok) {
-      for (const el of [els.identity, els.chart, els.ledger, els.maeMfe, els.orders, els.transfer, els.controls]) {
+      for (const el of [els.identity, els.chart, els.ledger, els.maeMfe, els.orders, els.attribution, els.transfer, els.controls]) {
         StateMatrix.render(el, { state: "error", message: "Could not load this allocation." });
       }
       return;
@@ -633,7 +1050,7 @@
     const lifecycle = lifecycles.find((l) => l.account_id === accountId && l.symbol === symbol);
 
     if (!position && !lifecycle) {
-      for (const el of [els.identity, els.chart, els.ledger, els.maeMfe, els.orders, els.transfer, els.controls]) {
+      for (const el of [els.identity, els.chart, els.ledger, els.maeMfe, els.orders, els.attribution, els.transfer, els.controls]) {
         StateMatrix.render(el, {
           state: "empty",
           emptyMessage: "No verified allocation is available for this reference.",
@@ -647,11 +1064,15 @@
 
     const entrySide = position && position.net_quantity < 0 ? "sell" : "buy";
 
-    // --- Real attribution: account config + economics + orders + signals ---
-    const [accountsRes, economicsRes, ordersRes] = await Promise.all([
+    // --- Real attribution: account config + economics + orders + signals +
+    // brokers (the last one needed only by the Result attribution panel's
+    // real per-fill fee step, same GET /brokers tr14.js's Costs panel and
+    // tr07.js/tr08.js/tr09.js already fetch). ---
+    const [accountsRes, economicsRes, ordersRes, brokersRes] = await Promise.all([
       ctx.fetchJSON("/accounts"),
       ctx.fetchJSON(`/accounts/${encodeURIComponent(accountId)}/economics`),
       ctx.fetchJSON(`/orders?limit=200&account_id=${encodeURIComponent(accountId)}`),
+      ctx.fetchJSON("/brokers"),
     ]);
 
     const accountConfig = accountsRes.ok
@@ -659,6 +1080,7 @@
       : null;
     const symbolEconomics =
       economicsRes.ok && economicsRes.data && economicsRes.data.per_symbol ? economicsRes.data.per_symbol[symbol] || null : null;
+    const brokerList = brokersRes.ok && brokersRes.data && Array.isArray(brokersRes.data.brokers) ? brokersRes.data.brokers : [];
 
     let symbolOrders = [];
     let ordersLoadFailed = false;
@@ -757,11 +1179,12 @@
         stopEventsFailed = true;
       }
     }
+    let chartPlan = null;
     if (ordersLoadFailed || stopEventsFailed) {
       StateMatrix.render(els.chart, { state: "error", message: "Could not load real order/event history needed for the price chart." });
       els.chartGaps.innerHTML = "";
     } else {
-      const chartPlan = buildPriceChartPlan(position, lifecycle, symbolOrders, stopEvents);
+      chartPlan = buildPriceChartPlan(position, lifecycle, symbolOrders, stopEvents);
       renderPriceChartPanel(els, chartPlan, symbolEconomics ? symbolEconomics.average_cost : null);
     }
 
@@ -803,6 +1226,39 @@
       StateMatrix.render(els.orders, { state: "error", message: "Could not load order history." });
     } else {
       renderOrdersPanel(els.orders, symbolOrders, signalsById);
+    }
+
+    // --- Result attribution (this batch) -- real per-position mirror of
+    // tr09.js's #tr09-p10 signal-vs-execution gap, plus fees/latency/
+    // exit-management, plus this page's own real net result. ---
+    if (ordersLoadFailed || stopEventsFailed) {
+      StateMatrix.render(els.attribution, {
+        state: "error",
+        message: "Could not load the real order/event history this panel needs.",
+      });
+    } else {
+      const entryOrder =
+        symbolOrders.find((o) => o.purpose === "entry") || (symbolOrders.length ? symbolOrders[0] : null);
+      const entrySignal =
+        entryOrder && entryOrder.signal_id !== null && entryOrder.signal_id !== undefined
+          ? signalsById.get(String(entryOrder.signal_id)) || null
+          : null;
+      const broker = brokerList.find((b) => b.name === (accountConfig ? accountConfig.broker : symbolOrders[0] && symbolOrders[0].broker)) || null;
+      const attribution = computeResultAttribution({
+        entrySignal,
+        entryOrder,
+        symbolOrders,
+        broker,
+        symbolEconomics,
+        lifecycle,
+        position,
+        entrySide,
+        stopPlaced: chartPlan ? chartPlan.stopPlaced : [],
+        stopTightened: chartPlan ? chartPlan.stopTightened : [],
+        targetHits: chartPlan ? chartPlan.targetHits : [],
+        exitFills: chartPlan ? chartPlan.exitFills : [],
+      });
+      renderResultAttributionPanel(els.attribution, attribution);
     }
 
     // --- Protection transfer / reconciliation ---
@@ -898,5 +1354,10 @@
   Router.register("/trade/positions/:account_id/:symbol", "tr03");
 
   // Exposed for tests only -- not part of the runtime page behavior.
-  window.Views.tr03._internal = { computeQuantityLedgerSegments, buildPriceChartPlan, parsePendingExitReason };
+  window.Views.tr03._internal = {
+    computeQuantityLedgerSegments,
+    buildPriceChartPlan,
+    parsePendingExitReason,
+    computeResultAttribution,
+  };
 })();
