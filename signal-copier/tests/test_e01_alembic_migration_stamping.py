@@ -20,7 +20,7 @@ def test_fresh_database_is_stamped_at_head(tmp_path):
     row = conn.execute("SELECT version_num FROM alembic_version").fetchone()
     conn.close()
 
-    assert row == ("0015",)  # current head -- see alembic/versions/0015_add_writer_lease_table.py
+    assert row == ("0016",)  # current head -- see alembic/versions/0016_add_signals_import_batch.py
 
 
 def test_legacy_pre_alembic_database_is_stamped_not_recreated(tmp_path):
@@ -50,7 +50,7 @@ def test_legacy_pre_alembic_database_is_stamped_not_recreated(tmp_path):
     signal_row = conn.execute("SELECT id FROM signals WHERE id = ?", (signal.id,)).fetchone()
     conn.close()
 
-    assert version_row == ("0015",)  # current head -- see alembic/versions/0015_add_writer_lease_table.py
+    assert version_row == ("0016",)  # current head -- see alembic/versions/0016_add_signals_import_batch.py
     assert signal_row is not None  # the pre-existing row survived untouched
 
 
@@ -103,9 +103,9 @@ def test_alembic_upgrade_head_from_genuinely_empty_database_matches_bootstrap(tm
     `add_column("orders", "reserved_notional", ...)` collided with a
     column already there and raised `sqlite3.OperationalError: duplicate
     column name: reserved_notional` -- and every later `create_table`
-    revision (0003, 0004, 0006, 0007, 0009, 0011, 0013, 0014, 0015) would
-    have hit the identical "already exists" failure had execution ever
-    reached it.
+    revision (0003, 0004, 0006, 0007, 0009, 0011, 0013, 0014, 0015, 0016)
+    would have hit the identical "already exists" failure had execution
+    ever reached it.
 
     This never affected a real `SignalStore`-backed deployment (that
     path runs `SCHEMA` directly via its own idempotent bootstrap, then
@@ -128,7 +128,7 @@ def test_alembic_upgrade_head_from_genuinely_empty_database_matches_bootstrap(tm
     conn = sqlite3.connect(alembic_db_path)
     version_row = conn.execute("SELECT version_num FROM alembic_version").fetchone()
     conn.close()
-    assert version_row == ("0015",)  # reached real head, not stuck partway through
+    assert version_row == ("0016",)  # reached real head, not stuck partway through
 
     bootstrap_db_path = tmp_path / "bootstrap.db"
     SignalStore(bootstrap_db_path)  # the real, SignalStore-backed path
@@ -136,11 +136,10 @@ def test_alembic_upgrade_head_from_genuinely_empty_database_matches_bootstrap(tm
     alembic_schema = _table_columns(alembic_db_path)
     bootstrap_schema = _table_columns(bootstrap_db_path)
 
-    # `signals.import_batch` (added only via app/db.py's frozen, pre-Alembic
-    # `_COLUMN_MIGRATIONS` list, never via a numbered Alembic revision) is a
-    # separate, pre-existing gap unrelated to the 0001-snapshot bug this
-    # test guards against -- excluded here rather than silently ignored.
-    bootstrap_schema["signals"] = bootstrap_schema["signals"] - {"import_batch"}
+    # `signals.import_batch` used to be reachable only via app/db.py's
+    # frozen, pre-Alembic `_COLUMN_MIGRATIONS` list, never via a numbered
+    # Alembic revision (see 0016_add_signals_import_batch.py) -- the two
+    # paths now match exactly, with no exclusion needed.
 
     assert alembic_schema.keys() == bootstrap_schema.keys(), (
         "the CLI-only alembic upgrade path and SignalStore's own bootstrap "
