@@ -20,7 +20,7 @@ from typing import Any, Callable
 
 import httpx
 from fastapi import Cookie, Depends, FastAPI, Form, Header, HTTPException, Query, Request, Response
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
@@ -1064,7 +1064,7 @@ async def get_capital_allocation(_owner: dict = Depends(require_owner_read)) -> 
 # vs. account.multiplier actually resolves before a real signal arrives,
 # plus the one case (no quantity on the signal at all) app/risk.py's own
 # `size_for_account` special-cases to a 1.0 base.
-_SIZING_PREVIEW_SCENARIOS = [
+_SIZING_PREVIEW_SCENARIOS: list[dict[str, Any]] = [
     {"label": "No quantity on signal (defaults to 1.0)", "quantity": None},
     {"label": "Small signal (quantity 1)", "quantity": 1.0},
     {"label": "Typical signal (quantity 5)", "quantity": 5.0},
@@ -1715,8 +1715,10 @@ async def simulate_routing_rules(request: RoutingSimulateRequest, _owner: dict =
     """
     try:
         side = Side(request.side.strip().lower())
-    except ValueError:
-        raise HTTPException(status_code=400, detail=f"invalid side '{request.side}' (must be buy, sell or close)")
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400, detail=f"invalid side '{request.side}' (must be buy, sell or close)"
+        ) from exc
 
     include_disabled = side == Side.CLOSE
     destinations, trace = routing_config.evaluate(request.source, request.symbol, include_disabled=include_disabled)
@@ -1765,7 +1767,7 @@ async def simulate_routing_rules(request: RoutingSimulateRequest, _owner: dict =
 
         broker = brokers.get(account.broker)
         broker_registered = broker is not None
-        asset_class_ok = broker_registered and broker.can_trade_asset_class(request.asset_class)
+        asset_class_ok = broker is not None and broker.can_trade_asset_class(request.asset_class)
 
         capital_check: dict[str, Any]
         capital_admitted = True
