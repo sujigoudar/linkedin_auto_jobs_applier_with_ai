@@ -22,11 +22,19 @@
  *     pending_entry, entry_price/highest/lowest-since-entry/mae/mfe/
  *     has_price_data, halted/halt_reason).
  *   - GET /orders?account_id=... -- this account's orders (filtered
- *     client-side to this symbol), each real row carrying `signal_id` and
- *     `broker` -- see app/static/views/tr06.js's own docstring: grouping
- *     by `signal_id` is "the closest real family concept this schema
- *     has", so the Orders/fills panel below genuinely groups by it
- *     (not a flat table with a wished-for field).
+ *     client-side to this symbol), each real row carrying `broker`,
+ *     `purpose` ('entry'/'close') and `family_id` (app/engine.py: an
+ *     entry order's family_id is its own triggering signal_id; a later
+ *     close order's family_id is that SAME originating entry signal_id
+ *     for a managed-lifecycle position -- app/lifecycle/models.py's
+ *     `PositionPlan.entry_signal_id` -- or null for a plain account's
+ *     close, which has no tracked lifecycle to attribute it to). The
+ *     Orders/fills panel below groups by this real `family_id` (falling
+ *     back to the order's own `signal_id` only for a pre-migration row
+ *     that predates this column, per app/db.py's own backfill note --
+ *     never fabricated). See app/static/views/tr06.js's own docstring
+ *     for the same real-family grouping this schema now natively
+ *     supports.
  *   - GET /positions/{account_id}/{symbol}/stop-events -- PU-A4's real,
  *     append-only stop/target event log (STOP_PLACED/STOP_TIGHTENED/
  *     PROTECTION_FAILED/TARGET_HIT -- see app/lifecycle/models.py's
@@ -471,7 +479,8 @@
   }
 
   // ---------------------------------------------------------------------
-  // Orders/fills grouped by real order family (signal_id).
+  // Orders/fills grouped by real order family (orders.family_id, falling
+  // back to an order's own signal_id only for a pre-migration row).
   // ---------------------------------------------------------------------
 
   function renderOrdersPanel(el, symbolOrders, signalsById) {
@@ -479,26 +488,30 @@
       StateMatrix.render(el, { state: "empty", emptyMessage: "No order events recorded for this allocation." });
       return;
     }
-    const families = new Map(); // signal_id (string, incl. "null") -> orders[]
+    const families = new Map(); // family key (string, incl. "") -> orders[]
     symbolOrders.forEach((o) => {
-      const key = o.signal_id === null || o.signal_id === undefined ? "" : String(o.signal_id);
+      const familyId = o.family_id === null || o.family_id === undefined ? null : String(o.family_id);
+      const fallback = o.signal_id === null || o.signal_id === undefined ? null : String(o.signal_id);
+      const key = familyId !== null ? familyId : fallback !== null ? fallback : "";
       if (!families.has(key)) families.set(key, []);
       families.get(key).push(o);
     });
 
     const familyBlocks = Array.from(families.entries())
-      .map(([signalId, orders]) => {
-        const signal = signalId && signalsById.has(signalId) ? signalsById.get(signalId) : null;
-        const heading = signalId
-          ? `Order family -- signal <span class="mono">${escapeHtml(signalId)}</span>${
+      .map(([key, orders]) => {
+        const signal = key && signalsById.has(key) ? signalsById.get(key) : null;
+        const usedRealFamilyId = orders.some((o) => o.family_id !== null && o.family_id !== undefined && String(o.family_id) === key);
+        const heading = key
+          ? `Order family -- ${usedRealFamilyId ? "family_id" : "signal_id (pre-migration row, no family_id column yet)"} <span class="mono">${escapeHtml(key)}</span>${
               signal
                 ? ` (${escapeHtml(signal.source || "unknown source")}${signal.analyst ? ` / ${escapeHtml(signal.analyst)}` : ""}, received ${escapeHtml(signal.received_at || "—")})`
                 : ` (originating signal outside the most recent 500 signals fetched -- provider/analyst not resolved here)`
             }`
-          : `Orders with no recorded signal_id (not attributable to any one originating signal)`;
+          : `Orders with no recorded family_id or signal_id (not attributable to any one originating signal)`;
         const rows = orders.map((o) => [
           `<span class="mono">${escapeHtml(o.broker_order_id || String(o.id))}</span>`,
           escapeHtml(o.broker || "—"),
+          o.purpose ? pill(o.purpose, o.purpose === "entry" ? "ok" : "muted") : "—",
           escapeHtml(o.side || "—"),
           fmtNum(o.requested_quantity),
           fmtNum(o.filled_quantity),
@@ -509,14 +522,14 @@
         ]);
         return `<div class="tr03-order-family">
           <p class="section-note">${heading}</p>
-          ${table(["Broker order", "Broker", "Side", "Requested", "Filled", "Fill price", "Status", "Executed at", "Message"], rows, "No orders.")}
+          ${table(["Broker order", "Broker", "Purpose", "Side", "Requested", "Filled", "Fill price", "Status", "Executed at", "Message"], rows, "No orders.")}
         </div>`;
       })
       .join("");
 
     StateMatrix.render(el, {
       state: "ready",
-      html: `<p class="section-note">Grouped by <code>signal_id</code> -- the closest real order-family concept this schema has today (every order sharing one signal_id came from the same originating signal; see app/static/views/tr06.js's own "Open family" feature for the same real grouping). A backend-added dedicated family field would slot in here without changing this grouping's shape.</p>${familyBlocks}`,
+      html: `<p class="section-note">Grouped by <code>orders.family_id</code> -- a real, dedicated order-family field (app/engine.py: an entry order's family_id is its own signal_id; a managed-lifecycle position's later close order carries that SAME originating entry signal_id as its family_id, so both sides of one round trip group together even though they were triggered by two different signals). Any order saved before this column existed falls back to grouping by its own <code>signal_id</code> instead (labeled as such below) -- see app/static/views/tr06.js's own "Open family" feature for the same real grouping concept.</p>${familyBlocks}`,
     });
   }
 
@@ -658,13 +671,22 @@
     const signalIds = Array.from(
       new Set(symbolOrders.map((o) => o.signal_id).filter((id) => id !== null && id !== undefined).map(String))
     );
+    // Real order families (app/engine.py's `orders.family_id`) are keyed by
+    // the ORIGINATING entry signal_id, which may differ from a given
+    // order's own `signal_id` (e.g. a provider-close order's own signal_id
+    // is the close signal, not the entry) -- both id sets are looked up in
+    // the same /signals fetch below.
+    const familyIds = Array.from(
+      new Set(symbolOrders.map((o) => o.family_id).filter((id) => id !== null && id !== undefined).map(String))
+    );
+    const lookupIds = Array.from(new Set([...signalIds, ...familyIds]));
     let signalsById = new Map();
-    if (signalIds.length) {
+    if (lookupIds.length) {
       const signalsRes = await ctx.fetchJSON("/signals?limit=500");
       if (signalsRes.ok) {
         const allSignals = (signalsRes.data && signalsRes.data.signals) || [];
         allSignals.forEach((s) => {
-          if (signalIds.includes(String(s.id))) signalsById.set(String(s.id), s);
+          if (lookupIds.includes(String(s.id))) signalsById.set(String(s.id), s);
         });
       }
     }
