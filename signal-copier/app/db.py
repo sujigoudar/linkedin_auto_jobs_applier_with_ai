@@ -530,6 +530,12 @@ _COLUMN_MIGRATIONS = [
     ("orders", "protection_confirmed_at", "TEXT"),
     ("orders", "purpose", "TEXT"),
     ("orders", "family_id", "TEXT"),
+    # E02 (bounded, history-import workflow): NULL for every live-received
+    # signal (this codebase's only other signal-creation path); a batch
+    # label for one created by the owner-gated batch-classify-and-import
+    # review workflow -- see Signal.import_batch's docstring in
+    # app/models.py for why this is the one field added for it.
+    ("signals", "import_batch", "TEXT"),
 ]
 
 
@@ -601,8 +607,8 @@ class SignalStore:
             conn.execute(
                 """INSERT OR REPLACE INTO signals
                    (id, source, symbol, side, asset_class, quantity, price, stop_loss, take_profit,
-                    analyst, received_at, raw)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    analyst, received_at, raw, import_batch)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     signal.id,
                     signal.source,
@@ -616,6 +622,7 @@ class SignalStore:
                     signal.analyst,
                     signal.received_at.isoformat(),
                     json.dumps(signal.raw),
+                    signal.import_batch,
                 ),
             )
 
@@ -1005,7 +1012,7 @@ class SignalStore:
         with self._connect() as conn:
             rows = conn.execute(
                 """SELECT id, source, symbol, side, asset_class, quantity, price, received_at, analyst,
-                          stop_loss, take_profit, raw
+                          stop_loss, take_profit, raw, import_batch
                    FROM signals ORDER BY received_at DESC LIMIT ?""",
                 (limit,),
             ).fetchall()
@@ -1040,6 +1047,11 @@ class SignalStore:
                 "stop_loss": r[9],
                 "take_profit": r[10],
                 "raw": json.loads(r[11]) if r[11] else {},
+                # E02 (bounded, history-import workflow): None for a
+                # live-received signal, a batch label for one created by
+                # POST /sources/{source}/import-signals -- see
+                # Signal.import_batch's docstring in app/models.py.
+                "import_batch": r[12],
             }
             for r in rows
         ]

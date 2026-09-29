@@ -2310,6 +2310,72 @@ async def classify_messages(
     }
 
 
+class ImportSignalsRequest(BaseModel):
+    """E02 (bounded, history-import workflow): the owner's SELECTED subset
+    of raw historical message texts to actually import as real `Signal`
+    rows -- e.g. what a review table (raw message | classified result |
+    import? checkbox) produced from an earlier `POST
+    /sources/{source}/classify-messages` call in the same session.
+
+    This endpoint does NOT trust any classification the caller may have
+    seen client-side: every text here is re-run through the real
+    `classify_batch` on the server, and only a message that resolves to
+    PARSED becomes a Signal. Anything else (IGNORED/AMBIGUOUS/MISSING_DATA/
+    NO_MATCH) is reported back as skipped, never imported, and never
+    fabricated as parsed."""
+
+    texts: list[str]
+    asset_class: AssetClass = AssetClass.CRYPTO
+    analyst: str | None = None
+    #: Owner-chosen label for this import batch (e.g. "telegram-2024-history").
+    #: Defaults to an auto-generated timestamp label when omitted. Stored on
+    #: every imported Signal's `import_batch` column -- see that field's
+    #: docstring in app/models.py for why this is the one honest,
+    #: distinguishing marker between a backfilled and a live-received
+    #: signal in this build.
+    batch_label: str | None = None
+
+
+@app.post("/sources/{source_name}/import-signals")
+async def import_signals(
+    source_name: str, request: ImportSignalsRequest, _owner: dict = Depends(require_owner)
+) -> dict:
+    """Owner-gated: classify the given historical messages with the real
+    `classify_batch` (never a client-supplied classification) and persist
+    only the ones that resolve to PARSED as real `Signal` rows, through
+    this codebase's one existing signal-creation path
+    (`SignalStore.save_signal` -- the same call the live webhook/bot
+    ingestion path uses). Every imported row is tagged with
+    `import_batch` so it stays honestly distinguishable from a signal
+    that arrived live (see ImportSignalsRequest's docstring).
+
+    A message that does not resolve to PARSED is never imported -- it is
+    returned under `skipped` with its real outcome/detail instead."""
+    label = request.batch_label or f"backfill:{datetime.now(timezone.utc).isoformat()}"
+    dispositions = classify_batch(
+        request.texts, source=source_name, asset_class=request.asset_class, analyst=request.analyst
+    )
+    imported = []
+    skipped = []
+    for d in dispositions:
+        if d.signal is not None:
+            d.signal.import_batch = label
+            store.save_signal(d.signal)
+            imported.append(
+                {
+                    "id": d.signal.id,
+                    "text": d.text,
+                    "symbol": d.signal.symbol,
+                    "side": d.signal.side.value,
+                    "asset_class": d.signal.asset_class.value,
+                    "import_batch": d.signal.import_batch,
+                }
+            )
+        else:
+            skipped.append({"text": d.text, "outcome": d.outcome.value, "detail": d.detail})
+    return {"batch_label": label, "imported": imported, "skipped": skipped}
+
+
 class BacktestRequest(BaseModel):
     """See app/backtest/replay.py's module docstring for exactly what this
     does and doesn't simulate before trusting its output."""

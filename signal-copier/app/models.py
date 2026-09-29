@@ -48,6 +48,17 @@ class Signal:
     id: str = field(default_factory=lambda: str(uuid.uuid4()))
     received_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     raw: dict[str, Any] = field(default_factory=dict)
+    #: E02 (bounded, history-import workflow): `None` for every signal that
+    #: arrived through a live transport (webhook/bot) -- this codebase's
+    #: existing, only signal-creation path (`app/db.py`'s `save_signal`) --
+    #: set to an owner-chosen/auto-generated batch label ONLY when a signal
+    #: was instead created by the owner-gated batch-classify-and-import
+    #: review workflow (`POST /sources/{source}/import-signals`) out of a
+    #: pasted historical message that `classify_batch` resolved to PARSED.
+    #: This is the one, cheap, honest distinguishing field between a
+    #: backfilled and a live-received Signal row -- an additive column
+    #: (see `app/db.py`'s `_COLUMN_MIGRATIONS`), not a second schema.
+    import_batch: Optional[str] = None
 
     def __post_init__(self) -> None:
         if isinstance(self.side, str):
