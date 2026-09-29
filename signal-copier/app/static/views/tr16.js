@@ -11,7 +11,38 @@
  * strengthened: never render a fabricated "ok" for a subsystem this
  * build cannot actually check.
  *
- * Real backing data (all read-only GETs, no new endpoint added):
+ * P0-8 (external release audit, 2026-09): "'Reachable' must not mean
+ * 'ready.'" Several earlier screenshots showed service/broker
+ * reachability alongside unknown balance, unknown buying power, missing
+ * provider worker, unavailable price monitoring, no rights/qualification
+ * data -- all folded into one green/red rollup. This batch adds
+ * GET /system/readiness (owner-gated) and a new "Readiness dimensions"
+ * panel that renders six independently-computed dimensions as their own
+ * labeled rows, ALWAYS visible (even when the rollup above reads ACTIVE):
+ *   - liveness: is this process/its database probe responding at all
+ *     (heartbeat-level -- NOT the same as any account's data being fresh).
+ *   - data_readiness: per-account LIVE broker balance/buying-power read
+ *     this cycle -- can be `unknown` even while liveness is `up`.
+ *   - market_data_readiness: PriceMonitor's own real freshness -- separate
+ *     from "is the broker connection reachable at all."
+ *   - trading_authority: whether this process holds a valid writer lease.
+ *     PLACEHOLDER pending the P0-6 fencing/lease work -- see
+ *     app/main.py's system_readiness docstring for the exact follow-up.
+ *   - protection_readiness: managed-lifecycle stop/target confirmation
+ *     state, AND whether that confirmed state is still current (fresh
+ *     reconciler cross-check), not just confirmed once in the past.
+ *   - release_status: qualification/release-approval state. PLACEHOLDER
+ *     pending the P0-7 qualification-taxonomy work.
+ * The existing ACTIVE/STANDBY/DEGRADED/NOT READY rollup is now computed
+ * SERVER-SIDE from exactly these six dimensions (app/main.py's
+ * `_compute_readiness_rollup`) -- this module no longer derives its own
+ * rollup from raw /health+/system/info fields, so the rollup and the
+ * dimension rows underneath it can never disagree. See `renderDimensions`
+ * below for how each dimension is rendered independently, and this
+ * file's git history for the previous JS-side `computeRollup` this
+ * replaces.
+ *
+ * Real backing data (all read-only GETs):
  *   - GET /health (public): `database_ok`/`price_monitor_ok`/
  *     `reconciler_ok`/`provider_scout_ok`/`equity_snapshotter_ok`/
  *     `relay_ok` and the pre-aggregated `status` ("ok" iff database_ok
@@ -48,8 +79,14 @@
  *     build with no lifecycle_manager) degrades those two rows back to
  *     boolean-only, never a fabricated age.
  *
- * Rollup logic (explicit, computed ONLY from the real fields above --
- * see `computeRollup`):
+ *   - GET /system/readiness (owner-gated, new this batch): the six
+ *     dimensions above, plus the `rollup` this module now renders
+ *     verbatim -- see app/main.py's own docstring for exactly which real
+ *     signal backs each one.
+ *
+ * Rollup logic (explicit, computed server-side ONLY from the six real
+ * dimensions above -- see app/main.py's `_compute_readiness_rollup`; kept
+ * here for quick reference):
  *   1. STANDBY   -- info.standby_mode is true. A standby deliberately
  *      does not run signal ingestion/reconciliation/price polling at all
  *      (app/main.py's `lifespan`), so its workers' own `_ok` flags are
@@ -195,40 +232,98 @@
     return t.toISOString();
   }
 
-  // --- Rollup: ACTIVE / STANDBY / DEGRADED / NOT READY -- see this
-  // file's own module docstring for the exact, explicit logic and why
-  // fencing is deliberately NOT folded in here. ---
-  function computeRollup(info, health, healthOk) {
-    if (!healthOk || !health) {
-      return { label: "NOT READY", tone: "crit", reason: "GET /health was unreachable this cycle -- nothing below can be verified live." };
+  // --- Readiness dimensions (P0-8): GET /system/readiness computes
+  // liveness / data_readiness / market_data_readiness / trading_authority
+  // / protection_readiness / release_status independently, plus a
+  // `rollup` that folds them into ACTIVE/STANDBY/DEGRADED/NOT READY (see
+  // app/main.py's system_readiness/_compute_readiness_rollup docstrings
+  // for the exact, explicit gate order). This module no longer computes
+  // its own rollup from raw /health+/system/info fields -- the server is
+  // the single source of truth for both the rollup AND each dimension, so
+  // the console can never show a dimension that disagrees with the
+  // rollup that folds it in. ---
+
+  const DIMENSION_TONE = {
+    up: "ok", fresh: "ok", current: "ok", held: "ok", approved: "ok", asserted: "ok",
+    partial: "warn", stale: "warn", degraded: "warn",
+    down: "crit", unknown: "crit", gap: "crit", not_held: "crit", rejected: "crit",
+    not_tracked: "neutral",
+  };
+
+  function dimensionTone(status) {
+    return DIMENSION_TONE[status] || "neutral";
+  }
+
+  function renderDimensions(container, readiness, readinessRes) {
+    if (!container) return;
+    if (!readiness) {
+      StateMatrix.render(container, {
+        state: "error",
+        message: `Could not load GET /system/readiness this cycle${readinessRes && readinessRes.status ? ` (HTTP ${readinessRes.status})` : ""} -- every dimension below, and the rollup above, is therefore NOT READY rather than guessed.`,
+      });
+      return;
     }
-    if (info.standby_mode) {
-      return { label: "STANDBY", tone: "neutral", reason: "STANDBY_MODE=true -- this instance deliberately does not ingest signals, reconcile orders, or poll prices (app/main.py's lifespan/_standby_read_only_gate)." };
-    }
-    if (health.status !== "ok") {
-      return {
-        label: "NOT READY",
-        tone: "crit",
-        reason: `GET /health reports status="${health.status}" -- at least one of database_ok/price_monitor_ok/reconciler_ok is false.`,
-      };
-    }
-    const relayDown = info.relay_ingress_configured && health.relay_ok === false;
-    const outboxOverCeiling = health.outbox_backlog_ok === false;
-    if (!health.provider_scout_ok || !health.equity_snapshotter_ok || relayDown || outboxOverCeiling) {
-      return {
-        label: "DEGRADED",
-        tone: "warn",
-        reason: outboxOverCeiling
-          ? "The private export outbox backlog is over its configured storage ceiling -- see the Storage row below. Position protection itself is unaffected; this is an export/storage-reliability risk, not silently ignored."
-          : "Every subsystem position-protection depends on is fresh, but an informational-only worker (provider scout, equity snapshotter, or the configured relay export) is not.",
-      };
-    }
-    return { label: "ACTIVE", tone: "ok", reason: "This is the active writer, and every subsystem GET /health tracks is fresh." };
+    const dataAccounts = (readiness.data_readiness && readiness.data_readiness.accounts) || [];
+    const accountsDetail = dataAccounts.length
+      ? `<ul>${dataAccounts
+          .map(
+            (a) =>
+              `<li><span class="mono">${escapeHtml(a.account_id)}</span>: ${pill(a.status, dimensionTone(a.status))} -- ${escapeHtml(a.reason || "")}${
+                a.status === "fresh"
+                  ? ` (cash=${a.cash === null || a.cash === undefined ? "n/a" : a.cash}, buying_power=${a.buying_power === null || a.buying_power === undefined ? "n/a" : a.buying_power})`
+                  : ""
+              }</li>`
+          )
+          .join("")}</ul>`
+      : "";
+    StateMatrix.render(container, {
+      state: "ready",
+      html: `
+        <p class="section-note">Each row below is computed and rendered independently -- a service can be reachable (Liveness = up) while Data readiness, Market-data readiness, Trading authority, Protection readiness or Release status is unknown/stale/not held/not tracked, and this table shows BOTH facts rather than collapsing them into the single rollup above. "Reachable" is never rendered as "ready."</p>
+        ${table(
+          ["Dimension", "Status", "Reason", "Age", "Notes"],
+          [
+            ["Liveness", pill(readiness.liveness.status, dimensionTone(readiness.liveness.status)), escapeHtml(readiness.liveness.reason || ""), "—", "Is this process/its database probe responding at all (heartbeat-level)."],
+            ["Data readiness", pill(readiness.data_readiness.status, dimensionTone(readiness.data_readiness.status)), escapeHtml(readiness.data_readiness.reason || ""), "—", `Per-account live balance/buying-power read. ${accountsDetail}`],
+            [
+              "Market-data readiness",
+              pill(readiness.market_data_readiness.status, dimensionTone(readiness.market_data_readiness.status)),
+              escapeHtml(readiness.market_data_readiness.reason || ""),
+              readiness.market_data_readiness.age_seconds === null || readiness.market_data_readiness.age_seconds === undefined ? "—" : fmtAge(readiness.market_data_readiness.age_seconds),
+              "Is current price flowing for the instruments this account trades (PriceMonitor freshness).",
+            ],
+            [
+              "Trading authority",
+              pill(readiness.trading_authority.status, dimensionTone(readiness.trading_authority.status)),
+              escapeHtml(readiness.trading_authority.reason || ""),
+              "—",
+              "Placeholder pending the P0-6 fencing/lease work -- see Reason.",
+            ],
+            [
+              "Protection readiness",
+              pill(readiness.protection_readiness.status, dimensionTone(readiness.protection_readiness.status)),
+              escapeHtml(readiness.protection_readiness.reason || ""),
+              "—",
+              "Managed-lifecycle stop/target confirmation state, and whether it's current (reconciler-fresh), not just confirmed once.",
+            ],
+            [
+              "Release status",
+              pill(readiness.release_status.status, dimensionTone(readiness.release_status.status)),
+              escapeHtml(readiness.release_status.reason || ""),
+              "—",
+              "Placeholder pending the P0-7 qualification/release-taxonomy work -- see Reason.",
+            ],
+          ],
+          "No dimension data."
+        )}
+      `,
+    });
   }
 
   function shell() {
     return `
       <section class="tr-panel" id="tr16-status"><h2>Operational readiness</h2><div class="tr-panel-body"></div></section>
+      <section class="tr-panel" id="tr16-dimensions"><h2>Readiness dimensions</h2><div class="tr-panel-body"></div></section>
       <section class="tr-panel" id="tr16-p01"><h2>Site role/writer identity</h2><div class="tr-panel-body"></div></section>
       <section class="tr-panel" id="tr16-p02"><h2>Subsystems</h2><div class="tr-panel-body"></div></section>
       <section class="tr-panel" id="tr16-p03"><h2>Backup/restore/deployment evidence</h2><div class="tr-panel-body"></div></section>
@@ -344,6 +439,7 @@
   async function load(ctx) {
     const els = {
       status: ctx.container.querySelector("#tr16-status .tr-panel-body"),
+      dimensions: ctx.container.querySelector("#tr16-dimensions .tr-panel-body"),
       role: ctx.container.querySelector("#tr16-p01 .tr-panel-body"),
       subsystems: ctx.container.querySelector("#tr16-p02 .tr-panel-body"),
       backup: ctx.container.querySelector("#tr16-p03 .tr-panel-body"),
@@ -354,11 +450,12 @@
     };
     for (const el of Object.values(els)) StateMatrix.render(el, { state: "loading" });
 
-    const [infoRes, healthRes, positionsRes, metricsText] = await Promise.all([
+    const [infoRes, healthRes, positionsRes, metricsText, readinessRes] = await Promise.all([
       ctx.fetchJSON("/system/info"),
       ctx.fetchJSON("/health"),
       ctx.fetchJSON("/positions"),
       fetchMetricsText(),
+      ctx.fetchJSON("/system/readiness"),
     ]);
     if (infoRes.status === 401 || infoRes.status === 403) {
       for (const el of Object.values(els)) StateMatrix.render(el, { state: "denied", deniedCode: infoRes.status });
@@ -379,8 +476,24 @@
     const reconcilerAgeSeconds = parseGaugeValue(metricsText, "signal_copier_reconciler_cycle_age_seconds");
     const schemaMatch = Boolean(info.schema_version && info.schema_head && info.schema_version === info.schema_head);
 
+    // --- Readiness dimensions (P0-8, GET /system/readiness): liveness,
+    // data readiness, market-data readiness, trading authority, protection
+    // readiness and release status are each computed independently
+    // server-side -- see app/main.py's system_readiness docstring. A
+    // failure to even reach this endpoint is itself treated as NOT READY
+    // (fail closed), never silently falling back to the old health-only
+    // rollup, which is exactly the "reachable was treated as ready" gap
+    // this batch closes. ---
+    const readiness = readinessRes.ok ? readinessRes.data : null;
+    const rollup = readiness
+      ? readiness.rollup
+      : {
+          label: "NOT READY",
+          tone: "crit",
+          reason: "GET /system/readiness was unreachable this cycle -- the independent readiness dimensions (liveness/data/market-data/trading authority/protection/release) could not be computed, so this cannot honestly report anything but NOT READY.",
+        };
+
     // --- Operational readiness rollup (top) ---
-    const rollup = computeRollup(info, health, healthRes.ok);
     const statusHost = document.createElement("div");
     Components.renderKPIBand(statusHost, {
       items: [
@@ -395,8 +508,16 @@
     els.status.appendChild(statusHost);
     els.status.insertAdjacentHTML(
       "beforeend",
-      `<p class="section-note">Computed strictly from GET /health and GET /system/info's own real fields -- see this file's module docstring for the exact rollup order (STANDBY, then NOT READY, then DEGRADED, then ACTIVE). Fencing is deliberately not part of this rollup; it gates the recovery runbook below instead.</p>`
+      `<p class="section-note">This is a ROLLUP of the six independent readiness dimensions in the panel below -- STANDBY, then NOT READY, then DEGRADED, then ACTIVE (see GET /system/readiness / app/main.py's <code>_compute_readiness_rollup</code>). A subsystem being reachable does NOT by itself mean ACTIVE: every dimension below stays visible in its own row even when this rollup reads ACTIVE, and an unconfirmed stop or an absent trading authority forces NOT READY here regardless of how healthy the others look.</p>`
     );
+
+    // --- Readiness dimensions: each rendered as its own labeled row, never
+    // folded into the single rollup above -- this is the direct fix for
+    // the external release audit's "reachable alongside unknown balance/
+    // buying power/no rights data must never render as if everything is
+    // fine." A dimension can show a real, independent status even while
+    // every OTHER dimension (including the rollup) looks fine. ---
+    renderDimensions(els.dimensions, readiness, readinessRes);
 
     // --- Site role/writer identity ---
     StateMatrix.render(els.role, {

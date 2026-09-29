@@ -534,6 +534,297 @@ async def system_info(_owner: dict = Depends(require_owner_read)) -> dict:
     }
 
 
+def _readiness_freshness(last_success: datetime | None, interval_seconds: float, now: datetime) -> bool:
+    if last_success is None:
+        return False
+    return (now - last_success).total_seconds() < max(interval_seconds * 3, interval_seconds + 30)
+
+
+def _compute_readiness_rollup(
+    *,
+    standby_mode: bool,
+    health_ok: bool,
+    health_status: str | None,
+    trading_authority_status: str,
+    data_readiness_status: str,
+    market_data_status: str,
+    protection_status: str,
+    outbox_backlog_ok: bool | None,
+    provider_scout_ok: bool,
+    equity_snapshotter_ok: bool,
+    relay_down: bool,
+) -> dict:
+    """P0-8: the overall ACTIVE/STANDBY/DEGRADED/NOT READY rollup, computed
+    strictly from the independent dimensions below it -- never a separate
+    green/red flag of its own. This is deliberately a ROLLUP: it never
+    replaces the individual dimensions in the response (each one stays in
+    the payload and must be rendered on its own), and gate order below
+    fails closed -- an unconfirmed stop or an absent trading authority
+    blocks ACTIVE regardless of how healthy every other dimension looks,
+    which is the exact "reachable does not mean ready" gap this batch
+    closes (see this module's own audit reference in system_readiness's
+    docstring)."""
+    if standby_mode:
+        return {
+            "label": "STANDBY",
+            "tone": "neutral",
+            "reason": "STANDBY_MODE=true -- this instance deliberately does not ingest signals, reconcile orders, or poll prices.",
+        }
+    if not health_ok:
+        return {"label": "NOT READY", "tone": "crit", "reason": "GET /health was unreachable this cycle -- nothing below can be verified live."}
+    if health_status != "ok":
+        return {
+            "label": "NOT READY",
+            "tone": "crit",
+            "reason": f'GET /health reports status="{health_status}" -- at least one of database_ok/price_monitor_ok/reconciler_ok is false.',
+        }
+    if trading_authority_status == "not_held":
+        return {
+            "label": "NOT READY",
+            "tone": "crit",
+            "reason": "This instance does not currently hold trading authority -- see the Trading authority dimension.",
+        }
+    if protection_status == "gap":
+        return {
+            "label": "NOT READY",
+            "tone": "crit",
+            "reason": "At least one open managed-lifecycle position has an unconfirmed stop -- see the Protection readiness dimension.",
+        }
+    degraded_reasons = []
+    if data_readiness_status in ("unknown", "partial"):
+        degraded_reasons.append("account balance/buying-power data is not fully verified this cycle")
+    if market_data_status in ("unknown", "stale"):
+        degraded_reasons.append("market-data (price) freshness is not current")
+    if protection_status == "stale":
+        degraded_reasons.append("protection-confirmation state is not current")
+    outbox_over_ceiling = outbox_backlog_ok is False
+    if not provider_scout_ok or not equity_snapshotter_ok or relay_down or outbox_over_ceiling:
+        degraded_reasons.append("an informational-only worker (provider scout/equity snapshotter/relay) or the export outbox is degraded")
+    if degraded_reasons:
+        return {"label": "DEGRADED", "tone": "warn", "reason": "; ".join(degraded_reasons) + "."}
+    return {"label": "ACTIVE", "tone": "ok", "reason": "Every readiness dimension is current, and this instance holds trading authority."}
+
+
+@app.get("/system/readiness")
+async def system_readiness(_owner: dict = Depends(require_owner_read)) -> dict:
+    """P0-8 (external release audit): "'Reachable' must not mean 'ready.'"
+    -- GET /health and GET /system/info conflated "is this process/worker
+    reachable" with "is this account/system actually ready to trade."
+    This endpoint splits that into independent, separately-rendered
+    dimensions (TR-16 renders each as its own row, never folded into one
+    badge -- see tr16.js):
+
+    - `liveness`: is this process/its database probe responding at all
+      (heartbeat-level; NOT the same as any account's data being fresh).
+    - `data_readiness`: per configured account, was a LIVE broker balance
+      (cash/equity/buying_power) read successfully THIS cycle -- honestly
+      `not_tracked` for a broker with no verified balance capability
+      (`BrokerAdapter.has_balance_capability`), `unknown` for one that
+      has the capability but failed/returned nothing this cycle. A
+      service can be fully reachable (liveness=up) while this is
+      `unknown` -- e.g. a broker session that authenticates but reports
+      no account fields -- and both facts must render, never collapsed.
+    - `market_data_readiness`: PriceMonitor's own real freshness
+      (`price_monitor.last_success_at` against `PRICE_MONITOR_INTERVAL_
+      SECONDS`, the same signal GET /health's `price_monitor_ok` uses),
+      separated out because "is the broker connection reachable" and "is
+      current price flowing for what this account trades" are different
+      questions GET /health folded into one boolean.
+    - `trading_authority`: whether this process currently holds a valid
+      writer lease. This build has no fencing/lease mechanism yet -- only
+      `STANDBY_MODE`, a static config flag, distinguishes role -- so this
+      is honestly `not_held` while standby (a real signal) or `not_tracked`
+      while configured as writer (a config assertion, not a live fenced
+      lease). FOLLOW-UP: replace the `not_tracked`/writer-role branch with
+      a real fencing-token/lease-expiry check once the P0-6 fencing/lease
+      work lands; this field's shape (`status`, `reason`, `fencing_token`)
+      is deliberately left room for that without a breaking change.
+    - `protection_readiness`: for open managed-lifecycle positions, is
+      stop/target protection state both CONFIRMED (`stop_gap_count`, GET
+      /positions' own real aggregate) and CURRENT -- current meaning
+      OrderReconciler's broker cross-check (`reconciler_ok`) is itself
+      fresh, since a confirmed-looking stop_status this process can no
+      longer cross-check against the broker is not the same as one that
+      genuinely still is confirmed. `not_tracked` when no managed-
+      lifecycle position is open at all (nothing to protect).
+    - `release_status`: the qualification/release-approval state for this
+      deployment. No qualification/release-approval taxonomy exists yet
+      in this build. FOLLOW-UP: integrate with the P0-7 qualification/
+      release-state work once it lands; until then this is honestly
+      `not_tracked`, never a fabricated "approved."
+
+    `rollup` folds all of the above into the existing ACTIVE/STANDBY/
+    DEGRADED/NOT READY label (see `_compute_readiness_rollup`) -- it is a
+    ROLLUP of the dimensions above, not a replacement for them; TR-16
+    keeps every dimension visible in its own row even when the rollup
+    reads ACTIVE, which is the entire point of this endpoint."""
+    now = datetime.now(timezone.utc)
+    health_body = await health()
+    health_ok = True  # this function call cannot itself fail to respond the way an HTTP round-trip could
+
+    # --- liveness ---
+    liveness: dict[str, Any] = {
+        "status": "up" if health_body["database_ok"] else "degraded",
+        "reason": (
+            "This process answered this request and its database probe (store.get_position) succeeded."
+            if health_body["database_ok"]
+            else "This process answered this request, but its own database probe raised -- the process is UP but its data store is not reachable."
+        ),
+    }
+
+    # --- trading_authority (placeholder pending P0-6 fencing/lease integration) ---
+    trading_authority: dict[str, Any]
+    if config.STANDBY_MODE:
+        trading_authority = {
+            "status": "not_held",
+            "reason": "STANDBY_MODE=true -- this instance deliberately does not act as writer (app/main.py's _standby_read_only_gate); no trade-affecting action is available here regardless of any other dimension.",
+            "fencing_token": None,
+        }
+    else:
+        trading_authority = {
+            "status": "not_tracked",
+            "reason": (
+                "This build has no writer-lease/fencing-token mechanism yet -- only STANDBY_MODE (a static config flag) distinguishes role. "
+                "This instance is configured as the active writer, but that is a config assertion, not a live, fenced lease. "
+                "FOLLOW-UP: integrate the P0-6 fencing/lease work once it lands so this can report a real 'held' state instead."
+            ),
+            "fencing_token": None,
+        }
+
+    # --- market_data_readiness ---
+    price_last_success = price_monitor.last_success_at
+    price_age_seconds = (now - price_last_success).total_seconds() if price_last_success else None
+    market_data_readiness: dict[str, Any]
+    if price_last_success is None:
+        market_data_readiness = {
+            "status": "unknown",
+            "reason": "PriceMonitor has not completed a successful pass since this process started.",
+            "age_seconds": None,
+        }
+    elif _readiness_freshness(price_last_success, config.PRICE_MONITOR_INTERVAL_SECONDS, now):
+        market_data_readiness = {
+            "status": "fresh",
+            "reason": "PriceMonitor's last successful pass is within its configured freshness window.",
+            "age_seconds": price_age_seconds,
+        }
+    else:
+        market_data_readiness = {
+            "status": "stale",
+            "reason": "PriceMonitor's last successful pass is older than its configured freshness window -- price-driven protection (targets/trailing/stop resizing) may not reflect the current market.",
+            "age_seconds": price_age_seconds,
+        }
+
+    # --- data_readiness: a LIVE per-account balance read, honestly bounded ---
+    account_rows: list[dict] = []
+    for account_id, account in routing_config.accounts.items():
+        broker = brokers.get(account.broker)
+        if broker is None:
+            account_rows.append({"account_id": account_id, "status": "unknown", "reason": f"no broker adapter registered for '{account.broker}'"})
+            continue
+        if not broker.has_balance_capability:
+            account_rows.append({"account_id": account_id, "status": "not_tracked", "reason": f"{broker.name} adapter has no verified get_account_balance implementation."})
+            continue
+        try:
+            balance = await broker.get_account_balance(account)
+        except Exception as exc:  # noqa: BLE001 - readiness check must never raise
+            account_rows.append({"account_id": account_id, "status": "unknown", "reason": f"live balance read raised: {exc}"})
+            continue
+        if balance is None or (balance.cash is None and balance.buying_power is None and balance.equity is None):
+            account_rows.append({"account_id": account_id, "status": "unknown", "reason": "broker responded with no usable balance field this cycle."})
+            continue
+        account_rows.append(
+            {
+                "account_id": account_id,
+                "status": "fresh",
+                "reason": "live balance read succeeded this cycle.",
+                "cash": balance.cash,
+                "buying_power": balance.buying_power,
+                "equity": balance.equity,
+            }
+        )
+
+    data_readiness: dict[str, Any]
+    if not account_rows:
+        data_readiness = {"status": "not_tracked", "reason": "No accounts are configured.", "accounts": account_rows}
+    elif all(r["status"] == "fresh" for r in account_rows):
+        data_readiness = {
+            "status": "fresh",
+            "reason": "Every configured account's balance/buying-power was read live and successfully this cycle.",
+            "accounts": account_rows,
+        }
+    elif any(r["status"] == "fresh" for r in account_rows):
+        data_readiness = {
+            "status": "partial",
+            "reason": "At least one configured account's balance/buying-power could not be verified this cycle -- see the per-account detail.",
+            "accounts": account_rows,
+        }
+    else:
+        data_readiness = {
+            "status": "unknown",
+            "reason": "No configured account's balance/buying-power could be verified this cycle.",
+            "accounts": account_rows,
+        }
+
+    # --- protection_readiness ---
+    managed_lifecycles = _managed_lifecycle_snapshot()
+    open_managed = [lc for lc in managed_lifecycles if lc["owned_quantity"] > 0]
+    stop_gap_count = sum(1 for lc in open_managed if lc["stop_status"] != ProtectionStatus.STOP_CONFIRMED.value)
+    reconciler_ok = _readiness_freshness(reconciler.last_success_at, config.RECONCILE_INTERVAL_SECONDS, now)
+    protection_readiness: dict[str, Any]
+    if not open_managed:
+        protection_readiness = {"status": "not_tracked", "reason": "No open managed-lifecycle position exists right now.", "stop_gap_count": 0}
+    elif stop_gap_count > 0:
+        protection_readiness = {
+            "status": "gap",
+            "reason": f"{stop_gap_count} open managed-lifecycle position(s) have an unconfirmed stop (GET /positions' stop_status).",
+            "stop_gap_count": stop_gap_count,
+        }
+    elif not reconciler_ok:
+        protection_readiness = {
+            "status": "stale",
+            "reason": "Every open managed-lifecycle position currently shows a confirmed stop, but OrderReconciler's own broker cross-check has not completed a fresh pass -- this confirmed state may not reflect the broker's current reality.",
+            "stop_gap_count": 0,
+        }
+    else:
+        protection_readiness = {
+            "status": "current",
+            "reason": "Every open managed-lifecycle position has a confirmed stop, and OrderReconciler's broker cross-check is fresh.",
+            "stop_gap_count": 0,
+        }
+
+    # --- release_status (placeholder pending P0-7 qualification/release-taxonomy integration) ---
+    release_status = {
+        "status": "not_tracked",
+        "reason": "No qualification/release-approval taxonomy exists yet in this build. FOLLOW-UP: integrate with the P0-7 qualification/release-state work once it lands.",
+    }
+
+    relay_down = bool(config.RELAY_INGRESS_URL) and health_body.get("relay_ok") is False
+    rollup = _compute_readiness_rollup(
+        standby_mode=config.STANDBY_MODE,
+        health_ok=health_ok,
+        health_status=health_body["status"],
+        trading_authority_status=trading_authority["status"],
+        data_readiness_status=data_readiness["status"],
+        market_data_status=market_data_readiness["status"],
+        protection_status=protection_readiness["status"],
+        outbox_backlog_ok=health_body.get("outbox_backlog_ok"),
+        provider_scout_ok=bool(health_body.get("provider_scout_ok")),
+        equity_snapshotter_ok=bool(health_body.get("equity_snapshotter_ok")),
+        relay_down=relay_down,
+    )
+
+    return {
+        "liveness": liveness,
+        "data_readiness": data_readiness,
+        "market_data_readiness": market_data_readiness,
+        "trading_authority": trading_authority,
+        "protection_readiness": protection_readiness,
+        "release_status": release_status,
+        "rollup": rollup,
+        "standby_mode": config.STANDBY_MODE,
+    }
+
+
 class LoginRequest(BaseModel):
     # A strict model (SEC-02) -- FastAPI/pydantic rejects a non-object body,
     # a non-string password, or one exceeding this bound with a clean 422,
