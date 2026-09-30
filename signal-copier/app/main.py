@@ -123,7 +123,11 @@ from app.notification_bridge import (
     verify_pairing_token,
 )
 from app.phone_escalation import DeniedAppPackageError, PhoneEscalationError, evaluate_escalation
-from app.connection_catalog import get_connection_catalog_entry, list_connection_catalog_types
+from app.connection_catalog import (
+    get_connection_catalog_entry,
+    get_connection_setup_fields,
+    list_connection_catalog_types,
+)
 from app.certification import CertificationError
 from app.certification_scorecard import compute_scorecard
 from app.sources.twitter import TwitterSource
@@ -3041,7 +3045,8 @@ async def promote_provider_candidate(request: PromoteCandidateRequest, _owner: d
     return {"source": request.source, "status": "promoted"}
 
 
-# --- Track 14: Provider/Source/Connection catalog -- read-only routes ---
+# --- Track 14: Provider/Source/Connection catalog -- read routes, plus
+# Track 21's creation routes (below) -------------------------------------
 #
 # See app/provider_catalog.py's module docstring for the full data model.
 # `/providers` (above) and `/providers/{provider_id}` (below, the config-
@@ -3050,11 +3055,24 @@ async def promote_provider_candidate(request: PromoteCandidateRequest, _owner: d
 # app/providers.py) -- this new catalog uses its own `/provider-catalog`
 # prefix to avoid colliding with either that or `/catalog/providers/...`
 # (signal-portfolio-commercial's public fit-simulation surface, also
-# unrelated). Deliberately GET-only and minimal -- "enough to see it
-# working via curl/tests, not a dashboard page" per this track's own
-# build-order decision; write access is through `SignalStore`'s CRUD
-# methods directly (tests, the migration backfill, and a future
-# onboarding-wizard task) rather than a REST surface in this track.
+# unrelated).
+#
+# Track 14 deliberately shipped this section GET-only ("enough to see it
+# working via curl/tests, not a dashboard page", per that track's own
+# build-order decision) and left write access to `SignalStore`'s CRUD
+# methods directly, naming "a future onboarding-wizard task" as the place
+# a real creation REST surface would belong. Track 21 (this one) is that
+# task -- `POST /providers` / `POST /sources` / `POST /connections`
+# below are thin wrappers over exactly `register_provider`/`register_
+# source`/`register_connection` (no new business logic beyond what those
+# methods and their own `validate_*_registration` helpers already
+# enforce), deliberately placed under the plain `/providers` / `/sources`
+# / `/connections` paths (not `/provider-catalog/...`) since they are the
+# real primitives the onboarding wizard (`#/providers/add`, app/static/
+# views/tr17.js) drives, and there is no pre-existing POST /sources or
+# POST /connections route to collide with (`/providers` already has a
+# DIFFERENT POST at `/providers/{provider_id}` -- a path with a required
+# path param, so `POST /providers` with no id segment is unambiguous).
 
 
 @app.get("/provider-catalog/providers")
@@ -3106,6 +3124,157 @@ async def get_catalog_connection(connection_id: str, _owner: dict = Depends(requ
     entry = store.get_connection(connection_id)
     if entry is None:
         raise HTTPException(status_code=404, detail=f"no connection registered with id={connection_id!r}")
+    return entry
+
+
+# --- Track 21: Provider/Source/Connection creation (the onboarding
+# wizard's three primitives) ----------------------------------------
+#
+# Each request body's fields are exactly register_provider's/register_
+# source's/register_connection's own kwargs (see app/db.py) -- no field
+# renaming, no extra business logic. Validation is entirely
+# validate_provider_registration/validate_source_registration/
+# validate_connection_registration (app/provider_catalog.py,
+# app/connections.py), each raising a ValueError subclass
+# (ProviderCatalogError/ConnectionError_) that is mapped to 422 here, the
+# same convention POST /connections/{connection_id}/cost-events already
+# uses for a ValueError from its own store call. register_source/
+# register_connection additionally raise KeyError for an unknown
+# provider_id/connection_id -- mapped to 404, same convention as every
+# other KeyError-from-a-db.py-call route in this file.
+
+
+class CreateProviderRequest(BaseModel):
+    provider_id: str
+    display_name: str
+    aliases: list[str] | None = None
+    logo_url: str | None = None
+    website: str | None = None
+    description: str | None = None
+    status: str = "onboarding"
+    account_ownership: str | None = None
+    subscription_status: str | None = None
+    classification: str | None = None
+    asset_classes: list[str] | None = None
+    strategy_types: list[str] | None = None
+    provider_timezone: str | None = None
+    execution_eligibility: str = "disabled"
+    default_parser_profile: str | None = None
+    max_entry_age_seconds: int | None = None
+    stale_exit_policy: str | None = None
+    min_parse_confidence: float | None = None
+    correlation_window_seconds: int | None = None
+    risk_policy_ref: str | None = None
+    certification_state: str = "uncertified"
+    certification_version: str | None = None
+    operator_notes: str | None = None
+    max_add_age_seconds: int | None = None
+    adjustment_stale_behavior: str | None = None
+    timestamp_source_preference: str | None = None
+    clock_skew_tolerance_seconds: int | None = None
+    recovered_event_behavior: str | None = None
+    conflict_resolution_policy: str = "HOLD"
+    deterministic_primary_source_id: str | None = None
+    correlation_price_tolerance_pct: float | None = None
+
+
+@app.post("/providers")
+async def create_provider(request: CreateProviderRequest, _owner: dict = Depends(require_owner)) -> dict:
+    """Creates (or idempotently re-describes) one Track 14 `providers`
+    catalog row -- the FIRST step of the onboarding wizard's
+    provider->source->connection sequence. This is a different concept
+    from `POST /providers/{provider_id}` above (that endpoint upserts a
+    `config/providers.yaml` settings-inheritance override for an EXISTING
+    provider; this one creates the provider's own catalog identity)."""
+    try:
+        return store.register_provider(**request.model_dump())
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+class CreateSourceRequest(BaseModel):
+    source_id: str
+    provider_id: str
+    platform: str
+    source_type: str | None = None
+    source_native_id: str | None = None
+    display_name: str | None = None
+    url_or_reference: str | None = None
+    enabled: bool = True
+    priority: int = 100
+    role: str = "PRIMARY"
+    capture_method: str | None = None
+    connection_id: str | None = None
+    parser_profile: str | None = None
+    asset_classes: list[str] | None = None
+    strategy_types: list[str] | None = None
+    freshness_policy: dict | None = None
+    dedup_policy: dict | None = None
+    execution_eligibility: str = "disabled"
+    health_state: str = "unqualified"
+
+
+@app.post("/sources")
+async def create_source(request: CreateSourceRequest, _owner: dict = Depends(require_owner)) -> dict:
+    """Creates (or idempotently re-describes) one Track 14 `sources` row
+    -- the wizard's second step, after the provider (and, for most
+    connection types, the connection) already exist. `provider_id` must
+    already be registered (`POST /providers`); `connection_id`, if given,
+    must already be registered (`POST /connections`) -- both enforced by
+    `register_source` itself, surfaced here as 404s rather than a raw
+    KeyError."""
+    try:
+        return store.register_source(**request.model_dump())
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+class CreateConnectionRequest(BaseModel):
+    connection_id: str
+    connection_type: str
+    display_name: str | None = None
+    credential_reference: str | None = None
+    authentication_type: str | None = None
+    account_identity: str | None = None
+    connection_state: str = "unconfigured"
+    authorization_state: str = "unauthorized"
+    scopes: list[str] | None = None
+    capabilities: dict | None = None
+    rate_limits: dict | None = None
+    cost_info: dict | None = None
+
+
+@app.post("/connections")
+async def create_connection(request: CreateConnectionRequest, _owner: dict = Depends(require_owner)) -> dict:
+    """Creates (or idempotently re-describes) one Track 14 `connections`
+    row -- the reusable, credential-bearing transport a source points at.
+    `credential_reference` must be an environment-variable NAME (or an
+    existing hash reference), never a raw secret -- `register_connection`
+    itself refuses anything that looks like one (422)."""
+    try:
+        return store.register_connection(**request.model_dump())
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.get("/connections/catalog/{connection_type}/setup-fields")
+async def get_connections_catalog_setup_fields(
+    connection_type: str, _owner: dict = Depends(require_owner_read)
+) -> dict:
+    """Tells the onboarding wizard which real fields to collect for a
+    given `connection_type` before calling `POST /connections` /
+    `POST /sources` -- see `app.connection_catalog.get_connection_setup_
+    fields`'s own docstring for the honest `not_implemented` shape (no
+    fabricated field list for an adapter that doesn't exist) and for
+    what a field with no `target` means (real, adapter-required
+    configuration this track's thin creation endpoints have no column
+    for, e.g. a second Slack Socket Mode secret or an IMAP sender
+    allowlist -- still surfaced, never silently dropped)."""
+    entry = get_connection_setup_fields(connection_type)
+    if entry is None:
+        raise HTTPException(status_code=404, detail=f"no catalog entry for connection_type={connection_type!r}")
     return entry
 
 

@@ -298,3 +298,219 @@ def get_connection_catalog_entry(connection_type: str) -> Optional[dict[str, Any
                 "notes": entry.notes,
             }
     return None
+
+
+# --- Track 21: onboarding-wizard field discovery ---------------------
+#
+# `GET /connections/catalog/{connection_type}/setup-fields` (app/main.py)
+# reads this table to tell the "+Add Signal Provider" wizard which real
+# inputs it must collect for a given `connection_type` BEFORE calling
+# `POST /connections` / `POST /sources` -- built by reading each real
+# adapter's own `__init__` (`app/sources/*.py`) rather than guessed field
+# names, same evidence discipline as `_CATALOG` above.
+#
+# Each field's `target` says where the collected value is meant to land
+# once the wizard assembles its `POST /connections` / `POST /sources`
+# request bodies: `"connection.<column>"` (a `register_connection` kwarg)
+# or `"source.<column>"` (a `register_source` kwarg, `source.freshness_
+# policy.poll_interval_seconds` being the one nested exception -- `sources.
+# freshness_policy` is itself a free-form JSON object). A field with no
+# `target` (`target: None`) is real, adapter-required configuration this
+# track's three thin registration endpoints do not have a column for --
+# it must still be set up separately (an env var, a per-type collector
+# registry row such as `app/telegram_collectors.py`/`app/email_collectors.
+# py`, or a paired device from Track 12/20) and is surfaced so the wizard
+# can say so honestly rather than silently dropping it.
+#
+# HONEST SCOPE LIMIT, stated once here rather than per-type below:
+# `POST /providers` / `POST /sources` / `POST /connections` (Track 21)
+# only persist the Track 14 Provider/Source/Connection catalog rows --
+# exactly what `register_provider`/`register_source`/`register_connection`
+# already did before this track. They do NOT start a live adapter, open a
+# socket, subscribe a webhook, or read a real credential. Standing up the
+# actual running transport for most connection types still goes through
+# this codebase's pre-existing, type-specific collector registries
+# (`app/telegram_collectors.py`, `app/email_collectors.py`, `app/website_
+# collectors.py`, `app/notification_bridge.py`, ...) or a push route
+# already wired in `app/main.py` (`/webhook/{source_name}`, `/sms/twilio`,
+# `/whatsapp/webhook`) -- this wizard's job is to make the CATALOG entry
+# (and therefore the provider's presence in certification/shadow-mode/
+# health tooling) easy to create, not to replace those registries.
+_CREDENTIAL_REF_HELP = (
+    "The NAME of an environment variable holding this secret (e.g. "
+    "TELEGRAM_MYBOT_TOKEN) -- never the raw token/password itself. See "
+    "app/connections.py's own module docstring (looks_like_raw_credential)."
+)
+
+SetupField = dict[str, Any]
+
+_SETUP_FIELDS: dict[str, list[SetupField]] = {
+    "telegram_bot": [
+        {"name": "bot_token_env_var", "label": "Bot token (env var name)", "type": "credential_reference",
+         "required": True, "target": "connection.credential_reference", "help": _CREDENTIAL_REF_HELP},
+        {"name": "chat_id", "label": "Chat / channel ID", "type": "text", "required": True,
+         "target": "source.url_or_reference",
+         "help": "The numeric or @channel chat_id this BotFather bot has been added to (app/sources/telegram.py TelegramSource.chat_id)."},
+    ],
+    "telegram_user": [
+        {"name": "api_hash_env_var", "label": "Telethon api_hash (env var name)", "type": "credential_reference",
+         "required": True, "target": "connection.credential_reference", "help": _CREDENTIAL_REF_HELP},
+        {"name": "api_id", "label": "Telethon api_id", "type": "text", "required": True,
+         "target": "connection.account_identity",
+         "help": "my.telegram.org api_id for the authenticated user session (app/sources/telegram_user.py)."},
+        {"name": "chat_id", "label": "Chat ID", "type": "text", "required": True, "target": "source.url_or_reference",
+         "help": "Channel/chat this user session reads (only reachable via a personal account, not a bot)."},
+        {"name": "topic_id", "label": "Topic ID (optional, forum channels)", "type": "text", "required": False,
+         "target": "source.source_native_id", "help": "Forum-topic id within the chat, if this channel uses topics."},
+    ],
+    "discord_bot": [
+        {"name": "bot_token_env_var", "label": "Bot token (env var name)", "type": "credential_reference",
+         "required": True, "target": "connection.credential_reference", "help": _CREDENTIAL_REF_HELP},
+        {"name": "channel_id", "label": "Channel ID", "type": "text", "required": True,
+         "target": "source.url_or_reference", "help": "Discord channel_id this bot reads (app/sources/discord.py)."},
+    ],
+    "slack_bot": [
+        {"name": "bot_token_env_var", "label": "Bot token (xoxb-..., env var name)", "type": "credential_reference",
+         "required": True, "target": "connection.credential_reference", "help": _CREDENTIAL_REF_HELP},
+        {"name": "app_token_env_var", "label": "App-level token (xapp-..., env var name)", "type": "credential_reference",
+         "required": True, "target": None,
+         "help": "Socket Mode also needs a SECOND secret (app.sources.slack.SlackSource.app_token). This data model "
+                 "has one credential_reference column per connection -- record both env var names using the same "
+                 "naming convention and wire the app token into deployment config directly; only the bot token is "
+                 "stored on this connection row."},
+        {"name": "channel_id", "label": "Channel ID", "type": "text", "required": True,
+         "target": "source.url_or_reference", "help": "Slack channel_id this bot listens on."},
+    ],
+    "slack_user": [
+        {"name": "user_token_env_var", "label": "User OAuth token (xoxp-..., env var name)", "type": "credential_reference",
+         "required": True, "target": "connection.credential_reference", "help": _CREDENTIAL_REF_HELP},
+        {"name": "channel_id", "label": "Channel ID", "type": "text", "required": True,
+         "target": "source.url_or_reference", "help": "Channel polled via channels.history (app/sources/slack_user.py)."},
+    ],
+    "twitter_bot": [
+        {"name": "bearer_token_env_var", "label": "App bearer token (env var name)", "type": "credential_reference",
+         "required": True, "target": "connection.credential_reference", "help": _CREDENTIAL_REF_HELP},
+        {"name": "stream_rules_note", "label": "Filtered-stream rules", "type": "text", "required": False,
+         "target": None,
+         "help": "tweepy filtered-stream rules (app/sources/twitter.py TwitterSource.rules) are configured directly "
+                 "in this adapter's own startup wiring today -- not a column this wizard's registration endpoints "
+                 "persist."},
+    ],
+    "twitter_user": [
+        {"name": "access_token_env_var", "label": "User-context OAuth2 access token (env var name)", "type": "credential_reference",
+         "required": True, "target": "connection.credential_reference", "help": _CREDENTIAL_REF_HELP},
+        {"name": "target_user_id", "label": "Target X/Twitter numeric user ID", "type": "text", "required": True,
+         "target": "source.source_native_id",
+         "help": "The numeric user id being followed (NOT the @handle -- a one-time handle->id lookup is a real "
+                 "setup step outside this adapter, see app/sources/twitter_user.py)."},
+        {"name": "poll_interval_seconds", "label": "Poll interval (seconds)", "type": "number", "required": False,
+         "default": 30, "target": "source.freshness_policy.poll_interval_seconds",
+         "help": "app.sources.twitter_user.DEFAULT_POLL_INTERVAL_SECONDS."},
+    ],
+    "email_imap": [
+        {"name": "imap_host", "label": "IMAP host:port", "type": "text", "required": True,
+         "target": "source.url_or_reference", "help": "e.g. imap.gmail.com:993 (app/sources/email_source.py EmailSource)."},
+        {"name": "username", "label": "Mailbox username / address", "type": "text", "required": True,
+         "target": "connection.account_identity", "help": "IMAP login identity for this mailbox."},
+        {"name": "password_env_var", "label": "IMAP password / app password (env var name)", "type": "credential_reference",
+         "required": True, "target": "connection.credential_reference", "help": _CREDENTIAL_REF_HELP},
+        {"name": "sender_allowlist_note", "label": "Sender allowlist / subject patterns", "type": "text", "required": False,
+         "target": None,
+         "help": "sender_allowlist and subject_patterns (required, real fields on EmailSource) are configured via "
+                 "app/email_collectors.py's own registry today, not a column this wizard's endpoints persist."},
+    ],
+    "website": [
+        {"name": "feed_or_article_list_url", "label": "Feed / article-list URL", "type": "text", "required": True,
+         "target": "source.url_or_reference", "help": "app/sources/website.py WebsiteSource.feed_url/article_list_url."},
+        {"name": "poll_interval_seconds", "label": "Poll interval (seconds)", "type": "number", "required": False,
+         "default": 300, "target": "source.freshness_policy.poll_interval_seconds", "help": "WebsiteSource default is 300."},
+    ],
+    "rss": [
+        {"name": "feed_url", "label": "RSS/Atom feed URL", "type": "text", "required": True,
+         "target": "source.url_or_reference", "help": "The FEED mode of app/sources/website.py WebsiteSource."},
+        {"name": "poll_interval_seconds", "label": "Poll interval (seconds)", "type": "number", "required": False,
+         "default": 300, "target": "source.freshness_policy.poll_interval_seconds", "help": "WebsiteSource default is 300."},
+    ],
+    "webhook": [
+        {"name": "source_name", "label": "Source name (URL path segment)", "type": "text", "required": True,
+         "target": "source.url_or_reference",
+         "help": "Inbound URL will be POST /webhook/{source_name}. Auth is a single, deployment-wide "
+                 "X-Webhook-Secret header checked against the WEBHOOK_SHARED_SECRET env var (app/main.py) -- "
+                 "NOT a secret generated per connection; this wizard never fabricates one."},
+    ],
+    "generic_http": [
+        {"name": "source_name", "label": "Source name (URL path segment)", "type": "text", "required": True,
+         "target": "source.url_or_reference",
+         "help": "Same adapter/route as 'webhook' -- POST /webhook/{source_name}, WEBHOOK_SHARED_SECRET-gated."},
+    ],
+    "sms_twilio": [
+        {"name": "note", "label": "No per-connection fields", "type": "text", "required": False, "target": None,
+         "help": "SMS arrives at a single global POST /sms/twilio route, X-Twilio-Signature verified against "
+                 "TWILIO_AUTH_TOKEN (app/sources/sms_twilio.py) -- there is no per-connection credential or "
+                 "address to collect; only a display name is meaningful here."},
+    ],
+    "whatsapp_business": [
+        {"name": "note", "label": "No per-connection fields", "type": "text", "required": False, "target": None,
+         "help": "Messages arrive at a single global POST /whatsapp/webhook route, HMAC-SHA256 verified "
+                 "(app/sources/whatsapp.py) -- there is no per-connection credential or address to collect; only "
+                 "a display name is meaningful here."},
+    ],
+    "android_notification": [
+        {"name": "device_id", "label": "Paired device ID", "type": "text", "required": True,
+         "target": "connection.account_identity",
+         "help": "Must already be paired via POST /notification-bridge/devices (Track 12/20) -- this wizard does "
+                 "not pair a new device."},
+        {"name": "app_package", "label": "Android app package", "type": "text", "required": True,
+         "target": "source.source_native_id",
+         "help": "e.g. com.whop.whop -- must already be in that device's authorized app_packages list."},
+    ],
+    "android_active_retrieval": [
+        {"name": "device_id", "label": "Paired device ID", "type": "text", "required": True,
+         "target": "connection.account_identity", "help": "Same paired device as android_notification."},
+        {"name": "app_package", "label": "Android app package", "type": "text", "required": True,
+         "target": "source.source_native_id",
+         "help": "Also gated by app/phone_escalation.py's own per-app CapabilityState ladder and deny-list -- "
+                 "registering this source does not itself grant active-retrieval capability."},
+    ],
+}
+
+
+def get_connection_setup_fields(connection_type: str) -> Optional[dict[str, Any]]:
+    """Returns `{"connection_type", "status", "fields": [...]}` for an
+    `implemented` type (real, adapter-sourced field list -- see
+    `_SETUP_FIELDS`'s own module-level docstring), or `{"connection_type",
+    "status": "not_implemented", "fields": None, "notes": ...}` for one of
+    the catalog's `not_implemented` entries -- NEVER a guessed field list
+    for an adapter that doesn't exist (hard rule 11). Returns `None` when
+    `connection_type` isn't in the catalog at all (the route turns that
+    into a 404, same as every other `/connections/catalog/...` route)."""
+    entry = get_connection_catalog_entry(connection_type)
+    if entry is None:
+        return None
+    if entry["status"] != "implemented":
+        return {
+            "connection_type": connection_type,
+            "display_name": entry["display_name"],
+            "status": "not_implemented",
+            "fields": None,
+            "notes": entry["notes"],
+        }
+    fields = _SETUP_FIELDS.get(connection_type)
+    if fields is None:
+        # Implemented in the catalog but this table hasn't been extended
+        # for it yet -- honest empty-list gap, never a guess.
+        return {
+            "connection_type": connection_type,
+            "display_name": entry["display_name"],
+            "status": "implemented",
+            "fields": [],
+            "notes": "This connection type is implemented, but its onboarding-wizard field list has not been "
+                     "catalogued yet -- use POST /connections / POST /sources directly.",
+        }
+    return {
+        "connection_type": connection_type,
+        "display_name": entry["display_name"],
+        "status": "implemented",
+        "fields": fields,
+        "notes": entry["notes"],
+    }
