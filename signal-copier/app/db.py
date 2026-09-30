@@ -26,6 +26,8 @@ from app.models import (
     Signal,
     UncertaintyState,
 )
+from app.connections import validate_connection_registration
+from app.provider_catalog import validate_provider_registration, validate_source_registration
 from app.unified_collectors import CollectorKind, UnifiedCollectorError, now_utc
 from app.writer_lease import LeaseStillValidError, WriterLeaseHeldByAnotherSiteError, WriterLeaseRecord
 from signal_platform_contracts import EventEnvelope
@@ -1262,6 +1264,141 @@ CREATE TABLE IF NOT EXISTS phone_escalation_attempts (
 );
 
 CREATE INDEX IF NOT EXISTS idx_phone_escalation_attempts_device ON phone_escalation_attempts (device_id, notification_key);
+
+-- Track 14: the Provider/Source/Connection data model -- see
+-- app/provider_catalog.py's own module docstring for the full
+-- rationale and for exactly how these three tables relate to every
+-- earlier registry (collectors, notification_bridge_devices,
+-- phone_escalation_configs) this track builds additively on top of,
+-- without replacing any of them.
+--
+-- `providers`: ONE row per real-world signal-provider identity,
+-- independent of how many transports (`sources` rows) reach it.
+-- `status`/`execution_eligibility`/`certification_state` are each
+-- constrained, at the application layer, to
+-- app.provider_catalog.ProviderStatus/ExecutionEligibility/
+-- CertificationState. `execution_eligibility` is an ADDITIONAL gate
+-- that composes with, and never replaces, app/engine.py's own
+-- `_check_route_qualified` per-route qualification gate -- see this
+-- table's own column and app/provider_catalog.py's docstring for that
+-- relationship. NEVER a credential column on this table -- see
+-- app/provider_catalog.py's hard rule.
+CREATE TABLE IF NOT EXISTS providers (
+    id TEXT PRIMARY KEY,
+    display_name TEXT NOT NULL,
+    aliases TEXT NOT NULL DEFAULT '[]',
+    logo_url TEXT,
+    website TEXT,
+    description TEXT,
+    status TEXT NOT NULL DEFAULT 'onboarding',
+    account_ownership TEXT,
+    subscription_status TEXT,
+    classification TEXT,
+    asset_classes TEXT NOT NULL DEFAULT '[]',
+    strategy_types TEXT NOT NULL DEFAULT '[]',
+    provider_timezone TEXT,
+    execution_eligibility TEXT NOT NULL DEFAULT 'disabled',
+    default_parser_profile TEXT,
+    max_entry_age_seconds INTEGER,
+    stale_exit_policy TEXT,
+    min_parse_confidence REAL,
+    correlation_window_seconds INTEGER,
+    risk_policy_ref TEXT,
+    certification_state TEXT NOT NULL DEFAULT 'uncertified',
+    certification_version TEXT,
+    certified_at TEXT,
+    operator_notes TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_providers_status ON providers (status);
+
+-- `sources`: MANY rows per provider, one per transport/channel that
+-- provider's alerts arrive through -- this is the layer that
+-- represents "the same provider sends the same trade through Whop,
+-- Telegram, email, SMS and a website" as 5 `sources` rows under 1
+-- `providers` row, each with its own `role`
+-- (PRIMARY/SECONDARY/FALLBACK/RECONCILIATION/DISCOVERY_ONLY -- see
+-- app.provider_catalog.SourceRole). `connection_id` is a nullable FK
+-- (SQLite does not enforce it across `ALTER`-free CREATE IF NOT
+-- EXISTS bootstraps in this codebase's existing convention -- see
+-- every other table above -- so it's application-enforced, in
+-- app/db.py's `register_source`) to the reusable `connections` row
+-- this source's events actually arrive over; NULL for a source with no
+-- connection registered yet (e.g. discovered but not yet wired up).
+-- `platform` is an open string (telegram/slack/twitter/email/website/
+-- notification_bridge/whop/...), matching `connections.connection_type`
+-- in spirit -- see app/provider_catalog.py's docstring for why this is
+-- deliberately not a closed enum.
+CREATE TABLE IF NOT EXISTS sources (
+    id TEXT PRIMARY KEY,
+    provider_id TEXT NOT NULL,
+    platform TEXT NOT NULL,
+    source_type TEXT,
+    source_native_id TEXT,
+    display_name TEXT,
+    url_or_reference TEXT,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    priority INTEGER NOT NULL DEFAULT 100,
+    role TEXT NOT NULL DEFAULT 'PRIMARY',
+    capture_method TEXT,
+    connection_id TEXT,
+    parser_profile TEXT,
+    asset_classes TEXT NOT NULL DEFAULT '[]',
+    strategy_types TEXT NOT NULL DEFAULT '[]',
+    freshness_policy TEXT NOT NULL DEFAULT '{}',
+    dedup_policy TEXT NOT NULL DEFAULT '{}',
+    execution_eligibility TEXT NOT NULL DEFAULT 'disabled',
+    health_state TEXT NOT NULL DEFAULT 'unqualified',
+    last_event_at TEXT,
+    last_success_at TEXT,
+    last_error_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_sources_provider_id ON sources (provider_id);
+CREATE INDEX IF NOT EXISTS idx_sources_connection_id ON sources (connection_id);
+
+-- `connections`: the reusable, credential-bearing transport a `sources`
+-- row points at. ONE connection can serve MANY sources across MANY
+-- providers -- see app/provider_catalog.py's docstring for the "one
+-- Gmail account, 15 providers" motivating example. `credential_
+-- reference` is ONLY an environment-variable NAME (or an existing hash
+-- reference, e.g. notification-bridge's pairing-token hash) -- NEVER a
+-- raw credential value, application-enforced by
+-- app.connections.validate_connection_registration. `capabilities` is
+-- a JSON object over the keys app.connections.CONNECTION_CAPABILITY_
+-- KEYS documents (realtime_events/history/.../active_retrieval) --
+-- this track only reserves the shape, it does not build capability
+-- discovery/introspection itself.
+CREATE TABLE IF NOT EXISTS connections (
+    id TEXT PRIMARY KEY,
+    connection_type TEXT NOT NULL,
+    display_name TEXT,
+    credential_reference TEXT,
+    authentication_type TEXT,
+    account_identity TEXT,
+    connection_state TEXT NOT NULL DEFAULT 'unconfigured',
+    authorization_state TEXT NOT NULL DEFAULT 'unauthorized',
+    scopes TEXT NOT NULL DEFAULT '[]',
+    capabilities TEXT NOT NULL DEFAULT '{}',
+    rate_limits TEXT NOT NULL DEFAULT '{}',
+    cost_info TEXT NOT NULL DEFAULT '{}',
+    last_authenticated_at TEXT,
+    token_expires_at TEXT,
+    last_heartbeat_at TEXT,
+    last_successful_event_at TEXT,
+    last_error_at TEXT,
+    last_error_detail TEXT,
+    retry_state TEXT NOT NULL DEFAULT '{}',
+    health_score REAL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_connections_connection_type ON connections (connection_type);
 
 CREATE INDEX IF NOT EXISTS idx_orders_executed_at ON orders (executed_at);
 CREATE INDEX IF NOT EXISTS idx_orders_account_id ON orders (account_id);
@@ -4017,6 +4154,569 @@ class SignalStore:
                 (json.dumps(merged), now_utc().isoformat(), collector_id),
             )
         return self.get_collector(collector_id)  # type: ignore[return-value]
+
+    # -- Track 14: Provider/Source/Connection catalog (app/provider_catalog.py,
+    # app/connections.py) -- see those modules' docstrings for the full data
+    # model and how it relates to the collector/notification-bridge/phone-
+    # escalation registries above. Minimal CRUD, no full UI, per that
+    # track's own build-order decision.
+
+    _PROVIDER_CATALOG_COLUMNS = (
+        "id, display_name, aliases, logo_url, website, description, status, account_ownership, "
+        "subscription_status, classification, asset_classes, strategy_types, provider_timezone, "
+        "execution_eligibility, default_parser_profile, max_entry_age_seconds, stale_exit_policy, "
+        "min_parse_confidence, correlation_window_seconds, risk_policy_ref, certification_state, "
+        "certification_version, certified_at, operator_notes, created_at, updated_at"
+    )
+
+    def _provider_catalog_row_to_dict(self, row: tuple) -> dict:
+        return {
+            "id": row[0],
+            "display_name": row[1],
+            "aliases": json.loads(row[2]) if row[2] else [],
+            "logo_url": row[3],
+            "website": row[4],
+            "description": row[5],
+            "status": row[6],
+            "account_ownership": row[7],
+            "subscription_status": row[8],
+            "classification": row[9],
+            "asset_classes": json.loads(row[10]) if row[10] else [],
+            "strategy_types": json.loads(row[11]) if row[11] else [],
+            "provider_timezone": row[12],
+            "execution_eligibility": row[13],
+            "default_parser_profile": row[14],
+            "max_entry_age_seconds": row[15],
+            "stale_exit_policy": row[16],
+            "min_parse_confidence": row[17],
+            "correlation_window_seconds": row[18],
+            "risk_policy_ref": row[19],
+            "certification_state": row[20],
+            "certification_version": row[21],
+            "certified_at": row[22],
+            "operator_notes": row[23],
+            "created_at": row[24],
+            "updated_at": row[25],
+        }
+
+    def register_provider(
+        self,
+        *,
+        provider_id: str,
+        display_name: str,
+        aliases: list[str] | None = None,
+        logo_url: str | None = None,
+        website: str | None = None,
+        description: str | None = None,
+        status: str = "onboarding",
+        account_ownership: str | None = None,
+        subscription_status: str | None = None,
+        classification: str | None = None,
+        asset_classes: list[str] | None = None,
+        strategy_types: list[str] | None = None,
+        provider_timezone: str | None = None,
+        execution_eligibility: str = "disabled",
+        default_parser_profile: str | None = None,
+        max_entry_age_seconds: int | None = None,
+        stale_exit_policy: str | None = None,
+        min_parse_confidence: float | None = None,
+        correlation_window_seconds: int | None = None,
+        risk_policy_ref: str | None = None,
+        certification_state: str = "uncertified",
+        certification_version: str | None = None,
+        certified_at: datetime | None = None,
+        operator_notes: str | None = None,
+    ) -> dict:
+        """Insert (or idempotently re-describe) one `providers` row.
+        Re-registering the SAME `provider_id` replaces every field given
+        but preserves `created_at` -- same convention as `register_
+        collector`. Field vocabulary (status/classification/account_
+        ownership/execution_eligibility/certification_state) is
+        validated by `app.provider_catalog.validate_provider_
+        registration` before anything is persisted."""
+        validate_provider_registration(
+            provider_id=provider_id,
+            display_name=display_name,
+            status=status,
+            classification=classification,
+            account_ownership=account_ownership,
+            execution_eligibility=execution_eligibility,
+            certification_state=certification_state,
+        )
+        now = now_utc().isoformat()
+        certified_at_s = certified_at.isoformat() if certified_at else None
+        with self._connect() as conn:
+            existing = conn.execute("SELECT created_at FROM providers WHERE id = ?", (provider_id,)).fetchone()
+            created_at = existing[0] if existing else now
+            conn.execute(
+                """INSERT INTO providers
+                       (id, display_name, aliases, logo_url, website, description, status, account_ownership,
+                        subscription_status, classification, asset_classes, strategy_types, provider_timezone,
+                        execution_eligibility, default_parser_profile, max_entry_age_seconds, stale_exit_policy,
+                        min_parse_confidence, correlation_window_seconds, risk_policy_ref, certification_state,
+                        certification_version, certified_at, operator_notes, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(id) DO UPDATE SET
+                       display_name = excluded.display_name,
+                       aliases = excluded.aliases,
+                       logo_url = excluded.logo_url,
+                       website = excluded.website,
+                       description = excluded.description,
+                       status = excluded.status,
+                       account_ownership = excluded.account_ownership,
+                       subscription_status = excluded.subscription_status,
+                       classification = excluded.classification,
+                       asset_classes = excluded.asset_classes,
+                       strategy_types = excluded.strategy_types,
+                       provider_timezone = excluded.provider_timezone,
+                       execution_eligibility = excluded.execution_eligibility,
+                       default_parser_profile = excluded.default_parser_profile,
+                       max_entry_age_seconds = excluded.max_entry_age_seconds,
+                       stale_exit_policy = excluded.stale_exit_policy,
+                       min_parse_confidence = excluded.min_parse_confidence,
+                       correlation_window_seconds = excluded.correlation_window_seconds,
+                       risk_policy_ref = excluded.risk_policy_ref,
+                       certification_state = excluded.certification_state,
+                       certification_version = excluded.certification_version,
+                       certified_at = excluded.certified_at,
+                       operator_notes = excluded.operator_notes,
+                       updated_at = excluded.updated_at""",
+                (
+                    provider_id,
+                    display_name,
+                    json.dumps(list(aliases or [])),
+                    logo_url,
+                    website,
+                    description,
+                    status,
+                    account_ownership,
+                    subscription_status,
+                    classification,
+                    json.dumps(list(asset_classes or [])),
+                    json.dumps(list(strategy_types or [])),
+                    provider_timezone,
+                    execution_eligibility,
+                    default_parser_profile,
+                    max_entry_age_seconds,
+                    stale_exit_policy,
+                    min_parse_confidence,
+                    correlation_window_seconds,
+                    risk_policy_ref,
+                    certification_state,
+                    certification_version,
+                    certified_at_s,
+                    operator_notes,
+                    created_at,
+                    now,
+                ),
+            )
+        return self.get_provider_catalog_entry(provider_id)  # type: ignore[return-value]
+
+    def get_provider_catalog_entry(self, provider_id: str) -> dict | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                f"SELECT {self._PROVIDER_CATALOG_COLUMNS} FROM providers WHERE id = ?", (provider_id,)
+            ).fetchone()
+        return self._provider_catalog_row_to_dict(row) if row else None
+
+    def list_provider_catalog_entries(self, *, status: str | None = None) -> list[dict]:
+        with self._connect() as conn:
+            if status is not None:
+                rows = conn.execute(
+                    f"SELECT {self._PROVIDER_CATALOG_COLUMNS} FROM providers WHERE status = ? ORDER BY id",
+                    (status,),
+                ).fetchall()
+            else:
+                rows = conn.execute(f"SELECT {self._PROVIDER_CATALOG_COLUMNS} FROM providers ORDER BY id").fetchall()
+        return [self._provider_catalog_row_to_dict(r) for r in rows]
+
+    def update_provider_catalog_entry(self, provider_id: str, patch: dict) -> dict:
+        """Shallow-updates only the columns present in `patch` (a dict
+        of column-name -> new value, JSON-list columns passed as plain
+        Python lists). Raises `KeyError` for an unregistered provider,
+        same convention as `merge_collector_provider_config`."""
+        existing = self.get_provider_catalog_entry(provider_id)
+        if existing is None:
+            raise KeyError(f"no provider registered with id={provider_id!r}")
+        allowed = set(self._PROVIDER_CATALOG_COLUMNS.replace(" ", "").split(",")) - {
+            "id",
+            "created_at",
+            "updated_at",
+        }
+        json_columns = {"aliases", "asset_classes", "strategy_types"}
+        set_clauses = []
+        values: list[Any] = []
+        for key, value in patch.items():
+            if key not in allowed:
+                raise KeyError(f"unknown providers column: {key!r}")
+            set_clauses.append(f"{key} = ?")
+            values.append(json.dumps(value) if key in json_columns else value)
+        if not set_clauses:
+            return existing
+        set_clauses.append("updated_at = ?")
+        now = now_utc().isoformat()
+        values.append(now)
+        values.append(provider_id)
+        with self._connect() as conn:
+            conn.execute(f"UPDATE providers SET {', '.join(set_clauses)} WHERE id = ?", values)
+        return self.get_provider_catalog_entry(provider_id)  # type: ignore[return-value]
+
+    _SOURCE_COLUMNS = (
+        "id, provider_id, platform, source_type, source_native_id, display_name, url_or_reference, enabled, "
+        "priority, role, capture_method, connection_id, parser_profile, asset_classes, strategy_types, "
+        "freshness_policy, dedup_policy, execution_eligibility, health_state, last_event_at, last_success_at, "
+        "last_error_at, created_at, updated_at"
+    )
+
+    def _source_row_to_dict(self, row: tuple) -> dict:
+        return {
+            "id": row[0],
+            "provider_id": row[1],
+            "platform": row[2],
+            "source_type": row[3],
+            "source_native_id": row[4],
+            "display_name": row[5],
+            "url_or_reference": row[6],
+            "enabled": bool(row[7]),
+            "priority": row[8],
+            "role": row[9],
+            "capture_method": row[10],
+            "connection_id": row[11],
+            "parser_profile": row[12],
+            "asset_classes": json.loads(row[13]) if row[13] else [],
+            "strategy_types": json.loads(row[14]) if row[14] else [],
+            "freshness_policy": json.loads(row[15]) if row[15] else {},
+            "dedup_policy": json.loads(row[16]) if row[16] else {},
+            "execution_eligibility": row[17],
+            "health_state": row[18],
+            "last_event_at": row[19],
+            "last_success_at": row[20],
+            "last_error_at": row[21],
+            "created_at": row[22],
+            "updated_at": row[23],
+        }
+
+    def register_source(
+        self,
+        *,
+        source_id: str,
+        provider_id: str,
+        platform: str,
+        source_type: str | None = None,
+        source_native_id: str | None = None,
+        display_name: str | None = None,
+        url_or_reference: str | None = None,
+        enabled: bool = True,
+        priority: int = 100,
+        role: str = "PRIMARY",
+        capture_method: str | None = None,
+        connection_id: str | None = None,
+        parser_profile: str | None = None,
+        asset_classes: list[str] | None = None,
+        strategy_types: list[str] | None = None,
+        freshness_policy: dict | None = None,
+        dedup_policy: dict | None = None,
+        execution_eligibility: str = "disabled",
+        health_state: str = "unqualified",
+    ) -> dict:
+        """Insert (or idempotently re-describe) one `sources` row. The
+        caller is responsible for `provider_id` referring to an already-
+        registered `providers` row (application-enforced -- see this
+        method's own `KeyError` below -- SQLite's own `CREATE TABLE IF
+        NOT EXISTS` bootstrap here does not declare a real `FOREIGN KEY`
+        constraint, matching every other table in this schema's existing
+        convention). `connection_id`, if given, must likewise refer to an
+        already-registered `connections` row."""
+        validate_source_registration(
+            source_id=source_id,
+            provider_id=provider_id,
+            platform=platform,
+            role=role,
+            execution_eligibility=execution_eligibility,
+            health_state=health_state,
+        )
+        now = now_utc().isoformat()
+        with self._connect() as conn:
+            if conn.execute("SELECT 1 FROM providers WHERE id = ?", (provider_id,)).fetchone() is None:
+                raise KeyError(f"no provider registered with id={provider_id!r}")
+            if connection_id is not None:
+                if conn.execute("SELECT 1 FROM connections WHERE id = ?", (connection_id,)).fetchone() is None:
+                    raise KeyError(f"no connection registered with id={connection_id!r}")
+            existing = conn.execute("SELECT created_at FROM sources WHERE id = ?", (source_id,)).fetchone()
+            created_at = existing[0] if existing else now
+            conn.execute(
+                """INSERT INTO sources
+                       (id, provider_id, platform, source_type, source_native_id, display_name, url_or_reference,
+                        enabled, priority, role, capture_method, connection_id, parser_profile, asset_classes,
+                        strategy_types, freshness_policy, dedup_policy, execution_eligibility, health_state,
+                        created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(id) DO UPDATE SET
+                       provider_id = excluded.provider_id,
+                       platform = excluded.platform,
+                       source_type = excluded.source_type,
+                       source_native_id = excluded.source_native_id,
+                       display_name = excluded.display_name,
+                       url_or_reference = excluded.url_or_reference,
+                       enabled = excluded.enabled,
+                       priority = excluded.priority,
+                       role = excluded.role,
+                       capture_method = excluded.capture_method,
+                       connection_id = excluded.connection_id,
+                       parser_profile = excluded.parser_profile,
+                       asset_classes = excluded.asset_classes,
+                       strategy_types = excluded.strategy_types,
+                       freshness_policy = excluded.freshness_policy,
+                       dedup_policy = excluded.dedup_policy,
+                       execution_eligibility = excluded.execution_eligibility,
+                       updated_at = excluded.updated_at""",
+                (
+                    source_id,
+                    provider_id,
+                    platform,
+                    source_type,
+                    source_native_id,
+                    display_name,
+                    url_or_reference,
+                    1 if enabled else 0,
+                    priority,
+                    role,
+                    capture_method,
+                    connection_id,
+                    parser_profile,
+                    json.dumps(list(asset_classes or [])),
+                    json.dumps(list(strategy_types or [])),
+                    json.dumps(freshness_policy or {}),
+                    json.dumps(dedup_policy or {}),
+                    execution_eligibility,
+                    health_state,
+                    created_at,
+                    now,
+                ),
+            )
+        return self.get_source(source_id)  # type: ignore[return-value]
+
+    def get_source(self, source_id: str) -> dict | None:
+        with self._connect() as conn:
+            row = conn.execute(f"SELECT {self._SOURCE_COLUMNS} FROM sources WHERE id = ?", (source_id,)).fetchone()
+        return self._source_row_to_dict(row) if row else None
+
+    def list_sources(self, *, provider_id: str | None = None, connection_id: str | None = None) -> list[dict]:
+        with self._connect() as conn:
+            if provider_id is not None:
+                rows = conn.execute(
+                    f"SELECT {self._SOURCE_COLUMNS} FROM sources WHERE provider_id = ? ORDER BY priority, id",
+                    (provider_id,),
+                ).fetchall()
+            elif connection_id is not None:
+                rows = conn.execute(
+                    f"SELECT {self._SOURCE_COLUMNS} FROM sources WHERE connection_id = ? ORDER BY priority, id",
+                    (connection_id,),
+                ).fetchall()
+            else:
+                rows = conn.execute(f"SELECT {self._SOURCE_COLUMNS} FROM sources ORDER BY provider_id, priority, id").fetchall()
+        return [self._source_row_to_dict(r) for r in rows]
+
+    def update_source_health(
+        self,
+        source_id: str,
+        health_state: str,
+        *,
+        last_event_at: datetime | None = None,
+        last_success_at: datetime | None = None,
+        last_error_at: datetime | None = None,
+    ) -> None:
+        """The ONE place a `sources` row's health/observation timestamps
+        are written -- same "caller validates its own kind's health
+        vocabulary first" convention as `update_collector_health`."""
+        now = now_utc().isoformat()
+        with self._connect() as conn:
+            cur = conn.execute(
+                """UPDATE sources
+                   SET health_state = ?,
+                       last_event_at = COALESCE(?, last_event_at),
+                       last_success_at = COALESCE(?, last_success_at),
+                       last_error_at = COALESCE(?, last_error_at),
+                       updated_at = ?
+                   WHERE id = ?""",
+                (
+                    health_state,
+                    last_event_at.isoformat() if last_event_at else None,
+                    last_success_at.isoformat() if last_success_at else None,
+                    last_error_at.isoformat() if last_error_at else None,
+                    now,
+                    source_id,
+                ),
+            )
+            if cur.rowcount == 0:
+                raise KeyError(f"no source registered with id={source_id!r}")
+
+    _CONNECTION_COLUMNS = (
+        "id, connection_type, display_name, credential_reference, authentication_type, account_identity, "
+        "connection_state, authorization_state, scopes, capabilities, rate_limits, cost_info, "
+        "last_authenticated_at, token_expires_at, last_heartbeat_at, last_successful_event_at, last_error_at, "
+        "last_error_detail, retry_state, health_score, created_at, updated_at"
+    )
+
+    def _connection_row_to_dict(self, row: tuple) -> dict:
+        return {
+            "id": row[0],
+            "connection_type": row[1],
+            "display_name": row[2],
+            "credential_reference": row[3],
+            "authentication_type": row[4],
+            "account_identity": row[5],
+            "connection_state": row[6],
+            "authorization_state": row[7],
+            "scopes": json.loads(row[8]) if row[8] else [],
+            "capabilities": json.loads(row[9]) if row[9] else {},
+            "rate_limits": json.loads(row[10]) if row[10] else {},
+            "cost_info": json.loads(row[11]) if row[11] else {},
+            "last_authenticated_at": row[12],
+            "token_expires_at": row[13],
+            "last_heartbeat_at": row[14],
+            "last_successful_event_at": row[15],
+            "last_error_at": row[16],
+            "last_error_detail": row[17],
+            "retry_state": json.loads(row[18]) if row[18] else {},
+            "health_score": row[19],
+            "created_at": row[20],
+            "updated_at": row[21],
+        }
+
+    def register_connection(
+        self,
+        *,
+        connection_id: str,
+        connection_type: str,
+        display_name: str | None = None,
+        credential_reference: str | None = None,
+        authentication_type: str | None = None,
+        account_identity: str | None = None,
+        connection_state: str = "unconfigured",
+        authorization_state: str = "unauthorized",
+        scopes: list[str] | None = None,
+        capabilities: dict | None = None,
+        rate_limits: dict | None = None,
+        cost_info: dict | None = None,
+    ) -> dict:
+        """Insert (or idempotently re-describe) one `connections` row.
+        Field vocabulary/credential-shape is validated by
+        `app.connections.validate_connection_registration` before
+        anything is persisted -- see that function's own docstring for
+        the raw-credential heuristic guard it applies."""
+        validate_connection_registration(
+            connection_id=connection_id,
+            connection_type=connection_type,
+            credential_reference=credential_reference,
+            connection_state=connection_state,
+            authorization_state=authorization_state,
+        )
+        now = now_utc().isoformat()
+        with self._connect() as conn:
+            existing = conn.execute("SELECT created_at FROM connections WHERE id = ?", (connection_id,)).fetchone()
+            created_at = existing[0] if existing else now
+            conn.execute(
+                """INSERT INTO connections
+                       (id, connection_type, display_name, credential_reference, authentication_type,
+                        account_identity, connection_state, authorization_state, scopes, capabilities,
+                        rate_limits, cost_info, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(id) DO UPDATE SET
+                       connection_type = excluded.connection_type,
+                       display_name = excluded.display_name,
+                       credential_reference = excluded.credential_reference,
+                       authentication_type = excluded.authentication_type,
+                       account_identity = excluded.account_identity,
+                       connection_state = excluded.connection_state,
+                       authorization_state = excluded.authorization_state,
+                       scopes = excluded.scopes,
+                       capabilities = excluded.capabilities,
+                       rate_limits = excluded.rate_limits,
+                       cost_info = excluded.cost_info,
+                       updated_at = excluded.updated_at""",
+                (
+                    connection_id,
+                    connection_type,
+                    display_name,
+                    credential_reference,
+                    authentication_type,
+                    account_identity,
+                    connection_state,
+                    authorization_state,
+                    json.dumps(list(scopes or [])),
+                    json.dumps(capabilities or {}),
+                    json.dumps(rate_limits or {}),
+                    json.dumps(cost_info or {}),
+                    created_at,
+                    now,
+                ),
+            )
+        return self.get_connection(connection_id)  # type: ignore[return-value]
+
+    def get_connection(self, connection_id: str) -> dict | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                f"SELECT {self._CONNECTION_COLUMNS} FROM connections WHERE id = ?", (connection_id,)
+            ).fetchone()
+        return self._connection_row_to_dict(row) if row else None
+
+    def list_connections(self, *, connection_type: str | None = None) -> list[dict]:
+        with self._connect() as conn:
+            if connection_type is not None:
+                rows = conn.execute(
+                    f"SELECT {self._CONNECTION_COLUMNS} FROM connections WHERE connection_type = ? ORDER BY id",
+                    (connection_type,),
+                ).fetchall()
+            else:
+                rows = conn.execute(f"SELECT {self._CONNECTION_COLUMNS} FROM connections ORDER BY id").fetchall()
+        return [self._connection_row_to_dict(r) for r in rows]
+
+    def update_connection_health(
+        self,
+        connection_id: str,
+        *,
+        connection_state: str | None = None,
+        authorization_state: str | None = None,
+        last_heartbeat_at: datetime | None = None,
+        last_successful_event_at: datetime | None = None,
+        last_error_at: datetime | None = None,
+        last_error_detail: str | None = None,
+        health_score: float | None = None,
+    ) -> None:
+        """The ONE place a `connections` row's live health/heartbeat
+        state is written. Only the fields explicitly given (non-`None`)
+        are changed -- a caller updating just `last_heartbeat_at` (a
+        routine heartbeat) never has to know or resupply the row's
+        current `connection_state`."""
+        existing = self.get_connection(connection_id)
+        if existing is None:
+            raise KeyError(f"no connection registered with id={connection_id!r}")
+        now = now_utc().isoformat()
+        with self._connect() as conn:
+            conn.execute(
+                """UPDATE connections
+                   SET connection_state = COALESCE(?, connection_state),
+                       authorization_state = COALESCE(?, authorization_state),
+                       last_heartbeat_at = COALESCE(?, last_heartbeat_at),
+                       last_successful_event_at = COALESCE(?, last_successful_event_at),
+                       last_error_at = COALESCE(?, last_error_at),
+                       last_error_detail = COALESCE(?, last_error_detail),
+                       health_score = COALESCE(?, health_score),
+                       updated_at = ?
+                   WHERE id = ?""",
+                (
+                    connection_state,
+                    authorization_state,
+                    last_heartbeat_at.isoformat() if last_heartbeat_at else None,
+                    last_successful_event_at.isoformat() if last_successful_event_at else None,
+                    last_error_at.isoformat() if last_error_at else None,
+                    last_error_detail,
+                    health_score,
+                    now,
+                    connection_id,
+                ),
+            )
 
     # -- Track 5: Telegram collector registry (app/telegram_collectors.py) --
 
