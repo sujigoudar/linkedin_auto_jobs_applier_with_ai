@@ -35,14 +35,152 @@
   <p><span class="badge badge-unknown">UNSUPPORTED</span> -- no provider-royalty model exists in this build.</p>
 </div>
 
+{% if error %}
+<div class="panel">
+  <p><span class="badge badge-unknown">Error</span> {{ error }}</p>
+</div>
+{% endif %}
+
 <div class="panel">
   <h2>Cost attribution</h2>
-  <p><span class="badge badge-unknown">UNSUPPORTED</span> -- no platform/data/cloud cost model exists in this build.</p>
+  <p><small>Real, entered operating-cost data only (subscriptions, infrastructure, API/LLM usage, data feeds) --
+  never a live billing-API pull (no such integration exists in this build; see app/services/operating_cost.py).
+  Entered manually or via a bounded CSV import.</small></p>
+
+  {% if cost_summary.by_category %}
+  <h3>By category</h3>
+  <table>
+    <thead><tr><th>Category</th><th>Currency</th><th>Total</th></tr></thead>
+    <tbody>
+      {% for row in cost_summary.by_category %}
+      <tr>
+        <td>{{ row.category }}</td>
+        <td>{{ row.currency | upper }}</td>
+        <td>{{ "%.2f"|format(row.total_cents / 100) }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="empty-state"><p>No operating costs have been recorded for this tenant yet.</p></div>
+  {% endif %}
+
+  {% if cost_summary.by_cost_center %}
+  <h3>By cost center</h3>
+  <table>
+    <thead><tr><th>Cost center</th><th>Currency</th><th>Total</th></tr></thead>
+    <tbody>
+      {% for row in cost_summary.by_cost_center %}
+      <tr>
+        <td>{{ row.cost_center or "(unattributed -- e.g. base infra)" }}</td>
+        <td>{{ row.currency | upper }}</td>
+        <td>{{ "%.2f"|format(row.total_cents / 100) }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+
+  {% if cost_summary.rows %}
+  <h3>All recorded costs</h3>
+  <table>
+    <thead>
+      <tr>
+        <th>Vendor</th><th>Category</th><th>Amount</th><th>Cadence</th><th>Period</th><th>Cost center</th>
+        <th>Source</th><th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in cost_summary.rows %}
+      <tr>
+        <td>{{ row.vendor }}</td>
+        <td>{{ row.category.value }}</td>
+        <td class="num">{{ "%.2f"|format(row.amount_cents / 100) }} {{ row.currency | upper }}</td>
+        <td>{{ row.cadence.value }}</td>
+        <td>{{ row.period_start.date() }} &ndash; {{ row.period_end.date() }}</td>
+        <td>{{ row.cost_center or "-" }}</td>
+        <td>
+          {{ row.entry_source.value }}
+          {% if row.is_usage_estimate %}<span class="badge badge-unknown">estimated from logged usage, not billing-reconciled</span>{% endif %}
+        </td>
+        <td>
+          {% if can_manage_operating_costs %}
+          <form method="post" action="/ops/business/costs/{{ row.cost_id }}/delete" style="display:inline">
+            <button type="submit">Delete</button>
+          </form>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+
+  {% if can_manage_operating_costs %}
+  <h3>Record a cost</h3>
+  <form method="post" action="/ops/business/costs">
+    <label>Category
+      <select name="category">
+        {% for c in all_cost_categories %}<option value="{{ c }}">{{ c }}</option>{% endfor %}
+      </select>
+    </label>
+    <label>Vendor <input type="text" name="vendor" required maxlength="200"></label>
+    <label>Amount (cents) <input type="number" name="amount_cents" required min="0"></label>
+    <label>Currency <input type="text" name="currency" value="usd" maxlength="8"></label>
+    <label>Cadence
+      <select name="cadence">
+        {% for c in all_cost_cadences %}<option value="{{ c }}" {% if c == "monthly" %}selected{% endif %}>{{ c }}</option>{% endfor %}
+      </select>
+    </label>
+    <label>Period start <input type="date" name="period_start" required></label>
+    <label>Period end <input type="date" name="period_end" required></label>
+    <label>Cost center (optional -- product/sleeve/account slug) <input type="text" name="cost_center"></label>
+    <label>Description (optional) <input type="text" name="description" maxlength="2000"></label>
+    <button type="submit">Add cost</button>
+  </form>
+
+  <h3>Import costs from CSV</h3>
+  <p><small>Columns: category, vendor, amount_cents, currency, cadence, period_start, period_end,
+  description (optional), cost_center (optional). All-or-nothing: a single bad row rejects the whole file.</small></p>
+  <form method="post" action="/ops/business/costs/import" enctype="multipart/form-data">
+    <input type="file" name="csv_file" accept=".csv,text/csv" required>
+    <button type="submit">Import CSV</button>
+  </form>
+  {% endif %}
 </div>
 
 <div class="panel">
   <h2>Margin</h2>
-  <p><span class="badge badge-unknown">UNSUPPORTED</span> -- margin requires real cost/royalty data this build does not have; it is never computed from admittedly incomplete inputs.</p>
+  <p><small>Revenue (booked, from real Subscription rows) minus cost (real OperatingCost rows) for the
+  current calendar month ({{ margin.period_start.date() }} &ndash; {{ margin.period_end.date() }}),
+  computed per currency -- ONLY when both a real revenue figure and at least one real recorded cost
+  exist for that currency in this period. Never trading P&amp;L, and never computed from partial/zero
+  costs.</small></p>
+  {% if margin.rows %}
+  <table>
+    <thead><tr><th>Currency</th><th>Revenue</th><th>Cost</th><th>Margin</th></tr></thead>
+    <tbody>
+      {% for row in margin.rows %}
+      <tr>
+        <td>{{ row.currency | upper }}</td>
+        <td class="num">{{ "%.2f"|format(row.revenue_cents / 100) }}</td>
+        <td class="num">{{ "%.2f"|format(row.cost_cents / 100) }}</td>
+        <td class="num">{{ "%.2f"|format(row.margin_cents / 100) }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+  {% if margin.currencies_missing_costs %}
+  <p>
+    {% for currency in margin.currencies_missing_costs %}
+    <span class="badge badge-unknown">{{ currency | upper }}: unavailable -- costs not recorded for this period</span>
+    {% endfor %}
+  </p>
+  {% endif %}
+  {% if not margin.rows and not margin.currencies_missing_costs %}
+  <div class="empty-state"><p>No booked revenue for this tenant this period yet.</p></div>
+  {% endif %}
 </div>
 
 <div class="panel">

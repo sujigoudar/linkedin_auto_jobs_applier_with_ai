@@ -116,6 +116,19 @@ class _Settings(BaseSettings):
     #: currently do.
     FIT_SIM_CATALOG_CONFIG_JSON: str = "{}"
 
+    #: Track 11 -- whether the background health-sampler task (app/main.py's
+    #: `_health_sampler_loop`) runs at all. A single, explicit process-
+    #: wide gate; tests set this False and record samples directly via
+    #: app.services.service_health.record_health_sample instead of
+    #: relying on a live timer.
+    HEALTH_SAMPLER_ENABLED: bool = True
+
+    #: Seconds between background health-sampler passes. A same-process/
+    #: cross-service SAMPLING cadence, not a correctness requirement -- a
+    #: slower interval just means a wider gap before AD-22's uptime
+    #: window has enough samples.
+    HEALTH_SAMPLER_INTERVAL_SECONDS: float = 60.0
+
 
 _settings = _Settings()
 
@@ -131,3 +144,5 @@ FORCE_SECURE_COOKIES = _settings.FORCE_SECURE_COOKIES
 SIGNAL_COPIER_BASE_URL = _settings.SIGNAL_COPIER_BASE_URL
 CATALOG_FIT_SIM_SIGNING_SECRET = _settings.CATALOG_FIT_SIM_SIGNING_SECRET
 FIT_SIM_CATALOG_CONFIG_JSON = _settings.FIT_SIM_CATALOG_CONFIG_JSON
+HEALTH_SAMPLER_ENABLED = _settings.HEALTH_SAMPLER_ENABLED
+HEALTH_SAMPLER_INTERVAL_SECONDS = _settings.HEALTH_SAMPLER_INTERVAL_SECONDS

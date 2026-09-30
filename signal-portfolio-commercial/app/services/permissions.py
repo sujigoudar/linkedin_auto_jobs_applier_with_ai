@@ -209,6 +209,12 @@ _ALLOWED: dict[str, frozenset[Role]] = {
     #: managed-program eligibility/status, same shape as
     #: "view_own_alerts".
     "view_own_managed_programs": frozenset({Role.CUSTOMER}),
+    #: Track 11 -- AD-12 "Business economics and royalties"'s new
+    #: operating-cost CRUD (app/services/operating_cost.py). Same pair
+    #: as "view_business_economics"/"manage_pricing": recording what the
+    #: business is spending is a billing/ownership decision, not a
+    #: research/support/publisher concern.
+    "manage_operating_costs": frozenset({Role.OWNER, Role.BILLING_OPERATOR}),
 }
 
 

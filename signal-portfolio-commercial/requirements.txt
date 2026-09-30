@@ -21,6 +21,8 @@ pyjwt>=2.8
 pwdlib[argon2]>=0.2  # app/services/local_auth.py's real password hashing (ID-01/ID-03) -- same
                      # library, same reason, as the paired signal-copier service's own app/auth.py
 alembic
+prometheus-client>=0.20  # Track 11's private operational metrics (app/metrics.py, GET /metrics) -- same
+                         # library, same convention, as signal-copier's own app/metrics.py.
 pytest
 pytest-asyncio
 ruff>=0.6      # dev-only: lint (CI)
