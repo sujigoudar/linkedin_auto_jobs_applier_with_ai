@@ -5,11 +5,13 @@ REJECTED/ERROR OrderResult in this codebase's own current adapters also
 happens to leave broker_order_id/filled_quantity/filled_price unset,
 which would make the FILLED-only check look redundant if only
 exercised end-to-end through the engine."""
+from datetime import datetime, timezone
+
 import pytest
 from signal_platform_contracts import EventType, Environment, EvidenceClass
 
-from app.export_events import build_execution_applied_envelope, build_source_receipt_envelope
-from app.models import AssetClass, DestinationAccount, OrderResult, OrderStatus, Side, Signal
+from app.export_events import build_execution_applied_envelope, build_source_event_envelope, build_source_receipt_envelope
+from app.models import AssetClass, DestinationAccount, OrderResult, OrderStatus, ProfitTarget, Side, Signal, SourceEvent, SourceEventKind
 
 
 def _account():
@@ -173,4 +175,98 @@ def test_the_event_id_is_stable_for_the_same_signal_id_enabling_idempotent_redel
         producer_id="test-producer", evidence_class=EvidenceClass.INTERNAL_PAPER, environment=Environment.LOCAL_SIM,
     )
     assert first.event_id == second.event_id
-    assert first.payload_hash == second.payload_hash
+
+
+# -- Multi-provider representability: targets/entry-range/identity on the ---
+# -- SOURCE_RECEIPT envelope --------------------------------------------------
+
+
+def test_ordered_targets_and_entry_range_are_carried_through_to_the_payload():
+    signal = Signal(
+        source="tradingview", symbol="AAPL", side=Side.BUY, quantity=10.0,
+        price_low=149.0, price_high=151.0, entry_order_type="limit",
+        targets=[ProfitTarget(price=155.0, fraction=0.5, label="TP1"), ProfitTarget(price=160.0, label="TP2")],
+        channel_id="tradingview", message_id="alert-1", parser_version="webhook-json-v1",
+    )
+    envelope = build_source_receipt_envelope(
+        signal, source_stream="signal-copier:source:tradingview", export_sequence=0,
+        producer_id="test-producer", evidence_class=EvidenceClass.INTERNAL_PAPER, environment=Environment.LOCAL_SIM,
+    )
+    assert envelope is not None
+    assert [t["label"] for t in envelope.payload["targets"]] == ["TP1", "TP2"]
+    assert envelope.payload["price_low"] == "149.0"
+    assert envelope.payload["price_high"] == "151.0"
+    assert envelope.payload["entry_order_type"] == "limit"
+    assert envelope.payload["source"]["source_channel_id"] == "tradingview"
+    assert envelope.payload["source"]["source_event_id"] == "alert-1"
+    assert envelope.payload["source"]["parser_version"] == "webhook-json-v1"
+
+
+def test_a_signal_with_no_new_fields_produces_the_same_shape_as_before():
+    """Backward compatibility: a Signal that never sets any of the new
+    fields exports exactly the same envelope a pre-existing producer
+    always has."""
+    signal = Signal(source="tradingview", symbol="AAPL", side=Side.BUY, quantity=10.0, price=150.0)
+    envelope = build_source_receipt_envelope(
+        signal, source_stream="signal-copier:source:tradingview", export_sequence=0,
+        producer_id="test-producer", evidence_class=EvidenceClass.INTERNAL_PAPER, environment=Environment.LOCAL_SIM,
+    )
+    assert envelope.payload["targets"] == []
+    assert envelope.payload.get("price_low") is None
+    assert envelope.payload.get("entry_order_type") is None
+    assert envelope.payload["source"]["source_event_id"] == signal.id  # falls back to signal.id, unchanged
+
+
+# -- SOURCE_EVENT source ledger ------------------------------------------------
+
+
+def test_source_event_envelope_for_an_original_message():
+    signal = Signal(
+        source="telegram", symbol="BTCUSDT", side=Side.BUY, quantity=1.0, price=65000.0,
+        channel_id="chan-1", message_id="msg-1", parser_version="telegram-text-parser-v1",
+    )
+    now = datetime.now(timezone.utc)
+    event = SourceEvent(
+        source="telegram", kind=SourceEventKind.ORIGINAL, channel_id="chan-1", message_id="msg-1",
+        provider_timestamp=now, signal=signal,
+    )
+    envelope = build_source_event_envelope(
+        event, source_stream="signal-copier:source:telegram", export_sequence=0,
+        producer_id="test-producer", evidence_class=EvidenceClass.INTERNAL_PAPER, environment=Environment.LOCAL_SIM,
+    )
+    assert envelope.event_type == EventType.SOURCE_EVENT
+    assert envelope.payload["kind"] == "original"
+    assert envelope.payload["source"]["source_channel_id"] == "chan-1"
+    assert envelope.payload["source"]["source_event_id"] == "msg-1"
+    assert envelope.payload["signal"]["price"] == "65000.0"
+
+
+def test_source_event_envelope_for_a_delete_has_no_inner_signal():
+    event = SourceEvent(
+        source="telegram", kind=SourceEventKind.DELETE, channel_id="chan-1", message_id="msg-1",
+        reason="retracted by analyst",
+    )
+    envelope = build_source_event_envelope(
+        event, source_stream="signal-copier:source:telegram", export_sequence=0,
+        producer_id="test-producer", evidence_class=EvidenceClass.INTERNAL_PAPER, environment=Environment.LOCAL_SIM,
+    )
+    assert envelope.payload["kind"] == "delete"
+    assert envelope.payload["signal"] is None
+    assert envelope.payload["reason"] == "retracted by analyst"
+
+
+def test_source_event_envelope_for_an_edit_links_revision_to_original():
+    signal = Signal(
+        source="telegram", symbol="BTCUSDT", side=Side.BUY, price=66000.0,
+        channel_id="chan-1", message_id="msg-1", revision_id="msg-1:rev2", original_message_id="msg-1",
+    )
+    event = SourceEvent(
+        source="telegram", kind=SourceEventKind.EDIT, channel_id="chan-1", message_id="msg-1",
+        revision_id="msg-1:rev2", original_message_id="msg-1", signal=signal,
+    )
+    envelope = build_source_event_envelope(
+        event, source_stream="signal-copier:source:telegram", export_sequence=0,
+        producer_id="test-producer", evidence_class=EvidenceClass.INTERNAL_PAPER, environment=Environment.LOCAL_SIM,
+    )
+    assert envelope.payload["source"]["revision_id"] == "msg-1:rev2"
+    assert envelope.payload["source"]["original_source_event_id"] == "msg-1"

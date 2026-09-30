@@ -87,17 +87,22 @@ def test_subject_must_not_be_empty():
         _valid_envelope(subject={})
 
 
-def test_only_five_event_types_are_actually_implemented_in_this_slice():
+def test_only_six_event_types_are_actually_implemented_in_this_slice():
     """Documents the honest scope boundary this package's own docstring
     claims -- if this test needs updating, a real payload model was added
     for a new EventType and the docstring/IMPLEMENTED_EVENT_TYPES set
-    should be updated in the same change, not drift silently."""
+    should be updated in the same change, not drift silently.
+
+    SOURCE_EVENT (the source ledger: original/edit/delete/reply/cancel/
+    close/add/target_update/stop_update) joined this set alongside the
+    original five when `SourceEventPayload` was added."""
     assert IMPLEMENTED_EVENT_TYPES == {
         EventType.SOURCE_RECEIPT,
         EventType.EXECUTION_APPLIED,
         EventType.FEE,
         EventType.POSITION_SNAPSHOT,
         EventType.ROUTING_ADMISSION_OUTCOME,
+        EventType.SOURCE_EVENT,
     }
 
 

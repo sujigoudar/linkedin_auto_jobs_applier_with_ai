@@ -37,8 +37,32 @@ def test_ambiguous_disposition_for_compound_instructions():
     assert disposition.outcome == DispositionOutcome.AMBIGUOUS
 
 
-def test_ambiguous_disposition_for_multiple_take_profit_levels():
+def test_parsed_disposition_for_cleanly_numbered_multiple_take_profit_levels():
+    """A release review found this codebase's previous single-take-profit
+    Signal shape forced every multi-target message into AMBIGUOUS even
+    when the message itself was perfectly clear about target order
+    (TP1/TP2/...) -- that's now representable (`Signal.targets`), so this
+    is PARSED, not AMBIGUOUS."""
     disposition = classify_text_signal("BUY AAPL 10 SL 95 TP1 105 TP2 110", source="test")
+    assert disposition.outcome == DispositionOutcome.PARSED
+    assert disposition.signal is not None
+    assert [t.price for t in disposition.signal.targets] == [105.0, 110.0]
+    assert [t.label for t in disposition.signal.targets] == ["TP1", "TP2"]
+    # Back-compat primary/first-target convention.
+    assert disposition.signal.take_profit == 105.0
+
+
+def test_ambiguous_disposition_for_unlabeled_repeated_take_profit_levels():
+    """Unlike a cleanly-numbered TP1/TP2/... message (now PARSED, see
+    above), a bare repeated "TP" with no level numbers to order by is
+    still genuinely ambiguous -- there's no reliable way to tell which
+    mention the source meant first."""
+    disposition = classify_text_signal("BUY AAPL 10 SL 95 TP 105 TP 110", source="test")
+    assert disposition.outcome == DispositionOutcome.AMBIGUOUS
+
+
+def test_ambiguous_disposition_for_non_sequential_take_profit_levels():
+    disposition = classify_text_signal("BUY AAPL 10 SL 95 TP1 105 TP3 110", source="test")
     assert disposition.outcome == DispositionOutcome.AMBIGUOUS
 
 

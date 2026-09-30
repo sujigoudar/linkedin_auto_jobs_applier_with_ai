@@ -62,6 +62,17 @@ class EventType(str, enum.Enum):
     SOURCE_RECEIPT = "source_receipt"
     SOURCE_REVISION = "source_revision"
     SOURCE_CLASSIFICATION = "source_classification"
+    #: The source ledger: every real, native-provider-identified moment in
+    #: a source message's own life -- original, edit, delete/retract,
+    #: reply, cancel, close, add, target_update, stop_update (see
+    #: `signal_platform_contracts.payloads.SourceEventKind`). Distinct from
+    #: `SOURCE_RECEIPT` (one signal, as received, before any routing
+    #: decision) and from the still-unimplemented `SOURCE_REVISION`
+    #: placeholder above: this is the ledger a deduplicating,
+    #: edit/cancel-aware ingestion path appends to, one row per real
+    #: provider-message event, not a re-interpretation of an existing
+    #: SOURCE_RECEIPT.
+    SOURCE_EVENT = "source_event"
     ROUTING_ADMISSION_OUTCOME = "routing_admission_outcome"
     EXECUTION_OBSERVED = "execution_observed"
     EXECUTION_APPLIED = "execution_applied"
@@ -97,6 +108,7 @@ IMPLEMENTED_EVENT_TYPES = frozenset(
         EventType.FEE,
         EventType.POSITION_SNAPSHOT,
         EventType.ROUTING_ADMISSION_OUTCOME,
+        EventType.SOURCE_EVENT,
     }
 )
 

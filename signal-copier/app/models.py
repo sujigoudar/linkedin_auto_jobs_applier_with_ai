@@ -27,6 +27,84 @@ class AssetClass(str, enum.Enum):
     FUTURE = "future"
 
 
+class EntryOrderType(str, enum.Enum):
+    """A release review found the previous, price-only Signal shape didn't
+    let a source distinguish a market entry from a resting limit/stop
+    order -- see `Signal.entry_order_type`'s own docstring."""
+
+    MARKET = "market"
+    LIMIT = "limit"
+    STOP = "stop"
+
+
+@dataclass
+class ProfitTarget:
+    """One level of an ORDERED profit-target collection (`Signal.targets`).
+    List order IS this target's ordinal (the source's own TP1/TP2/TP3...),
+    never re-derived from `price`. `quantity`/`fraction` are each
+    independent and optional -- a source that only ever gives a bare price
+    per level has neither, and that's a real, honest absence, not
+    something this dataclass invents a default for. Mirrors
+    `signal_platform_contracts.payloads.ProfitTargetPayload` field-for-
+    field, and `app/lifecycle/models.py`'s own `Target.reduce_fraction`
+    convention for `fraction`."""
+
+    price: float
+    quantity: Optional[float] = None
+    #: A fraction (0, 1] of the ORIGINALLY planned quantity to close at
+    #: this level.
+    fraction: Optional[float] = None
+    #: The source's own label for this level, verbatim, when it gave one
+    #: (e.g. "TP1") -- never fabricated.
+    label: Optional[str] = None
+
+
+@dataclass
+class OptionContractSpec:
+    """`Signal.option` -- only set when `Signal.asset_class` is genuinely
+    OPTION. See `signal_platform_contracts.payloads.OptionContractDetails`
+    for the shared cross-service shape this mirrors."""
+
+    underlying: str
+    expiry: str  # ISO-8601 date string, e.g. "2026-09-18"
+    strike: float
+    right: str  # "call" | "put"
+    multiplier: float = 100.0
+    deliverable: Optional[str] = None
+
+
+@dataclass
+class FutureContractSpec:
+    """`Signal.future` -- only set when `Signal.asset_class` is genuinely
+    FUTURE."""
+
+    root: str
+    expiry: str
+    multiplier: float
+    venue: str
+
+
+@dataclass
+class FxContractSpec:
+    """`Signal.fx` -- only set when `Signal.asset_class` is genuinely
+    FOREX and the source distinguished base/quote/unit convention beyond
+    the bare symbol."""
+
+    base_currency: str
+    quote_currency: str
+    unit: str  # e.g. "standard_lot_100000", "micro_lot_1000", "units"
+
+
+@dataclass
+class CryptoDerivativeSpec:
+    """`Signal.crypto_derivative` -- only set when this is genuinely a
+    crypto DERIVATIVE (perpetual/future), never for crypto spot."""
+
+    instrument_kind: str  # "spot" | "perpetual" | "future"
+    margin_currency: Optional[str] = None
+    settlement_currency: Optional[str] = None
+
+
 @dataclass
 class Signal:
     """A normalized trade instruction, independent of where it came from."""
@@ -42,8 +120,17 @@ class Signal:
     #: (not analyst-level) overrides apply.
     analyst: Optional[str] = None
     quantity: Optional[float] = None
+    #: The single/primary/informational price -- kept exactly as before
+    #: for every existing producer. A source that instead gives an entry
+    #: RANGE sets `price_low`/`price_high` (below) alongside or instead of
+    #: this; `price` is never required to duplicate either bound.
     price: Optional[float] = None
     stop_loss: Optional[float] = None
+    #: The single/primary take-profit -- kept exactly as before. A source
+    #: with multiple profit targets ALSO populates `targets` (below);
+    #: existing consumers that only ever read `take_profit` keep working
+    #: unchanged (it's conventionally the first/primary target's price
+    #: when `targets` is set, but is never required to be).
     take_profit: Optional[float] = None
     id: str = field(default_factory=lambda: str(uuid.uuid4()))
     received_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
@@ -60,11 +147,145 @@ class Signal:
     #: (see `app/db.py`'s `_COLUMN_MIGRATIONS`), not a second schema.
     import_batch: Optional[str] = None
 
+    # -- Multi-provider representability (release review: the previous
+    # shape -- source/analyst/symbol/side/asset class/quantity/price/one
+    # stop/one take-profit/received time/raw payload -- was "substantially
+    # simpler than the provider universe you intend to support"). Every
+    # field below is optional/empty-default so an existing single-target/
+    # single-price producer is completely unaffected unless it explicitly
+    # sets one. Mirrors signal_platform_contracts.payloads.
+    # SourceReceiptPayload's own identically-named additions field for
+    # field -- see app/export_events.py's `build_source_receipt_envelope`
+    # for where the two are bridged.
+
+    #: Ordered profit-target collection (TP1/TP2/TP3...) -- see
+    #: `ProfitTarget`'s own docstring. Empty (the default) means no
+    #: distinct multi-target structure was given.
+    targets: list["ProfitTarget"] = field(default_factory=list)
+    #: An entry price RANGE's lower/upper bound, when the source gave a
+    #: range instead of (or alongside) a single `price`.
+    price_low: Optional[float] = None
+    price_high: Optional[float] = None
+    #: "market" (the default/unspecified case) / "limit" / "stop".
+    entry_order_type: Optional[EntryOrderType] = None
+    #: When this entry order expires (a time, a session boundary, or a
+    #: condition) -- `None` means no expiration was given.
+    entry_expiration: Optional[datetime] = None
+    #: "intraday" / "swing" / "deadline" / "session" -- the source's own
+    #: stated management horizon. Never inferred.
+    management_horizon: Optional[str] = None
+    #: A confidence/strategy tag, set ONLY when the source actually
+    #: supplied or qualified one -- never fabricated.
+    confidence: Optional[str] = None
+    option: Optional["OptionContractSpec"] = None
+    future: Optional["FutureContractSpec"] = None
+    fx: Optional["FxContractSpec"] = None
+    crypto_derivative: Optional["CryptoDerivativeSpec"] = None
+
+    # -- Provider message identity / revision / provenance --------------
+
+    #: This provider's own native channel identifier (e.g. a Discord/
+    #: Telegram channel id, a webhook source's configured name) -- `None`
+    #: when the adapter hasn't wired real channel identity yet (the
+    #: existing, unchanged default for every adapter this task didn't
+    #: touch).
+    channel_id: Optional[str] = None
+    #: This provider's own native message/event identifier -- together
+    #: with `channel_id`, the real dedup/correlation key a provider
+    #: reconnect-and-replay, edit, or delete needs. `None` for the same
+    #: reason as `channel_id`.
+    message_id: Optional[str] = None
+    #: This SPECIFIC revision's own native id (e.g. an edited message's
+    #: new edit marker) -- `None` for an original message/no revision.
+    revision_id: Optional[str] = None
+    #: The FIRST message's own `message_id` this revision chain traces
+    #: back to -- `None` when this Signal IS the original, or isn't part
+    #: of a revision chain.
+    original_message_id: Optional[str] = None
+    #: The exact parser/interpretation implementation that produced this
+    #: Signal (e.g. a version string for `app/sources/text_parser.py`'s
+    #: grammar) -- `None` when the producing adapter hasn't been wired to
+    #: report one.
+    parser_version: Optional[str] = None
+    #: The immutable ORIGINAL source event exactly as received (e.g. the
+    #: raw Discord/Telegram message object, serialized) -- distinct from
+    #: `raw` above, which for most existing adapters already holds
+    #: exactly this (e.g. `app/sources/webhook.py`'s raw JSON body) but
+    #: for a text-message adapter has historically held only `{"text":
+    #: ...}`, not the provider's own full event envelope. `None` when not
+    #: populated.
+    raw_source_event: Optional[dict[str, Any]] = None
+
     def __post_init__(self) -> None:
         if isinstance(self.side, str):
             self.side = Side(self.side.lower())
         if isinstance(self.asset_class, str):
             self.asset_class = AssetClass(self.asset_class.lower())
+        if isinstance(self.entry_order_type, str):
+            self.entry_order_type = EntryOrderType(self.entry_order_type.lower())
+
+
+class SourceEventKind(str, enum.Enum):
+    """The source ledger this codebase's own ingestion review asked for:
+    "the source ledger should capture: SOURCE_EVENT { original, edit,
+    delete/retract, reply, cancel, close, add, target update, stop
+    update }". Mirrors
+    `signal_platform_contracts.payloads.SourceEventKind` member for
+    member -- see that enum's own per-member docstring for what each one
+    means and when `SourceEvent.signal` is/isn't expected to be set. An
+    adapter emits exactly the kind the provider's own event shape
+    actually reports, never a guessed kind for content it can't
+    distinguish from plain new-message text."""
+
+    ORIGINAL = "original"
+    EDIT = "edit"
+    DELETE = "delete"
+    REPLY = "reply"
+    CANCEL = "cancel"
+    CLOSE = "close"
+    ADD = "add"
+    TARGET_UPDATE = "target_update"
+    STOP_UPDATE = "stop_update"
+
+
+@dataclass
+class SourceEvent:
+    """One row of the source ledger -- see `SourceEventKind`'s own
+    docstring. True deduplication and edit/cancel/reply awareness both
+    depend on `channel_id`/`message_id` (this event's own native
+    provider/channel/message identity) being real and stable across
+    redelivery.
+
+    `provider_timestamp` is when the PROVIDER says this event happened
+    (e.g. a Telegram message's own `date`/`edit_date`); `local_receipt_
+    timestamp` is when THIS SERVICE actually received/processed it --
+    kept as two distinct fields (not left to be inferred from `Signal.
+    received_at` alone) so "did the provider reconnect and replay the
+    same message" and "how stale was this by the time we saw it" are
+    both answerable directly."""
+
+    source: str
+    kind: SourceEventKind
+    channel_id: Optional[str] = None
+    message_id: Optional[str] = None
+    revision_id: Optional[str] = None
+    original_message_id: Optional[str] = None
+    parent_message_id: Optional[str] = None
+    #: `None` when the provider event itself carries no distinct
+    #: timestamp of its own (rare, but honest) -- never fabricated to
+    #: equal `local_receipt_timestamp`.
+    provider_timestamp: Optional[datetime] = None
+    local_receipt_timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    #: The interpreted instruction this event carries, when it carries
+    #: one (see `SourceEventKind`'s own per-member docstring for which
+    #: kinds typically do). `None` is a real, honest absence.
+    signal: Optional["Signal"] = None
+    #: Free-text reason/detail the source gave for a CANCEL/CLOSE/DELETE,
+    #: when it gave one verbatim. Never fabricated.
+    reason: Optional[str] = None
+    #: The immutable raw provider event exactly as received.
+    raw_source_event: dict[str, Any] = field(default_factory=dict)
+    id: str = field(default_factory=lambda: str(uuid.uuid4()))
 
 
 class OrderStatus(str, enum.Enum):

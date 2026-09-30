@@ -18,7 +18,26 @@ from signal_platform_contracts.money import Money
 class SourceIdentity(BaseModel):
     """S5: "source_provider_id, source_channel_id, analyst_id, strategy_id,
     parser_version" plus "Original source_event_id, revision ID,
-    parent/reply relation"."""
+    parent/reply relation".
+
+    `source_channel_id` + `source_event_id` together ARE this event's
+    native provider message identity (e.g. a Discord/Telegram/Slack
+    channel id + message id, or a webhook source's own idempotency key)
+    -- true deduplication and edit/delete/reply correlation both key off
+    this pair, never off re-parsed message text. `revision_id` is this
+    SPECIFIC revision's own native id (e.g. Telegram's edited-message
+    update carries the same message id but a new edit_date -- a source
+    adapter that has a real distinct revision identifier puts it here;
+    one that doesn't may reuse `source_event_id` as its own revision
+    marker). `original_source_event_id` is the additional, distinct
+    thing a revision chain needs: the FIRST message's own
+    `source_event_id` this revision traces back to -- `None` when this
+    identity describes the original message itself (no revision chain
+    exists yet) or when this event isn't part of a revision chain at
+    all. Never fabricated -- an adapter that hasn't wired real message
+    identity yet (see app/sources/base.py's own docstring on this) simply
+    leaves these `None`, same as it always could before this field
+    existed."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -30,6 +49,7 @@ class SourceIdentity(BaseModel):
     source_event_id: str
     revision_id: str | None = None
     parent_event_id: str | None = None
+    original_source_event_id: str | None = None
 
 
 class InstrumentIdentity(BaseModel):

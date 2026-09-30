@@ -44,14 +44,26 @@ from signal_platform_contracts import (
     ExecutionAppliedPayload,
     InstrumentIdentity,
     PrivateAccountIdentity,
+    ProfitTargetPayload,
     RoutingAdmissionOutcomePayload,
+    SourceEventKind as ContractSourceEventKind,
+    SourceEventPayload,
     SourceIdentity,
     SourceReceiptPayload,
     build_subject,
     compute_payload_hash,
 )
 
-from app.models import AssetClass, DestinationAccount, OrderResult, OrderStatus, Side, Signal
+from app.models import (
+    AssetClass,
+    DestinationAccount,
+    OrderResult,
+    OrderStatus,
+    Side,
+    Signal,
+    SourceEvent,
+    SourceEventKind,
+)
 
 #: SourceIdentity.parser_version is required (S5), but this codebase has
 #: no real per-source-adapter parser-version registry yet (same
@@ -198,9 +210,12 @@ def build_source_receipt_envelope(
     )
     source_identity = SourceIdentity(
         source_provider_id=signal.source,
+        source_channel_id=signal.channel_id,
         analyst_id=signal.analyst,
-        parser_version=_UNVERSIONED_PARSER,
-        source_event_id=signal.id,
+        parser_version=signal.parser_version or _UNVERSIONED_PARSER,
+        source_event_id=signal.message_id or signal.id,
+        revision_id=signal.revision_id,
+        original_source_event_id=signal.original_message_id,
     )
     payload = SourceReceiptPayload(
         source=source_identity,
@@ -210,6 +225,21 @@ def build_source_receipt_envelope(
         price=None if signal.price is None else str(signal.price),
         stop_loss=None if signal.stop_loss is None else str(signal.stop_loss),
         take_profit=None if signal.take_profit is None else str(signal.take_profit),
+        targets=[
+            ProfitTargetPayload(
+                price=str(target.price),
+                quantity=None if target.quantity is None else str(target.quantity),
+                fraction=None if target.fraction is None else str(target.fraction),
+                label=target.label,
+            )
+            for target in signal.targets
+        ],
+        price_low=None if signal.price_low is None else str(signal.price_low),
+        price_high=None if signal.price_high is None else str(signal.price_high),
+        entry_order_type=None if signal.entry_order_type is None else signal.entry_order_type.value,
+        entry_expiration=signal.entry_expiration,
+        management_horizon=signal.management_horizon,
+        confidence=signal.confidence,
     )
     payload_dict = payload.model_dump(mode="json")
     now = datetime.now(timezone.utc)
@@ -302,6 +332,113 @@ def build_routing_admission_outcome_envelope(
         effective_time=now,
         availability_time=now,
         receipt_time=now,
+        environment=environment,
+        evidence_class=evidence_class,
+        payload_hash=compute_payload_hash(payload_dict),
+        payload=payload_dict,
+    )
+
+
+#: This codebase's own `app/models.py` `SourceEventKind` values map 1:1 to
+#: `signal_platform_contracts.payloads.SourceEventKind` -- kept as an
+#: explicit table (not `ContractSourceEventKind(kind.value)`) so a future
+#: divergence between the two enums is a loud `KeyError` here, not a
+#: silently-wrong cross-service value.
+_CONTRACT_SOURCE_EVENT_KIND = {
+    SourceEventKind.ORIGINAL: ContractSourceEventKind.ORIGINAL,
+    SourceEventKind.EDIT: ContractSourceEventKind.EDIT,
+    SourceEventKind.DELETE: ContractSourceEventKind.DELETE,
+    SourceEventKind.REPLY: ContractSourceEventKind.REPLY,
+    SourceEventKind.CANCEL: ContractSourceEventKind.CANCEL,
+    SourceEventKind.CLOSE: ContractSourceEventKind.CLOSE,
+    SourceEventKind.ADD: ContractSourceEventKind.ADD,
+    SourceEventKind.TARGET_UPDATE: ContractSourceEventKind.TARGET_UPDATE,
+    SourceEventKind.STOP_UPDATE: ContractSourceEventKind.STOP_UPDATE,
+}
+
+
+def build_source_event_envelope(
+    event: SourceEvent,
+    *,
+    source_stream: str,
+    export_sequence: int,
+    producer_id: str,
+    evidence_class: EvidenceClass,
+    environment: Environment,
+) -> EventEnvelope:
+    """The source ledger this codebase's own ingestion review asked for:
+    one real `EventEnvelope`/`SourceEventPayload` per `SourceEvent` an
+    adapter's `on_source_event` hook received (see `app/sources/base.py`'s
+    own docstring) -- ORIGINAL/EDIT/DELETE/REPLY/CANCEL/CLOSE/ADD/
+    TARGET_UPDATE/STOP_UPDATE, each carrying its own native provider/
+    channel/message identity and a distinct provider vs. local-receipt
+    timestamp. Unlike `build_source_receipt_envelope`, this never returns
+    `None` for a CLOSE-kind event -- a CLOSE source event genuinely has no
+    resolvable trade direction of its own (same reasoning as that
+    function's own CLOSE-signal skip), but it IS itself a real, exportable
+    ledger row (the source's "close now" instruction, independent of
+    whatever direction the private engine later resolves it to), so it is
+    never skipped here."""
+    source_identity = SourceIdentity(
+        source_provider_id=event.source,
+        source_channel_id=event.channel_id,
+        parser_version=(event.signal.parser_version if event.signal is not None else None) or _UNVERSIONED_PARSER,
+        source_event_id=event.message_id or event.id,
+        revision_id=event.revision_id,
+        original_source_event_id=event.original_message_id,
+        parent_event_id=event.parent_message_id,
+    )
+    inner_signal_payload = None
+    if event.signal is not None and event.signal.side != Side.CLOSE:
+        instrument = InstrumentIdentity(
+            instrument_id=event.signal.symbol,
+            venue="unspecified",
+            market_type=event.signal.asset_class.value,
+            currency=_resolve_currency(event.signal.symbol),
+            multiplier="1",
+            quantity_convention=_QUANTITY_CONVENTION_BY_ASSET_CLASS[event.signal.asset_class],
+        )
+        inner_signal_payload = SourceReceiptPayload(
+            source=source_identity,
+            instrument=instrument,
+            side=event.signal.side.value,
+            quantity=None if event.signal.quantity is None else str(event.signal.quantity),
+            price=None if event.signal.price is None else str(event.signal.price),
+            stop_loss=None if event.signal.stop_loss is None else str(event.signal.stop_loss),
+            take_profit=None if event.signal.take_profit is None else str(event.signal.take_profit),
+            targets=[
+                ProfitTargetPayload(
+                    price=str(target.price),
+                    quantity=None if target.quantity is None else str(target.quantity),
+                    fraction=None if target.fraction is None else str(target.fraction),
+                    label=target.label,
+                )
+                for target in event.signal.targets
+            ],
+        )
+
+    payload = SourceEventPayload(
+        kind=_CONTRACT_SOURCE_EVENT_KIND[event.kind],
+        source=source_identity,
+        provider_timestamp=event.provider_timestamp or event.local_receipt_timestamp,
+        local_receipt_timestamp=event.local_receipt_timestamp,
+        signal=inner_signal_payload,
+        reason=event.reason,
+    )
+    payload_dict = payload.model_dump(mode="json")
+    now = datetime.now(timezone.utc)
+
+    return EventEnvelope(
+        event_type=EventType.SOURCE_EVENT,
+        event_id=f"source-event:{event.id}",
+        producer_id=producer_id,
+        source_stream=source_stream,
+        export_sequence=export_sequence,
+        subject=build_subject(source=source_identity),
+        event_time=event.provider_timestamp or event.local_receipt_timestamp,
+        effective_time=event.provider_timestamp or event.local_receipt_timestamp,
+        availability_time=now,
+        receipt_time=event.local_receipt_timestamp,
         environment=environment,
         evidence_class=evidence_class,
         payload_hash=compute_payload_hash(payload_dict),
