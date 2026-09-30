@@ -999,6 +999,17 @@ CREATE TABLE IF NOT EXISTS pull_collectors (
 -- `last_heartbeat_at` (see SignalStore.get_notification_bridge_device),
 -- since "is the heartbeat stale RIGHT NOW" changes with no write of its
 -- own.
+-- Track 20: the device-metadata/allowed-blocked-apps columns below
+-- (device_name through blocked_apps) are ALL nullable/empty-default and
+-- populated ONLY when the Android app itself reports them via
+-- POST /ingest/notification-bridge/{device_id}'s optional
+-- `device_metadata` payload -- see app.notification_bridge.
+-- NotificationBridgeDevice's own docstring for the full "never
+-- fabricated, honest None until reported" contract each one follows.
+-- `allowed_apps`/`blocked_apps` are device-scoped, ADDITIVE to (never a
+-- replacement for) app.phone_escalation's global BROKER_APP_PACKAGES/
+-- is_denied_app_package deny-list -- see
+-- app.notification_bridge.validate_device_app_lists.
 CREATE TABLE IF NOT EXISTS notification_bridge_devices (
     device_id TEXT PRIMARY KEY,
     pairing_token_hash TEXT NOT NULL,
@@ -1008,6 +1019,20 @@ CREATE TABLE IF NOT EXISTS notification_bridge_devices (
     recent_completeness TEXT NOT NULL DEFAULT '[]',
     health_state TEXT NOT NULL DEFAULT 'never_paired',
     health_detail TEXT,
+    device_name TEXT,
+    platform TEXT,
+    model TEXT,
+    os_version TEXT,
+    agent_version TEXT,
+    network_status TEXT,
+    battery_level INTEGER,
+    is_charging INTEGER,
+    notification_permission_granted INTEGER,
+    accessibility_permission_granted INTEGER,
+    screen_control_capability INTEGER,
+    ai_agent_capability INTEGER,
+    allowed_apps TEXT NOT NULL DEFAULT '[]',
+    blocked_apps TEXT NOT NULL DEFAULT '[]',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -1281,6 +1306,53 @@ CREATE TABLE IF NOT EXISTS phone_escalation_attempts (
 );
 
 CREATE INDEX IF NOT EXISTS idx_phone_escalation_attempts_device ON phone_escalation_attempts (device_id, notification_key);
+
+-- Track 20: per-(device, app_package) mobile app configuration -- the
+-- backend for "Settings -> Mobile Devices -> Signal Phone -> Apps ->
+-- Whop" (see app/notification_bridge.py's own MobileAppConfig docstring
+-- for the full field-by-field contract). `package_name` must be one of
+-- the owning device's own `app_packages` (app.notification_bridge.
+-- validate_mobile_app_config) -- FOREIGN KEY not declared (this
+-- codebase's other per-device child tables, e.g.
+-- notification_bridge_events, don't declare one either) but enforced at
+-- the application layer the same way.
+--
+-- `active_retrieval_allowed` is this row's own per-DEVICE switch,
+-- AND-gated with (never a replacement for) phone_escalation_configs'
+-- existing GLOBAL-per-app_package capability_state lifecycle -- see
+-- SignalStore.get_mobile_app_config's own docstring for exactly how the
+-- two compose, and this table's own design note in
+-- docs/adr/ (Track 20) for why phone_escalation_configs was kept global
+-- rather than migrated to per-device scoping.
+--
+-- `notification_title_patterns`/`conversation_patterns`/
+-- `expected_screens`/`navigation_recipe`/`content_extraction_schema` are
+-- all JSON (list or object) columns -- honest, empty-by-default
+-- forward-declared config, never something this table's own writers
+-- interpret or execute.
+CREATE TABLE IF NOT EXISTS mobile_app_configs (
+    id TEXT PRIMARY KEY,
+    device_id TEXT NOT NULL,
+    package_name TEXT NOT NULL,
+    display_name TEXT,
+    capture_notifications INTEGER NOT NULL DEFAULT 1,
+    active_retrieval_allowed INTEGER NOT NULL DEFAULT 0,
+    retrieval_mode TEXT NOT NULL DEFAULT 'notification_only',
+    notification_title_patterns TEXT NOT NULL DEFAULT '[]',
+    conversation_patterns TEXT NOT NULL DEFAULT '[]',
+    expected_screens TEXT NOT NULL DEFAULT '[]',
+    navigation_recipe TEXT NOT NULL DEFAULT '[]',
+    ai_fallback_allowed INTEGER NOT NULL DEFAULT 0,
+    max_navigation_steps INTEGER NOT NULL DEFAULT 10,
+    timeout_seconds INTEGER NOT NULL DEFAULT 30,
+    screenshot_retention TEXT NOT NULL DEFAULT 'none',
+    content_extraction_schema TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE (device_id, package_name)
+);
+
+CREATE INDEX IF NOT EXISTS idx_mobile_app_configs_device ON mobile_app_configs (device_id);
 
 -- Track 14: the Provider/Source/Connection data model -- see
 -- app/provider_catalog.py's own module docstring for the full
@@ -1712,6 +1784,25 @@ _COLUMN_MIGRATIONS = [
     # this overrides the global SIGNAL_CORRELATION_PRICE_TOLERANCE_PCT
     # default, per provider.
     ("providers", "correlation_price_tolerance_pct", "REAL"),
+    # Track 20 (mobile devices as first-class infrastructure -- see
+    # app.notification_bridge.NotificationBridgeDevice's own docstring for
+    # the full contract each of these follows: nullable/empty-default,
+    # populated ONLY when the Android app itself reports it, never
+    # fabricated/guessed/defaulted server-side).
+    ("notification_bridge_devices", "device_name", "TEXT"),
+    ("notification_bridge_devices", "platform", "TEXT"),
+    ("notification_bridge_devices", "model", "TEXT"),
+    ("notification_bridge_devices", "os_version", "TEXT"),
+    ("notification_bridge_devices", "agent_version", "TEXT"),
+    ("notification_bridge_devices", "network_status", "TEXT"),
+    ("notification_bridge_devices", "battery_level", "INTEGER"),
+    ("notification_bridge_devices", "is_charging", "INTEGER"),
+    ("notification_bridge_devices", "notification_permission_granted", "INTEGER"),
+    ("notification_bridge_devices", "accessibility_permission_granted", "INTEGER"),
+    ("notification_bridge_devices", "screen_control_capability", "INTEGER"),
+    ("notification_bridge_devices", "ai_agent_capability", "INTEGER"),
+    ("notification_bridge_devices", "allowed_apps", "TEXT NOT NULL DEFAULT '[]'"),
+    ("notification_bridge_devices", "blocked_apps", "TEXT NOT NULL DEFAULT '[]'"),
 ]
 
 
@@ -6672,6 +6763,107 @@ class SignalStore:
             )
         return self.get_notification_bridge_device(device_id)  # type: ignore[return-value]
 
+    def update_notification_bridge_device_metadata(
+        self,
+        device_id: str,
+        *,
+        device_name: str | None = None,
+        platform: str | None = None,
+        model: str | None = None,
+        os_version: str | None = None,
+        agent_version: str | None = None,
+        network_status: str | None = None,
+        battery_level: int | None = None,
+        is_charging: bool | None = None,
+        notification_permission_granted: bool | None = None,
+        accessibility_permission_granted: bool | None = None,
+        screen_control_capability: bool | None = None,
+        ai_agent_capability: bool | None = None,
+    ) -> dict:
+        """Track 20: merges whatever subset of device-reported metadata
+        the caller actually provides (any `None` kwarg here means "this
+        caller didn't report this field on THIS call" and is left
+        UNTOUCHED, never written as a NULL that would erase a previously
+        reported value -- see `app/main.py`'s ingest route, which calls
+        this with only the fields the Android app's `device_metadata`
+        payload actually included). Raises `KeyError` for an unregistered
+        `device_id`, same convention as every other per-device write
+        here."""
+        fields = {
+            "device_name": device_name,
+            "platform": platform,
+            "model": model,
+            "os_version": os_version,
+            "agent_version": agent_version,
+            "network_status": network_status,
+            "battery_level": battery_level,
+            "is_charging": None if is_charging is None else int(is_charging),
+            "notification_permission_granted": (
+                None if notification_permission_granted is None else int(notification_permission_granted)
+            ),
+            "accessibility_permission_granted": (
+                None if accessibility_permission_granted is None else int(accessibility_permission_granted)
+            ),
+            "screen_control_capability": (
+                None if screen_control_capability is None else int(screen_control_capability)
+            ),
+            "ai_agent_capability": None if ai_agent_capability is None else int(ai_agent_capability),
+        }
+        provided = {k: v for k, v in fields.items() if v is not None}
+        if not provided:
+            existing = self.get_notification_bridge_device(device_id)
+            if existing is None:
+                raise KeyError(f"no notification-bridge device registered with device_id={device_id!r}")
+            return existing
+        set_clause = ", ".join(f"{k} = ?" for k in provided) + ", updated_at = ?"
+        with self._connect() as conn:
+            cur = conn.execute(
+                f"UPDATE notification_bridge_devices SET {set_clause} WHERE device_id = ?",
+                (*provided.values(), datetime.now(timezone.utc).isoformat(), device_id),
+            )
+            if cur.rowcount == 0:
+                raise KeyError(f"no notification-bridge device registered with device_id={device_id!r}")
+        return self.get_notification_bridge_device(device_id)  # type: ignore[return-value]
+
+    def update_notification_bridge_device_apps(
+        self, device_id: str, *, device_name: str | None = None, allowed_apps: list[str] | None = None, blocked_apps: list[str] | None = None
+    ) -> dict:
+        """Track 20: owner-gated write for `device_name`/`allowed_apps`/
+        `blocked_apps` (`PATCH /mobile-devices/{device_id}` in
+        app/main.py) -- validated by `app.notification_bridge.
+        validate_device_app_lists` BEFORE anything is written (never lets
+        a globally-denied package be stored as "allowed" -- see that
+        function's own docstring). `None` for `allowed_apps`/
+        `blocked_apps` means "leave this list unchanged," matching
+        `update_notification_bridge_device_metadata`'s own "untouched,
+        never silently cleared" convention; pass `[]` explicitly to clear
+        one."""
+        from app.notification_bridge import validate_device_app_lists
+
+        existing = self.get_notification_bridge_device(device_id)
+        if existing is None:
+            raise KeyError(f"no notification-bridge device registered with device_id={device_id!r}")
+        new_allowed = existing["allowed_apps"] if allowed_apps is None else allowed_apps
+        new_blocked = existing["blocked_apps"] if blocked_apps is None else blocked_apps
+        validate_device_app_lists(allowed_apps=new_allowed, blocked_apps=new_blocked)
+
+        fields: dict[str, Any] = {}
+        if device_name is not None:
+            fields["device_name"] = device_name
+        if allowed_apps is not None:
+            fields["allowed_apps"] = json.dumps(new_allowed)
+        if blocked_apps is not None:
+            fields["blocked_apps"] = json.dumps(new_blocked)
+        if not fields:
+            return existing
+        set_clause = ", ".join(f"{k} = ?" for k in fields) + ", updated_at = ?"
+        with self._connect() as conn:
+            conn.execute(
+                f"UPDATE notification_bridge_devices SET {set_clause} WHERE device_id = ?",
+                (*fields.values(), datetime.now(timezone.utc).isoformat(), device_id),
+            )
+        return self.get_notification_bridge_device(device_id)  # type: ignore[return-value]
+
     # -- Track 9: website collector registry (app/website_collectors.py) --
 
     def register_website_collector(
@@ -7105,13 +7297,37 @@ class SignalStore:
             "health_state": effective_health,
             "stored_health_state": stored_health,
             "health_detail": row[7],
-            "created_at": row[8],
-            "updated_at": row[9],
+            # Track 20: device-reported metadata -- honestly None/absent
+            # until the device itself reports it (see
+            # app.notification_bridge.NotificationBridgeDevice's own
+            # docstring). `is_charging`/the four permission-and-capability
+            # booleans are stored as INTEGER (0/1) or NULL -- converted
+            # back to a real Python bool/None here, never coerced to
+            # False for NULL.
+            "device_name": row[8],
+            "platform": row[9],
+            "model": row[10],
+            "os_version": row[11],
+            "agent_version": row[12],
+            "network_status": row[13],
+            "battery_level": row[14],
+            "is_charging": bool(row[15]) if row[15] is not None else None,
+            "notification_permission_granted": bool(row[16]) if row[16] is not None else None,
+            "accessibility_permission_granted": bool(row[17]) if row[17] is not None else None,
+            "screen_control_capability": bool(row[18]) if row[18] is not None else None,
+            "ai_agent_capability": bool(row[19]) if row[19] is not None else None,
+            "allowed_apps": json.loads(row[20]) if row[20] else [],
+            "blocked_apps": json.loads(row[21]) if row[21] else [],
+            "created_at": row[22],
+            "updated_at": row[23],
         }
 
     _NOTIFICATION_BRIDGE_DEVICE_COLUMNS = (
         "device_id, pairing_token_hash, app_packages, provider_mapping, last_heartbeat_at, "
-        "recent_completeness, health_state, health_detail, created_at, updated_at"
+        "recent_completeness, health_state, health_detail, "
+        "device_name, platform, model, os_version, agent_version, network_status, battery_level, is_charging, "
+        "notification_permission_granted, accessibility_permission_granted, screen_control_capability, "
+        "ai_agent_capability, allowed_apps, blocked_apps, created_at, updated_at"
     )
 
     def get_notification_bridge_device(self, device_id: str) -> dict | None:
@@ -7564,6 +7780,151 @@ class SignalStore:
             }
             for r in rows
         ]
+
+    # -- Track 20: per-(device, app_package) mobile app configuration
+    # (app/notification_bridge.py's MobileAppConfig) --
+
+    _MOBILE_APP_CONFIG_COLUMNS = (
+        "id, device_id, package_name, display_name, capture_notifications, active_retrieval_allowed, "
+        "retrieval_mode, notification_title_patterns, conversation_patterns, expected_screens, "
+        "navigation_recipe, ai_fallback_allowed, max_navigation_steps, timeout_seconds, screenshot_retention, "
+        "content_extraction_schema, created_at, updated_at"
+    )
+
+    def _mobile_app_config_row_to_dict(self, row: tuple) -> dict:
+        return {
+            "id": row[0],
+            "device_id": row[1],
+            "package_name": row[2],
+            "display_name": row[3],
+            "capture_notifications": bool(row[4]),
+            "active_retrieval_allowed": bool(row[5]),
+            "retrieval_mode": row[6],
+            "notification_title_patterns": json.loads(row[7]) if row[7] else [],
+            "conversation_patterns": json.loads(row[8]) if row[8] else [],
+            "expected_screens": json.loads(row[9]) if row[9] else [],
+            "navigation_recipe": json.loads(row[10]) if row[10] else [],
+            "ai_fallback_allowed": bool(row[11]),
+            "max_navigation_steps": row[12],
+            "timeout_seconds": row[13],
+            "screenshot_retention": row[14],
+            "content_extraction_schema": json.loads(row[15]) if row[15] else {},
+            "created_at": row[16],
+            "updated_at": row[17],
+        }
+
+    def register_mobile_app_config(
+        self,
+        *,
+        device_id: str,
+        package_name: str,
+        display_name: str | None = None,
+        capture_notifications: bool = True,
+        active_retrieval_allowed: bool = False,
+        retrieval_mode: str = "notification_only",
+        notification_title_patterns: list[str] | None = None,
+        conversation_patterns: list[str] | None = None,
+        expected_screens: list[str] | None = None,
+        navigation_recipe: list[dict] | None = None,
+        ai_fallback_allowed: bool = False,
+        max_navigation_steps: int = 10,
+        timeout_seconds: int = 30,
+        screenshot_retention: str = "none",
+        content_extraction_schema: dict | None = None,
+    ) -> dict:
+        """Insert (or, idempotently, re-describe) one `(device_id,
+        package_name)` config row -- see
+        `app.notification_bridge.validate_mobile_app_config` for the
+        validation applied BEFORE anything is written (in particular:
+        `package_name` must already be in the owning device's own
+        `app_packages`). Re-registering the SAME `(device_id,
+        package_name)` replaces every field -- unlike the device/provider
+        registries above, there is no partial "observed evidence" state
+        on this row worth preserving across a re-describe."""
+        from app.notification_bridge import validate_mobile_app_config
+
+        device = self.get_notification_bridge_device(device_id)
+        if device is None:
+            raise KeyError(f"no notification-bridge device registered with device_id={device_id!r}")
+        validate_mobile_app_config(
+            device_app_packages=device["app_packages"],
+            package_name=package_name,
+            retrieval_mode=retrieval_mode,
+            max_navigation_steps=max_navigation_steps,
+            timeout_seconds=timeout_seconds,
+            screenshot_retention=screenshot_retention,
+        )
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            existing = conn.execute(
+                "SELECT id, created_at FROM mobile_app_configs WHERE device_id = ? AND package_name = ?",
+                (device_id, package_name),
+            ).fetchone()
+            config_id = existing[0] if existing else str(uuid.uuid4())
+            created_at = existing[1] if existing else now
+            conn.execute(
+                """INSERT INTO mobile_app_configs
+                       (id, device_id, package_name, display_name, capture_notifications,
+                        active_retrieval_allowed, retrieval_mode, notification_title_patterns,
+                        conversation_patterns, expected_screens, navigation_recipe, ai_fallback_allowed,
+                        max_navigation_steps, timeout_seconds, screenshot_retention, content_extraction_schema,
+                        created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(device_id, package_name) DO UPDATE SET
+                       display_name = excluded.display_name,
+                       capture_notifications = excluded.capture_notifications,
+                       active_retrieval_allowed = excluded.active_retrieval_allowed,
+                       retrieval_mode = excluded.retrieval_mode,
+                       notification_title_patterns = excluded.notification_title_patterns,
+                       conversation_patterns = excluded.conversation_patterns,
+                       expected_screens = excluded.expected_screens,
+                       navigation_recipe = excluded.navigation_recipe,
+                       ai_fallback_allowed = excluded.ai_fallback_allowed,
+                       max_navigation_steps = excluded.max_navigation_steps,
+                       timeout_seconds = excluded.timeout_seconds,
+                       screenshot_retention = excluded.screenshot_retention,
+                       content_extraction_schema = excluded.content_extraction_schema,
+                       updated_at = excluded.updated_at""",
+                (
+                    config_id,
+                    device_id,
+                    package_name,
+                    display_name,
+                    int(capture_notifications),
+                    int(active_retrieval_allowed),
+                    retrieval_mode,
+                    json.dumps(notification_title_patterns or []),
+                    json.dumps(conversation_patterns or []),
+                    json.dumps(expected_screens or []),
+                    json.dumps(navigation_recipe or []),
+                    int(ai_fallback_allowed),
+                    max_navigation_steps,
+                    timeout_seconds,
+                    screenshot_retention,
+                    json.dumps(content_extraction_schema or {}),
+                    created_at,
+                    now,
+                ),
+            )
+        return self.get_mobile_app_config(device_id, package_name)  # type: ignore[return-value]
+
+    def get_mobile_app_config(self, device_id: str, package_name: str) -> dict | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                f"SELECT {self._MOBILE_APP_CONFIG_COLUMNS} FROM mobile_app_configs "
+                "WHERE device_id = ? AND package_name = ?",
+                (device_id, package_name),
+            ).fetchone()
+        return self._mobile_app_config_row_to_dict(row) if row else None
+
+    def list_mobile_app_configs(self, device_id: str) -> list[dict]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"SELECT {self._MOBILE_APP_CONFIG_COLUMNS} FROM mobile_app_configs "
+                "WHERE device_id = ? ORDER BY package_name",
+                (device_id,),
+            ).fetchall()
+        return [self._mobile_app_config_row_to_dict(r) for r in rows]
 
     def list_orders_for_signal(self, signal_id: str) -> list[dict]:
         """Every order already recorded against this exact signal id — what
