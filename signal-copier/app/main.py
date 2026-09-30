@@ -122,7 +122,7 @@ from app.notification_bridge import (
     validate_content_completeness,
     verify_pairing_token,
 )
-from app.phone_escalation import PhoneEscalationError, evaluate_escalation
+from app.phone_escalation import DeniedAppPackageError, PhoneEscalationError, evaluate_escalation
 from app.certification import CertificationError
 from app.certification_scorecard import compute_scorecard
 from app.sources.twitter import TwitterSource
@@ -4029,6 +4029,247 @@ async def list_notification_bridge_device_events(device_id: str, _owner: dict = 
     return {"device_id": device_id, "events": store.list_notification_bridge_events(device_id)}
 
 
+# -- Track 20: mobile devices as first-class infrastructure ("Settings ->
+# Mobile Devices" / "Settings -> Mobile Devices -> Signal Phone -> Apps ->
+# Whop", per the user's own spec). These routes read/write the SAME
+# `notification_bridge_devices` registry Track 10 already owns (this is
+# not a second device table) plus the new `mobile_app_configs` table --
+# see app/notification_bridge.py's `NotificationBridgeDevice`/
+# `MobileAppConfig` docstrings for the full field contract.
+
+
+def _strip_pairing_token_hash(device: dict) -> dict:
+    return {k: v for k, v in device.items() if k != "pairing_token_hash"}
+
+
+@app.get("/mobile-devices")
+async def list_mobile_devices(_owner: dict = Depends(require_owner_read)) -> dict:
+    """Every registered device with its full Track 20 metadata (device_
+    name/platform/model/os_version/agent_version/network_status/battery/
+    charging/permissions/capabilities/allowed_apps/blocked_apps), each
+    honestly `None`/empty until the device itself has reported it -- same
+    registry `GET /notification-bridge/devices` reads, under the name the
+    user's own spec uses for this screen."""
+    devices = [_strip_pairing_token_hash(d) for d in store.list_notification_bridge_devices()]
+    return {"devices": devices}
+
+
+@app.get("/mobile-devices/{device_id}")
+async def get_mobile_device(device_id: str, _owner: dict = Depends(require_owner_read)) -> dict:
+    device = store.get_notification_bridge_device(device_id)
+    if device is None:
+        raise HTTPException(status_code=404, detail=f"no notification-bridge device registered with device_id={device_id!r}")
+    return _strip_pairing_token_hash(device)
+
+
+class PatchMobileDeviceRequest(BaseModel):
+    """Owner-gated write for the device-level fields an OPERATOR (not the
+    device app) configures -- `device_name` (the operator's own label)
+    and `allowed_apps`/`blocked_apps` (see
+    `app.notification_bridge.NotificationBridgeDevice`'s own docstring
+    for exactly what each list means and how it composes with the GLOBAL
+    `app.phone_escalation.is_denied_app_package` deny-list, which this
+    can never override). `None` for any field leaves it unchanged; pass
+    `[]` explicitly to clear a list. Device-REPORTED fields (battery,
+    permissions, etc.) are never writable here -- only the device itself,
+    via `POST /ingest/notification-bridge/{device_id}`'s
+    `device_metadata`, can set those."""
+
+    device_name: str | None = None
+    allowed_apps: list[str] | None = None
+    blocked_apps: list[str] | None = None
+
+
+@app.patch("/mobile-devices/{device_id}")
+async def update_mobile_device(
+    device_id: str, request: PatchMobileDeviceRequest, _owner: dict = Depends(require_owner)
+) -> dict:
+    try:
+        device = store.update_notification_bridge_device_apps(
+            device_id,
+            device_name=request.device_name,
+            allowed_apps=request.allowed_apps,
+            blocked_apps=request.blocked_apps,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except NotificationBridgeError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return _strip_pairing_token_hash(device)
+
+
+def _mobile_app_config_response(device: dict, config_row: dict) -> dict:
+    """Composes one `mobile_app_configs` row with its OWNING device's own
+    `provider_mapping[package_name]` entry -- see
+    `app.notification_bridge`'s module-level note on why this table
+    deliberately does not fork/duplicate `provider_mapping`'s own
+    per-package rule shape. `{}` (never fabricated) when the device has
+    no mapping entry for this package at all."""
+    response = dict(config_row)
+    response["provider_mapping"] = device["provider_mapping"].get(config_row["package_name"], {})
+    return response
+
+
+@app.get("/mobile-devices/{device_id}/apps")
+async def list_mobile_app_configs_route(device_id: str, _owner: dict = Depends(require_owner_read)) -> dict:
+    device = store.get_notification_bridge_device(device_id)
+    if device is None:
+        raise HTTPException(status_code=404, detail=f"no notification-bridge device registered with device_id={device_id!r}")
+    configs = [_mobile_app_config_response(device, c) for c in store.list_mobile_app_configs(device_id)]
+    return {"device_id": device_id, "apps": configs}
+
+
+@app.get("/mobile-devices/{device_id}/apps/{package_name}")
+async def get_mobile_app_config_route(
+    device_id: str, package_name: str, _owner: dict = Depends(require_owner_read)
+) -> dict:
+    device = store.get_notification_bridge_device(device_id)
+    if device is None:
+        raise HTTPException(status_code=404, detail=f"no notification-bridge device registered with device_id={device_id!r}")
+    config_row = store.get_mobile_app_config(device_id, package_name)
+    if config_row is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"no mobile app config registered for device_id={device_id!r} package_name={package_name!r}",
+        )
+    return _mobile_app_config_response(device, config_row)
+
+
+class MobileAppConfigRequest(BaseModel):
+    """The "Apps -> Whop" screen's own backend, per the user's own spec.
+    `active_retrieval_allowed` is this (device, app) row's own switch --
+    AND-gated with (never a replacement for)
+    `app.phone_escalation.ProviderEscalationConfig.capability_state`'s
+    existing GLOBAL-per-app_package DISABLED/SHADOW/ENABLED lifecycle;
+    see `_evaluate_phone_escalation_for_event`'s own docstring for
+    exactly where the two are composed. `navigation_recipe`/
+    `expected_screens`/`content_extraction_schema` are honest,
+    forward-declared config -- no real navigation-recipe interpreter or
+    extraction backend exists yet (see
+    `app.phone_escalation.AdbPhoneControlAdapter`'s own docstring)."""
+
+    display_name: str | None = None
+    capture_notifications: bool = True
+    active_retrieval_allowed: bool = False
+    retrieval_mode: str = "notification_only"
+    notification_title_patterns: list[str] = Field(default_factory=list)
+    conversation_patterns: list[str] = Field(default_factory=list)
+    expected_screens: list[str] = Field(default_factory=list)
+    navigation_recipe: list[dict[str, Any]] = Field(default_factory=list)
+    ai_fallback_allowed: bool = False
+    max_navigation_steps: int = 10
+    timeout_seconds: int = 30
+    screenshot_retention: str = "none"
+    content_extraction_schema: dict[str, Any] = Field(default_factory=dict)
+
+
+@app.post("/mobile-devices/{device_id}/apps/{package_name}")
+async def create_or_update_mobile_app_config(
+    device_id: str, package_name: str, request: MobileAppConfigRequest, _owner: dict = Depends(require_owner)
+) -> dict:
+    """Owner-gated create-or-update of one `(device_id, package_name)`
+    config row. `package_name` must already be one of the device's own
+    `app_packages` (`app.notification_bridge.validate_mobile_app_config`)
+    -- a per-app config can never be created for a package this device
+    isn't even authorized to forward notifications for."""
+    try:
+        config_row = store.register_mobile_app_config(
+            device_id=device_id,
+            package_name=package_name,
+            display_name=request.display_name,
+            capture_notifications=request.capture_notifications,
+            active_retrieval_allowed=request.active_retrieval_allowed,
+            retrieval_mode=request.retrieval_mode,
+            notification_title_patterns=request.notification_title_patterns,
+            conversation_patterns=request.conversation_patterns,
+            expected_screens=request.expected_screens,
+            navigation_recipe=request.navigation_recipe,
+            ai_fallback_allowed=request.ai_fallback_allowed,
+            max_navigation_steps=request.max_navigation_steps,
+            timeout_seconds=request.timeout_seconds,
+            screenshot_retention=request.screenshot_retention,
+            content_extraction_schema=request.content_extraction_schema,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except NotificationBridgeError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    device = store.get_notification_bridge_device(device_id)
+    assert device is not None  # register_mobile_app_config already confirmed it exists
+    return _mobile_app_config_response(device, config_row)
+
+
+@app.post("/mobile-devices/{device_id}/apps/{package_name}/test")
+async def test_mobile_app(device_id: str, package_name: str, _owner: dict = Depends(require_owner)) -> dict:
+    """Owner-gated "Test App" action, per the user's own spec: "the
+    system should open the app, retrieve a test item, return the
+    extracted content and show exactly what it saw."
+
+    HONEST CONTRACT (hard rule: never fabricate a success): this
+    environment has no physical Android device, ADB connection, or
+    emulator (same constraint `app.phone_escalation.
+    AdbPhoneControlAdapter` documents -- every one of its methods raises
+    `NotImplementedError`), so `_resolve_phone_control_adapter` always
+    returns `(None, None)` here today, and this route returns a
+    structured `status="unavailable"` response -- NEVER a fabricated
+    "here's what it saw" result, and never a bare 500. The response
+    SHAPE below (device_id/package_name/status/reason/detail/
+    what_it_saw/extracted_content) is written so that once a real
+    `PhoneControlAdapter` backend is wired into
+    `_resolve_phone_control_adapter` (a follow-up that needs a real
+    device), only the early `adapter is None` return goes away -- this
+    contract does not need to change."""
+    device = store.get_notification_bridge_device(device_id)
+    if device is None:
+        raise HTTPException(status_code=404, detail=f"no notification-bridge device registered with device_id={device_id!r}")
+    config_row = store.get_mobile_app_config(device_id, package_name)
+    if config_row is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"no mobile app config registered for device_id={device_id!r} package_name={package_name!r}",
+        )
+
+    escalation_config_row = store.get_phone_escalation_config(package_name)
+    adapter, extractor = _resolve_phone_control_adapter(escalation_config_row)
+    if adapter is None or extractor is None:
+        return {
+            "device_id": device_id,
+            "package_name": package_name,
+            "status": "unavailable",
+            "reason": "no_real_phone_control_backend",
+            "detail": (
+                "no physical Android device/ADB connection/emulator is available in this deployment -- "
+                "app.phone_escalation.AdbPhoneControlAdapter is a documented real-backend DESIGN ONLY (every "
+                "method raises NotImplementedError). This is an honest 'not available yet' result, never a "
+                "fabricated success -- see this route's own docstring."
+            ),
+            "what_it_saw": None,
+            "extracted_content": None,
+        }
+
+    # Unreachable in THIS environment today (see docstring above) -- the
+    # forward-compatible real path, exercised only by a test that injects
+    # a real adapter/extractor pair, or once a real backend is wired into
+    # `_resolve_phone_control_adapter`.
+    try:
+        await adapter.open_app(package_name)
+    except DeniedAppPackageError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    screen_text = await adapter.read_screen_text()
+    tree = await adapter.get_accessibility_tree()
+    raw_text = screen_text or (tree.text or "")
+    extraction = await extractor.extract(raw_text)
+    return {
+        "device_id": device_id,
+        "package_name": package_name,
+        "status": "candidate" if extraction.status.value == "candidate" else "unknown",
+        "reason": None,
+        "detail": extraction.detail,
+        "what_it_saw": raw_text,
+        "extracted_content": extraction.fields,
+    }
+
+
 class RegisterPhoneEscalationConfigRequest(BaseModel):
     """Owner-gated: register (or re-describe) one provider/app's active
     phone-control-retrieval config -- see app/phone_escalation.py's
@@ -4144,8 +4385,42 @@ class NotificationBridgeEventPayload(BaseModel):
     received_at: datetime | None = None
 
 
+class DeviceMetadataPayload(BaseModel):
+    """Track 20: optional, ADDITIVE device-metadata block the companion
+    Android app may include on any ingest/heartbeat call -- every field
+    is `None` (meaning "not reported on this call") by default, so an
+    OLDER build of the companion app that sends only `{"events": [...]}`
+    with no `device_metadata` key at all keeps working completely
+    unchanged (`NotificationBridgeIngestRequest.device_metadata` itself
+    also defaults to `None`). A field the device DOES report is merged
+    into the stored row (`SignalStore.
+    update_notification_bridge_device_metadata`); a field left `None`
+    here is left UNTOUCHED on the stored row, never overwritten with
+    `NULL` just because one particular call didn't happen to include it
+    (see that method's own docstring). See
+    `app.notification_bridge.NotificationBridgeDevice`'s own docstring
+    for exactly what each field means -- never fabricated/guessed
+    server-side, only ever what the device itself reports."""
+
+    device_name: str | None = None
+    platform: str | None = None
+    model: str | None = None
+    os_version: str | None = None
+    agent_version: str | None = None
+    network_status: str | None = None
+    battery_level: int | None = None
+    is_charging: bool | None = None
+    notification_permission_granted: bool | None = None
+    accessibility_permission_granted: bool | None = None
+    screen_control_capability: bool | None = None
+    ai_agent_capability: bool | None = None
+
+
 class NotificationBridgeIngestRequest(BaseModel):
-    events: list[NotificationBridgeEventPayload]
+    events: list[NotificationBridgeEventPayload] = Field(default_factory=list)
+    #: Track 20, optional and backward-compatible -- see
+    #: `DeviceMetadataPayload`'s own docstring.
+    device_metadata: DeviceMetadataPayload | None = None
 
 
 def _resolve_phone_control_adapter(config_row: dict | None) -> tuple[Any, Any]:
@@ -4191,11 +4466,37 @@ async def _evaluate_phone_escalation_for_event(
     raises for an individual event's own escalation-evaluation outcome,
     same "one bad item doesn't sink the batch" convention as the caller
     itself) -- `None` only if evaluation itself raised unexpectedly,
-    which is logged, never silently swallowed."""
+    which is logged, never silently swallowed.
+
+    Track 20 (device-level AND-gate): before consulting the GLOBAL
+    `phone_escalation_configs` row's own `capability_state`, this also
+    checks this specific device's own Track 20 config -- if a
+    `mobile_app_configs` row exists for `(device_id, app_package)` and
+    its `active_retrieval_allowed` is `False`, OR `app_package` is on
+    this device's own `blocked_apps`, escalation is forced to behave as
+    `CAPABILITY_DISABLED` for THIS device regardless of the global
+    `capability_state` (an operator can permit a provider globally but
+    still turn it off on one specific phone). `phone_escalation_configs`
+    itself is deliberately kept GLOBAL-per-`app_package` (not migrated to
+    per-device) -- see this module's own `MobileAppConfigRequest`
+    docstring and this task's own final report for the reasoning; this
+    device-level toggle is the additive, AND-gated permission layered on
+    top instead."""
     config_row = store.get_phone_escalation_config(app_package)
     from app.phone_escalation import ProviderEscalationConfig
 
     config_obj = ProviderEscalationConfig(**config_row) if config_row else None
+
+    device_row = store.get_notification_bridge_device(device_id)
+    if device_row is not None:
+        blocked_apps = {p.lower() for p in device_row.get("blocked_apps", [])}
+        if app_package.lower() in blocked_apps:
+            config_obj = None
+        else:
+            app_config_row = store.get_mobile_app_config(device_id, app_package)
+            if app_config_row is not None and not app_config_row["active_retrieval_allowed"]:
+                config_obj = None
+
     adapter, extractor = _resolve_phone_control_adapter(config_row)
     try:
         attempt, extraction = await evaluate_escalation(
@@ -4533,7 +4834,14 @@ async def ingest_notification_bridge(
     not `events` is empty (the Android app's own dedicated periodic
     heartbeat, see mobile/notification-bridge/README.md, posts an empty
     batch here for exactly this reason, alongside real notification
-    uploads)."""
+    uploads).
+
+    Track 20: `body.device_metadata` is OPTIONAL and fully backward-
+    compatible -- an existing Android build that never sends it (or an
+    older `events`-only body) behaves identically to before this field
+    existed; see `DeviceMetadataPayload`'s own docstring for the "merge
+    only what's reported, never clobber with a guess" contract applied
+    below."""
     device = store.get_notification_bridge_device(device_id)
     if device is None:
         raise HTTPException(status_code=404, detail=f"no notification-bridge device registered with device_id={device_id!r}")
@@ -4546,7 +4854,11 @@ async def ingest_notification_bridge(
         raise HTTPException(status_code=401, detail="invalid device pairing token")
 
     store.record_notification_bridge_heartbeat(device_id)
-    device = store.get_notification_bridge_device(device_id)  # refreshed after heartbeat
+    if body.device_metadata is not None:
+        store.update_notification_bridge_device_metadata(
+            device_id, **body.device_metadata.model_dump(exclude_none=True)
+        )
+    device = store.get_notification_bridge_device(device_id)  # refreshed after heartbeat/metadata
     assert device is not None  # just heartbeated the same row within this request
 
     results = [await _process_notification_bridge_event(device, event) for event in body.events]
