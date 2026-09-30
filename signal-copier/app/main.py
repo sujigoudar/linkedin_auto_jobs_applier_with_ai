@@ -3427,6 +3427,68 @@ async def promote_parser_profile(
     except (ParserToolingError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+# --- Track 16: transport dedup vs. semantic correlation, canonical      -
+# signal lifecycle, and position-ownership visibility -- see
+# app/db.py's own docstrings on each SignalStore method below for the
+# full contract. Deliberately GET-only, same "enough to see it working,
+# not a dashboard page" build-order decision as the Track 14 routes just
+# above (config write access is through app.provider_catalog's existing
+# SignalStore.update_provider_catalog_entry/register_source, not a new
+# REST surface in this track).
+
+
+@app.get("/signal-correlation/transport-duplicates")
+async def list_transport_duplicates(_owner: dict = Depends(require_owner_read)) -> dict:
+    """TRANSPORT-level duplication (same channel_id+message_id, revised
+    more than once) -- see `SignalStore.list_transport_duplicate_groups`'s
+    own docstring for exactly what is and isn't observable here, and this
+    module's own section docstring for why this is a DIFFERENT read path
+    from `/signal-correlation/semantic-correlations` below, never
+    conflated with it."""
+    return {"transport_duplicate_groups": store.list_transport_duplicate_groups()}
+
+
+@app.get("/signal-correlation/semantic-correlations")
+async def list_semantic_correlations_route(_owner: dict = Depends(require_owner_read)) -> dict:
+    """Cross-transport SEMANTIC correlation (Track 12's `signal_
+    correlation_evidence`, corroborating AND conflicting) -- see
+    `SignalStore.list_semantic_correlations`'s own docstring."""
+    return {"canonical_signals": store.list_semantic_correlations()}
+
+
+@app.get("/signal-correlation/conflicts")
+async def list_conflicting_correlations_route(_owner: dict = Depends(require_owner_read)) -> dict:
+    """Track 12's existing conflicting-only read, kept at its own path
+    for a reviewer who wants ONLY unresolved conflicts, not every
+    corroborating observation too (`/semantic-correlations` above)."""
+    return {"conflicts": store.list_conflicting_signal_correlations()}
+
+
+@app.get("/signals/{signal_id}/lifecycle")
+async def get_signal_lifecycle_route(signal_id: str, _owner: dict = Depends(require_owner_read)) -> dict:
+    """The canonical signal lifecycle timeline drill-down -- see
+    `SignalStore.get_signal_lifecycle`'s own docstring for exactly which
+    events are real vs. inferred and why."""
+    lifecycle = store.get_signal_lifecycle(signal_id)
+    if lifecycle is None:
+        raise HTTPException(status_code=404, detail=f"no signal recorded with id={signal_id!r}")
+    return lifecycle
+
+
+@app.get("/positions/{symbol}/provider-allocations")
+async def get_position_provider_allocations_route(
+    symbol: str, _owner: dict = Depends(require_owner_read)
+) -> dict:
+    """READ-ONLY: broker-level tracked position for `symbol`, per
+    account, vs. each provider's own best-effort attributable
+    contribution to it -- see `SignalStore.get_position_provider_
+    allocations`'s own docstring for exactly what this is derived from
+    and its real limitation (no separate per-provider ownership ledger
+    exists to instead just read back -- see this task's own final report
+    for the full position-ownership finding). NEVER consulted by any
+    live-routing decision."""
+    return store.get_position_provider_allocations(symbol)
+
 
 def _managed_lifecycle_snapshot() -> list[dict]:
     """Coverage/deficit detail for every open `managed_lifecycle` position —

@@ -122,6 +122,7 @@ from signal_platform_contracts import Environment, EventEnvelope, EvidenceClass
 
 from app import command_ledger, config
 from app import quantity as quantity_module
+from app import signal_freshness
 from app.brokers.base import BrokerAdapter
 from app.brokers.paper import PaperBroker
 from app.capital_allocator import CapitalAllocator, confirmed_open_notional, owner_wide_exposure
@@ -499,6 +500,27 @@ class SignalCopierEngine:
         # (a malformed provider row, a store error) can never break real
         # signal processing -- see this method's own call site comment.
         self._maybe_run_shadow_mode(signal)
+
+        # Track 16: `decision_at` -- this engine is about to make its
+        # routing/admission decision for this signal (freshness gating
+        # immediately below, then per-destination-account processing) --
+        # recorded so `get_signal_lifecycle` can report it, whichever way
+        # that decision goes. A no-op cost (one more UPDATE) for every
+        # signal, whether or not it has a registered provider.
+        signal.decision_at = datetime.now(timezone.utc)
+        self.store.save_signal(signal)
+
+        # Track 16: per-provider/per-source freshness -- see
+        # `_check_signal_freshness`'s own docstring for the full contract.
+        # Strict superset: a signal whose `source` names no registered
+        # `providers` row (every signal this codebase produced before
+        # Track 14, and most of its adapters/fixtures today) resolves to
+        # `FreshnessConfig.disabled()`, which always returns `ok=True` --
+        # this call is then a real no-op, identical to before this
+        # existed.
+        stale_result = self._check_signal_freshness(signal)
+        if stale_result is not None:
+            return stale_result
 
         # EXE-10: an account's own `enabled=False` is an entry pause, not
         # an exit block -- a CLOSE signal must still reach an account that
@@ -961,6 +983,64 @@ class SignalCopierEngine:
     #: engine's other sentinels.
     _CROSS_TRANSPORT_CONFLICT_ACCOUNT_ID = "__cross_transport_conflict__"
 
+    #: Track 16 -- same "honest, never-a-real-account-id" sentinel
+    #: convention as `_CROSS_TRANSPORT_CONFLICT_ACCOUNT_ID`, for a signal
+    #: `_check_signal_freshness` holds/rejects out of live routing
+    #: entirely before `routing.destinations_for` is ever consulted.
+    _STALE_SIGNAL_ACCOUNT_ID = "__stale_signal_held__"
+    #: Track 16 -- same convention, for a signal
+    #: `ConflictResolutionPolicy.REQUIRE_MATCHING_SOURCES` holds pending a
+    #: second, independent, corroborating source (see
+    #: `_correlate_cross_transport`'s own wiring note).
+    _INSUFFICIENT_CORROBORATION_ACCOUNT_ID = "__insufficient_corroboration__"
+
+    def _check_signal_freshness(self, signal: Signal) -> list[OrderResult] | None:
+        """Track 16: evaluates `signal` against its effective
+        `app.signal_freshness.FreshnessConfig` (resolved from this
+        signal's `source`'s `providers`/`sources` catalog rows, when one
+        exists -- see `app/signal_freshness.py`'s own module docstring).
+
+        Returns `None` -- "nothing to do, proceed exactly as before" --
+        for every signal whose provider isn't registered at all (the
+        strict-superset case), and for a genuinely fresh signal, and for
+        a stale one whose configured behavior is `ACT_ANYWAY`.
+
+        Returns a REAL final `list[OrderResult]` (a single REJECTED
+        result, `HOLD`/`REJECT` both represented this way -- there is no
+        separate "come back later" queue this engine polls, same as
+        Track 12's `CONFLICTING_SOURCE_DATA`) when the signal must be
+        held out of live routing. The signal itself is still persisted
+        (already done by the caller, `_handle_signal`, before this is
+        called) -- never silently dropped from the audit trail, only ever
+        held out of the live pipeline, same "recorded, never routed"
+        convention as `stale_backlog_import_only`/
+        `CONFLICTING_SOURCE_DATA`."""
+        provider_row = self.store.get_provider_catalog_entry(signal.source)
+        source_row: dict | None = None
+        if provider_row is not None and signal.channel_id is not None:
+            for candidate_source in self.store.list_sources(provider_id=signal.source):
+                if candidate_source.get("source_native_id") == signal.channel_id:
+                    source_row = candidate_source
+                    break
+        freshness_config = signal_freshness.freshness_config_from_rows(provider_row, source_row)
+        decision = signal_freshness.evaluate_signal_freshness(signal, freshness_config)
+        if decision.ok:
+            return None
+        logger.warning(
+            "signal id=%s source=%s held out of live routing by freshness policy: %s",
+            signal.id,
+            signal.source,
+            decision.reason,
+        )
+        return [
+            OrderResult(
+                account_id=self._STALE_SIGNAL_ACCOUNT_ID,
+                status=OrderStatus.REJECTED,
+                signal_id=signal.id,
+                message=f"STALE_SIGNAL ({decision.action.value if decision.action else 'HOLD'}): {decision.reason}",
+            )
+        ]
+
     async def _correlate_cross_transport(self, signal: Signal) -> list[OrderResult] | None:
         """Track 12: cross-transport signal correlation/dedup -- see
         `app/signal_correlation.py`'s own module docstring for the full
@@ -1002,10 +1082,43 @@ class SignalCopierEngine:
         if signal.channel_id is None or signal.message_id is None:
             return None
 
-        from app.signal_correlation import CorrelationOutcome, classify_candidate, fingerprint_key
+        from app.signal_correlation import (
+            ConflictResolutionPolicy,
+            CorrelationOutcome,
+            classify_candidate,
+            fingerprint_key,
+            resolve_conflict,
+        )
+
+        # Track 16: a provider row's own correlation_window_seconds/
+        # correlation_price_tolerance_pct OVERRIDE this module's global
+        # defaults when one exists for this signal's source -- strict
+        # superset, falls back to the exact same config.* defaults as
+        # before for a signal with no registered provider (or one that
+        # never set these fields). See app/signal_correlation.py's own
+        # module docstring for the "not yet wired" note this closes out.
+        provider_row = self.store.get_provider_catalog_entry(signal.source)
+        window = config.SIGNAL_CORRELATION_TIMESTAMP_WINDOW_SECONDS
+        price_tolerance = config.SIGNAL_CORRELATION_PRICE_TOLERANCE_PCT
+        conflict_policy = ConflictResolutionPolicy.HOLD
+        if provider_row is not None:
+            if provider_row.get("correlation_window_seconds") is not None:
+                window = provider_row["correlation_window_seconds"]
+            if provider_row.get("correlation_price_tolerance_pct") is not None:
+                price_tolerance = provider_row["correlation_price_tolerance_pct"]
+            raw_policy = provider_row.get("conflict_resolution_policy")
+            if raw_policy:
+                try:
+                    conflict_policy = ConflictResolutionPolicy(raw_policy)
+                except ValueError:
+                    logger.warning(
+                        "provider=%s has unrecognized conflict_resolution_policy=%r -- failing closed to HOLD",
+                        signal.source,
+                        raw_policy,
+                    )
+                    conflict_policy = ConflictResolutionPolicy.HOLD
 
         key = fingerprint_key(signal)
-        window = config.SIGNAL_CORRELATION_TIMESTAMP_WINDOW_SECONDS
         received_at = signal.received_at if signal.received_at.tzinfo else signal.received_at.replace(tzinfo=timezone.utc)
         since = datetime.fromtimestamp(received_at.timestamp() - window, tz=timezone.utc)
         until = datetime.fromtimestamp(received_at.timestamp() + window, tz=timezone.utc)
@@ -1013,6 +1126,7 @@ class SignalCopierEngine:
             fingerprint_key=key, exclude_channel_id=signal.channel_id, since=since, until=until
         )
 
+        any_corroborating_or_conflicting = False
         for candidate in candidates:
             candidate_price = candidate["price"]
             candidate_received_at = datetime.fromisoformat(candidate["received_at"])
@@ -1023,11 +1137,12 @@ class SignalCopierEngine:
                 candidate_price=candidate_price,
                 candidate_side=candidate["side"],
                 candidate_received_at=candidate_received_at,
-                price_tolerance_pct=config.SIGNAL_CORRELATION_PRICE_TOLERANCE_PCT,
+                price_tolerance_pct=price_tolerance,
                 window_seconds=window,
             )
             if outcome is None:
                 continue  # not eligible to compare (missing price on either side) -- never guessed
+            any_corroborating_or_conflicting = True
             self.store.record_signal_correlation_evidence(
                 canonical_signal_id=candidate["id"],
                 evidence_signal_id=signal.id,
@@ -1052,18 +1167,72 @@ class SignalCopierEngine:
                 )
                 signal.id = candidate["id"]
                 return None
-            # CONFLICTING: never silently pick one side -- hold this
-            # signal out of live routing entirely and surface it for
-            # human review (see this method's own docstring).
+            # CONFLICTING: Track 16 -- resolve through this provider's own
+            # ConflictResolutionPolicy (default HOLD, Track 12's original
+            # behavior, unchanged for every unconfigured provider). See
+            # app/signal_correlation.py's `resolve_conflict` for the full,
+            # purely structural (never LLM/AI) decision.
+            primary_native_id, primary_count = (None, 0)
+            deterministic_native_id = None
+            if conflict_policy is ConflictResolutionPolicy.REQUIRE_PRIMARY_SOURCE:
+                primary_native_id, primary_count = self.store.get_primary_source_native_id(signal.source)
+            elif conflict_policy is ConflictResolutionPolicy.PROVIDER_DETERMINISTIC:
+                det_source_id = provider_row.get("deterministic_primary_source_id") if provider_row else None
+                if det_source_id:
+                    det_source = self.store.get_source(det_source_id)
+                    deterministic_native_id = det_source.get("source_native_id") if det_source else None
+
+            resolution = resolve_conflict(
+                policy=conflict_policy,
+                new_channel_id=signal.channel_id,
+                candidate_channel_id=candidate["channel_id"],
+                primary_source_native_id=primary_native_id,
+                primary_source_count=primary_count,
+                deterministic_source_native_id=deterministic_native_id,
+            )
+
+            if resolution.action == "trust_new":
+                logger.warning(
+                    "CONFLICTING_SOURCE_DATA resolved by policy=%s: trusting NEW signal id=%s (channel=%s) "
+                    "over candidate id=%s (channel=%s) -- %s",
+                    conflict_policy.value,
+                    signal.id,
+                    signal.channel_id,
+                    candidate["id"],
+                    candidate["channel_id"],
+                    resolution.reason,
+                )
+                return None
+            if resolution.action == "trust_candidate":
+                logger.warning(
+                    "CONFLICTING_SOURCE_DATA resolved by policy=%s: trusting CANDIDATE signal id=%s "
+                    "(channel=%s) over new signal id=%s (channel=%s) -- %s",
+                    conflict_policy.value,
+                    candidate["id"],
+                    candidate["channel_id"],
+                    signal.id,
+                    signal.channel_id,
+                    resolution.reason,
+                )
+                signal.id = candidate["id"]
+                return None
+
+            # "hold" (the floor -- HOLD itself, or any other policy that
+            # couldn't make its own specific determination): never
+            # silently pick one side -- hold this signal out of live
+            # routing entirely and surface it for human review (see this
+            # method's own docstring).
             logger.warning(
                 "CONFLICTING_SOURCE_DATA: signal id=%s (channel=%s, source=%s) shares fingerprint with "
                 "already-recorded signal id=%s (channel=%s) but disagrees on price/side -- held out of "
-                "live routing, recorded for human review",
+                "live routing, recorded for human review (policy=%s: %s)",
                 signal.id,
                 signal.channel_id,
                 signal.source,
                 candidate["id"],
                 candidate["channel_id"],
+                conflict_policy.value,
+                resolution.reason,
             )
             signal.import_batch = f"cross_transport_conflict:{candidate['id']}"
             self.store.save_signal(signal)
@@ -1075,7 +1244,44 @@ class SignalCopierEngine:
                     message=(
                         f"CONFLICTING_SOURCE_DATA: shares fingerprint with signal id={candidate['id']!r} "
                         f"(channel_id={candidate['channel_id']!r}) but disagrees on price/side -- held for "
-                        "human review, never auto-resolved"
+                        f"human review (policy={conflict_policy.value}: {resolution.reason}), never "
+                        "auto-resolved by AI/LLM judgment"
+                    ),
+                )
+            ]
+
+        # Track 16: ConflictResolutionPolicy.REQUIRE_MATCHING_SOURCES --
+        # the "current single-source-triggers-immediately behavior becomes
+        # opt-in" case (see that enum member's own docstring). No
+        # fingerprint-matching candidate was found at all (the ordinary,
+        # single-source case that reaches here for every OTHER policy and
+        # proceeds to route immediately) -- for THIS policy, hold this
+        # first-seen source's signal until a second, independent,
+        # corroborating source's signal actually arrives (which will find
+        # THIS one as a candidate above and canonicalize onto it via the
+        # ordinary CORROBORATING path -- see that branch). This never
+        # applies once at least one candidate was found (corroborating OR
+        # conflicting) above -- that path already ran its own, correct
+        # (2-source) logic.
+        if not any_corroborating_or_conflicting and conflict_policy is ConflictResolutionPolicy.REQUIRE_MATCHING_SOURCES:
+            logger.info(
+                "signal id=%s (channel=%s, source=%s) held pending a second, independent corroborating "
+                "source -- ConflictResolutionPolicy.REQUIRE_MATCHING_SOURCES for this provider",
+                signal.id,
+                signal.channel_id,
+                signal.source,
+            )
+            signal.import_batch = f"insufficient_corroboration:{key}"
+            self.store.save_signal(signal)
+            return [
+                OrderResult(
+                    account_id=self._INSUFFICIENT_CORROBORATION_ACCOUNT_ID,
+                    status=OrderStatus.REJECTED,
+                    signal_id=signal.id,
+                    message=(
+                        "INSUFFICIENT_CORROBORATION: ConflictResolutionPolicy.REQUIRE_MATCHING_SOURCES for "
+                        f"provider={signal.source!r} -- held until a second, independent source corroborates "
+                        "this fingerprint; never auto-resolved by AI/LLM judgment"
                     ),
                 )
             ]
