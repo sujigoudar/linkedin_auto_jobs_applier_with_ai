@@ -56,6 +56,7 @@ def render_metrics(session: Session, *, tenant_id: str | None = None) -> bytes:
             ).labels(service_name=service_name).set(age)
 
         if not result.insufficient_history:
+            assert result.uptime_pct is not None  # guaranteed once history is sufficient
             Gauge(
                 "commercial_service_uptime_ratio_24h",
                 "Fraction (0..1) of recorded health samples over the trailing 24h window that "

@@ -6,7 +6,7 @@ entries) must never be presented as, or computed into, business margin.
 A real, runnable test, not just a docstring claim.
 """
 import ast
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 
