@@ -59,6 +59,7 @@ import app.models.local_auth  # noqa: F401
 import app.models.managed_program  # noqa: F401
 import app.models.notification_preferences  # noqa: F401
 import app.models.onboarding_progress  # noqa: F401
+import app.models.operating_cost  # noqa: F401
 import app.models.platform_connection  # noqa: F401
 import app.models.portfolio_selection  # noqa: F401
 import app.models.portfolio_version  # noqa: F401
@@ -71,6 +72,7 @@ import app.models.real_account_route  # noqa: F401
 import app.models.release_review  # noqa: F401
 import app.models.research_run  # noqa: F401
 import app.models.rights  # noqa: F401
+import app.models.service_health_sample  # noqa: F401
 import app.models.sleeve  # noqa: F401
 import app.models.support_case  # noqa: F401
 import app.models.tenancy  # noqa: F401

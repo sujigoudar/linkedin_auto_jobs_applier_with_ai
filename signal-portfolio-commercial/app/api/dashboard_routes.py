@@ -110,9 +110,18 @@ what is and is not implemented yet.
 - AD-12 "Business economics and royalties": real booked revenue per
   currency, computed only from Subscription rows in a genuinely
   payment-recognized state (never LedgerEntry -- investment profits are
-  not revenue). Refunds/royalties/cost attribution/margin are NOT
-  implemented -- no such model exists, so each is rendered as an
-  explicit UNSUPPORTED, never a fabricated zero or an incomplete margin.
+  not revenue). Cost attribution and Margin are now real too (Track 11,
+  app/models/operating_cost.py / app/services/operating_cost.py /
+  app/services/business_economics.py's `compute_margin_for_period`):
+  a tenant-scoped, owner-gated manual/CSV-import cost ledger, broken
+  down by category and cost center, and a margin figure computed ONLY
+  for a currency with both real revenue and at least one real recorded
+  cost in the same period -- never a number computed from partial/zero
+  costs. No live billing-API integration exists (AWS/Stripe fee API/
+  Telegram/OpenAI/Anthropic usage endpoints) -- that remains a
+  documented, scoped-out follow-up. Refunds/royalties are still NOT
+  implemented -- no such model exists, so each stays an explicit
+  UNSUPPORTED.
 - AD-11 "Customers and scoped support record": a real, read-only staff
   view over a tenant's own customer memberships, built entirely from
   data ID-04/CU-14 already made real (eligibility decisions, support
@@ -190,7 +199,7 @@ from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request, Response
+from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request, Response, UploadFile
 from fastapi.responses import RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import select
@@ -227,7 +236,17 @@ from app.services.api_key import (
     list_api_keys,
     revoke_api_key,
 )
-from app.services.business_economics import get_business_economics
+from app.services.business_economics import compute_margin_for_period, get_business_economics
+from app.models.operating_cost import OperatingCostCadence, OperatingCostCategory
+from app.services.operating_cost import (
+    CsvImportError,
+    InvalidOperatingCostError,
+    create_operating_cost,
+    delete_operating_cost,
+    import_operating_costs_csv,
+    summarize_operating_costs,
+)
+from app.services.service_health import compute_all_services_uptime_latency
 from app.services.content_document import (
     ContentNotEligibleForPublicationError,
     ContentNotEligibleForReviewError,
@@ -1843,14 +1862,47 @@ def revoke_api_key_page(
     return RedirectResponse(url="/app/developer", status_code=303)
 
 
+def _current_month_bounds(now: datetime | None = None) -> tuple[datetime, datetime]:
+    """The default period AD-12's Cost attribution/Margin panels compute
+    against: the current calendar month in UTC, start (inclusive) to now
+    (the still-open period's own "so far" boundary) -- never a full
+    future month, which would silently make every current-month cost
+    look like it "overlaps" a period that hasn't happened yet."""
+    now = now or datetime.now(timezone.utc)
+    period_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    return period_start, now
+
+
+def _all_cost_categories() -> list[str]:
+    return [c.value for c in OperatingCostCategory]
+
+
+def _all_cost_cadences() -> list[str]:
+    return [c.value for c in OperatingCostCadence]
+
+
+def _require_manage_operating_costs(scope: TenantScope) -> None:
+    try:
+        require_permission(scope.role, "manage_operating_costs")
+    except PermissionDenied as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+
 @router.get("/ops/business")
 def business_economics_page(
     request: Request,
     scope: TenantScope = Depends(get_current_scope),
     session: Session = Depends(get_db_session),
+    error: str | None = None,
 ):
     """AD-12 "Business economics and royalties" -- see this route
-    module's own docstring above for what is and is not implemented."""
+    module's own docstring above for what is and is not implemented.
+    "Cost attribution" and "Margin" are now real: cost data a human has
+    actually entered (app/services/operating_cost.py), and margin
+    computed only for currencies that have BOTH real revenue and real
+    recorded costs for the current month (app/services/
+    business_economics.py's `compute_margin_for_period`) -- never a
+    number computed from partial/zero costs."""
     try:
         require_permission(scope.role, "view_business_economics")
     except PermissionDenied as exc:
@@ -1858,7 +1910,202 @@ def business_economics_page(
 
     set_tenant_scope(session, scope.tenant_id)
     economics = get_business_economics(session, tenant_id=scope.tenant_id)
-    return templates.TemplateResponse(request, "ad12_business.html", {"economics": economics})
+    cost_summary = summarize_operating_costs(session, tenant_id=scope.tenant_id)
+    period_start, period_end = _current_month_bounds()
+    margin = compute_margin_for_period(
+        session, tenant_id=scope.tenant_id, period_start=period_start, period_end=period_end
+    )
+    return templates.TemplateResponse(
+        request,
+        "ad12_business.html",
+        {
+            "economics": economics,
+            "cost_summary": cost_summary,
+            "margin": margin,
+            "all_cost_categories": _all_cost_categories(),
+            "all_cost_cadences": _all_cost_cadences(),
+            "can_manage_operating_costs": is_allowed(scope.role, "manage_operating_costs"),
+            "error": error,
+        },
+    )
+
+
+@router.post("/ops/business/costs")
+async def create_operating_cost_page(
+    request: Request,
+    category: str = Form(...),
+    vendor: str = Form(...),
+    amount_cents: int = Form(...),
+    currency: str = Form("usd"),
+    cadence: str = Form("monthly"),
+    period_start: str = Form(...),
+    period_end: str = Form(...),
+    description: str = Form(""),
+    cost_center: str = Form(""),
+    scope: TenantScope = Depends(get_current_scope),
+    session: Session = Depends(get_db_session),
+):
+    """AD-12's manual cost-entry form -- one real `OperatingCost` row per
+    submit, always `entry_source=manual`. See app/services/
+    operating_cost.py's own docstring on why this build has no live
+    billing-API pull to offer instead."""
+    _require_manage_operating_costs(scope)
+    set_tenant_scope(session, scope.tenant_id)
+    try:
+        parsed_start = datetime.fromisoformat(period_start)
+        if parsed_start.tzinfo is None:
+            parsed_start = parsed_start.replace(tzinfo=timezone.utc)
+        parsed_end = datetime.fromisoformat(period_end)
+        if parsed_end.tzinfo is None:
+            parsed_end = parsed_end.replace(tzinfo=timezone.utc)
+        create_operating_cost(
+            session,
+            tenant_id=scope.tenant_id,
+            category=category,
+            vendor=vendor,
+            amount_cents=amount_cents,
+            currency=currency,
+            cadence=cadence,
+            period_start=parsed_start,
+            period_end=parsed_end,
+            description=description or None,
+            cost_center=cost_center or None,
+            created_by_user_id=scope.user_id,
+        )
+        session.commit()
+    except (InvalidOperatingCostError, ValueError) as exc:
+        session.rollback()
+        return RedirectResponse(url=f"/ops/business?error={exc}", status_code=303)
+    return RedirectResponse(url="/ops/business", status_code=303)
+
+
+@router.post("/ops/business/costs/import")
+async def import_operating_costs_page(
+    request: Request,
+    csv_file: UploadFile,
+    scope: TenantScope = Depends(get_current_scope),
+    session: Session = Depends(get_db_session),
+):
+    """AD-12's bounded CSV import -- see app/services/operating_cost.py's
+    own `import_operating_costs_csv` docstring: all-or-nothing, no
+    partial import."""
+    _require_manage_operating_costs(scope)
+    set_tenant_scope(session, scope.tenant_id)
+    raw = await csv_file.read()
+    try:
+        text_content = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return RedirectResponse(url="/ops/business?error=CSV file must be UTF-8 encoded", status_code=303)
+    try:
+        import_operating_costs_csv(
+            session, tenant_id=scope.tenant_id, csv_text=text_content, created_by_user_id=scope.user_id
+        )
+        session.commit()
+    except CsvImportError as exc:
+        session.rollback()
+        return RedirectResponse(url=f"/ops/business?error={exc}", status_code=303)
+    return RedirectResponse(url="/ops/business", status_code=303)
+
+
+@router.post("/ops/business/costs/{cost_id}/delete")
+def delete_operating_cost_page(
+    cost_id: str,
+    scope: TenantScope = Depends(get_current_scope),
+    session: Session = Depends(get_db_session),
+):
+    _require_manage_operating_costs(scope)
+    set_tenant_scope(session, scope.tenant_id)
+    deleted = delete_operating_cost(session, cost_id, tenant_id=scope.tenant_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="operating cost not found")
+    session.commit()
+    return RedirectResponse(url="/ops/business", status_code=303)
+
+
+#: Track 11 -- a tenant-scoped, owner-gated JSON CRUD API alongside the
+#: HTML form routes above, for a programmatic caller (the same "form
+#: POST for browsers, JSON API for programmatic callers" split this
+#: router already uses elsewhere, e.g. `/api/v1/ops/integration-status`
+#: vs `/ops/system`).
+@router.get("/api/v1/ops/costs")
+def list_operating_costs_api(
+    scope: TenantScope = Depends(get_current_scope),
+    session: Session = Depends(get_db_session),
+):
+    try:
+        require_permission(scope.role, "view_business_economics")
+    except PermissionDenied as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    set_tenant_scope(session, scope.tenant_id)
+    summary = summarize_operating_costs(session, tenant_id=scope.tenant_id)
+    return {
+        "rows": [
+            {
+                "cost_id": row.cost_id,
+                "category": row.category.value,
+                "vendor": row.vendor,
+                "description": row.description,
+                "amount_cents": row.amount_cents,
+                "currency": row.currency,
+                "cadence": row.cadence.value,
+                "period_start": row.period_start.isoformat(),
+                "period_end": row.period_end.isoformat(),
+                "cost_center": row.cost_center,
+                "entry_source": row.entry_source.value,
+                "is_usage_estimate": row.is_usage_estimate,
+            }
+            for row in summary.rows
+        ],
+        "by_category": [
+            {"category": r.category, "total_cents": r.total_cents, "currency": r.currency} for r in summary.by_category
+        ],
+    }
+
+
+@router.post("/api/v1/ops/costs")
+async def create_operating_cost_api(
+    request: Request,
+    scope: TenantScope = Depends(get_current_scope),
+    session: Session = Depends(get_db_session),
+):
+    _require_manage_operating_costs(scope)
+    set_tenant_scope(session, scope.tenant_id)
+    payload = await request.json()
+    try:
+        row = create_operating_cost(
+            session,
+            tenant_id=scope.tenant_id,
+            category=payload["category"],
+            vendor=payload["vendor"],
+            amount_cents=int(payload["amount_cents"]),
+            currency=payload.get("currency", "usd"),
+            cadence=payload.get("cadence", "monthly"),
+            period_start=datetime.fromisoformat(payload["period_start"]),
+            period_end=datetime.fromisoformat(payload["period_end"]),
+            description=payload.get("description"),
+            cost_center=payload.get("cost_center"),
+            created_by_user_id=scope.user_id,
+        )
+        session.commit()
+    except (InvalidOperatingCostError, KeyError, ValueError) as exc:
+        session.rollback()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"cost_id": row.cost_id}
+
+
+@router.delete("/api/v1/ops/costs/{cost_id}")
+def delete_operating_cost_api(
+    cost_id: str,
+    scope: TenantScope = Depends(get_current_scope),
+    session: Session = Depends(get_db_session),
+):
+    _require_manage_operating_costs(scope)
+    set_tenant_scope(session, scope.tenant_id)
+    deleted = delete_operating_cost(session, cost_id, tenant_id=scope.tenant_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="operating cost not found")
+    session.commit()
+    return {"deleted": True}
 
 
 @router.get("/ops/customers")
@@ -2957,16 +3204,24 @@ def _require_deployment_status(scope: TenantScope) -> None:
 def deployment_status_page(
     request: Request,
     scope: TenantScope = Depends(get_current_scope),
+    session: Session = Depends(get_db_session),
 ):
     """AD-22 "Commercial deployments and recovery" -- shares PU-01/
     PU-07's own get_service_status rather than a duplicate computed
-    status. No worker/queue/backup-generation/fencing-evidence model
-    exists anywhere in this build, so every deployment/recovery panel
-    is an explicit UNSUPPORTED, never a fabricated "qualified" or
-    "healthy" status with no real input behind it."""
+    status. No queue/backup-generation/fencing-evidence model exists
+    anywhere in this build, so those panels stay an explicit
+    UNSUPPORTED, never a fabricated "qualified" or "healthy" status with
+    no real input behind it. "Workers and queues" now also shows real,
+    computed uptime %/p50/p95 latency over the trailing 24h -- from
+    actual recorded `ServiceHealthSample` rows only (app/services/
+    service_health.py), reporting "insufficient sample history" rather
+    than a fabricated percentage when too few samples exist yet."""
     _require_deployment_status(scope)
     service_status = get_service_status()
-    return templates.TemplateResponse(request, "ad22_system.html", {"service_status": service_status})
+    uptime_latency = compute_all_services_uptime_latency(session, window_hours=24.0)
+    return templates.TemplateResponse(
+        request, "ad22_system.html", {"service_status": service_status, "uptime_latency": uptime_latency}
+    )
 
 
 _ALL_PLATFORM_CONNECTION_PLATFORMS = ["collective2", "etoro", "metaapi_copyfactory"]

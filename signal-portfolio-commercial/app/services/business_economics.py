@@ -22,12 +22,14 @@ UNSUPPORTED rather than calling these with fabricated zeros.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from decimal import Decimal
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.models.billing import Subscription, SubscriptionState
+from app.models.operating_cost import OperatingCost
 
 
 @dataclass(frozen=True)
@@ -114,3 +116,87 @@ def get_business_economics(session: Session, *, tenant_id: str) -> BusinessEcono
         RevenueByCurrency(currency=currency, booked_revenue_cents=int(total or Decimal(0))) for currency, total in rows
     ]
     return BusinessEconomics(revenue_by_currency=revenue_by_currency)
+
+
+#: Track 11 -- AD-12 "Margin": "compute margin = revenue minus costs, but
+#: ONLY when both sides have real data for the same period; if costs
+#: haven't been entered for a period, margin for that period must show
+#: 'unavailable', never a silently-wrong number computed from partial/
+#: zero costs." Mirrors `compute_unit_contribution`'s own "an omitted
+#: cost is not the same as a verified zero cost" discipline at the top
+#: of this module, and account_economics_v2.py's TWR/unrealized-P&L
+#: "unavailable, never fabricated" pattern in signal-copier.
+@dataclass(frozen=True)
+class MarginRow:
+    currency: str
+    revenue_cents: int
+    cost_cents: int
+    margin_cents: int
+
+
+@dataclass(frozen=True)
+class MarginResult:
+    period_start: datetime
+    period_end: datetime
+    #: One row per currency that has BOTH a booked-revenue figure and at
+    #: least one real recorded cost row overlapping this period.
+    rows: list[MarginRow]
+    #: Currencies with booked revenue in this period but no recorded
+    #: cost row overlapping it -- margin for these is explicitly
+    #: unavailable, never computed as revenue-minus-zero.
+    currencies_missing_costs: list[str]
+
+
+def compute_margin_for_period(
+    session: Session, *, tenant_id: str, period_start: datetime, period_end: datetime
+) -> MarginResult:
+    """Revenue: the same real, payment-recognized-state `Subscription`
+    rows `get_business_economics` already sums, restricted to
+    subscriptions whose `current_period_end` falls inside
+    `[period_start, period_end]` -- the one real per-row date this table
+    has to anchor "revenue for this period" to (see app/models/billing.py).
+    Costs: real `OperatingCost` rows whose own billing period OVERLAPS
+    the window (a cost that ran through part of the period counts,
+    matching how a real accrual would be recognized). A currency present
+    on the revenue side with zero overlapping cost rows is reported in
+    `currencies_missing_costs`, never silently margined against zero."""
+    if period_end < period_start:
+        raise ValueError("period_end must not be before period_start")
+
+    revenue_rows = session.execute(
+        select(Subscription.currency, func.sum(Subscription.price_cents))
+        .where(
+            Subscription.tenant_id == tenant_id,
+            Subscription.state.in_(_REVENUE_RECOGNIZED_STATES),
+            Subscription.current_period_end >= period_start,
+            Subscription.current_period_end <= period_end,
+        )
+        .group_by(Subscription.currency)
+    ).all()
+    revenue_by_currency: dict[str, int] = {currency: int(total or Decimal(0)) for currency, total in revenue_rows}
+
+    cost_rows = session.execute(
+        select(OperatingCost.currency, func.sum(OperatingCost.amount_cents))
+        .where(
+            OperatingCost.tenant_id == tenant_id,
+            OperatingCost.period_start <= period_end,
+            OperatingCost.period_end >= period_start,
+        )
+        .group_by(OperatingCost.currency)
+    ).all()
+    cost_by_currency: dict[str, int] = {currency: int(total or 0) for currency, total in cost_rows}
+
+    rows: list[MarginRow] = []
+    missing: list[str] = []
+    for currency, revenue_cents in sorted(revenue_by_currency.items()):
+        cost_cents = cost_by_currency.get(currency)
+        if cost_cents is None:
+            missing.append(currency)
+            continue
+        rows.append(
+            MarginRow(
+                currency=currency, revenue_cents=revenue_cents, cost_cents=cost_cents,
+                margin_cents=revenue_cents - cost_cents,
+            )
+        )
+    return MarginResult(period_start=period_start, period_end=period_end, rows=rows, currencies_missing_costs=missing)
