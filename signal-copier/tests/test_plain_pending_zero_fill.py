@@ -31,12 +31,39 @@ def store(tmp_path):
     return SignalStore(tmp_path / "test.db")
 
 
+def _force_release_approved(store, *, adapter_type, route_key, asset_class, product_type="default"):
+    """Track 1b: `_ZeroFillPendingBroker` has no real order-status/
+    position/balance feedback override at all, so `record_route_
+    qualification` can never honestly record `account_entitled`-or-above
+    for it (app/qualification.py's `FEEDBACK_DEPENDENT_FLOOR`). Writes
+    directly to `route_qualifications`, bypassing that write path's own
+    validation, only to isolate THIS file's own subject (EXE-04 explicit-
+    zero-fill handling) from Track 1b's separate live-routing
+    qualification gate. `record_route_qualification` itself is untouched
+    and still fails closed for every real caller."""
+    from datetime import datetime, timezone
+
+    now = datetime.now(timezone.utc).isoformat()
+    with store._connect() as conn:
+        for state in [
+            "implemented", "configured", "authenticated", "account_entitled", "protocol_tested", "venue_tested",
+            "release_approved",
+        ]:
+            conn.execute(
+                "INSERT OR REPLACE INTO route_qualifications "
+                "(adapter_type, route_key, asset_class, product_type, state, recorded_at, recorded_by, notes) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (adapter_type, route_key, asset_class, product_type, state, now, "test-fixture", "test-only bypass"),
+            )
+
+
 @pytest.mark.asyncio
 async def test_explicit_zero_fill_on_a_pending_entry_does_not_apply_the_full_quantity(store):
     broker = _ZeroFillPendingBroker()
     account = DestinationAccount(account_id="acct1", broker="zero-fill")
     routing = RoutingConfig(rules=[RoutingRule(source="test", destinations=["acct1"])], accounts={"acct1": account})
     engine = SignalCopierEngine(routing=routing, brokers={"zero-fill": broker}, store=store)
+    _force_release_approved(store, adapter_type="zero-fill", route_key="acct1", asset_class="crypto")
 
     results = await engine.handle_signal(Signal(source="test", symbol="AAPL", side=Side.BUY, quantity=10.0))
 

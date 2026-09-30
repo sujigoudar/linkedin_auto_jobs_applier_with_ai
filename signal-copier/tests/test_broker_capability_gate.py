@@ -21,6 +21,41 @@ def store(tmp_path):
     return SignalStore(tmp_path / "test.db")
 
 
+def _force_release_approved(store, *, adapter_type, route_key, asset_class, product_type="default"):
+    """Track 1b: this file's own tests are about the broker-capability
+    (protective-stop) gate, not the live-routing qualification gate --
+    but SignalStackBroker structurally has NO real order-status/
+    position/balance feedback (see app/brokers/signalstack.py's own
+    docstring and tests/test_route_qualification.py's
+    test_signalstack_cannot_be_recorded_as_account_entitled), so
+    `SignalStore.record_route_qualification` can NEVER honestly record
+    `account_entitled` (or anything above it, including
+    `release_approved`) for a signalstack route -- there is no legitimate
+    way to satisfy the qualification gate for these fixtures at all.
+
+    This writes directly to the `route_qualifications` table, bypassing
+    `record_route_qualification`'s own ladder/feedback-capability
+    validation entirely, ONLY so these tests can isolate the
+    protective-stop capability gate they actually exercise. It never
+    touches, patches, or weakens `record_route_qualification` itself --
+    that write path still fails closed for every real caller exactly as
+    before; only this test file's own fixture data is seeded this way."""
+    from datetime import datetime, timezone
+
+    now = datetime.now(timezone.utc).isoformat()
+    with store._connect() as conn:
+        for state in [
+            "implemented", "configured", "authenticated", "account_entitled", "protocol_tested", "venue_tested",
+            "release_approved",
+        ]:
+            conn.execute(
+                "INSERT OR REPLACE INTO route_qualifications "
+                "(adapter_type, route_key, asset_class, product_type, state, recorded_at, recorded_by, notes) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (adapter_type, route_key, asset_class, product_type, state, now, "test-fixture", "test-only bypass"),
+            )
+
+
 def test_paper_broker_has_no_native_bracket_but_real_protective_stop():
     broker = PaperBroker()
     assert broker.supports_native_bracket is False
@@ -60,6 +95,7 @@ async def test_plain_path_refuses_entry_with_stop_loss_on_a_broker_that_would_dr
         rules=[RoutingRule(source="tradingview", destinations=["acct1"])], accounts={"acct1": account}
     )
     engine = SignalCopierEngine(routing=routing, brokers={"signalstack": broker}, store=store)
+    _force_release_approved(store, adapter_type="signalstack", route_key="acct1", asset_class="crypto")
 
     signal = Signal(source="tradingview", symbol="AAPL", side=Side.BUY, quantity=10.0, stop_loss=48.50)
     results = await engine.handle_signal(signal)
@@ -89,6 +125,7 @@ async def test_plain_path_allows_entry_with_no_protection_requested(store, monke
         rules=[RoutingRule(source="tradingview", destinations=["acct1"])], accounts={"acct1": account}
     )
     engine = SignalCopierEngine(routing=routing, brokers={"signalstack": broker}, store=store)
+    _force_release_approved(store, adapter_type="signalstack", route_key="acct1", asset_class="crypto")
 
     signal = Signal(source="tradingview", symbol="AAPL", side=Side.BUY, quantity=10.0)  # no stop_loss requested
     results = await engine.handle_signal(signal)
@@ -129,6 +166,7 @@ async def test_managed_entry_refused_on_a_broker_with_no_protection_capability(s
     engine = SignalCopierEngine(
         routing=routing, brokers={"signalstack": broker}, store=store, lifecycle_manager=lifecycle_manager
     )
+    _force_release_approved(store, adapter_type="signalstack", route_key="acct1", asset_class="crypto")
 
     signal = Signal(source="tradingview", symbol="AAPL", side=Side.BUY, quantity=10.0, stop_loss=48.50)
     results = await engine.handle_signal(signal)

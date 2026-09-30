@@ -3045,6 +3045,32 @@ class SignalStore:
             result.append(route)
         return result
 
+    def is_route_release_approved(
+        self, *, adapter_type: str, route_key: str, asset_class: str, product_type: str
+    ) -> bool:
+        """Live-routing gate read (app/engine.py's `_check_route_qualified`):
+        has `QualificationState.RELEASE_APPROVED` -- the deliberate human
+        sign-off, never auto-set (see app/qualification.py's own
+        docstring) -- actually been recorded for this EXACT
+        (adapter_type, route_key, asset_class, product_type) tuple.
+
+        Reuses `_achieved_qualification_states` (the same read the write
+        path's own prerequisite check uses), so this can never disagree
+        with what `record_route_qualification`/`list_route_qualifications`
+        report as achieved for the same route. Returns `False` for a route
+        with zero recorded qualification events at all, and `False` for a
+        route that has SOME recorded states but not `release_approved`
+        itself -- there is no partial credit here; the ladder's own
+        ordering already guarantees `release_approved` recorded means
+        every rung below it was too."""
+        from app.qualification import QualificationState
+
+        with self._connect() as conn:
+            achieved = self._achieved_qualification_states(
+                conn, adapter_type=adapter_type, route_key=route_key, asset_class=asset_class, product_type=product_type
+            )
+        return QualificationState.RELEASE_APPROVED in achieved
+
     def list_orders_for_signal(self, signal_id: str) -> list[dict]:
         """Every order already recorded against this exact signal id — what
         SIG-01's engine-level dedup checks before routing/submitting a

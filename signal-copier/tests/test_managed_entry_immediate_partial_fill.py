@@ -39,6 +39,33 @@ class _ImmediatePartialFillBroker(BrokerAdapter):
         return True
 
 
+def _force_release_approved(store, *, adapter_type, route_key, asset_class, product_type="default"):
+    """Track 1b: this fixture's own test broker has no real order-status/
+    position/balance feedback override at all (only `place_order` is
+    overridden), so `SignalStore.record_route_qualification` can never
+    honestly record `account_entitled`-or-above for it (see
+    app/qualification.py's `FEEDBACK_DEPENDENT_FLOOR`). This writes
+    directly to `route_qualifications`, bypassing that write path's own
+    ladder/feedback validation, ONLY to isolate this file's own subject
+    (EXE-08 immediate-partial-fill handling) from Track 1b's separate
+    live-routing qualification gate. `record_route_qualification` itself
+    is untouched and still fails closed for every real caller."""
+    from datetime import datetime, timezone
+
+    now = datetime.now(timezone.utc).isoformat()
+    with store._connect() as conn:
+        for state in [
+            "implemented", "configured", "authenticated", "account_entitled", "protocol_tested", "venue_tested",
+            "release_approved",
+        ]:
+            conn.execute(
+                "INSERT OR REPLACE INTO route_qualifications "
+                "(adapter_type, route_key, asset_class, product_type, state, recorded_at, recorded_by, notes) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (adapter_type, route_key, asset_class, product_type, state, now, "test-fixture", "test-only bypass"),
+            )
+
+
 @pytest.mark.asyncio
 async def test_a_confirmed_partial_fill_in_the_initial_pending_response_is_protected_immediately(tmp_path):
     store = SignalStore(tmp_path / "test.db")
@@ -47,6 +74,7 @@ async def test_a_confirmed_partial_fill_in_the_initial_pending_response_is_prote
     routing = RoutingConfig(rules=[RoutingRule(source="test", destinations=["acct1"])], accounts={"acct1": account})
     manager = PositionLifecycleManager(brokers={"partial-broker": broker}, store=store)
     engine = SignalCopierEngine(routing=routing, brokers={"partial-broker": broker}, store=store, lifecycle_manager=manager)
+    _force_release_approved(store, adapter_type="partial-broker", route_key="acct1", asset_class="crypto")
 
     results = await engine.handle_signal(
         Signal(source="test", symbol="AAPL", side=Side.BUY, quantity=100.0, stop_loss=90.0)
