@@ -3030,6 +3030,74 @@ async def promote_provider_candidate(request: PromoteCandidateRequest, _owner: d
     return {"source": request.source, "status": "promoted"}
 
 
+# --- Track 14: Provider/Source/Connection catalog -- read-only routes ---
+#
+# See app/provider_catalog.py's module docstring for the full data model.
+# `/providers` (above) and `/providers/{provider_id}` (below, the config-
+# override CRUD) already use those exact paths for a DIFFERENT, pre-
+# existing concept (Signal.source-keyed settings-inheritance overrides,
+# app/providers.py) -- this new catalog uses its own `/provider-catalog`
+# prefix to avoid colliding with either that or `/catalog/providers/...`
+# (signal-portfolio-commercial's public fit-simulation surface, also
+# unrelated). Deliberately GET-only and minimal -- "enough to see it
+# working via curl/tests, not a dashboard page" per this track's own
+# build-order decision; write access is through `SignalStore`'s CRUD
+# methods directly (tests, the migration backfill, and a future
+# onboarding-wizard task) rather than a REST surface in this track.
+
+
+@app.get("/provider-catalog/providers")
+async def list_catalog_providers(
+    status: str | None = None, _owner: dict = Depends(require_owner_read)
+) -> dict:
+    return {"providers": store.list_provider_catalog_entries(status=status)}
+
+
+@app.get("/provider-catalog/providers/{provider_id}")
+async def get_catalog_provider(provider_id: str, _owner: dict = Depends(require_owner_read)) -> dict:
+    entry = store.get_provider_catalog_entry(provider_id)
+    if entry is None:
+        raise HTTPException(status_code=404, detail=f"no provider registered with id={provider_id!r}")
+    return entry
+
+
+@app.get("/provider-catalog/providers/{provider_id}/sources")
+async def list_catalog_provider_sources(provider_id: str, _owner: dict = Depends(require_owner_read)) -> dict:
+    if store.get_provider_catalog_entry(provider_id) is None:
+        raise HTTPException(status_code=404, detail=f"no provider registered with id={provider_id!r}")
+    return {"provider_id": provider_id, "sources": store.list_sources(provider_id=provider_id)}
+
+
+@app.get("/provider-catalog/sources")
+async def list_catalog_sources(
+    provider_id: str | None = None, connection_id: str | None = None, _owner: dict = Depends(require_owner_read)
+) -> dict:
+    return {"sources": store.list_sources(provider_id=provider_id, connection_id=connection_id)}
+
+
+@app.get("/provider-catalog/sources/{source_id}")
+async def get_catalog_source(source_id: str, _owner: dict = Depends(require_owner_read)) -> dict:
+    entry = store.get_source(source_id)
+    if entry is None:
+        raise HTTPException(status_code=404, detail=f"no source registered with id={source_id!r}")
+    return entry
+
+
+@app.get("/provider-catalog/connections")
+async def list_catalog_connections(
+    connection_type: str | None = None, _owner: dict = Depends(require_owner_read)
+) -> dict:
+    return {"connections": store.list_connections(connection_type=connection_type)}
+
+
+@app.get("/provider-catalog/connections/{connection_id}")
+async def get_catalog_connection(connection_id: str, _owner: dict = Depends(require_owner_read)) -> dict:
+    entry = store.get_connection(connection_id)
+    if entry is None:
+        raise HTTPException(status_code=404, detail=f"no connection registered with id={connection_id!r}")
+    return entry
+
+
 def _managed_lifecycle_snapshot() -> list[dict]:
     """Coverage/deficit detail for every open `managed_lifecycle` position —
     the quantity-by-quantity picture app/lifecycle/manager.py's module
