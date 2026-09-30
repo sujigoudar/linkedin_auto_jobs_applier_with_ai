@@ -1010,7 +1010,7 @@
     StateMatrix.render(actionsEl, {
       state: "ready",
       html: `
-        <div class="tr-controls-row"><a href="#/trade/sources/new">Add source (TR-10)</a></div>
+        <div class="tr-controls-row"><a href="#/trade/sources/new">Add source (TR-10)</a> &middot; <a href="#/providers/add">+ Add Signal Provider (Provider/Source/Connection onboarding wizard, TR-17)</a></div>
         <h3 class="section-note" style="margin-top:12px;">Pause new admissions (TR-09-A03)</h3>
         <p class="section-note">Sets this exact provider's own enabled=false via the same, already-tested POST /providers/{provider_id} upsert -- no other provider, analyst, or account setting is changed. Existing routing/exit behavior for open positions is unaffected.</p>
         ${actionRows}
