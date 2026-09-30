@@ -571,6 +571,22 @@ function table(headers, rows, emptyMessage) {
   return `<table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
 }
 
+// 2026-09 design review ("engineering truthfulness ... exposes
+// implementation details directly"): a collapsed-by-default drilldown for
+// exactly the class of thing that review named -- an internal requirement
+// ID (M-TR-*), a raw UUID/order id, a raw UTC timestamp -- so it stays
+// real and available for debugging without competing with the primary
+// reading experience. Deliberately a plain <details>, not
+// Components.renderCapabilityState (that component's badge vocabulary is
+// about a capability's real/gap STATUS; this is about visibility of
+// already-real data, a different concept). `bodyHtml` is trusted,
+// pre-escaped HTML the caller builds (same convention as `table()` above)
+// -- callers must escapeHtml() any raw string themselves before
+// interpolating it in.
+function evidenceHtml(summaryText, bodyHtml) {
+  return `<details class="tr-evidence"><summary>${escapeHtml(summaryText)}</summary><div class="tr-evidence-body">${bodyHtml}</div></details>`;
+}
+
 async function fetchJSON(path) {
   const res = await fetch(path);
   if (res.status === 401) { showLogin("Your session expired -- please sign in again."); throw new Error("not authenticated"); }

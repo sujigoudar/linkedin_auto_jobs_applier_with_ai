@@ -250,6 +250,179 @@
     return typeof v === "number" && Number.isFinite(v);
   }
 
+  // Real elapsed time since a real ISO timestamp, rendered the same
+  // coarse "Xs/Xm/Xh/Xd ago" shape Components.renderAttentionQueue already
+  // uses for its own age badge -- primary display for the timeline below;
+  // the real raw ISO timestamp is still available (title attribute /
+  // Evidence drilldown), never deleted, just not the PRIMARY reading.
+  function fmtRelativeFromIso(iso) {
+    if (!iso) return null;
+    const t = new Date(iso).getTime();
+    if (!Number.isFinite(t)) return null;
+    const seconds = Math.max(0, Math.floor((Date.now() - t) / 1000));
+    if (seconds < 60) return `${seconds}s ago`;
+    const m = Math.floor(seconds / 60);
+    if (m < 60) return `${m}m ago`;
+    const h = Math.floor(m / 60);
+    if (h < 24) return `${h}h ago`;
+    const d = Math.floor(h / 24);
+    return `${d}d ago`;
+  }
+
+  /**
+   * Phase E (this batch, 2026-09 design review: "Position detail should
+   * become the strongest screen ... a single synchronized timeline"
+   * covering signal receipt, entry executions, stop/target placement and
+   * revisions, fills, and current protection state, all on one
+   * chronological view). Pure (no DOM) -- every event traces to a real
+   * field this page already fetches for the Identity panel / centerpiece
+   * price chart (never a second fetch, never a fabricated event kind).
+   * Returns `{ timed, currentState, hasAnyEvents }` -- `timed` is real,
+   * timestamped events sorted chronologically ascending; `currentState`
+   * is a real, but NOT dated, snapshot of this position's current
+   * protection state (PositionLifecycle carries no "as-of" timestamp on
+   * these fields to attach to it, so it is rendered as a distinct "now"
+   * row, never given a fabricated time).
+   *
+   * One real, disclosed gap (flagged in this batch's report, not
+   * fabricated as an estimate here): this build's real per-order
+   * timestamps (app/execution_quality.py's received_at/submitted_at/
+   * acknowledged_at) are NOT projected by GET /orders (see app/db.py's
+   * `list_recent_orders` SELECT list, which only selects `executed_at`,
+   * the fill time) -- so an entry/exit order's real SUBMISSION moment
+   * (accepted by the broker, before it fills) cannot be plotted here as a
+   * distinct step before its fill; only the fill itself is a real,
+   * timestamped event this page can show.
+   */
+  function buildLifecycleTimeline({ uniqueSignals, entryFills, exitFills, stopPlaced, stopTightened, targetHits, lifecycle, position }) {
+    const events = [];
+    (uniqueSignals || []).forEach((s) => {
+      events.push({
+        at: s.received_at,
+        kind: "signal",
+        title: "Signal received",
+        detail: `${escapeHtml(s.source || "unknown source")}${s.analyst ? ` / ${escapeHtml(s.analyst)}` : ""} -- ${escapeHtml(s.side || "?")}${isFiniteNum(s.price) ? ` @ ${fmtNum(s.price)}` : ""}`,
+        evidence: `signal id <span class="mono">${escapeHtml(String(s.id))}</span>, received_at <span class="mono">${escapeHtml(s.received_at || "—")}</span>`,
+      });
+    });
+    (entryFills || []).forEach((o) => {
+      events.push({
+        at: o.executed_at,
+        kind: "entry_fill",
+        title: "Entry filled",
+        detail: `${fmtNum(o.filled_quantity)} @ ${fmtNum(o.filled_price)} (${escapeHtml(o.broker || "—")})`,
+        evidence: `order <span class="mono">${escapeHtml(o.broker_order_id || String(o.id))}</span>, executed_at <span class="mono">${escapeHtml(o.executed_at || "—")}</span>`,
+      });
+    });
+    (stopPlaced || []).forEach((e) => {
+      events.push({
+        at: e.at,
+        kind: "stop_placed",
+        title: "Stop placed",
+        detail: `Working stop set @ ${fmtNum(e.price)}`,
+        evidence: `at <span class="mono">${escapeHtml(e.at || "—")}</span>`,
+      });
+    });
+    (stopTightened || []).forEach((e) => {
+      events.push({
+        at: e.at,
+        kind: "stop_tightened",
+        title: "Stop revised",
+        detail: `Tightened ${fmtNum(e.previous_price)} -&gt; ${fmtNum(e.price)}`,
+        evidence: `at <span class="mono">${escapeHtml(e.at || "—")}</span>`,
+      });
+    });
+    (targetHits || []).forEach((e) => {
+      events.push({
+        at: e.at,
+        kind: "target_hit",
+        title: "Target hit",
+        detail: `@ ${fmtNum(e.price)}`,
+        evidence: `at <span class="mono">${escapeHtml(e.at || "—")}</span>`,
+      });
+    });
+    (exitFills || []).forEach((o) => {
+      events.push({
+        at: o.executed_at,
+        kind: "exit_fill",
+        title: "Exit filled",
+        detail: `${fmtNum(o.filled_quantity)} @ ${fmtNum(o.filled_price)} (${escapeHtml(o.broker || "—")})`,
+        evidence: `order <span class="mono">${escapeHtml(o.broker_order_id || String(o.id))}</span>, executed_at <span class="mono">${escapeHtml(o.executed_at || "—")}</span>`,
+      });
+    });
+
+    const timed = events
+      .filter((e) => e.at)
+      .sort((a, b) => (String(a.at) < String(b.at) ? -1 : String(a.at) > String(b.at) ? 1 : 0));
+
+    let currentState = null;
+    if (lifecycle) {
+      const parts = [];
+      if (lifecycle.halted) parts.push(`halted (${lifecycle.halt_reason || "reason unknown"})`);
+      if (lifecycle.stop_status === "stop_confirmed" && isFiniteNum(lifecycle.stop_price)) {
+        parts.push(`working stop @ ${fmtNum(lifecycle.stop_price)}`);
+      } else {
+        parts.push(`no confirmed working stop (${lifecycle.stop_status || "unknown"})`);
+      }
+      if (lifecycle.uncovered_quantity > 0) parts.push(`${fmtNum(lifecycle.uncovered_quantity)} uncovered`);
+      if (lifecycle.pending_exit) parts.push("pending exit unresolved");
+      if (lifecycle.pending_entry) parts.push("pending entry unresolved");
+      currentState = { supported: true, summary: parts.join(" · ") };
+    } else if (position) {
+      currentState = {
+        supported: false,
+        reason: "This is a plain (unmanaged) account position -- protection state (working stop, pending exit/entry) is only tracked for managed-lifecycle positions in this build.",
+      };
+    }
+
+    return { timed, currentState, hasAnyEvents: timed.length > 0 };
+  }
+
+  function renderTimelinePanel(el, plan) {
+    if (!plan.hasAnyEvents && !plan.currentState) {
+      el.innerHTML = `<p class="sm-empty-message">No real, timestamped lifecycle events exist yet for this position.</p>`;
+      return;
+    }
+    const rows = plan.timed
+      .map((e) => {
+        const rel = fmtRelativeFromIso(e.at);
+        return `<div class="tr03-timeline-row tr03-timeline-${escapeAttr(e.kind)}">
+          <div class="tr03-timeline-marker" aria-hidden="true"></div>
+          <div class="tr03-timeline-body">
+            <div class="tr03-timeline-title">${escapeHtml(e.title)}</div>
+            <div class="tr03-timeline-detail">${e.detail}</div>
+            <div class="tr03-timeline-age" title="${escapeAttr(e.at || "")}">${rel ? escapeHtml(rel) : "—"}</div>
+            ${evidenceHtml("Evidence", e.evidence)}
+          </div>
+        </div>`;
+      })
+      .join("");
+
+    const nowRow = plan.currentState
+      ? plan.currentState.supported
+        ? `<div class="tr03-timeline-row tr03-timeline-now">
+            <div class="tr03-timeline-marker" aria-hidden="true"></div>
+            <div class="tr03-timeline-body">
+              <div class="tr03-timeline-title">Current protection state (now)</div>
+              <div class="tr03-timeline-detail">${escapeHtml(plan.currentState.summary)}</div>
+            </div>
+          </div>`
+        : `<div class="tr03-timeline-row tr03-timeline-now">
+            <div class="tr03-timeline-marker" aria-hidden="true"></div>
+            <div class="tr03-timeline-body" id="tr03-timeline-now-cap"></div>
+          </div>`
+      : "";
+
+    el.innerHTML = `<p class="section-note">Every real, timestamped step in this position's lifecycle, oldest first, ending with its current (undated) protection state -- signal receipt, entry fill(s), stop placement/revisions, target hits, and exit fill(s), all on one view. Raw ids and timestamps are one click away under each step's own "Evidence" toggle, not the primary reading.</p>
+      <div class="tr03-timeline">${rows}${nowRow}</div>`;
+    if (plan.currentState && !plan.currentState.supported) {
+      Components.renderCapabilityState(el.querySelector("#tr03-timeline-now-cap"), {
+        status: "unsupported",
+        reason: plan.currentState.reason,
+      });
+    }
+  }
+
   /**
    * Result attribution waterfall for THIS ONE position -- see this file's
    * module docstring's "Result attribution panel" section for the full
@@ -997,6 +1170,7 @@
   function shell() {
     return `
       <section class="tr-panel" id="tr03-header-panel"><div id="tr03-header"></div></section>
+      <section class="tr-panel" id="tr03-p-timeline"><h2>Position timeline</h2><div class="tr-panel-body" id="tr03-timeline-body"></div></section>
       <section class="tr-panel" id="tr03-p01"><h2>Identity and plan</h2><div class="tr-panel-body"></div></section>
       <section class="tr-panel" id="tr03-p-chart">
         <h2>Price chart -- entries, stops, targets, exits</h2>
@@ -1149,6 +1323,7 @@
     const { account_id: accountId, symbol } = ctx.params;
     const els = {
       header: ctx.container.querySelector("#tr03-header"),
+      timeline: ctx.container.querySelector("#tr03-timeline-body"),
       identity: ctx.container.querySelector("#tr03-p01 .tr-panel-body"),
       chart: ctx.container.querySelector("#tr03-chart-body"),
       chartGaps: ctx.container.querySelector("#tr03-chart-gaps"),
@@ -1159,19 +1334,19 @@
       transfer: ctx.container.querySelector("#tr03-p05 .tr-panel-body"),
       controls: ctx.container.querySelector("#tr03-p06 .tr-panel-body"),
     };
-    for (const el of [els.identity, els.chart, els.ledger, els.maeMfe, els.orders, els.attribution, els.transfer, els.controls]) {
+    for (const el of [els.timeline, els.identity, els.chart, els.ledger, els.maeMfe, els.orders, els.attribution, els.transfer, els.controls]) {
       StateMatrix.render(el, { state: "loading" });
     }
 
     const positionsRes = await ctx.fetchJSON("/positions");
     if (positionsRes.status === 401 || positionsRes.status === 403) {
-      for (const el of [els.identity, els.chart, els.ledger, els.maeMfe, els.orders, els.attribution, els.transfer, els.controls]) {
+      for (const el of [els.timeline, els.identity, els.chart, els.ledger, els.maeMfe, els.orders, els.attribution, els.transfer, els.controls]) {
         StateMatrix.render(el, { state: "denied", deniedCode: positionsRes.status });
       }
       return;
     }
     if (!positionsRes.ok) {
-      for (const el of [els.identity, els.chart, els.ledger, els.maeMfe, els.orders, els.attribution, els.transfer, els.controls]) {
+      for (const el of [els.timeline, els.identity, els.chart, els.ledger, els.maeMfe, els.orders, els.attribution, els.transfer, els.controls]) {
         StateMatrix.render(el, { state: "error", message: "Could not load this allocation." });
       }
       return;
@@ -1183,7 +1358,7 @@
     const lifecycle = lifecycles.find((l) => l.account_id === accountId && l.symbol === symbol);
 
     if (!position && !lifecycle) {
-      for (const el of [els.identity, els.chart, els.ledger, els.maeMfe, els.orders, els.attribution, els.transfer, els.controls]) {
+      for (const el of [els.timeline, els.identity, els.chart, els.ledger, els.maeMfe, els.orders, els.attribution, els.transfer, els.controls]) {
         StateMatrix.render(el, {
           state: "empty",
           emptyMessage: "No verified allocation is available for this reference.",
@@ -1271,7 +1446,7 @@
       [
         "Originating signal(s)",
         signalIds.length
-          ? signalIds.map((id) => `<span class="mono">${escapeHtml(id)}</span>`).join(", ")
+          ? `${fmtNum(signalIds.length)} recorded${evidenceHtml("Evidence -- raw signal id(s)", signalIds.map((id) => `<span class="mono">${escapeHtml(id)}</span>`).join(", "))}`
           : "None recorded on any order for this position",
       ],
       [
@@ -1316,16 +1491,38 @@
     if (ordersLoadFailed || stopEventsFailed) {
       StateMatrix.render(els.chart, { state: "error", message: "Could not load real order/event history needed for the price chart." });
       els.chartGaps.innerHTML = "";
+      els.timeline.innerHTML = `<p class="section-note">Could not load the real order/event history this panel needs.</p>`;
     } else {
       chartPlan = buildPriceChartPlan(position, lifecycle, symbolOrders, stopEvents);
       renderPriceChartPanel(els, chartPlan, symbolEconomics ? symbolEconomics.average_cost : null);
+
+      // --- Position timeline (this batch) -- one synchronized,
+      // chronological view built from the exact same real events the
+      // centerpiece price chart above already computed (chartPlan), plus
+      // this position's real originating signal(s) (uniqueSignals, from
+      // the Identity panel above) and its current, undated protection
+      // state (lifecycle) -- never a second fetch, never a fabricated
+      // event. See buildLifecycleTimeline's own docstring for the one
+      // genuine data gap (no real order-submission timestamp) this panel
+      // discloses rather than approximates. ---
+      const timelinePlan = buildLifecycleTimeline({
+        uniqueSignals,
+        entryFills: chartPlan.entryFills,
+        exitFills: chartPlan.exitFills,
+        stopPlaced: chartPlan.stopPlaced,
+        stopTightened: chartPlan.stopTightened,
+        targetHits: chartPlan.targetHits,
+        lifecycle,
+        position,
+      });
+      renderTimelinePanel(els.timeline, timelinePlan);
     }
 
     // --- Quantity ledger (visualized) ---
     const ledgerPlan = computeQuantityLedgerSegments(lifecycle, position);
     if (!ledgerPlan.supported) {
       const wrap = document.createElement("div");
-      wrap.innerHTML = `<div class="econ-stats"><div><span class="muted">M-TR-03-01 Owned</span><br><span class="num">${
+      wrap.innerHTML = `<div class="econ-stats"><div><span class="muted">Owned</span><br><span class="num">${
         ledgerPlan.owned === null || ledgerPlan.owned === undefined ? "—" : fmtNum(ledgerPlan.owned)
       }</span></div></div><div id="tr03-ledger-gap"></div>`;
       els.ledger.innerHTML = "";
@@ -1339,11 +1536,12 @@
       Components.renderQuantityLedgerBar(barWrap, { total: ledgerPlan.owned, segments: ledgerPlan.segments });
       const closeable = lifecycle && lifecycle.pending_exit && !lifecycle.pending_exit.remainder_resolved ? 0 : ledgerPlan.owned;
       const numbersHtml = `<div class="econ-stats">
-               <div><span class="muted">M-TR-03-01 Owned</span><br><span class="num">${fmtNum(ledgerPlan.owned)}</span></div>
-               <div><span class="muted">M-TR-03-02 Native covered</span><br><span class="num">${fmtNum(lifecycle.covered_quantity)}</span></div>
-               <div><span class="muted">M-TR-03-03 Uncovered</span><br><span class="num">${fmtNum(lifecycle.uncovered_quantity)}</span></div>
-               <div><span class="muted">M-TR-03-04 Still executable closes</span><br><span class="num">${closeable === null || closeable === undefined ? "—" : fmtNum(closeable)}</span></div>
-             </div>`;
+               <div><span class="muted">Owned</span><br><span class="num">${fmtNum(ledgerPlan.owned)}</span></div>
+               <div><span class="muted">Covered by a working stop</span><br><span class="num">${fmtNum(lifecycle.covered_quantity)}</span></div>
+               <div><span class="muted">Uncovered</span><br><span class="num">${fmtNum(lifecycle.uncovered_quantity)}</span></div>
+               <div><span class="muted">Still executable closes</span><br><span class="num">${closeable === null || closeable === undefined ? "—" : fmtNum(closeable)}</span></div>
+             </div>
+             ${evidenceHtml("Evidence -- internal requirement IDs", "<code>M-TR-03-01</code> Owned &middot; <code>M-TR-03-02</code> Native covered &middot; <code>M-TR-03-03</code> Uncovered &middot; <code>M-TR-03-04</code> Still executable closes.")}`;
       els.ledger.innerHTML = "";
       els.ledger.appendChild(barWrap);
       const numbersEl = document.createElement("div");
@@ -1505,5 +1703,6 @@
     buildPriceChartPlan,
     parsePendingExitReason,
     computeResultAttribution,
+    buildLifecycleTimeline,
   };
 })();

@@ -411,6 +411,108 @@
 }
 
 /* =====================================================================
+ * Evidence drilldown (evidenceHtml(), app/static/dashboard.html) -- a
+ * generic collapsed-by-default block for a raw ID/timestamp/internal
+ * requirement code, visually matching .capability-state's details/summary
+ * treatment (2026-09 design review) without borrowing its status-badge
+ * vocabulary, which is about capability gaps, not visibility of data that
+ * is already real.
+ * ===================================================================== */
+.tr-evidence {
+  margin-top: 6px;
+}
+.tr-evidence summary {
+  cursor: pointer;
+  color: var(--level3-color);
+  font-size: var(--level3-size);
+  font-style: italic;
+  list-style: none;
+}
+.tr-evidence summary::-webkit-details-marker { display: none; }
+.tr-evidence summary::before { content: "▸ "; }
+.tr-evidence[open] summary::before { content: "▾ "; }
+.tr-evidence .tr-evidence-body {
+  color: var(--level3-color);
+  font-size: var(--level3-size);
+  padding: 4px 0 0 12px;
+}
+.tr-evidence .tr-evidence-body code {
+  font-size: inherit;
+}
+.tr-evidence .tr-evidence-body table {
+  margin-top: 4px;
+}
+
+/* =====================================================================
+ * Position timeline (TR-03's buildLifecycleTimeline/renderTimelinePanel,
+ * app/static/views/tr03.js) -- a single chronological list: signal
+ * receipt -> entry fill(s) -> stop placement/revisions -> target hits ->
+ * exit fill(s) -> current (undated) protection state. 2026-09 design
+ * review: "Position detail should become the strongest screen ... a
+ * single synchronized timeline".
+ * ===================================================================== */
+.tr03-timeline {
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  padding-left: 2px;
+}
+.tr03-timeline-row {
+  display: flex;
+  gap: var(--space-2);
+  padding-bottom: var(--space-3);
+  position: relative;
+}
+.tr03-timeline-row::before {
+  /* the connecting vertical line -- omitted after the last row via
+     :last-child below */
+  content: "";
+  position: absolute;
+  left: 5px;
+  top: 14px;
+  bottom: 0;
+  width: 2px;
+  background: var(--border);
+}
+.tr03-timeline-row:last-child::before {
+  display: none;
+}
+.tr03-timeline-marker {
+  flex-shrink: 0;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  margin-top: 3px;
+  background: var(--accent);
+  border: 2px solid var(--panel);
+  box-shadow: 0 0 0 1px var(--border);
+}
+.tr03-timeline-stop_placed .tr03-timeline-marker,
+.tr03-timeline-stop_tightened .tr03-timeline-marker { background: var(--warn); }
+.tr03-timeline-target_hit .tr03-timeline-marker,
+.tr03-timeline-entry_fill .tr03-timeline-marker { background: var(--ok); }
+.tr03-timeline-exit_fill .tr03-timeline-marker { background: var(--accent); }
+.tr03-timeline-now .tr03-timeline-marker { background: var(--muted); }
+.tr03-timeline-body {
+  flex: 1;
+  min-width: 0;
+}
+.tr03-timeline-title {
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+.tr03-timeline-detail {
+  color: var(--text);
+  font-size: 0.85rem;
+  margin-top: 1px;
+}
+.tr03-timeline-age {
+  color: var(--muted);
+  font-size: var(--level3-size);
+  margin-top: 2px;
+}
+
+/* =====================================================================
  * Quantity ledger bar (Components.renderQuantityLedgerBar)
  * ===================================================================== */
 .qledger {
