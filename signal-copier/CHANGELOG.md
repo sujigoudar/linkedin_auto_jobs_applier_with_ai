@@ -48,6 +48,17 @@ engine's data integrity and operational-safety guarantees.
   `c88bb66`).
 
 ### Fixed
+- Managed-lifecycle orders (`_handle_managed_entry`/`_handle_managed_close`)
+  never populated `orders.applied_execution_delta`/`confirmed_cumulative_
+  fill`/`outstanding_possible_fill`/`acknowledged_quantity` — leaving
+  Track 16's `/positions/{symbol}/provider-allocations` and Track 18's
+  `get_provider_position_ownership` blind to the majority of real trading
+  activity (managed-lifecycle fills). Both methods now return a
+  `_ManagedOrderOutcome` carrying AUD-01's distinct-field quantity model
+  through to `save_order_result`, computed from the exact same
+  FILLED/PENDING classification `_submit_order` already uses for the
+  plain-account path, without a second, duplicate `record_fill` call
+  (TRK-22).
 - Broker/source fill data: genuine `0.0` fills silently collapsing to
   `None` (and, for Rithmic, silently bypassing a notional-exposure
   ceiling check) — `app/brokers/ibkr.py`, `app/sources/rithmic.py` (P0-9,

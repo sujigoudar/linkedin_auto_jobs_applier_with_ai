@@ -114,7 +114,7 @@ import asyncio
 import logging
 import math
 from collections import defaultdict
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 
 import structlog
@@ -200,6 +200,49 @@ _RECONCILIATION_REL_TOLERANCE = 1e-6
 #: schema (and this constant) will need a real per-account product_type
 #: field added; nothing here can honestly support that today.
 _UNDECLARED_ROUTE_PRODUCT_TYPE = "default"
+
+
+@dataclass(frozen=True)
+class _ManagedOrderOutcome:
+    """TRK-22: the widened return of `_handle_managed_entry`/
+    `_handle_managed_close`/`_handle_managed_signal` -- adds AUD-01's
+    distinct-field quantity model (see `_submit_order`'s own docstring for
+    the shared contract) on top of the pre-existing `(result, submitted_at,
+    protection_confirmed_at)` triple, so `_handle_signal`'s managed-
+    lifecycle branch and `close_position` can finally pass these through to
+    `save_order_result` the same way the plain-account path already does.
+
+    A private, internal-plumbing type (not a public contract -- see
+    app/models.py's `QuantityBreakdown` for the public, broader 7-field
+    snapshot this is deliberately NOT reusing: that type's
+    `reserved_quantity`/`protected_quantity`/etc. fields have no
+    equivalent here, and forcing this narrower, save_order_result-shaped
+    bundle into it would mean either fabricating those or leaving them
+    permanently None on a "real" model).
+
+    Every field here mirrors `_submit_order`'s own per-field honesty rule
+    exactly: `None` (never a fabricated number) whenever this specific
+    call never reached that stage or has nothing real to report (a
+    pre-submission rejection inside `_handle_managed_entry`/
+    `_handle_managed_close` itself, e.g. `validate_plan` failing or "no
+    open position to close", never reaches a broker at all, so every field
+    below stays `None` for it -- exactly `_handle_signal`'s own established
+    convention for its equivalent pre-submission rejections). Once a real
+    submission attempt is made (broker.place_order, or
+    `PositionLifecycleManager.request_exit`, was actually called),
+    `applied_execution_delta`/`outstanding_possible_fill` are always real
+    floats (`0.0`, not `None`, when this save genuinely applied/has
+    nothing to report), matching `save_order_result`'s own documented
+    contract for those two fields."""
+
+    result: OrderResult
+    submitted_at: datetime | None
+    protection_confirmed_at: datetime | None
+    applied_quantity: float | None = None
+    confirmed_cumulative_fill: float | None = None
+    applied_execution_delta: float | None = None
+    outstanding_possible_fill: float | None = None
+    acknowledged_quantity: float | None = None
 
 
 def _positions_reconcile(broker_position: float, local_position: float) -> bool:
@@ -670,17 +713,31 @@ class SignalCopierEngine:
                     existing_lifecycle = self.lifecycle_manager.get_lifecycle(account.account_id, symbol)
                     if existing_lifecycle is not None and existing_lifecycle.plan.entry_signal_id:
                         order_family_id = existing_lifecycle.plan.entry_signal_id
-                result, submitted_at, protection_confirmed_at = await self._handle_managed_signal(
-                    signal, account, symbol
-                )
+                managed_outcome = await self._handle_managed_signal(signal, account, symbol)
+                result = managed_outcome.result
+                # TRK-22: threads AUD-01's distinct-field quantity model
+                # through for a managed-lifecycle order -- previously this
+                # call never passed applied_quantity/confirmed_cumulative_
+                # fill/applied_execution_delta/outstanding_possible_fill/
+                # acknowledged_quantity at all, leaving every managed
+                # order's `orders.applied_execution_delta` permanently NULL
+                # (see `_ManagedOrderOutcome`'s own docstring for exactly
+                # what each field means for a managed order and why). Same
+                # kwarg shape as `_submit_order`'s own callers use for the
+                # plain-account path.
                 self.store.save_order_result(
                     result,
                     broker=account.broker,
                     symbol=symbol,
                     side=signal.side,
                     requested_quantity=None,
-                    submitted_at=submitted_at,
-                    protection_confirmed_at=protection_confirmed_at,
+                    applied_quantity=managed_outcome.applied_quantity,
+                    confirmed_cumulative_fill=managed_outcome.confirmed_cumulative_fill,
+                    applied_execution_delta=managed_outcome.applied_execution_delta,
+                    outstanding_possible_fill=managed_outcome.outstanding_possible_fill,
+                    acknowledged_quantity=managed_outcome.acknowledged_quantity,
+                    submitted_at=managed_outcome.submitted_at,
+                    protection_confirmed_at=managed_outcome.protection_confirmed_at,
                     purpose=order_purpose,
                     family_id=order_family_id,
                 )
@@ -2161,17 +2218,20 @@ class SignalCopierEngine:
 
     async def _handle_managed_signal(
         self, signal: Signal, account: DestinationAccount, symbol: str, *, enforce_provider_ownership: bool = True
-    ) -> tuple[OrderResult, datetime | None, datetime | None]:
+    ) -> _ManagedOrderOutcome:
         """Route a BUY/SELL/CLOSE signal for a `managed_lifecycle` account through
         `PositionLifecycleManager` instead of the plain broker.place_order path.
 
-        Returns (result, submitted_at, protection_confirmed_at) -- the latter
-        two are PU-A2's execution-quality timestamps, both None for a CLOSE
-        (an exit, not an entry: nothing here submits a fresh protective stop
-        for it, and app/execution_quality.py's protection stage is entry-only
-        -- see _handle_managed_close). `enforce_provider_ownership` (Track 18)
-        is forwarded to `_handle_managed_close` unchanged -- see its own
-        docstring; entries have no equivalent gate (there is nothing pooled
+        Returns a `_ManagedOrderOutcome` -- `submitted_at`/`protection_confirmed_at`
+        are PU-A2's execution-quality timestamps, both None for a CLOSE (an exit,
+        not an entry: nothing here submits a fresh protective stop for it, and
+        app/execution_quality.py's protection stage is entry-only -- see
+        _handle_managed_close). TRK-22: the remaining fields are AUD-01's
+        distinct-field quantity model, threaded through from whichever of
+        `_handle_managed_entry`/`_handle_managed_close` actually ran -- see
+        `_ManagedOrderOutcome`'s own docstring. `enforce_provider_ownership`
+        (Track 18) is forwarded to `_handle_managed_close` unchanged -- see its
+        own docstring; entries have no equivalent gate (there is nothing pooled
         yet to gate an entry against)."""
         if signal.side == Side.CLOSE:
             return await self._handle_managed_close(
@@ -2181,10 +2241,15 @@ class SignalCopierEngine:
 
     async def _handle_managed_entry(
         self, signal: Signal, account: DestinationAccount, symbol: str
-    ) -> tuple[OrderResult, datetime | None, datetime | None]:
+    ) -> _ManagedOrderOutcome:
         broker = self.brokers.get(account.broker)
         if broker is None:
-            return (
+            # TRK-22: a pre-submission rejection inside this method itself --
+            # never reached a broker, same "all quantity fields stay None"
+            # convention `_handle_signal`'s own equivalent pre-submission
+            # rejections already use (see e.g. its own "no broker adapter
+            # registered" branch).
+            return _ManagedOrderOutcome(
                 OrderResult(
                     account_id=account.account_id,
                     status=OrderStatus.ERROR,
@@ -2247,7 +2312,9 @@ class SignalCopierEngine:
 
         error = self.lifecycle_manager.validate_plan(plan)
         if error is not None:
-            return (
+            # TRK-22: same pre-submission "never reached a broker" convention
+            # as the "no broker adapter" branch above.
+            return _ManagedOrderOutcome(
                 OrderResult(
                     account_id=account.account_id, status=OrderStatus.REJECTED, signal_id=signal.id, message=error
                 ),
@@ -2258,7 +2325,9 @@ class SignalCopierEngine:
         admitted, notional, rejection = await self._try_reserve_capital(account, signal, quantity)
         if not admitted:
             assert rejection is not None  # _try_reserve_capital always sets this when admitted is False
-            return rejection, None, None
+            # TRK-22: same convention -- capital admission is refused before
+            # any broker call.
+            return _ManagedOrderOutcome(rejection, None, None)
 
         self.lifecycle_manager.start_plan(plan)
 
@@ -2318,7 +2387,14 @@ class SignalCopierEngine:
                 symbol,
                 ledger_entry.uncertainty_state.value,
             )
-            return (
+            # TRK-22: this exact save replays a prior attempt's tracked
+            # state rather than submitting/applying anything new -- mirrors
+            # `_submit_order`'s own duplicate-command branch exactly:
+            # applied_quantity/confirmed_cumulative_fill/acknowledged_quantity
+            # stay None (nothing new confirmed BY THIS call), while
+            # applied_execution_delta/outstanding_possible_fill are the real
+            # 0.0 "this save applied/has nothing new to report" facts.
+            return _ManagedOrderOutcome(
                 OrderResult(
                     account_id=account.account_id,
                     status=OrderStatus.PENDING,
@@ -2331,6 +2407,8 @@ class SignalCopierEngine:
                 ),
                 None,
                 None,
+                applied_execution_delta=0.0,
+                outstanding_possible_fill=0.0,
             )
 
         # PU-A2: submission moment for this managed entry -- see
@@ -2370,12 +2448,20 @@ class SignalCopierEngine:
                 uncertainty_state=UncertaintyState.UNKNOWN_AMBIGUOUS,
                 terminal_evidence=command_ledger.ambiguous_evidence_for_exception(exc),
             )
-            return (
+            # TRK-22: a genuinely ambiguous ERROR (see the comment above) --
+            # mirrors `_submit_order`'s own exception-branch classification
+            # exactly: nothing confirmed applied/acknowledged by THIS call,
+            # and (the order being terminal from this call's own point of
+            # view) nothing outstanding for it to track either.
+            return _ManagedOrderOutcome(
                 OrderResult(
                     account_id=account.account_id, status=OrderStatus.ERROR, signal_id=signal.id, message=str(exc)
                 ),
                 submitted_at,
                 None,
+                applied_execution_delta=0.0,
+                outstanding_possible_fill=0.0,
+                acknowledged_quantity=0.0,
             )
 
         # P0-2: one real broker answer landed (didn't raise) -- classify
@@ -2386,6 +2472,18 @@ class SignalCopierEngine:
             ledger_key, uncertainty_state=_ledger_state, remote_identifiers=_ledger_remote, terminal_evidence=_ledger_evidence
         )
 
+        # TRK-22: AUD-01's distinct-field quantity model for this managed
+        # entry -- the same FILLED/PENDING classification `_submit_order`
+        # uses (see that method's own docstring for the shared contract),
+        # adapted to this method's own, pre-existing fill-application gates
+        # (`on_entry_fill` for FILLED, `resolve_pending_entry`'s own `> 0`
+        # guard for a PENDING result's synchronous partial fill) rather than
+        # a second, duplicate `record_fill` call -- these fields only ever
+        # report what this method's OWN calls above already applied, never
+        # re-derive or re-apply it.
+        applied_quantity: float | None = None
+        confirmed_cumulative_fill: float | None = None
+        outstanding_possible_fill = 0.0
         protection_confirmed_at: datetime | None = None
         if result.status == OrderStatus.REJECTED:
             # A broker-confirmed rejection (or a client-side validation
@@ -2424,6 +2522,13 @@ class SignalCopierEngine:
             self.capital_allocator.release(account.account_id, notional)
             filled_quantity = result.filled_quantity if result.filled_quantity is not None else quantity
             self.store.record_fill(account.account_id, symbol, signal.side, filled_quantity)
+            # TRK-22: `filled_quantity` above is exactly what was just
+            # applied via `record_fill` -- same FILLED convention
+            # `_submit_order` uses (a broker-confirmed FILLED with no
+            # reported `filled_quantity` falls back to the full requested
+            # `quantity`, never guessed as 0).
+            applied_quantity = filled_quantity
+            confirmed_cumulative_fill = filled_quantity
             # PU-A1: `result.filled_price` is the real confirmed fill price for
             # this entry — seeds PositionLifecycle's MAE/MFE tracking. None
             # when the broker's FILLED response didn't report one; that stays
@@ -2438,7 +2543,16 @@ class SignalCopierEngine:
             # place_protective_stop for this broker, or the submission
             # failed/was rejected -- see StopRecord.confirmed_at).
             protection_confirmed_at = lifecycle_after_fill.stop.confirmed_at
+            outstanding_possible_fill = 0.0
         elif result.status == OrderStatus.PENDING:
+            # TRK-22: `confirmed_cumulative_fill` is the broker-reported fact
+            # regardless of whether it was applied (pass it through as-is,
+            # same as `_submit_order`); `outstanding_possible_fill` is what
+            # could still fill later. Both computed BEFORE the branch body
+            # below decides whether to actually apply anything, since they
+            # describe the broker's answer, not this method's reaction to it.
+            confirmed_cumulative_fill = result.filled_quantity
+            outstanding_possible_fill = quantity - (confirmed_cumulative_fill or 0.0)
             # Don't assume the requested quantity is owned yet -- retain the
             # intent (this may already be a real, accepted order) and let
             # app/reconciliation.py's pending-entry polling call
@@ -2486,6 +2600,18 @@ class SignalCopierEngine:
                 await self.lifecycle_manager.resolve_pending_entry(
                     account, symbol, result.filled_quantity, remainder_cancelled=False
                 )
+                # TRK-22: this is the ONE case `resolve_pending_entry` (this
+                # exact call, above) actually invoked `record_fill` for a
+                # PENDING managed entry -- since this is always the FIRST
+                # `resolve_pending_entry` call for a brand new
+                # `register_pending_entry` (just above), its own
+                # `pending.confirmed_filled_quantity` starts at 0.0, so the
+                # `newly_applied` delta it records is exactly
+                # `result.filled_quantity`. Never set for the
+                # `filled_quantity is None or == 0.0` case below this `if` --
+                # `resolve_pending_entry` was correctly NOT called for it, so
+                # nothing was actually applied to report.
+                applied_quantity = result.filled_quantity
                 # PU-A2: resolve_pending_entry may have placed/confirmed the
                 # protective stop synchronously (same reasoning as the
                 # FILLED branch above) -- re-read the lifecycle rather than
@@ -2494,7 +2620,20 @@ class SignalCopierEngine:
                 if lifecycle_now is not None:
                     protection_confirmed_at = lifecycle_now.stop.confirmed_at
 
-        return result, submitted_at, protection_confirmed_at
+        applied_execution_delta = applied_quantity if applied_quantity is not None else 0.0
+        # TRK-Q1: same utility `_submit_order` uses -- see its own docstring
+        # for exactly what "acknowledged" means and doesn't.
+        acknowledged_quantity = quantity_module.acknowledged_quantity_for(result, quantity)
+        return _ManagedOrderOutcome(
+            result,
+            submitted_at,
+            protection_confirmed_at,
+            applied_quantity=applied_quantity,
+            confirmed_cumulative_fill=confirmed_cumulative_fill,
+            applied_execution_delta=applied_execution_delta,
+            outstanding_possible_fill=outstanding_possible_fill,
+            acknowledged_quantity=acknowledged_quantity,
+        )
 
     async def _handle_managed_close(
         self,
@@ -2504,16 +2643,38 @@ class SignalCopierEngine:
         source: str = "provider_exit",
         *,
         enforce_provider_ownership: bool = True,
-    ) -> tuple[OrderResult, datetime | None, datetime | None]:
-        """Returns (result, submitted_at, protection_confirmed_at) like
-        `_handle_managed_entry`, for the same call-site shape -- but a CLOSE
-        is an exit, not an entry: nothing here confirms a fresh protective
-        stop for it, so `protection_confirmed_at` is always None (PU-A2's
-        protection stage is entry-only in this codebase today). `submitted_at`
-        is also None here -- unlike the plain-account close path (see
-        `_submit_order`), `request_exit`'s own submission call is inside
+    ) -> _ManagedOrderOutcome:
+        """Returns a `_ManagedOrderOutcome` like `_handle_managed_entry`, for
+        the same call-site shape -- but a CLOSE is an exit, not an entry:
+        nothing here confirms a fresh protective stop for it, so
+        `protection_confirmed_at` is always None (PU-A2's protection stage
+        is entry-only in this codebase today). `submitted_at` is also None
+        here -- unlike the plain-account close path (see `_submit_order`),
+        `request_exit`'s own submission call is inside
         app/lifecycle/manager.py, not this method, so there is no real
         submission instant available at this call site to report honestly.
+
+        TRK-22: this method does NOT reuse `_submit_order` for its
+        classification, unlike the plain-account close path -- `request_exit`
+        (below) is `PositionLifecycleManager`'s own single execution-
+        application owner for a managed exit fill (see its own docstring and
+        `_apply_exit_fill`'s), with its OWN real `broker.place_order` call
+        site (`_submit_exit_order`, inside app/lifecycle/manager.py) and its
+        own `record_fill` call(s) already wired through `_apply_exit_fill`/
+        `resolve_pending_exit`. `_submit_order` is this engine's OWN direct
+        `broker.place_order` call for the plain-account close path; there is
+        no broker call in this method to point `_submit_order` at, and
+        duplicating its classification here would either re-call
+        `broker.place_order` a second time (never -- would double-submit) or
+        require refactoring `request_exit`'s own internals to return a
+        `_submit_order`-shaped tuple, a bigger refactor across
+        app/lifecycle/manager.py than this task scopes. This method instead
+        classifies `request_exit`'s returned `OrderResult` using the exact
+        same FILLED/PENDING rule `_submit_order` uses, against `available`
+        (the quantity this method itself requested) as the base -- see the
+        classification block below for the one disclosed approximation this
+        implies (`available` vs. `request_exit`'s own internal, possibly
+        narrower `ReductionPlan.requested_quantity`).
 
         `source` here is `request_exit`'s exit-KIND label (e.g.
         "provider_exit", the manual-flatten reason) -- NOT necessarily the
@@ -2536,9 +2697,14 @@ class SignalCopierEngine:
         that passes False is `close_position`'s manual dashboard "Exit
         now"/"Flatten" action -- see that method's own docstring for why
         gating it against a synthetic reason string would be wrong."""
+        # TRK-22: every pre-submission rejection in this method (this one,
+        # "no shares available to sell", and the ownership-gate rejection
+        # below) never reaches `request_exit`/a broker call -- all quantity
+        # fields stay None, the same convention `_handle_managed_entry`'s
+        # own pre-submission rejections use.
         lifecycle = self.lifecycle_manager.get_lifecycle(account.account_id, symbol)
         if lifecycle is None or lifecycle.closed:
-            return (
+            return _ManagedOrderOutcome(
                 OrderResult(
                     account_id=account.account_id,
                     status=OrderStatus.REJECTED,
@@ -2551,7 +2717,7 @@ class SignalCopierEngine:
 
         available = self.lifecycle_manager.arbiter.available_to_sell(account.account_id, symbol)
         if available <= 0:
-            return (
+            return _ManagedOrderOutcome(
                 OrderResult(
                     account_id=account.account_id,
                     status=OrderStatus.REJECTED,
@@ -2573,18 +2739,18 @@ class SignalCopierEngine:
             # invariant is what this checks -- NOT `orders.applied_
             # execution_delta` (Track 16's own attribution computation,
             # reused by the plain-account gate in
-            # `_gate_close_by_provider_ownership`): this engine's managed-
-            # lifecycle save_order_result call (in the `_handle_signal`
-            # loop, and `_persist_self_initiated_exit`) never populates
-            # that field for a managed order today (a pre-existing gap,
-            # not introduced here -- Track 16's own `/positions/{symbol}/
-            # provider-allocations` endpoint is equally blind to managed-
-            # lifecycle activity for the same reason). Fixing that gap
-            # safely would need `_handle_managed_entry`/`_handle_managed_
-            # close`/`close_position` to thread the real applied quantity
-            # back to that save call, a broader refactor outside this
-            # pass's confidence -- see this task's own final report.
-            # `lifecycle.plan.entry_signal_id` is the reliable, ALREADY-
+            # `_gate_close_by_provider_ownership`). TRK-22 fixed the
+            # pre-existing gap this comment used to describe (this engine's
+            # managed-lifecycle `save_order_result` calls, in `_handle_
+            # signal`'s loop and `close_position`, now DO populate that
+            # field -- see `_ManagedOrderOutcome` and this method's own
+            # classification block below), so that data now exists -- but
+            # this gate deliberately still doesn't use it: switching to a
+            # proportional cap the way the plain-account gate does is a
+            # real behavior change (binary allow/reject -> a computed
+            # share) outside this task's own scope, not merely "the data
+            # wasn't available yet." `lifecycle.plan.entry_signal_id` is the
+            # reliable, ALREADY-
             # EXISTING source of truth for "which provider owns this
             # lifecycle" instead (see its own docstring in app/lifecycle/
             # models.py -- already used by `close_position`'s `family_id`
@@ -2601,7 +2767,7 @@ class SignalCopierEngine:
                 if entry_signal_row is not None:
                     owning_source = entry_signal_row["source"]
             if owning_source != signal.source:
-                return (
+                return _ManagedOrderOutcome(
                     OrderResult(
                         account_id=account.account_id,
                         status=OrderStatus.REJECTED,
@@ -2630,7 +2796,63 @@ class SignalCopierEngine:
         # gate above (a binary allow/reject, not a proportional cap -- see
         # that block's own comment for why).
         result = await self.lifecycle_manager.request_exit(account, symbol, available, source=source)
-        return result, None, None
+
+        # TRK-22: AUD-01's distinct-field quantity model for this managed
+        # close -- see this method's own docstring for why `request_exit`'s
+        # OWN internal `broker.place_order` call can't be pointed at
+        # `_submit_order` directly, and the one disclosed approximation this
+        # implies (`available` standing in for `request_exit`'s own,
+        # possibly narrower, internal `ReductionPlan.requested_quantity`,
+        # which this method has no way to read back).
+        #
+        # REJECTED/ERROR (whether from one of `request_exit`'s own
+        # pre-submission checks -- "no active lifecycle", "halted", a prior
+        # unresolved exit, a failed stop cancel/reservation -- or a real
+        # broker-confirmed/ambiguous outcome from `_submit_exit_order`
+        # inside it): this method can't tell those apart from `result`
+        # alone, so it uses the one classification that's honest for EITHER
+        # cause -- nothing confirmed applied/acknowledged, nothing
+        # outstanding left to poll for THIS call -- exactly `_submit_order`'s
+        # own fallthrough for these two statuses.
+        applied_quantity: float | None = None
+        confirmed_cumulative_fill: float | None = None
+        outstanding_possible_fill = 0.0
+        if result.status == OrderStatus.FILLED:
+            # `request_exit`'s own synchronous FILLED branch already called
+            # `_apply_exit_fill` -> `record_fill` with exactly
+            # `actual_filled` (`result.filled_quantity`, defaulting to 0.0
+            # when the broker didn't report one -- NOT the full `available`,
+            # unlike `_submit_order`'s own FILLED convention; see this
+            # method's docstring: `request_exit`'s real internal default
+            # differs and this reports what actually happened, never a
+            # hypothetical). `_apply_exit_fill` itself only calls
+            # `record_fill` when that quantity is `> 0`, so `applied_quantity`
+            # mirrors that same gate here rather than assume it happened.
+            actual_filled = result.filled_quantity if result.filled_quantity is not None else 0.0
+            if actual_filled > 0:
+                applied_quantity = actual_filled
+            confirmed_cumulative_fill = result.filled_quantity
+        elif result.status == OrderStatus.PENDING:
+            # `request_exit`'s own PENDING branch returns straight through
+            # without ever calling `_apply_exit_fill` -- unlike
+            # `_handle_managed_entry`'s extra synchronous-partial-fill
+            # branch, there is no equivalent immediate application here, so
+            # `applied_quantity` stays None; only `resolve_pending_exit`
+            # (app/reconciliation.py's polling) can ever apply this one.
+            confirmed_cumulative_fill = result.filled_quantity
+            outstanding_possible_fill = available - (confirmed_cumulative_fill or 0.0)
+        applied_execution_delta = applied_quantity if applied_quantity is not None else 0.0
+        acknowledged_quantity = quantity_module.acknowledged_quantity_for(result, available)
+        return _ManagedOrderOutcome(
+            result,
+            None,
+            None,
+            applied_quantity=applied_quantity,
+            confirmed_cumulative_fill=confirmed_cumulative_fill,
+            applied_execution_delta=applied_execution_delta,
+            outstanding_possible_fill=outstanding_possible_fill,
+            acknowledged_quantity=acknowledged_quantity,
+        )
 
     async def close_position(
         self, account: DestinationAccount, symbol: str, reason: str = "manual_exit"
@@ -2696,9 +2918,10 @@ class SignalCopierEngine:
             # real provider, so ownership-gating it would incorrectly
             # reject the one action meant to flatten the WHOLE pooled
             # position regardless of which provider(s) built it.
-            result, _submitted_at, _protection_confirmed_at = await self._handle_managed_close(
+            managed_outcome = await self._handle_managed_close(
                 close_signal, account, symbol, source=reason, enforce_provider_ownership=False
             )
+            result = managed_outcome.result
             # DB-01: PositionLifecycleManager.request_exit (which this
             # ultimately calls into) reports some outcomes with
             # signal_id="" (it has no Signal of its own there, only a
@@ -2720,8 +2943,20 @@ class SignalCopierEngine:
                 if lifecycle_before_close is not None and lifecycle_before_close.plan.entry_signal_id
                 else None
             )
+            # TRK-22: same fix as `_handle_signal`'s managed branch -- see
+            # its own comment for exactly what was missing before.
             self.store.save_order_result(
-                result, broker=account.broker, symbol=symbol, side=resolved_side, purpose="close", family_id=family_id
+                result,
+                broker=account.broker,
+                symbol=symbol,
+                side=resolved_side,
+                applied_quantity=managed_outcome.applied_quantity,
+                confirmed_cumulative_fill=managed_outcome.confirmed_cumulative_fill,
+                applied_execution_delta=managed_outcome.applied_execution_delta,
+                outstanding_possible_fill=managed_outcome.outstanding_possible_fill,
+                acknowledged_quantity=managed_outcome.acknowledged_quantity,
+                purpose="close",
+                family_id=family_id,
             )
         else:
             # Goes through the same (account_id, symbol) lock as a provider-driven
