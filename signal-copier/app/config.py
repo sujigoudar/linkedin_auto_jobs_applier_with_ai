@@ -138,6 +138,19 @@ class _Settings(BaseSettings):
     SLACK_APP_TOKEN: str = ""
     SLACK_CHANNEL_ID: str = ""
 
+    # Track 6: Slack USER-TOKEN collectors (app/sources/slack_user.py,
+    # SlackUserSource) -- the app-level token (xapp-..., connections:write)
+    # for the Socket Mode connection, global/shared across every
+    # user-token collector this deployment runs (same role
+    # SLACK_APP_TOKEN plays for the bot-based SlackSource above, but for a
+    # SEPARATE Slack app -- a user-token collector is registered under a
+    # different Slack app than the bot one, since it needs user scopes
+    # installed, not bot scopes). Each collector's own OAuth USER token
+    # (xoxp-...) lives at a separate, per-collector env var
+    # (SLACK_USER_<COLLECTOR_ID>_TOKEN, read directly via os.environ at
+    # collector-start time -- see docs/security/SLACK_USER_TOKEN.md).
+    SLACK_USER_APP_TOKEN: str = ""
+
     TWITTER_BEARER_TOKEN: str = ""
     TWITTER_RULES: str = ""
 
@@ -435,6 +448,7 @@ DISCORD_CHANNEL_ID = _settings.DISCORD_CHANNEL_ID
 SLACK_BOT_TOKEN = _settings.SLACK_BOT_TOKEN
 SLACK_APP_TOKEN = _settings.SLACK_APP_TOKEN
 SLACK_CHANNEL_ID = _settings.SLACK_CHANNEL_ID
+SLACK_USER_APP_TOKEN = _settings.SLACK_USER_APP_TOKEN
 
 TWITTER_BEARER_TOKEN = _settings.TWITTER_BEARER_TOKEN
 TWITTER_RULES = [r.strip() for r in _settings.TWITTER_RULES.split(",") if r.strip()]

@@ -93,6 +93,9 @@ from app.sources.mt4_mt5 import MetaApiSource
 from app.sources.ninjatrader import NinjaTraderSource
 from app.sources.rithmic import RithmicSource
 from app.sources.slack import SlackSource
+from app.sources.slack_user import SlackUserSource
+from app.sources.twitter_user import TwitterUserSource
+from app.collector_registry import Provider, PullCollectorError
 from app.sources.base import SourceAdapter
 from app.sources.sms_twilio import TwilioSMSSource
 from app.sources.telegram import TelegramSource
@@ -311,6 +314,51 @@ if config.SLACK_BOT_TOKEN and config.SLACK_APP_TOKEN and config.SLACK_CHANNEL_ID
 if config.TWITTER_BEARER_TOKEN:
     _background_sources.append(
         TwitterSource(engine.handle_signal, config.TWITTER_BEARER_TOKEN, config.TWITTER_RULES)
+    )
+# Track 6: every registered pull_collectors row (app/collector_registry.py)
+# -- same data-driven-registry pattern as Track 5's telegram_collectors
+# loop above: one row per collector, a collector whose credential_env_var
+# isn't set in THIS process's environment is simply never started (see
+# CollectorHealth.MISSING_CREDENTIALS).
+if config.SLACK_USER_APP_TOKEN:
+    for _slack_collector in store.list_pull_collectors(provider=Provider.SLACK.value):
+        _user_token = os.environ.get(_slack_collector["credential_env_var"])
+        if not _user_token:
+            store.update_pull_collector_health(
+                _slack_collector["id"], "missing_credentials",
+                detail=f"env var {_slack_collector['credential_env_var']!r} is not set in this process's environment",
+            )
+            continue
+        _background_sources.append(
+            SlackUserSource(
+                engine.handle_signal,
+                collector_id=_slack_collector["id"],
+                channel_id=_slack_collector["target_id"],
+                user_token=_user_token,
+                app_token=config.SLACK_USER_APP_TOKEN,
+                on_source_event=engine.export_source_event,
+                registry=store,
+                save_historical_signal=store.save_signal,
+            )
+        )
+for _twitter_collector in store.list_pull_collectors(provider=Provider.TWITTER.value):
+    _access_token = os.environ.get(_twitter_collector["credential_env_var"])
+    if not _access_token:
+        store.update_pull_collector_health(
+            _twitter_collector["id"], "missing_credentials",
+            detail=f"env var {_twitter_collector['credential_env_var']!r} is not set in this process's environment",
+        )
+        continue
+    _background_sources.append(
+        TwitterUserSource(
+            engine.handle_signal,
+            collector_id=_twitter_collector["id"],
+            target_user_id=_twitter_collector["target_id"],
+            access_token=_access_token,
+            on_source_event=engine.export_source_event,
+            registry=store,
+            save_historical_signal=store.save_signal,
+        )
     )
 if config.MT4_MT5_METAAPI_TOKEN and config.MT4_MT5_METAAPI_SOURCE_ACCOUNT_ID:
     _background_sources.append(
@@ -3207,6 +3255,95 @@ async def record_telegram_collector_qualification_evidence(
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return store.get_telegram_collector(collector_id)  # type: ignore[return-value]
+
+
+# -- Track 6: Slack/Twitter user-context collector registry -----------------
+# (app/collector_registry.py) -- same owner-gated CRUD shape as the
+# Telegram collector routes above, one shared `pull_collectors` table.
+
+
+class RegisterPullCollectorRequest(BaseModel):
+    """See app/collector_registry.py's module docstring and
+    docs/security/SLACK_USER_TOKEN.md / docs/security/TWITTER_USER_CONTEXT.md
+    for the full registration procedure. `credential_env_var` is a
+    REFERENCE (the name of an env var), never a credential value --
+    `validate_registration` rejects anything that doesn't look like a
+    bare env-var name."""
+
+    id: str
+    provider: str
+    auth_mode: str
+    identity_ref: str
+    credential_env_var: str
+    target_id: str
+    provider_name: str
+    target_label: str | None = None
+    allowed_uses: list[str] | None = None
+
+
+@app.post("/pull-collectors")
+async def register_pull_collector(
+    request: RegisterPullCollectorRequest, _owner: dict = Depends(require_owner)
+) -> dict:
+    """Owner-gated: register (or re-describe) one Slack/Twitter
+    user-context collector. Never accepts or stores a credential value --
+    see `RegisterPullCollectorRequest`'s own docstring."""
+    try:
+        return store.register_pull_collector(
+            collector_id=request.id,
+            provider=request.provider,
+            auth_mode=request.auth_mode,
+            identity_ref=request.identity_ref,
+            credential_env_var=request.credential_env_var,
+            target_id=request.target_id,
+            provider_name=request.provider_name,
+            target_label=request.target_label,
+            allowed_uses=request.allowed_uses,
+        )
+    except PullCollectorError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.get("/pull-collectors")
+async def list_pull_collectors(
+    provider: str | None = None, _owner: dict = Depends(require_owner_read)
+) -> dict:
+    """Every registered collector, including its current `health_state` --
+    a dashboard reads this, never a hardcoded green, for every collector
+    regardless of provider. Optionally filtered to one provider
+    ("slack"/"twitter")."""
+    return {"collectors": store.list_pull_collectors(provider=provider)}
+
+
+@app.get("/pull-collectors/{collector_id}")
+async def get_pull_collector(collector_id: str, _owner: dict = Depends(require_owner_read)) -> dict:
+    collector = store.get_pull_collector(collector_id)
+    if collector is None:
+        raise HTTPException(status_code=404, detail=f"no pull collector registered with id={collector_id!r}")
+    return collector
+
+
+class RecordPullCollectorQualificationRequest(BaseModel):
+    """Real evidence of authorized message receipt -- e.g.
+    `{"observed_ts": "...", "method": "manual_owner_confirmation"}`.
+    Never a claim this endpoint verifies itself; the CALLER is asserting
+    they have real evidence (mirrors the Telegram collector route's own
+    identical contract)."""
+
+    evidence: dict
+
+
+@app.post("/pull-collectors/{collector_id}/qualification-evidence")
+async def record_pull_collector_qualification_evidence(
+    collector_id: str,
+    request: RecordPullCollectorQualificationRequest,
+    _owner: dict = Depends(require_owner),
+) -> dict:
+    try:
+        store.record_pull_collector_qualification_evidence(collector_id, evidence=request.evidence)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return store.get_pull_collector(collector_id)  # type: ignore[return-value]
 
 
 class BacktestRequest(BaseModel):
