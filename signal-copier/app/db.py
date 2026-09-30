@@ -36,7 +36,7 @@ from app.certification import (
     validate_check_record,
     validate_scope,
 )
-from app.connections import validate_connection_registration
+from app.connections import compute_connection_health, default_capabilities_for_connection_type, validate_connection_registration
 from app.parser_tooling import (
     ParserProfileStatus,
     ParserToolingError,
@@ -1416,6 +1416,38 @@ CREATE TABLE IF NOT EXISTS connections (
 );
 
 CREATE INDEX IF NOT EXISTS idx_connections_connection_type ON connections (connection_type);
+
+-- Track 19: append-only connection cost-event ledger -- see
+-- SignalStore.record_connection_cost_event/get_connection_cost_summary.
+-- Same "audit ledger, only ever appended to, never mutated/deleted"
+-- convention as signal_correlation_evidence/phone_escalation_attempts.
+-- `amount`/`category` are the only required fields (a recorded cost is
+-- always attributed to SOME category, e.g. "api"/"ai"/"infra"); every
+-- other numeric field (ai_calls/tokens/browser_minutes/
+-- mobile_agent_calls) is NULL unless a caller actually recorded one --
+-- never a fabricated placeholder. This table only RECORDS/AGGREGATES
+-- costs a caller reports -- it never auto-detects real spend from any
+-- live provider API (X/Twilio/etc. billing), which is explicitly out of
+-- scope for this track (see app/db.py's own record_connection_cost_event
+-- docstring).
+CREATE TABLE IF NOT EXISTS connection_cost_events (
+    id TEXT PRIMARY KEY,
+    connection_id TEXT NOT NULL,
+    amount REAL NOT NULL,
+    currency TEXT NOT NULL DEFAULT 'USD',
+    category TEXT NOT NULL,
+    event_count INTEGER NOT NULL DEFAULT 1,
+    ai_calls INTEGER,
+    tokens INTEGER,
+    browser_minutes REAL,
+    mobile_agent_calls INTEGER,
+    occurred_at TEXT NOT NULL,
+    recorded_at TEXT NOT NULL,
+    note TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_connection_cost_events_connection_id ON connection_cost_events (connection_id);
+CREATE INDEX IF NOT EXISTS idx_connection_cost_events_occurred_at ON connection_cost_events (connection_id, occurred_at);
 
 -- Track 17: provider certification checklist -- see
 -- app/certification.py's module docstring for the full design. ONE row
@@ -5182,6 +5214,15 @@ class SignalStore:
             connection_state=connection_state,
             authorization_state=authorization_state,
         )
+        # Track 19: an explicit `capabilities={}` (falsy) is NOT the same
+        # as "no override given" -- only `capabilities is None` (the
+        # caller never mentioned it at all) falls back to this
+        # connection_type's real, verified default shape. A caller that
+        # explicitly passes `{}` gets exactly that stored (honest "this
+        # caller asserted nothing"), matching `capabilities or {}`'s own
+        # pre-existing behavior for any other explicit value.
+        if capabilities is None:
+            capabilities = default_capabilities_for_connection_type(connection_type)
         now = now_utc().isoformat()
         with self._connect() as conn:
             existing = conn.execute("SELECT created_at FROM connections WHERE id = ?", (connection_id,)).fetchone()
@@ -5287,6 +5328,293 @@ class SignalStore:
                     connection_id,
                 ),
             )
+
+    # -- Track 19: connection health / checkpoint diagnostics / cost -------
+    #
+    # See app/connections.py's own docstrings for `compute_connection_health`
+    # (the real HEALTHY/DEGRADED/OFFLINE/NEVER_CONNECTED/INSUFFICIENT_DATA/
+    # UNKNOWN computation) and `default_capabilities_for_connection_type`.
+    # Everything below is READ-ONLY diagnostics plus a cost-recording
+    # ledger -- no recovery/remediation logic, no live-routing impact.
+
+    def get_connection_health(self, connection_id: str) -> dict | None:
+        """One connection's real, freshly computed health -- never a
+        stored/cached verdict (`health_score` on the row is a separate,
+        caller-supplied field this does not read or write). `None` when
+        no such connection is registered."""
+        connection = self.get_connection(connection_id)
+        if connection is None:
+            return None
+        health = compute_connection_health(connection)
+        return {"connection_id": connection_id, "connection_type": connection["connection_type"], **health}
+
+    def get_connection_health_summary(self) -> dict:
+        """Dashboard summary (the user's own spec: "N Healthy / N Degraded
+        / N Offline") across every registered `connections` row -- real
+        counts from `compute_connection_health`, computed fresh each call,
+        never a cached/fabricated number. Every `ConnectionHealthState`
+        member gets a key (including `never_connected`/
+        `insufficient_data`/`unknown`), even when its count is 0, so a
+        dashboard never has to guess whether a missing key means zero or
+        "not computed"."""
+        from app.connections import ConnectionHealthState
+
+        counts: dict[str, int] = {state.value: 0 for state in ConnectionHealthState}
+        connections = []
+        for connection in self.list_connections():
+            health = compute_connection_health(connection)
+            counts[health["state"]] += 1
+            connections.append(
+                {
+                    "connection_id": connection["id"],
+                    "connection_type": connection["connection_type"],
+                    "display_name": connection["display_name"],
+                    **health,
+                }
+            )
+        return {"counts": counts, "total": len(connections), "connections": connections}
+
+    def get_connection_checkpoint_status(self, connection_id: str) -> dict:
+        """Honest, read-only checkpoint/reconciliation diagnostics for one
+        connection (the user's own spec: "expected checkpoint, current
+        checkpoint, gaps, recovery attempts, unrecoverable gaps, backlog,
+        last successful reconciliation").
+
+        This codebase's real checkpoint concept (`collectors.checkpoint`,
+        Track 8) lives on the UNIFIED COLLECTOR registry, which has NO
+        foreign-key relationship to `connections`/`sources` at all (see
+        this module's own `collectors` table comment -- collectors predate
+        Track 14's provider/source/connection layer and were never
+        migrated onto it beyond the one-time `legacy_{kind}`/
+        `android_notification` backfill rows Track 14's own migration
+        created). There is therefore no real mechanism in this codebase
+        today that can compute a `connections` row's "expected checkpoint
+        vs. current checkpoint" gap, a recovery-attempt count, or an
+        unrecoverable-gap count -- reporting any of those as a number
+        would be fabrication (CLAUDE.md #11), so each is reported as the
+        literal string `"not_tracked"`, never a fake `0`.
+
+        What IS real and available: every `sources` row this connection
+        serves (`sources.connection_id`) carries its own
+        `last_event_at`/`last_success_at`/`last_error_at` (`app/db.py`'s
+        `update_source_health`) -- a genuine, if coarse, "is this source's
+        traffic caught up or stale" signal. This reuses the same
+        `CONNECTION_HEARTBEAT_STALE_SECONDS` threshold concept
+        `compute_connection_health` uses (same "don't invent a new
+        arbitrary number" instruction) to label each source
+        `caught_up`/`stale`/`insufficient_data`."""
+        from app.connections import CONNECTION_HEARTBEAT_STALE_SECONDS
+
+        connection = self.get_connection(connection_id)
+        if connection is None:
+            raise KeyError(f"no connection registered with id={connection_id!r}")
+
+        now = now_utc()
+        sources_status = []
+        for source in self.list_sources(connection_id=connection_id):
+            last_activity_raw = source.get("last_event_at") or source.get("last_success_at")
+            if last_activity_raw is None:
+                freshness = "insufficient_data"
+                age_seconds = None
+            else:
+                last_activity = datetime.fromisoformat(last_activity_raw)
+                if last_activity.tzinfo is None:
+                    last_activity = last_activity.replace(tzinfo=timezone.utc)
+                age_seconds = max(0.0, (now - last_activity).total_seconds())
+                freshness = "stale" if age_seconds >= CONNECTION_HEARTBEAT_STALE_SECONDS else "caught_up"
+            sources_status.append(
+                {
+                    "source_id": source["id"],
+                    "provider_id": source["provider_id"],
+                    "last_event_at": source.get("last_event_at"),
+                    "last_success_at": source.get("last_success_at"),
+                    "last_error_at": source.get("last_error_at"),
+                    "age_seconds": age_seconds,
+                    "freshness": freshness,
+                }
+            )
+
+        return {
+            "connection_id": connection_id,
+            "connection_type": connection["connection_type"],
+            "checkpoint_tracking": "not_tracked",
+            "checkpoint_tracking_detail": (
+                "app/db.py's unified `collectors` table (Track 8) is this codebase's only real "
+                "checkpoint concept, and it has no foreign-key link to `connections`/`sources` "
+                "(Track 14) -- expected/current checkpoint, gaps, recovery attempts, and "
+                "unrecoverable gaps cannot be honestly computed for a connection today; see this "
+                "method's own docstring."
+            ),
+            "expected_checkpoint": "not_tracked",
+            "current_checkpoint": "not_tracked",
+            "gaps": "not_tracked",
+            "recovery_attempts": "not_tracked",
+            "unrecoverable_gaps": "not_tracked",
+            "backlog": "not_tracked",
+            "last_successful_reconciliation": "not_tracked",
+            "stale_after_seconds": CONNECTION_HEARTBEAT_STALE_SECONDS,
+            "sources": sources_status,
+        }
+
+    _CONNECTION_COST_EVENT_COLUMNS = (
+        "id, connection_id, amount, currency, category, event_count, ai_calls, tokens, "
+        "browser_minutes, mobile_agent_calls, occurred_at, recorded_at, note"
+    )
+
+    def _connection_cost_event_row_to_dict(self, row: tuple) -> dict:
+        return {
+            "id": row[0],
+            "connection_id": row[1],
+            "amount": row[2],
+            "currency": row[3],
+            "category": row[4],
+            "event_count": row[5],
+            "ai_calls": row[6],
+            "tokens": row[7],
+            "browser_minutes": row[8],
+            "mobile_agent_calls": row[9],
+            "occurred_at": row[10],
+            "recorded_at": row[11],
+            "note": row[12],
+        }
+
+    def record_connection_cost_event(
+        self,
+        connection_id: str,
+        *,
+        amount: float,
+        currency: str = "USD",
+        category: str,
+        event_count: int = 1,
+        occurred_at: datetime | None = None,
+        ai_calls: int | None = None,
+        tokens: int | None = None,
+        browser_minutes: float | None = None,
+        mobile_agent_calls: int | None = None,
+        note: str | None = None,
+    ) -> dict:
+        """Appends one row to the append-only `connection_cost_events`
+        ledger (same "audit ledger, never mutated/deleted, only appended
+        to" convention as `signal_correlation_evidence`/
+        `phone_escalation_attempts`). This is the RECORDING mechanism
+        only -- see this module's own module-level docstring section on
+        cost tracking for why no live-provider-billing auto-detection is
+        wired here (out of scope for this track, a real follow-up).
+        `amount`/`category` are required (never a bare unattributed
+        number); `ai_calls`/`tokens`/`browser_minutes`/`mobile_agent_calls`
+        are optional and left `NULL` unless a caller actually recorded
+        one -- never fabricated placeholders for a capability this
+        codebase doesn't really meter yet (e.g. `app/phone_escalation.py`'s
+        `SignalExtractor` is a stub with no real LLM calls)."""
+        if self.get_connection(connection_id) is None:
+            raise KeyError(f"no connection registered with id={connection_id!r}")
+        if amount < 0:
+            raise ValueError("amount must be >= 0")
+        if event_count < 0:
+            raise ValueError("event_count must be >= 0")
+        if not category or not category.strip():
+            raise ValueError("category is required")
+        occurred_at = occurred_at or now_utc()
+        now = now_utc().isoformat()
+        event_id = f"cce_{uuid.uuid4().hex}"
+        with self._connect() as conn:
+            conn.execute(
+                """INSERT INTO connection_cost_events
+                       (id, connection_id, amount, currency, category, event_count, ai_calls, tokens,
+                        browser_minutes, mobile_agent_calls, occurred_at, recorded_at, note)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    event_id,
+                    connection_id,
+                    amount,
+                    currency,
+                    category,
+                    event_count,
+                    ai_calls,
+                    tokens,
+                    browser_minutes,
+                    mobile_agent_calls,
+                    occurred_at.isoformat(),
+                    now,
+                    note,
+                ),
+            )
+        with self._connect() as conn:
+            row = conn.execute(
+                f"SELECT {self._CONNECTION_COST_EVENT_COLUMNS} FROM connection_cost_events WHERE id = ?",
+                (event_id,),
+            ).fetchone()
+        return self._connection_cost_event_row_to_dict(row)  # type: ignore[arg-type]
+
+    def list_connection_cost_events(self, connection_id: str, *, since: datetime | None = None) -> list[dict]:
+        with self._connect() as conn:
+            if since is not None:
+                rows = conn.execute(
+                    f"SELECT {self._CONNECTION_COST_EVENT_COLUMNS} FROM connection_cost_events "
+                    "WHERE connection_id = ? AND occurred_at >= ? ORDER BY occurred_at",
+                    (connection_id, since.isoformat()),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    f"SELECT {self._CONNECTION_COST_EVENT_COLUMNS} FROM connection_cost_events "
+                    "WHERE connection_id = ? ORDER BY occurred_at",
+                    (connection_id,),
+                ).fetchall()
+        return [self._connection_cost_event_row_to_dict(r) for r in rows]
+
+    def get_connection_cost_summary(self, connection_id: str, *, since: datetime | None = None) -> dict:
+        """Real totals computed from `connection_cost_events` rows only --
+        the user's own spec ("$ spent, events received, cost/event, AI
+        calls, tokens, browser minutes, mobile-agent calls") answered
+        honestly: `insufficient_data` (never a fabricated `0`/`0.0`) when
+        no cost event has ever been recorded for this connection in the
+        window. `since` defaults to the start of the current UTC month
+        ("this month", per the spec) -- pass `since=None` explicitly and
+        this is what you get; an all-time summary needs a caller-supplied
+        `since` far enough in the past (or a dedicated all-time call is a
+        follow-up, not built here)."""
+        if self.get_connection(connection_id) is None:
+            raise KeyError(f"no connection registered with id={connection_id!r}")
+        if since is None:
+            today = now_utc()
+            since = today.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        events = self.list_connection_cost_events(connection_id, since=since)
+        if not events:
+            return {
+                "connection_id": connection_id,
+                "since": since.isoformat(),
+                "status": "insufficient_data",
+                "total_amount": None,
+                "currency": None,
+                "total_events": 0,
+                "cost_per_event": None,
+                "ai_calls": None,
+                "tokens": None,
+                "browser_minutes": None,
+                "mobile_agent_calls": None,
+                "event_count_recorded": 0,
+            }
+        currencies = {e["currency"] for e in events}
+        total_amount = sum(e["amount"] for e in events)
+        total_events = sum(e["event_count"] for e in events)
+        ai_calls = sum(e["ai_calls"] for e in events if e["ai_calls"] is not None) or None
+        tokens = sum(e["tokens"] for e in events if e["tokens"] is not None) or None
+        browser_minutes = sum(e["browser_minutes"] for e in events if e["browser_minutes"] is not None) or None
+        mobile_agent_calls = sum(e["mobile_agent_calls"] for e in events if e["mobile_agent_calls"] is not None) or None
+        return {
+            "connection_id": connection_id,
+            "since": since.isoformat(),
+            "status": "ok" if len(currencies) == 1 else "mixed_currencies",
+            "total_amount": total_amount,
+            "currency": next(iter(currencies)) if len(currencies) == 1 else sorted(currencies),
+            "total_events": total_events,
+            "cost_per_event": (total_amount / total_events) if total_events > 0 else None,
+            "ai_calls": ai_calls,
+            "tokens": tokens,
+            "browser_minutes": browser_minutes,
+            "mobile_agent_calls": mobile_agent_calls,
+            "event_count_recorded": len(events),
+        }
 
     # -- Track 17: provider certification checklist (app/certification.py) --
     # -- and shadow mode results (app/shadow_mode.py) --
