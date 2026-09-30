@@ -52,6 +52,11 @@ jobs:
       - name: Run tests
         run: pytest -q
 
+      - name: Audit dependencies for known advisories (pip-audit)
+        run: |
+          pip install pip-audit
+          pip-audit -r requirements.txt
+
       # Real migration verification, separate from the test suite's own
       # per-test disposable schema (tests/conftest.py never runs Alembic
       # -- it uses Base.metadata.create_all directly): starts one more

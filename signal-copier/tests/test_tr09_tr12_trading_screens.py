@@ -79,6 +79,7 @@ def test_new_screens_read_endpoints_require_owner_session(monkeypatch, tmp_path)
     assert client.get("/providers/value").status_code == 401
     assert client.get("/providers/candidates").status_code == 401
     assert client.post("/sources/telegram/classify-messages", json={"texts": ["buy BTCUSDT"]}).status_code == 401
+    assert client.get("/policies/sizing-preview").status_code == 401
 
 
 def test_policy_and_routing_write_paths_require_owner_session(monkeypatch, tmp_path):
@@ -108,6 +109,7 @@ def test_new_screens_read_endpoints_reachable_with_a_valid_owner_session(monkeyp
     resp = client.post("/sources/telegram/classify-messages", json={"texts": ["buy BTCUSDT"]})
     assert resp.status_code == 200
     assert resp.json()["dispositions"][0]["signal"]["symbol"] == "BTCUSDT"
+    assert client.get("/policies/sizing-preview").status_code == 200
 
 
 # --- TR-10's parser laboratory: real, no-effects sandbox classification
@@ -191,6 +193,85 @@ def test_routing_rule_create_update_delete_round_trip(monkeypatch, tmp_path):
     deleted = client.delete(f"/routing-rules/{rule_id}", headers=headers)
     assert deleted.status_code == 200
     assert client.get("/routing-rules", headers=headers).json()["routing_rules"] == []
+
+
+# --- TR-12's new "expected size under representative trades"/"Preview"
+# backend (`GET /policies/sizing-preview`, app/main.py) -- LOAD-BEARING:
+# this must call app.risk.size_for_account DIRECTLY, never a
+# reimplementation that could silently drift from what the real engine
+# actually sizes a signal to. Verified during this batch by temporarily
+# replacing the endpoint's call with a stale/duplicated formula (e.g.
+# `quantity * (account.multiplier + 0.0)` without the fixed_quantity
+# short-circuit) and confirming this exact test failed, then restoring the
+# real call and reconfirming green. ---
+
+
+def test_sizing_preview_scenario_mode_matches_real_size_for_account(monkeypatch, tmp_path):
+    from app.risk import size_for_account
+
+    _store, client = _authed_client(monkeypatch, tmp_path, db_name="sizing_preview_scenario.db")
+    login = client.post("/auth/login", json={"password": "test-owner-password"})
+    csrf = login.json()["csrf_token"]
+    headers = {"X-CSRF-Token": csrf}
+
+    assert client.post(
+        "/accounts", json={"account_id": "acct1", "broker": "paper", "multiplier": 3.0}, headers=headers
+    ).status_code == 200
+
+    resp = client.get("/policies/sizing-preview?price=50", headers=headers)
+    assert resp.status_code == 200
+    body = resp.json()
+    account_out = next(a for a in body["accounts"] if a["account_id"] == "acct1")
+
+    account = main_module.routing_config.accounts["acct1"]
+    for scenario in account_out["scenarios"]:
+        from app.models import Side, Signal
+
+        hypothetical = Signal(source="x", symbol="PREVIEW", side=Side.BUY, quantity=scenario["signal_quantity"])
+        expected = size_for_account(hypothetical, account)
+        assert scenario["expected_quantity"] == expected
+        assert scenario["notional"] == expected * 50
+
+
+def test_sizing_preview_signal_mode_matches_the_real_placed_order(monkeypatch, tmp_path):
+    from app import config as app_config
+
+    _store, client = _authed_client(monkeypatch, tmp_path, db_name="sizing_preview_signal.db")
+    monkeypatch.setattr(app_config, "WEBHOOK_SHARED_SECRET", "test-webhook-secret")
+    monkeypatch.setattr(main_module.engine, "store", _store)
+    login = client.post("/auth/login", json={"password": "test-owner-password"})
+    csrf = login.json()["csrf_token"]
+    headers = {"X-CSRF-Token": csrf}
+
+    assert client.post(
+        "/accounts", json={"account_id": "acct1", "broker": "paper", "multiplier": 3.0}, headers=headers
+    ).status_code == 200
+    assert client.post(
+        "/providers/telegram", json={"display_name": "Telegram signals"}, headers=headers
+    ).status_code == 200
+    assert client.post(
+        "/routing-rules", json={"source": "telegram", "destinations": ["acct1"]}, headers=headers
+    ).status_code == 200
+
+    webhook = client.post(
+        "/webhook/telegram",
+        json={"symbol": "AAPL", "side": "buy", "quantity": 2.0, "price": 50.0},
+        headers={"X-Webhook-Secret": "test-webhook-secret"},
+    )
+    assert webhook.status_code == 200
+
+    signal_id = client.get("/signals", headers=headers).json()["signals"][0]["id"]
+    order = client.get("/orders", headers=headers).json()["orders"][0]
+    # The REAL order the engine actually placed used size_for_account's
+    # real output: quantity 2.0 * multiplier 3.0 = 6.0.
+    assert order["requested_quantity"] == 6.0
+
+    preview = client.get(f"/policies/sizing-preview?signal_id={signal_id}", headers=headers)
+    assert preview.status_code == 200
+    account_out = next(a for a in preview.json()["accounts"] if a["account_id"] == "acct1")
+    # The preview must agree EXACTLY with what the real engine actually did.
+    assert account_out["expected_quantity"] == order["requested_quantity"] == 6.0
+    assert account_out["notional"] == 6.0 * 50.0
 
 
 # --- Real browser: the router actually renders real content for each of
@@ -280,13 +361,18 @@ async def test_all_four_new_trading_screens_render_real_content(live_server):
             )
 
             # TR-12: Sizing, stops and profit policies -- real effective
-            # preview against the real received signal.
+            # preview against the real received signal. TR-12 is now a
+            # tabbed policy editor (Sizing | Initial protection | Targets |
+            # Trailing | Deadlines | Limits | Preview | Versions) -- the
+            # "Preview on signal" control moved onto its own Preview tab.
             await page.click('a[href="#/trade/policies"]')
             await page.wait_for_selector("#tr12-p02", timeout=5000)
             await wait_settled("#tr12-p02")
             assert "Sizing, stops and profit policies" == await page.inner_text("#route-title")
             size_text = await page.inner_text("#tr12-p02")
             assert "telegram" in size_text
+            await page.click('#tr12-tabbar button[data-tab="preview"]')
+            await page.wait_for_selector("#tr12-preview-run:not([disabled])", timeout=5000)
             await page.click("#tr12-preview-run")
             await page.wait_for_function(
                 "() => document.querySelector('#tr12-preview-result') && "

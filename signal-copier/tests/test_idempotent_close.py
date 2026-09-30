@@ -23,6 +23,13 @@ def client(tmp_path, monkeypatch):
     store = SignalStore(tmp_path / "test.db")
     monkeypatch.setattr(main_module, "store", store)
     monkeypatch.setattr(main_module.engine, "store", store)
+    # P0-5: give this test its own PaperBroker instance, same reasoning as
+    # tests/test_manual_exit.py's identical fixture -- main_module.brokers
+    # is a process-wide singleton dict whose "paper" broker's in-memory
+    # position book would otherwise carry over from earlier tests, now
+    # that a plain close reconciles it against this test's own fresh
+    # `store`.
+    main_module.brokers["paper"] = PaperBroker()
     main_module.routing_config.accounts.clear()
     main_module.routing_config.accounts["acct1"] = DestinationAccount(account_id="acct1", broker="paper")
 

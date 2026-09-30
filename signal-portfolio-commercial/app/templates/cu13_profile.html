@@ -23,7 +23,13 @@
 
 <div class="panel">
   <h2>Sessions/security</h2>
-  <p><span class="badge badge-unknown">UNSUPPORTED</span> -- there is no session store in this build (JWT sessions are stateless -- the same gap AD-16's own slice already documented); Revoke session is not implemented.</p>
+  {% if revoked_token_count is not none %}
+  <p><span class="badge badge-granted">DONE</span> Revoked {{ revoked_token_count }} active API token(s).</p>
+  {% endif %}
+  <p>Cookie-based web sessions are not affected by this action. If you have used a Bearer API token (e.g. from an integration or script), you can immediately invalidate every currently-active one issued to your account.</p>
+  <form method="post" action="/app/settings/revoke-api-tokens">
+    <p><button type="submit">Revoke all API tokens (log out everywhere)</button></p>
+  </form>
 </div>
 
 <div class="panel">

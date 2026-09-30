@@ -14,6 +14,7 @@ from app.api.dependencies import get_db_session
 from app.main import create_app
 from app.models.tenancy import MembershipRole
 from app.services.auth import issue_token
+from tests._onboarding_fixtures import complete_onboarding_prerequisites
 
 
 def _client(db_session):
@@ -374,7 +375,12 @@ def _seed_ready_product_for_review(db_session, *, tenant_id="tenant-a", slug="re
     db_session.add(pv)
     db_session.flush()
     db_session.add(
-        PortfolioVersionSleeve(portfolio_version_id=pv.portfolio_version_id, sleeve_id=sleeve.sleeve_id, weight=Decimal("1.0"))
+        PortfolioVersionSleeve(
+            portfolio_version_id=pv.portfolio_version_id,
+            sleeve_id=sleeve.sleeve_id,
+            weight=Decimal("1.0"),
+            tenant_id=tenant_id,
+        )
     )
     db_session.add(
         RightsGrant(
@@ -1561,6 +1567,7 @@ def test_customer_detail_shows_real_eligibility_and_cases_over_real_http(db_sess
 
 def test_customer_detail_shows_a_real_copy_mandate_over_real_http(db_session):
     _seed_customer_membership(db_session)
+    complete_onboarding_prerequisites(db_session, tenant_id="tenant-a", user_id="user-a")
     product = _seed_published_product(db_session, slug="ad11-mandate-product")
     customer_headers = _auth_headers(role=MembershipRole.CUSTOMER)
     client = _client(db_session)
@@ -2059,6 +2066,57 @@ def test_revoke_staff_member_appends_a_real_audit_event(db_session):
     assert "revoke_staff_member" in response.text
 
 
+def test_export_evidence_manifest_requires_owner_or_reviewer(db_session):
+    client = _client(db_session)
+    response = client.post(
+        "/ops/audit/evidence-manifest", headers=_auth_headers(role=MembershipRole.SUPPORT_READONLY)
+    )
+    assert response.status_code == 403
+
+
+def test_export_evidence_manifest_denies_customer(db_session):
+    client = _client(db_session)
+    response = client.post("/ops/audit/evidence-manifest", headers=_auth_headers(role=MembershipRole.CUSTOMER))
+    assert response.status_code == 403
+
+
+def test_export_evidence_manifest_returns_the_real_rows_and_a_verifiable_hash(db_session):
+    from app.models.tenancy import UserIdentity
+
+    _seed_owner_membership(db_session)
+    db_session.add(UserIdentity(user_id="evidence-staff", email="evidence-staff@example.com"))
+    db_session.commit()
+
+    client = _client(db_session)
+    owner_headers = _auth_headers(role=MembershipRole.OWNER)
+    client.post("/ops/access/invite", data={"user_id": "evidence-staff", "role": "researcher"}, headers=owner_headers)
+
+    reviewer_headers = _auth_headers(role=MembershipRole.REVIEWER)
+    response = client.post(
+        "/ops/audit/evidence-manifest",
+        data={"object_id": "evidence-staff"},
+        headers=reviewer_headers,
+    )
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("application/json")
+    assert "attachment; filename=" in response.headers["content-disposition"]
+
+    import json
+
+    from signal_platform_contracts import compute_payload_hash
+
+    body = json.loads(response.text)
+    assert body["manifest"]["row_count"] == 1
+    assert body["manifest"]["filter_criteria"]["object_id"] == "evidence-staff"
+    assert body["rows"][0]["action"] == "invite_staff_member:researcher"
+    assert body["manifest"]["content_hash"] == compute_payload_hash({"rows": body["rows"]})
+
+    # The export itself must leave a real new AuditEvent row.
+    audit_response = client.get("/ops/audit", params={"action": "export_evidence_manifest"}, headers=reviewer_headers)
+    assert "export_evidence_manifest" in audit_response.text
+    assert "user-a" in audit_response.text  # the actor who ran the export
+
+
 def test_workspace_settings_page_requires_owner(db_session):
     client = _client(db_session)
     response = client.get("/ops/settings", headers=_auth_headers(role=MembershipRole.REVIEWER))
@@ -2207,6 +2265,7 @@ def _seed_publication_intent(db_session, *, tenant_id="tenant-a", portfolio_vers
     db_session.add(pv)
     db_session.flush()
     intent = PublicationIntent(
+        tenant_id=tenant_id,
         environment=Environment.LOCAL_SIM,
         portfolio_version_id=portfolio_version_id,
         episode_id="ep-http-1",
@@ -2672,6 +2731,7 @@ def test_create_copy_mandate_draft_over_real_http(db_session):
     from app.models.product import Product, ProductLifecycleState
 
     _seed_customer_membership(db_session)
+    complete_onboarding_prerequisites(db_session, tenant_id="tenant-a", user_id="user-a")
     product = Product(
         tenant_id="tenant-a", product_name="HTTP Mandate Product", slug="http-mandate-product",
         lifecycle_state=ProductLifecycleState.PUBLISHED,
@@ -2740,6 +2800,7 @@ def test_create_then_cancel_copy_mandate_over_real_http(db_session):
     from app.models.product import Product, ProductLifecycleState
 
     _seed_customer_membership(db_session)
+    complete_onboarding_prerequisites(db_session, tenant_id="tenant-a", user_id="user-a")
     product = Product(
         tenant_id="tenant-a", product_name="Manage Mandate Product", slug="manage-mandate-product",
         lifecycle_state=ProductLifecycleState.PUBLISHED,
@@ -2805,6 +2866,7 @@ def test_cancel_copy_mandate_is_a_scoped_not_found_for_another_customer(db_sessi
     from app.models.tenancy import Membership, MembershipRole as Role, UserIdentity
 
     _seed_customer_membership(db_session, user_id="user-a")
+    complete_onboarding_prerequisites(db_session, tenant_id="tenant-a", user_id="user-a")
     product = Product(
         tenant_id="tenant-a", product_name="Cross Mandate Product", slug="cross-mandate-product",
         lifecycle_state=ProductLifecycleState.PUBLISHED,
@@ -2871,6 +2933,7 @@ def test_customer_overview_page_shows_the_real_empty_state(db_session):
 
 def test_customer_overview_page_shows_the_real_row_after_a_full_selection_connection_mandate_chain(db_session):
     _seed_customer_membership(db_session)
+    complete_onboarding_prerequisites(db_session, tenant_id="tenant-a", user_id="user-a")
     product = _seed_published_product(db_session)
     client = _client(db_session)
     headers = _auth_headers(role=MembershipRole.CUSTOMER)
@@ -3308,6 +3371,7 @@ def _seed_customer_alert_fixture(
     db_session.flush()
 
     intent = PublicationIntent(
+        tenant_id=tenant_id,
         environment=Environment.LOCAL_SIM,
         portfolio_version_id=portfolio_version_id,
         episode_id=episode_id,

@@ -75,11 +75,22 @@ class SignalStackBroker(BrokerAdapter):
             response = await self._client.post(url, json=payload)
             response.raise_for_status()
         except httpx.HTTPError as exc:
+            # SEC-01: the webhook URL embeds a secret token (see module
+            # docstring: "treat it like a credential"), and httpx's own
+            # HTTPStatusError formats the FULL request URL straight into
+            # str(exc) ("... for url 'https://.../hook/<token>'"). Using
+            # that string directly in `message` would leak the token into
+            # this service's own stored order rows / logs on every
+            # rejected/erroring request. Report only the exception type and
+            # (when there is one) the response status code -- never the raw
+            # exception string or the request URL.
+            status_code = getattr(getattr(exc, "response", None), "status_code", None)
+            detail = f"HTTP {status_code}" if status_code is not None else type(exc).__name__
             return OrderResult(
                 account_id=account.account_id,
                 status=OrderStatus.ERROR,
                 signal_id=signal.id,
-                message=f"SignalStack webhook request failed: {exc}",
+                message=f"SignalStack webhook request failed ({detail})",
             )
 
         # SignalStack's webhook response only confirms it accepted the order for

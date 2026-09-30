@@ -91,7 +91,13 @@ class EventType(str, enum.Enum):
 #: and an intended producer in this slice. Anything else in EventType is a
 #: named placeholder only -- see this module's own docstring.
 IMPLEMENTED_EVENT_TYPES = frozenset(
-    {EventType.SOURCE_RECEIPT, EventType.EXECUTION_APPLIED, EventType.FEE, EventType.POSITION_SNAPSHOT}
+    {
+        EventType.SOURCE_RECEIPT,
+        EventType.EXECUTION_APPLIED,
+        EventType.FEE,
+        EventType.POSITION_SNAPSHOT,
+        EventType.ROUTING_ADMISSION_OUTCOME,
+    }
 )
 
 

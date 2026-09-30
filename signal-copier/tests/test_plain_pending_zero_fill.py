@@ -47,7 +47,15 @@ async def test_explicit_zero_fill_on_a_pending_entry_does_not_apply_the_full_qua
 @pytest.mark.asyncio
 async def test_explicit_zero_fill_on_a_plain_close_does_not_apply_the_full_quantity(store):
     broker = _ZeroFillPendingBroker()
-    account = DestinationAccount(account_id="acct1", broker="zero-fill")
+    # P0-5: this broker has no get_broker_position implementation at all, so
+    # a plain close now requires this account to be explicitly
+    # exclusive_writer_qualified before it's allowed to proceed on this
+    # service's own tracked position alone -- see
+    # SignalCopierEngine._reconcile_before_plain_close. This test is about
+    # zero-fill quantity handling, not reconciliation, so it opts in
+    # deliberately rather than have the close blocked before it ever
+    # reaches the code under test.
+    account = DestinationAccount(account_id="acct1", broker="zero-fill", exclusive_writer_qualified=True)
     routing = RoutingConfig(rules=[RoutingRule(source="test", destinations=["acct1"])], accounts={"acct1": account})
     engine = SignalCopierEngine(routing=routing, brokers={"zero-fill": broker}, store=store)
     store.record_fill("acct1", "AAPL", Side.BUY, 10.0)  # pretend a prior fill left us long 10

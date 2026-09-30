@@ -275,16 +275,27 @@ actual available capital still isn't caught before submission — closing
 that gap would mean wiring `get_account_balance` into the admission path
 itself, which is a separate, larger change not attempted here.
 
-An account can still opt into one narrower ceiling: `max_notional_exposure`
-(`app/capital_allocator.py`) rejects an entry that would push this
-account's confirmed open notional (quantity × price, summed at cost
-across every symbol it holds) over that number — an atomic,
-per-account admission gate, so two signals for the same account arriving
-concurrently can't both spend the same remaining capacity. It's opt-in
-(`None` by default, meaning no ceiling), only checked when the admitting
-signal actually carries a price, and doesn't do currency conversion,
-per-analyst overlap accounting, or an owner-wide ceiling across
-accounts — see that module's docstring for the exact scope.
+An account can still opt into narrower gates (`app/capital_allocator.py`):
+`max_notional_exposure` rejects an entry that would push this account's
+confirmed open notional (quantity × price, summed at cost across every
+symbol it holds) over that number; `risk_percent_of_equity` rejects an
+entry whose risk-to-stop (|entry price − stop_loss| × quantity) would
+exceed that percentage of the account's real, freshly-fetched equity; and
+a process-wide `MAX_OWNER_NOTIONAL_EXPOSURE` setting (`app/config.py`)
+rejects an entry that would push the SUM of every configured account's
+confirmed + pending notional over that number (this service is
+single-tenant, so "every configured account" already is "owner-wide").
+All three are atomic per-account (and, for the owner-wide one,
+per-process) admission gates, so two signals arriving concurrently can't
+both spend the same remaining capacity. Every one is opt-in (`None` by
+default, meaning no gate); a signal with no resolvable price is REJECTED
+(not silently skipped) whenever any gate is configured, and an account
+whose open exposure this service's fill replay couldn't fully resolve
+blocks new admissions for that account until it resolves, rather than
+treating the unresolved part as zero. None of this does currency
+conversion, per-analyst overlap accounting, cross-account netting, or
+stress-loss modeling — see `app/capital_allocator.py`'s module docstring
+for the exact, current scope.
 
 **If I have two accounts of the same type (e.g. two options-capable
 accounts), where does an incoming options trade get placed?** Routing is
@@ -313,12 +324,16 @@ this per destination account before calling any broker:
    it has sent, not a live read of the broker's actual book).
 2. Flat (zero)? Report `REJECTED` — "no open position to close" — without
    calling the broker.
-3. Otherwise resolve to the opposing `buy`/`sell` at the full open
+3. **(P0-5) Reconcile before proceeding.** A plain account's own tracked
+   position is this service's best record, not the broker's real book —
+   see "Exclusive-writer qualification" below for exactly what's now
+   required before a close is allowed to act on it.
+4. Otherwise resolve to the opposing `buy`/`sell` at the full open
    quantity and call the broker with that. Brokers never see `Side.CLOSE`
    from the engine; each broker's own close handling (where present) is
    only a defensive fallback for direct/standalone use.
 
-On a plain (non-`managed_lifecycle`) account, steps 1–3 are serialized per
+On a plain (non-`managed_lifecycle`) account, steps 1–4 are serialized per
 `(account_id, symbol)` (`SignalCopierEngine._resolve_and_submit_plain_close`)
 — without this, two close attempts landing close together (a duplicate
 dashboard click, a retried HTTP request, a provider `EXIT` signal racing a
@@ -345,6 +360,52 @@ event stream). SignalStack, NinjaTrader, and Rithmic have no confirmed
 order-status-read API wired up yet, so their PENDING orders stay
 optimistic until that's added. The reconciler's poll interval is
 `RECONCILE_INTERVAL_SECONDS` (default 30s).
+
+### Exclusive-writer qualification (P0-5)
+
+A plain (non-`managed_lifecycle`) account's `CLOSE` used to act purely on
+`SignalCopierEngine`'s own locally tracked position, with no check against
+what the broker actually holds. That tracked value can go stale after a
+manual intervention, an external fill placed directly at the broker, a
+corporate action, or ordinary reconciliation lag (a `PENDING` order this
+service hasn't yet confirmed a terminal status for) — closing against a
+stale projection risks flattening the wrong size, or flattening when
+there's nothing real left to flatten.
+
+Before a plain close is allowed to proceed, `SignalCopierEngine` now
+requires **one** of:
+
+- **A fresh broker position readback.** If the account's broker adapter has
+  a real (code-verified, not just declared) `get_broker_position`
+  implementation — `BrokerAdapter.has_position_readback_capability` — the
+  engine reads it and compares it to the locally tracked quantity (small
+  absolute+relative tolerance for floating-point noise). A match lets the
+  close proceed; a mismatch is `REJECTED` with a message naming both
+  quantities and the account/symbol, and the close does **not** proceed.
+  This is the default, preferred path and needs no configuration —
+  **Alpaca**, **ccxt**, and **paper** already implement it.
+
+- **`DestinationAccount.exclusive_writer_qualified = True`.** For a broker
+  adapter with no verified position-readback capability at all
+  (SignalStack, IBKR, NinjaTrader, Rithmic, Schwab, Robinhood, Tastytrade,
+  TradeStation, Tradovate, OANDA, MT4/MT5 as of this writing), the engine
+  can't reconcile automatically — so it refuses to close by default. This
+  flag is the operator's own explicit, narrow, per-account assertion that
+  **nothing else writes to this specific broker account's position outside
+  Signal Copier** — no manual trade at the broker's own dashboard/API, no
+  other automated system, no corporate action changing share count without
+  an offsetting fill this service sees. It is **off by default** and must
+  be set deliberately; it is not a config convenience to flip just to make
+  a rejection go away. Setting it on an account that ISN'T actually
+  exclusively written by this service will let a real, silent divergence
+  between the tracked and actual position go uncaught by this close path.
+
+Neither condition holding is a hard, fail-closed block — the close is
+`REJECTED` with a clear, actionable reason, never allowed through on an
+unproven local projection. See `SignalCopierEngine._reconcile_before_plain_close`
+for the exact contract and `tests/test_p0_5_close_reconciliation.py` for
+the covered cases (mismatch blocks, match allows, the qualified flag allows
+without a broker read).
 
 ## Stop-loss / take-profit
 
@@ -412,6 +473,42 @@ SDK.
 A signal with **no** `stop_loss`/`take_profit` at all is unaffected —
 this only blocks the specific case of requesting protection a broker
 would silently drop.
+
+### Declared management recipe (P0-5)
+
+Managed and unmanaged (plain) accounts are fundamentally different safety
+products — one gets MAE/MFE tracking, protection coverage, and
+transfer-on-partial-fill logic from `PositionLifecycleManager` below; the
+other gets none of that. Until now that distinction was purely structural
+(inferred from `managed_lifecycle`'s boolean routing switch wherever a
+screen or report needed it). Every `DestinationAccount` now also carries an
+explicit, **persisted** `management_recipe` (`app/models.py`'s
+`ManagementRecipe`: `full_managed_lifecycle` or `plain_unmanaged`) plus a
+free-form `qualification_level` string, both round-tripped through
+`config_accounts` the same as every other account field, and both visible
+on TR-07's Accounts screen and `GET /accounts`.
+
+`management_recipe` defaults from `managed_lifecycle` when not given
+explicitly (so every existing account gets a real, non-null value with no
+migration step needed) but can be set independently — an account whose
+`management_recipe` disagrees with its `managed_lifecycle` boolean is a
+real misconfiguration worth surfacing/auditing, not something this field
+silently resolves.
+
+`qualification_level` is deliberately a **simple, free-form label** for
+now (e.g. `"qualified"`, `"unqualified"`, `"pending_review"`), not an enum
+— a related, fuller broker-capability qualification taxonomy is being
+built separately for broker adapters themselves; this field is the
+**account's** own declared management contract and may end up referencing
+that taxonomy later, but is independent of it today.
+
+This does **not** change what TR-07 already renders for an unmanaged
+account's MAE/MFE, protection coverage, or transfer-logic
+`CapabilityState` badges — those were already honest `not_tracked` badges
+for a plain account before this change, and stay that way; what's new is
+that the underlying managed-vs-unmanaged declaration driving them is now a
+real, explicit, auditable field rather than an implicit read of
+`managed_lifecycle` alone.
 
 ## Managed lifecycle (protect-first position management)
 
@@ -1319,7 +1416,12 @@ Cloudflare for independent monitoring + off-host backup) and
 checklist, not automatic failover. `STANDBY_MODE=true` (see
 `app/config.py`) is the real, tested mechanism a standby uses to refuse
 every financial command independent of any single route's own auth logic
-(`tests/test_standby_mode.py`).
+(`tests/test_standby_mode.py`). See `docs/FAILOVER.md` for the
+database-backed cross-process/cross-host fencing-token mechanism
+(`app/writer_lease.py`) underneath the runbook, and
+`python -m app.promote_cli` for the only way a different site ever
+becomes the writer — always a deliberate, human-run action with explicit
+confirmation flags, never automatic.
 
 ## Security notes for when this goes live
 

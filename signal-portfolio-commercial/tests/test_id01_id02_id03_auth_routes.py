@@ -205,3 +205,81 @@ def test_cookie_authenticated_mutation_without_csrf_header_is_refused(db_session
 
     assert response.status_code == 403
     assert "CSRF" in response.text
+
+
+def test_cookie_authenticated_mutation_with_wrong_csrf_token_is_refused(db_session):
+    """A well-formed but wrong CSRF header (the shape a guessing/timing
+    attack would send) must still be flatly rejected -- `get_current_scope`
+    compares it against the real token with `hmac.compare_digest`, never
+    a short-circuiting `!=`, precisely so a near-miss guess is denied
+    exactly like a completely wrong one, in constant time."""
+    client = _client(db_session)
+    signup = client.post(
+        "/auth/signup",
+        data={"email": "csrf-wrong@example.com", "password": "pw-12345678", "tenant_display_name": "T", "accept_terms": "1"},
+    )
+    token = _extract_query_param(signup.headers["location"], "token")
+    client.get(f"/auth/verify?token={token}")
+
+    response = client.post(
+        "/app/copy/does-not-exist/cancel",
+        headers={"X-CSRF-Token": "x" * 43},
+    )
+    assert response.status_code == 403
+    assert "CSRF" in response.text
+
+
+def test_csrf_comparison_uses_constant_time_compare():
+    """Static guard against reintroducing a timing side-channel: the
+    cookie-mutation CSRF check must go through `hmac.compare_digest`,
+    never a plain `==`/`!=` on the two token strings directly."""
+    import inspect
+
+    from app.api import dependencies
+
+    source = inspect.getsource(dependencies.get_current_scope)
+    assert "hmac.compare_digest" in source
+    assert "csrf_token != web_session.csrf_token" not in source
+
+
+def test_cookie_authenticated_form_post_with_csrf_field_succeeds(db_session):
+    """Regression test for the CSRF-delivery bug: `create_web_session`'s
+    own `csrf_token` return value used to be minted and thrown away
+    (never set as a cookie, never in any template, never returned
+    anywhere a browser could read it back), so EVERY real cookie+form
+    POST -- the only way a real, JavaScript-free browser session in this
+    app can submit a mutation -- was unconditionally rejected with 403,
+    completely untested (every other POST test in this suite, and in
+    test_dashboard_routes.py, uses Bearer auth, which this CSRF check
+    exempts). This is the one test in the suite that drives the actual
+    cookie+form path: pulls the token back out of the now-real `cp_csrf`
+    cookie (exactly what `_base.html`'s own injection script does) and
+    submits it as a `csrf_token` form field (exactly what a real
+    server-rendered `<form method="post">` submit does -- no
+    X-CSRF-Token header at all, unlike the negative test above)."""
+    client = _client(db_session)
+    signup = client.post(
+        "/auth/signup",
+        data={"email": "csrf-ok@example.com", "password": "pw-12345678", "tenant_display_name": "T", "accept_terms": "1"},
+    )
+    token = _extract_query_param(signup.headers["location"], "token")
+    client.get(f"/auth/verify?token={token}")
+
+    csrf_cookie = client.cookies.get("cp_csrf")
+    assert csrf_cookie, "cp_csrf cookie was never set on sign-in/verify -- the actual bug this test guards against"
+
+    response = client.post(
+        "/app/settings",
+        data={
+            "workspace_name": "irrelevant",
+            "display_name": "New Name",
+            "timezone_name": "UTC",
+            "theme": "system",
+            "density": "comfortable",
+            "number_locale": "en-US",
+            "reduce_motion": "system",
+            "csrf_token": csrf_cookie,
+        },
+    )
+    assert response.status_code == 303, response.text
+    assert response.headers["location"] == "/app/settings"

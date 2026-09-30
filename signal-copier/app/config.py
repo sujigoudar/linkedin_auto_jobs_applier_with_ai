@@ -71,6 +71,18 @@ class _Settings(BaseSettings):
 
     LOG_LEVEL: str = "INFO"
 
+    # TR-0x redesign transition flag (see app/static/dashboard.html's
+    # #legacy-content section): the legacy "all panels on one page"
+    # dashboard is superseded by the 16 hash-routed TR-0X screens, which a
+    # prior design review confirmed have reached parity+more. Off by
+    # default -- the empty-hash `/` route and the legacy nav link both
+    # redirect straight to `#/trade` instead of showing the legacy panels.
+    # An operator who still needs the legacy view for development sets
+    # this true; nothing about the legacy panels' own markup, JS handlers,
+    # or backend endpoints is removed -- this only gates whether the page
+    # routes a visitor to them.
+    LEGACY_DASHBOARD_ENABLED: bool = False
+
     # Standby mode (see deploy/RUNBOOK.md): when true, this process serves only
     # GET/HEAD/OPTIONS -- no signal ingestion, no background reconciliation/price
     # polling, no financial command can reach the engine, regardless of what any
@@ -78,6 +90,26 @@ class _Settings(BaseSettings):
     # restart with this unset (or false) AND real broker credentials configured --
     # never a config flip on an already-running process.
     STANDBY_MODE: bool = False
+
+    # Cross-process/cross-host single-writer fencing (app/writer_lease.py,
+    # docs/FAILOVER.md). WRITER_SITE_ID identifies THIS deployed site
+    # (e.g. "primary"/"standby-a") -- distinct per host in a real
+    # active/passive deployment; falls back to the hostname when unset
+    # (see app/writer_lease.py's default_site_id, whose docstring covers
+    # why an explicit, distinct value per site matters). Only read/used
+    # by the ACTIVE (non-STANDBY_MODE) startup path in app/main.py -- a
+    # standby never acquires a lease at all.
+    WRITER_SITE_ID: str = ""
+    # How long an acquired/renewed writer lease is valid for before
+    # `app/promote_cli.py` would treat it as genuinely expired. Renewed
+    # well before this elapses by app/main.py's own heartbeat loop under
+    # normal operation (see WRITER_LEASE_RENEW_SECONDS below).
+    WRITER_LEASE_SECONDS: float = 30.0
+    # How often the active writer renews its own lease. Must be
+    # meaningfully shorter than WRITER_LEASE_SECONDS (a missed renewal or
+    # two must not let the lease look expired to a promotion attempt
+    # elsewhere while this process is still genuinely alive and healthy).
+    WRITER_LEASE_RENEW_SECONDS: float = 10.0
 
     # Optional pull-based sources: each only starts if its required env vars are
     # all set (see .env.example). Push-based sources (webhook, SMS) need no
@@ -212,6 +244,12 @@ class _Settings(BaseSettings):
     # see app/pricing.py's module docstring).
     PRICE_MONITOR_INTERVAL_SECONDS: float = 15.0
 
+    # How often app/equity_history.py's EquitySnapshotter persists one real
+    # equity/P&L snapshot per configured account (PU-A3). Default: 5 minutes
+    # -- frequent enough for a real intraday equity curve, infrequent enough
+    # that a large account roster's snapshot pass stays cheap.
+    EQUITY_SNAPSHOT_INTERVAL_SECONDS: float = 300.0
+
     # How often app/provider_scout.py re-evaluates every signal source/analyst
     # that ISN'T yet a tracked provider_subscriptions row against
     # PROVIDER_VALUE_* below, looking for a free provider worth promoting.
@@ -296,6 +334,53 @@ class _Settings(BaseSettings):
     #: it in sync with signal-portfolio-commercial's own
     #: CATALOG_FIT_SIM_SIGNING_SECRET.
     CATALOG_FIT_SIM_SIGNING_SECRET: str = "LOCAL_SIM-not-a-real-catalog-fit-sim-secret-change-if-ever-deployed"
+    #: Optional: the PREVIOUS value of CATALOG_FIT_SIM_SIGNING_SECRET,
+    #: accepted alongside the CURRENT one above by
+    #: app/services/catalog_fit_sim_auth.py's own
+    #: `verify_catalog_fit_sim_signature` -- see that module's own
+    #: docstring for the two-step zero-downtime rotation procedure this
+    #: enables. Blank (the default) means no previous secret is
+    #: accepted, i.e. rotation is not in progress.
+    CATALOG_FIT_SIM_SIGNING_SECRET_PREVIOUS: str = ""
+
+    # INT-040: a real, configurable ceiling on the private export outbox's
+    # own real backlog -- see app/db.py's `SignalStore.export_outbox_backlog`
+    # for exactly what is measured (SUM(LENGTH(envelope_json)) over
+    # undelivered `export_events` rows -- a real, live number, never an
+    # estimate) and app/main.py's `/health` `outbox_backlog_ok` for how
+    # it's surfaced. If the commercial platform is unreachable long
+    # enough, this table grows unboundedly; this ceiling is the alerting
+    # threshold at which an operator should be told, well before an
+    # actual out-of-space condition, so it never becomes a reason to
+    # prune or truncate real, undelivered financial evidence.
+    #
+    # Default (256 MiB) -- an operator-tunable starting point, not a
+    # claim about any specific deployment's real disk capacity:
+    # `signal_platform_contracts.EventEnvelope` (this table's own
+    # `envelope_json`) is a handful of scalar identity/timing fields plus
+    # one small payload -- a real EXECUTION_APPLIED envelope in this
+    # codebase's own test fixtures serializes to roughly 1-2 KB. 256 MiB
+    # is therefore on the order of 150k-250k undelivered events: at any
+    # plausible per-account signal rate this project's own sources
+    # produce (webhook/Telegram/Discord/etc., nowhere near
+    # high-frequency-trading volume), that is comfortably weeks of a
+    # fully-down commercial ingress before this ceiling trips, while
+    # still staying a small, safe fraction (well under 5%) of even a
+    # modest 5-10 GB deployment disk -- real headroom between "the alert
+    # fires" and "the disk is actually full." Tune this down for a
+    # small/constrained disk, or up for a genuinely high-volume
+    # deployment.
+    EXPORT_OUTBOX_SIZE_CEILING_BYTES: int = 256 * 1024 * 1024
+
+    # E03 (owner-wide exposure): this service is single-tenant -- one
+    # RoutingConfig, one set of destination accounts, one owner. An
+    # opt-in ceiling on the SUM of every configured account's confirmed +
+    # pending notional exposure (see app/capital_allocator.py's
+    # `owner_wide_exposure`), independent of and in addition to any
+    # per-account `max_notional_exposure`. `None` (the default) means no
+    # owner-wide ceiling is enforced -- existing single-account behavior
+    # is unchanged unless this is explicitly set.
+    MAX_OWNER_NOTIONAL_EXPOSURE: float | None = None
 
 
 _settings = _Settings()
@@ -317,8 +402,16 @@ LOG_LEVEL = _settings.LOG_LEVEL
 
 STANDBY_MODE = _settings.STANDBY_MODE
 
+WRITER_SITE_ID = _settings.WRITER_SITE_ID
+WRITER_LEASE_SECONDS = _settings.WRITER_LEASE_SECONDS
+WRITER_LEASE_RENEW_SECONDS = _settings.WRITER_LEASE_RENEW_SECONDS
+
+LEGACY_DASHBOARD_ENABLED = _settings.LEGACY_DASHBOARD_ENABLED
+
 TELEGRAM_BOT_TOKEN = _settings.TELEGRAM_BOT_TOKEN
 TELEGRAM_CHAT_ID = _settings.TELEGRAM_CHAT_ID
+
+MAX_OWNER_NOTIONAL_EXPOSURE = _settings.MAX_OWNER_NOTIONAL_EXPOSURE
 
 DISCORD_BOT_TOKEN = _settings.DISCORD_BOT_TOKEN
 DISCORD_CHANNEL_ID = _settings.DISCORD_CHANNEL_ID
@@ -361,6 +454,7 @@ RITHMIC_SOURCE_ACCOUNT_ID = _settings.RITHMIC_SOURCE_ACCOUNT_ID
 
 RECONCILE_INTERVAL_SECONDS = _settings.RECONCILE_INTERVAL_SECONDS
 PRICE_MONITOR_INTERVAL_SECONDS = _settings.PRICE_MONITOR_INTERVAL_SECONDS
+EQUITY_SNAPSHOT_INTERVAL_SECONDS = _settings.EQUITY_SNAPSHOT_INTERVAL_SECONDS
 PROVIDER_SCOUT_INTERVAL_SECONDS = _settings.PROVIDER_SCOUT_INTERVAL_SECONDS
 PROVIDER_VALUE_MIN_SAMPLE_SIZE = _settings.PROVIDER_VALUE_MIN_SAMPLE_SIZE
 PROVIDER_VALUE_WIN_RATE_THRESHOLD = _settings.PROVIDER_VALUE_WIN_RATE_THRESHOLD
@@ -378,3 +472,6 @@ RELAY_EVIDENCE_CLASS = _settings.RELAY_EVIDENCE_CLASS
 RELAY_ENVIRONMENT = _settings.RELAY_ENVIRONMENT
 
 CATALOG_FIT_SIM_SIGNING_SECRET = _settings.CATALOG_FIT_SIM_SIGNING_SECRET
+CATALOG_FIT_SIM_SIGNING_SECRET_PREVIOUS = _settings.CATALOG_FIT_SIM_SIGNING_SECRET_PREVIOUS
+
+EXPORT_OUTBOX_SIZE_CEILING_BYTES = _settings.EXPORT_OUTBOX_SIZE_CEILING_BYTES

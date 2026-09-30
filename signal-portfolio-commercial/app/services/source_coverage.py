@@ -2,8 +2,9 @@
 outcomes reach research": the coverage report that case itself asks for
 and S12 step 5's own "Portfolio Lab source feed" slice never built -- a
 real cross-reference of every ingested `SOURCE_RECEIPT` event's own
-CURRENT disposition and lineage, computed straight from `InboxEvent`/
-`LedgerEntry`, never fabricated or estimated.
+CURRENT disposition, real routing outcome, and lineage, computed
+straight from `InboxEvent`/`LedgerEntry`, never fabricated or
+estimated.
 
 Honest scope boundary, stated here because it is the single thing this
 report cannot claim: this build's own data model tracks exactly three
@@ -27,16 +28,30 @@ dispositions --
   report does not re-parse, to keep this a light aggregate query rather
   than a payload deserialization pass over every row).
 
-INT-027's own explicitly requested taxonomy (admitted/rejected/unfilled/
-canceled/loss/commentary, reflecting signal-copier's own ROUTING
-decision) does NOT exist anywhere in this system's data model yet --
-signal-copier's own export path (`signal-copier/app/export_events.py`)
-exports a `SOURCE_RECEIPT` unconditionally, for every non-CLOSE signal
-regardless of its own routing outcome, but never encodes WHICH outcome
-that was onto the receipt itself. Widening the payload/receipt shape to
-carry that is real future work this report does not attempt; this
-report is honest about covering only the disposition axis this build
-already has real data for.
+Real, now closed, gap this report used to name: INT-027's own
+explicitly requested taxonomy (admitted/rejected/unfilled/canceled/
+loss/commentary, reflecting signal-copier's own ROUTING decision) never
+reached this receipt at all -- a `SOURCE_RECEIPT` was exported
+unconditionally, for every non-CLOSE signal regardless of its own
+routing outcome, but never encoded WHICH outcome that was. A real,
+separate, correlated `ROUTING_ADMISSION_OUTCOME` event (signal-copier's
+own `app/engine.py`, `_export_routing_outcome`) now carries exactly
+that, applied onto its originating receipt's own `InboxEvent.
+routing_outcome` column (app/services/integration_inbox.py's own
+`ROUTING_ADMISSION_OUTCOME` branch of `_apply_projection`) -- surfaced
+below as each row's own `routing_outcome`. Still honestly partial in
+two ways, neither fabricated around here: (1) `routing_outcome` is
+`None` until that follow-up event has actually arrived and applied,
+never guessed from the receipt's own disposition; (2) this engine's own
+real outcome vocabulary (`not_routed`, `disabled_by_settings`,
+`admitted_filled`, `admitted_unfilled`, `rejected`, `error` -- see
+signal_platform_contracts.payloads's own `_KNOWN_ROUTING_OUTCOMES`
+comment) does not include "canceled" (no cancellation code path exists
+anywhere in signal-copier's engine or broker adapters) or "loss"/
+"commentary" (neither is a routing outcome at all -- a loss is a P&L
+fact computed later from closed positions, not a state routing/
+admission ever reports); inventing either would be exactly the
+fabrication this report and this package's own tests (INT-035) forbid.
 
 "Lineage" here means each row's own `source_stream`/`export_sequence`
 identity (enough to trace it back to its own exact envelope in
@@ -65,6 +80,12 @@ class SourceCoverageRow:
     disposition: str
     parked_reason: str | None
     ledger_entry_id: str | None
+    #: INT-027: the real routing/admission/fill outcome from this
+    #: receipt's own correlated `ROUTING_ADMISSION_OUTCOME` event, or
+    #: `None` when that follow-up hasn't arrived/applied yet -- never
+    #: guessed from `disposition` alone (see this module's own
+    #: docstring).
+    routing_outcome: str | None
 
 
 @dataclass
@@ -117,6 +138,7 @@ def compute_source_coverage(session: Session, *, tenant_id: str) -> SourceCovera
                 disposition=disposition,
                 parked_reason=event.parked_reason,
                 ledger_entry_id=event.ledger_entry_id,
+                routing_outcome=event.routing_outcome,
             )
         )
     return report

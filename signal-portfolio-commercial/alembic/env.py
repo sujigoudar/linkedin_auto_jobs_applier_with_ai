@@ -30,6 +30,7 @@ import app.models.ledger  # noqa: E402,F401
 import app.models.local_auth  # noqa: E402,F401
 import app.models.managed_program  # noqa: E402,F401
 import app.models.notification_preferences  # noqa: E402,F401
+import app.models.onboarding_progress  # noqa: E402,F401
 import app.models.platform_connection  # noqa: E402,F401
 import app.models.portfolio_selection  # noqa: E402,F401
 import app.models.portfolio_version  # noqa: E402,F401
@@ -44,6 +45,7 @@ import app.models.rights  # noqa: E402,F401
 import app.models.sleeve  # noqa: E402,F401
 import app.models.support_case  # noqa: E402,F401
 import app.models.tenancy  # noqa: E402,F401
+import app.models.token_revocation  # noqa: E402,F401
 import app.models.webhook_event  # noqa: E402,F401
 import app.models.workspace_settings  # noqa: E402,F401
 

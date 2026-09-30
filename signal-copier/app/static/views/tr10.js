@@ -27,14 +27,50 @@
  * comparison table have no ground-truth store in this build (no labeled-
  * dataset table) -- each renders "not tracked in this build" per row
  * rather than a fabricated comparison.
+ *
+ * "Historical message import" (panel 08 below) is a DIFFERENT, real
+ * capability from TR-10-A02 above: not an async per-source history-export
+ * job (still doesn't exist), but an owner-driven, synchronous batch
+ * review -- paste historical messages, see each one's real classify_batch
+ * disposition (POST /sources/{source}/classify-messages, same call the
+ * parser laboratory above uses), select which ones to import, and
+ * persist exactly those through POST /sources/{source}/import-signals
+ * (the server re-classifies every selected text itself -- it never
+ * trusts a client-side disposition -- and only a PARSED outcome becomes
+ * a Signal row, via the same SignalStore.save_signal the live ingestion
+ * path uses). Each imported row carries a real `import_batch` label
+ * (the signals.import_batch column, additive/nullable) so it stays
+ * honestly distinguishable from a signal that arrived over a live
+ * transport.
  */
 (function () {
   "use strict";
 
-  function unsupportedNote(reason) {
-    const el = document.createElement("div");
-    StateMatrix.render(el, { state: "unsupported", reason });
-    return el.outerHTML;
+  // Placeholder-slot pattern (see tr04.js): a capability-state badge
+  // renders into a real DOM element, but this view composes each panel's
+  // markup (form fields plus a gap note) as one HTML string before it is
+  // inserted. `unsupportedNote` reserves a slot and queues its opts;
+  // `flushCapStates` mounts everything queued so far once the panel's
+  // string has actually been assigned to `.innerHTML`.
+  let capIdCounter = 0;
+  let pendingCapStates = [];
+  function capSlot(id) {
+    return `<span class="cap-state-slot" id="${id}"></span>`;
+  }
+  function mountCapStates(root, specs) {
+    for (const [id, opts] of specs) {
+      const el = root.querySelector(`#${id}`);
+      if (el) Components.renderCapabilityState(el, opts);
+    }
+  }
+  function unsupportedNote(reason, remediation) {
+    const id = `tr10-cap-${capIdCounter++}`;
+    pendingCapStates.push([id, { status: "unsupported", reason, remediation }]);
+    return capSlot(id);
+  }
+  function flushCapStates(container) {
+    mountCapStates(container, pendingCapStates);
+    pendingCapStates = [];
   }
 
   function shell() {
@@ -46,6 +82,7 @@
       <section class="tr-panel" id="tr10-p05"><h2>Labeled classifications</h2><div class="tr-panel-body"></div></section>
       <section class="tr-panel" id="tr10-p06"><h2>Parser comparison</h2><div class="tr-panel-body"></div></section>
       <section class="tr-panel" id="tr10-p07"><h2>Review</h2><div class="tr-panel-body"></div></section>
+      <section class="tr-panel" id="tr10-p08"><h2>Historical message import</h2><div class="tr-panel-body"></div></section>
     `;
   }
 
@@ -58,6 +95,7 @@
       classifications: ctx.container.querySelector("#tr10-p05 .tr-panel-body"),
       comparison: ctx.container.querySelector("#tr10-p06 .tr-panel-body"),
       review: ctx.container.querySelector("#tr10-p07 .tr-panel-body"),
+      historyImport: ctx.container.querySelector("#tr10-p08 .tr-panel-body"),
     };
     for (const el of Object.values(els)) StateMatrix.render(el, { state: "loading" });
 
@@ -84,6 +122,7 @@
         ${unsupportedNote("Transport instance selection (transport_instance_id) -- a shared collector-instance registry with duplicate-bot detection -- is not tracked in this build. Each provider ID maps directly to at most one bot process/env-var set, checked manually.")}
       `,
     });
+    flushCapStates(els.transport);
 
     StateMatrix.render(els.channel, {
       state: "ready",
@@ -93,10 +132,12 @@
         ${unsupportedNote("Channel/product identity (channel_product_id) and a reviewed, versioned analyst-mapping registry (analyst_mapping) are not tracked in this build. Real analyst entries (below) exist per provider, but display-name matching is not independently reviewed/versioned.")}
       `,
     });
+    flushCapStates(els.channel);
     renderAnalystSection();
 
-    StateMatrix.render(els.rights, {
-      state: "unsupported",
+    els.rights.removeAttribute("aria-busy");
+    Components.renderCapabilityState(els.rights, {
+      status: "unsupported",
       reason: "No rights/resale-grant model exists anywhere in this codebase (no rights_grant_id field) -- there is nothing real to display or collect here.",
     });
 
@@ -125,7 +166,9 @@
         escapeHtml(s.symbol),
         escapeHtml(s.side),
         escapeHtml(s.received_at),
-        pill("received", "ok"),
+        s.import_batch
+          ? `${pill("imported", "warn")} <span class="section-note">${escapeHtml(s.import_batch)}</span>`
+          : pill("received (live)", "ok"),
       ]);
       StateMatrix.render(els.history, {
         state: "ready",
@@ -235,22 +278,34 @@
         StateMatrix.render(els.comparison, { state: "empty", emptyMessage: "Run parser validation above to see per-message dispositions here." });
         return;
       }
-      const rows = lastDispositions.map((d) => [
+      const rows = lastDispositions.map((d, i) => [
         `<span class="mono">${escapeHtml(d.text)}</span>`,
-        `<span class="tr-not-tracked">not tracked in this build</span>`,
+        capSlot(`tr10-cap-expected-${i}`),
         d.outcome === "matched" || d.signal ? pill(escapeHtml(d.signal ? d.signal.side : d.outcome), "ok") : pill(escapeHtml(d.outcome), "bad"),
-        `<span class="tr-not-tracked">not tracked in this build</span>`,
+        capSlot(`tr10-cap-unconsumed-${i}`),
         d.signal ? escapeHtml(d.signal.symbol) : pill("n/a", "muted"),
-        `<span class="tr-not-tracked">not tracked in this build</span>`,
+        capSlot(`tr10-cap-difference-${i}`),
       ]);
       StateMatrix.render(els.comparison, {
         state: "ready",
-        html: `<p class="section-note">"Expected action", "Unconsumed fields" and "Difference" have no ground-truth/labeled-dataset store in this build -- shown honestly as not tracked rather than fabricated.</p>${table(
+        html: table(
           ["Message/revision", "Expected action", "Parser action", "Unconsumed fields", "Instrument", "Difference"],
           rows,
           "No dispositions."
-        )}`,
+        ),
       });
+      const noGroundTruth = {
+        status: "not_tracked",
+        reason: `"Expected action", "Unconsumed fields" and "Difference" have no ground-truth/labeled-dataset store in this build.`,
+      };
+      mountCapStates(
+        els.comparison,
+        lastDispositions.flatMap((_, i) => [
+          [`tr10-cap-expected-${i}`, noGroundTruth],
+          [`tr10-cap-unconsumed-${i}`, noGroundTruth],
+          [`tr10-cap-difference-${i}`, noGroundTruth],
+        ])
+      );
     }
     renderComparison();
 
@@ -277,6 +332,7 @@
           <div id="tr10-save-result"></div>
           <p class="section-note">If routing rules exist here, editing them is done on <a href="#/trade/routing">Routing and allocation rules (TR-11)</a> -- not duplicated on this form.</p>`,
       });
+      flushCapStates(els.review);
       els.review.querySelector("#tr10-save").addEventListener("click", async () => {
         const errorEl = els.review.querySelector("#tr10-form-error");
         errorEl.textContent = "";
@@ -297,6 +353,122 @@
       });
     }
     renderReview();
+
+    // --- Historical message import: classify a batch, review, select, import ---
+    let lastImportDispositions = []; // [{text, outcome, detail, signal}] from classify-messages, indexed to checkbox state
+    function renderHistoryImportForm() {
+      StateMatrix.render(els.historyImport, {
+        state: "ready",
+        html: `
+          <p class="section-note">Paste historical messages (one per line) from this source's real backing channel/export. Each one is run through the real, same-grammar POST /sources/{provider_id}/classify-messages -- no signal is created yet. Review the real disposition, then select which rows to actually import as real Signal rows.</p>
+          <label>Historical messages (one per line)
+            <textarea id="tr10-import-messages" rows="8" placeholder="buy BTCUSDT sl 95 tp 110&#10;maybe consider shorting ETH here&#10;not sure what this line even means"></textarea>
+          </label>
+          <label>Asset class
+            <select id="tr10-import-asset-class">
+              <option value="crypto">crypto</option>
+              <option value="equity">equity</option>
+              <option value="forex">forex</option>
+              <option value="future">future</option>
+              <option value="option">option</option>
+            </select>
+          </label>
+          <label>Analyst (optional)<input type="text" id="tr10-import-analyst" maxlength="80"></label>
+          <div class="tr-controls-row">
+            <button type="button" id="tr10-import-classify">Classify batch for review</button>
+          </div>
+          <div id="tr10-import-classify-result"></div>
+          <div id="tr10-import-review"></div>
+        `,
+      });
+      const providerId = currentProviderId();
+      els.historyImport.querySelector("#tr10-import-classify").addEventListener("click", async () => {
+        const resultEl = els.historyImport.querySelector("#tr10-import-classify-result");
+        const pid = currentProviderId();
+        if (!pid) {
+          resultEl.innerHTML = `<p class="sm-error-message">Provider ID is required before classifying a history batch.</p>`;
+          return;
+        }
+        const texts = els.historyImport
+          .querySelector("#tr10-import-messages").value.split("\n").map((t) => t.trim()).filter(Boolean);
+        if (!texts.length) {
+          resultEl.innerHTML = `<p class="sm-error-message">Enter at least one historical message line.</p>`;
+          return;
+        }
+        resultEl.textContent = "Classifying batch…";
+        try {
+          const result = await postJSON(`/sources/${encodeURIComponent(pid)}/classify-messages`, {
+            texts,
+            asset_class: els.historyImport.querySelector("#tr10-import-asset-class").value,
+            analyst: els.historyImport.querySelector("#tr10-import-analyst").value.trim() || null,
+          });
+          lastImportDispositions = result.dispositions || [];
+          resultEl.innerHTML = `<p class="section-note">Classified ${lastImportDispositions.length} message(s). Select the rows below to import.</p>`;
+          renderImportReviewTable();
+        } catch (err) {
+          resultEl.innerHTML = `<p class="sm-error-message">${escapeHtml(err.message)}</p>`;
+        }
+      });
+      renderImportReviewTable();
+    }
+
+    function renderImportReviewTable() {
+      const target = els.historyImport.querySelector("#tr10-import-review");
+      if (!target) return;
+      if (!lastImportDispositions.length) {
+        target.innerHTML = `<p class="section-note">No batch classified yet in this session.</p>`;
+        return;
+      }
+      const rows = lastImportDispositions.map((d, i) => {
+        const importable = d.outcome === "parsed" && d.signal;
+        const resultCell = importable
+          ? `${pill("parsed", "ok")} ${escapeHtml(d.signal.side)} ${escapeHtml(d.signal.symbol)}`
+          : `${pill(escapeHtml(d.outcome), "bad")} ${d.detail ? `<span class="section-note">${escapeHtml(d.detail)}</span>` : ""}`;
+        return [
+          `<input type="checkbox" class="tr10-import-select" data-idx="${i}" ${importable ? "" : "disabled"}>`,
+          `<span class="mono">${escapeHtml(d.text)}</span>`,
+          resultCell,
+        ];
+      });
+      target.innerHTML = `
+        ${table(["Import?", "Raw message", "Classified result (real classify_batch output)"], rows, "No dispositions.")}
+        <label>Batch label (optional -- stored on every imported Signal's import_batch field)
+          <input type="text" id="tr10-import-batch-label" maxlength="120" placeholder="e.g. telegram-2024-history">
+        </label>
+        <div class="tr-controls-row">
+          <button type="button" id="tr10-import-selected">Import selected as Signal rows</button>
+        </div>
+        <div id="tr10-import-result"></div>
+      `;
+      target.querySelector("#tr10-import-selected").addEventListener("click", async () => {
+        const resultEl = target.querySelector("#tr10-import-result");
+        const pid = currentProviderId();
+        const checked = Array.from(target.querySelectorAll(".tr10-import-select:checked"));
+        if (!checked.length) {
+          resultEl.innerHTML = `<p class="sm-error-message">Select at least one parsed row to import.</p>`;
+          return;
+        }
+        const selectedTexts = checked.map((cb) => lastImportDispositions[Number(cb.dataset.idx)].text);
+        resultEl.textContent = "Importing…";
+        try {
+          const result = await postJSON(`/sources/${encodeURIComponent(pid)}/import-signals`, {
+            texts: selectedTexts,
+            asset_class: els.historyImport.querySelector("#tr10-import-asset-class").value,
+            analyst: els.historyImport.querySelector("#tr10-import-analyst").value.trim() || null,
+            batch_label: target.querySelector("#tr10-import-batch-label").value.trim() || null,
+          });
+          resultEl.innerHTML = `<p class="section-note">Imported ${result.imported.length} of ${selectedTexts.length} selected message(s) as real Signal rows (batch label: <span class="mono">${escapeHtml(result.batch_label)}</span>). ${
+            result.skipped.length
+              ? `${result.skipped.length} selected message(s) were re-classified server-side as non-parsed and were NOT imported -- the server never trusts the client's earlier disposition.`
+              : ""
+          }</p>`;
+          await renderHistory();
+        } catch (err) {
+          resultEl.innerHTML = `<p class="sm-error-message">${escapeHtml(err.message)}</p>`;
+        }
+      });
+    }
+    renderHistoryImportForm();
 
     ctx.setChrome({ asOf: new Date().toISOString() });
   }

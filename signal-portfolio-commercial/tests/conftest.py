@@ -29,6 +29,7 @@ from sqlalchemy import text
 from app.db import (
     Base,
     enable_content_document_visibility_policy,
+    enable_membership_self_lookup_policy,
     enable_product_visibility_policy,
     enable_relay_role_access,
     enable_row_level_security,
@@ -57,6 +58,7 @@ import app.models.ledger  # noqa: F401
 import app.models.local_auth  # noqa: F401
 import app.models.managed_program  # noqa: F401
 import app.models.notification_preferences  # noqa: F401
+import app.models.onboarding_progress  # noqa: F401
 import app.models.platform_connection  # noqa: F401
 import app.models.portfolio_selection  # noqa: F401
 import app.models.portfolio_version  # noqa: F401
@@ -72,6 +74,7 @@ import app.models.rights  # noqa: F401
 import app.models.sleeve  # noqa: F401
 import app.models.support_case  # noqa: F401
 import app.models.tenancy  # noqa: F401
+import app.models.token_revocation  # noqa: F401
 import app.models.webhook_event  # noqa: F401
 import app.models.workspace_settings  # noqa: F401
 
@@ -214,6 +217,7 @@ def db_session(postgres_cluster):
     enable_product_visibility_policy(engine)
     enable_content_document_visibility_policy(engine)
     enable_relay_role_access(engine)
+    enable_membership_self_lookup_policy(engine)
     enforce_append_only(engine)
     session_factory = make_session_factory(engine)
     session = session_factory()

@@ -1,0 +1,588 @@
+/* Signal Copier design system
+ * ---------------------------
+ * Shared visual tokens + component styles for the TR-0x routed screens
+ * (app/static/dashboard.html + router.js + state-matrix.js + views/*.js)
+ * and the shared components in app/static/components/*.js.
+ *
+ * Three explicit visual levels (per the 2026-09 design review):
+ *   Level 1 (decision/KPI)  -- large, immediate, glanceable. Lives in a
+ *                              persistent header/KPI-band area.
+ *   Level 2 (operational)   -- the existing tables/charts/panels. This is
+ *                              the page's default/base visual weight.
+ *   Level 3 (evidence/tech) -- reason codes, capability caveats,
+ *                              implementation notes. Must visually recede
+ *                              (smaller, muted, or behind a disclosure)
+ *                              instead of competing with Level 1/2.
+ *
+ * This file only holds tokens + component/nav/mobile rules that are
+ * genuinely shared. Page-specific one-offs stay in dashboard.html's own
+ * inline <style> block, loaded AFTER this file so it can still override.
+ */
+
+:root {
+  /* --- Existing tokens (dashboard.html) — kept, never renamed --- */
+  color-scheme: light dark;
+  --bg: #0b0e14;
+  --panel: #141926;
+  --border: #262c3d;
+  --text: #e6e9f0;
+  --muted: #8b93a7;
+  --ok: #3ddc84;
+  --warn: #f5b942;
+  --bad: #ef5b5b;
+  --accent: #5b8cff;
+
+  /* --- New semantic status tokens --- */
+  /* --crit: reserved for genuine risk/exposure alerts (an unprotected
+     position, a stale broker connection) -- deliberately a distinct
+     red/orange from --bad (plain error/failure states) so the two never
+     look interchangeable in a KPI band or attention queue. */
+  --crit: #ff5d3b;
+  --crit-bg: rgba(255, 93, 59, 0.14);
+  --ok-bg: rgba(61, 220, 132, 0.14);
+  --warn-bg: rgba(245, 185, 66, 0.14);
+  --bad-bg: rgba(239, 91, 91, 0.14);
+  --accent-bg: rgba(91, 140, 255, 0.14);
+  --neutral-bg: rgba(139, 147, 167, 0.14);
+
+  /* --level3-color: a dimmer muted, for evidence-tier text that must
+     recede further than --muted (which is still used for ordinary
+     Level-2 secondary text like column headers and timestamps). */
+  --level3-color: #62687a;
+
+  /* --- Type scale (3 explicit levels) --- */
+  --level1-size: 2rem;       /* KPI band big numbers */
+  --level1-label-size: 0.72rem;
+  --level2-size: 0.95rem;    /* panel headings, body/table text */
+  --level2-body-size: 0.82rem;
+  --level3-size: 0.72rem;    /* evidence/technical detail */
+
+  /* --- Spacing scale --- */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+
+  --radius: 10px;
+  --radius-sm: 6px;
+}
+
+/* prefers-color-scheme / data-theme hooks are intentionally left to
+   dashboard.html's own page shell -- this stylesheet only supplies the
+   variables consumed above; the values are dark-first to match the
+   existing --bg/--panel defaults, which is the only palette this app has
+   shipped so far. */
+
+/* =====================================================================
+ * Grouped primary / secondary navigation
+ * ===================================================================== */
+.tr-nav-primary {
+  display: flex;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  margin-bottom: var(--space-2);
+}
+.tr-nav-primary a,
+.tr-nav-primary button.tr-nav-tab {
+  display: inline-block;
+  color: var(--text);
+  background: var(--panel);
+  text-decoration: none;
+  font-size: 0.82rem;
+  font-weight: 600;
+  padding: 6px 14px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  cursor: pointer;
+}
+.tr-nav-primary a:hover,
+.tr-nav-primary button.tr-nav-tab:hover {
+  border-color: var(--accent);
+}
+.tr-nav-primary a[aria-current="page"],
+.tr-nav-primary button.tr-nav-tab[aria-current="page"] {
+  background: var(--accent-bg);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.tr-nav-primary a:focus-visible,
+.tr-nav-primary button.tr-nav-tab:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.tr-nav-secondary {
+  display: flex;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  align-items: center;
+  margin-bottom: var(--space-4);
+  padding-bottom: var(--space-3);
+  border-bottom: 1px solid var(--border);
+}
+.tr-nav-secondary a {
+  color: var(--muted);
+  text-decoration: none;
+  font-size: 0.78rem;
+  padding: 3px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+}
+.tr-nav-secondary a:hover {
+  color: var(--text);
+  text-decoration: underline;
+}
+.tr-nav-secondary a[aria-current="page"] {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.04);
+  border-color: var(--text);
+}
+.tr-nav-secondary a:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.tr-nav-secondary .tr-nav-legacy {
+  margin-left: auto;
+  color: var(--level3-color);
+  font-size: var(--level3-size);
+  border-style: dashed;
+}
+.tr-nav-secondary .tr-nav-legacy:hover {
+  color: var(--muted);
+}
+/* Links belonging to a group other than the current one -- kept
+   reachable (never display:none) but visually receded, so the row still
+   reads as "this section's screens" at a glance. See dashboard.html's
+   updateNav(). */
+.tr-nav-secondary a.tr-nav-dim {
+  color: var(--level3-color);
+  font-size: var(--level3-size);
+  padding: 2px 8px;
+  border-color: transparent;
+  opacity: 0.7;
+}
+.tr-nav-secondary a.tr-nav-dim:hover {
+  opacity: 1;
+  color: var(--muted);
+}
+
+/* =====================================================================
+ * Level 1 -- KPI band (Components.renderKPIBand)
+ * ===================================================================== */
+.kpi-band {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-5);
+  padding: var(--space-4) var(--space-5);
+  margin-bottom: var(--space-4);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.kpi-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 108px;
+}
+.kpi-label {
+  color: var(--muted);
+  font-size: var(--level1-label-size);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-weight: 600;
+}
+.kpi-value {
+  font-size: var(--level1-size);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.1;
+  color: var(--text);
+}
+.kpi-sublabel {
+  color: var(--muted);
+  font-size: 0.74rem;
+}
+.kpi-item.tone-ok .kpi-value { color: var(--ok); }
+.kpi-item.tone-warn .kpi-value { color: var(--warn); }
+.kpi-item.tone-crit .kpi-value { color: var(--crit); }
+.kpi-item.tone-crit { position: relative; padding-left: var(--space-3); }
+.kpi-item.tone-crit::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 2px;
+  bottom: 2px;
+  width: 3px;
+  border-radius: 2px;
+  background: var(--crit);
+}
+.kpi-band-empty {
+  color: var(--muted);
+  font-size: var(--level2-body-size);
+  font-style: italic;
+}
+
+/* =====================================================================
+ * Monthly returns heatmap (TR-15 research report -- real month-bucketed
+ * P&L, see app/static/views/tr15.js's renderMonthlyHeatmap)
+ * ===================================================================== */
+.tr15-heatmap {
+  border-collapse: collapse;
+  width: 100%;
+}
+.tr15-heatmap th,
+.tr15-heatmap td {
+  border: 1px solid var(--border);
+  padding: var(--space-2);
+  text-align: center;
+  font-size: var(--level3-size);
+}
+.tr15-heatmap th {
+  color: var(--muted);
+  font-weight: 600;
+}
+.tr15-heat-cell {
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+
+/* =====================================================================
+ * Attention queue (Components.renderAttentionQueue)
+ * ===================================================================== */
+.attention-queue {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.attention-item {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  border-left: 3px solid var(--border);
+  background: rgba(255, 255, 255, 0.02);
+  font-size: var(--level2-body-size);
+}
+.attention-item.sev-critical {
+  border-left-color: var(--crit);
+  background: var(--crit-bg);
+}
+.attention-item.sev-warning {
+  border-left-color: var(--warn);
+  background: var(--warn-bg);
+}
+.attention-item.sev-info {
+  border-left-color: var(--accent);
+  background: var(--accent-bg);
+}
+.attention-item-body {
+  flex: 1;
+  min-width: 0;
+}
+.attention-item-text {
+  color: var(--text);
+}
+.attention-item-meta {
+  display: flex;
+  gap: var(--space-2);
+  margin-top: 2px;
+  color: var(--level3-color);
+  font-size: var(--level3-size);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.attention-age-badge {
+  flex-shrink: 0;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  padding-top: 1px;
+}
+.attention-queue-empty {
+  color: var(--muted);
+  font-size: var(--level2-body-size);
+  font-style: italic;
+  padding: var(--space-2) 0;
+}
+
+/* =====================================================================
+ * Capability state badge (Components.renderCapabilityState)
+ * Level 3: replaces the bare .tr-not-tracked italic-sentence pattern with
+ * a small structured badge + optional collapsed <details> for the
+ * reason/remediation prose, so it stops competing visually with Level 1/2.
+ * ===================================================================== */
+.capability-state {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  font-size: var(--level3-size);
+}
+.capability-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: var(--level3-size);
+  font-weight: 600;
+  color: var(--level3-color);
+  background: var(--neutral-bg);
+  border: 1px solid var(--border);
+}
+.capability-badge::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  flex-shrink: 0;
+}
+.capability-badge.status-implemented,
+.capability-badge.status-configured,
+.capability-badge.status-authenticated,
+.capability-badge.status-entitled,
+.capability-badge.status-verified {
+  color: var(--ok);
+  background: var(--ok-bg);
+}
+.capability-badge.status-unsupported,
+.capability-badge.status-rejected {
+  color: var(--bad);
+  background: var(--bad-bg);
+}
+.capability-badge.status-not_tracked,
+.capability-badge.status-not_started {
+  color: var(--level3-color);
+  background: var(--neutral-bg);
+}
+/* Live-qualification-only rungs (app/qualification.py) -- account_entitled
+   and protocol_tested share the same "achieved" green as the engineering-
+   capability vocabulary above; venue_tested and release_approved are the
+   two highest, deliberately hardest-to-reach rungs (a real venue/sandbox
+   test, and a separate human sign-off) and get the accent color so they
+   visually stand apart rather than blending into "just another green
+   badge". */
+.capability-badge.status-account_entitled,
+.capability-badge.status-protocol_tested {
+  color: var(--ok);
+  background: var(--ok-bg);
+}
+.capability-badge.status-venue_tested,
+.capability-badge.status-release_approved {
+  color: var(--accent);
+  background: var(--accent-bg);
+}
+.capability-state details {
+  margin-top: 2px;
+}
+.capability-state summary {
+  cursor: pointer;
+  color: var(--level3-color);
+  font-size: var(--level3-size);
+  font-style: italic;
+  list-style: none;
+}
+.capability-state summary::-webkit-details-marker { display: none; }
+.capability-state summary::before {
+  content: "▸ ";
+}
+.capability-state details[open] summary::before {
+  content: "▾ ";
+}
+.capability-state .capability-detail-body {
+  color: var(--level3-color);
+  font-size: var(--level3-size);
+  font-style: italic;
+  padding: 2px 0 0 12px;
+  max-width: 46ch;
+}
+.capability-detail-body dt {
+  color: var(--muted);
+  font-weight: 600;
+  margin-top: 4px;
+}
+.capability-detail-body dd {
+  margin: 0;
+}
+
+/* =====================================================================
+ * Quantity ledger bar (Components.renderQuantityLedgerBar)
+ * ===================================================================== */
+.qledger {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.qledger-bar {
+  display: flex;
+  width: 100%;
+  height: 18px;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  background: var(--neutral-bg);
+  border: 1px solid var(--border);
+}
+.qledger-segment {
+  height: 100%;
+  min-width: 2px;
+}
+.qledger-segment.tone-ok { background: var(--ok); }
+.qledger-segment.tone-warn { background: var(--warn); }
+.qledger-segment.tone-crit { background: var(--crit); }
+.qledger-segment.tone-bad { background: var(--bad); }
+.qledger-segment.tone-accent { background: var(--accent); }
+.qledger-segment.tone-neutral { background: var(--muted); }
+.qledger-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  font-size: 0.74rem;
+  color: var(--muted);
+}
+.qledger-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.qledger-swatch {
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+.qledger-swatch.tone-ok { background: var(--ok); }
+.qledger-swatch.tone-warn { background: var(--warn); }
+.qledger-swatch.tone-crit { background: var(--crit); }
+.qledger-swatch.tone-bad { background: var(--bad); }
+.qledger-swatch.tone-accent { background: var(--accent); }
+.qledger-swatch.tone-neutral { background: var(--muted); }
+.qledger-empty {
+  color: var(--muted);
+  font-size: var(--level2-body-size);
+  font-style: italic;
+}
+
+/* =====================================================================
+ * Mobile responsive base (foundation only -- per-screen card layouts are
+ * out of scope for this pass).
+ * ===================================================================== */
+@media (max-width: 640px) {
+  body { padding: var(--space-3); }
+
+  .tr-nav-primary {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    padding-bottom: var(--space-1);
+    margin-left: calc(var(--space-3) * -1);
+    margin-right: calc(var(--space-3) * -1);
+    padding-left: var(--space-3);
+    padding-right: var(--space-3);
+  }
+  .tr-nav-primary a,
+  .tr-nav-primary button.tr-nav-tab {
+    flex-shrink: 0;
+  }
+
+  .tr-nav-secondary {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+  .tr-nav-secondary .tr-nav-legacy {
+    margin-left: var(--space-2);
+  }
+
+  .kpi-band {
+    gap: var(--space-3);
+    padding: var(--space-3);
+  }
+  .kpi-item { min-width: 84px; }
+  .kpi-value { font-size: 1.5rem; }
+
+  /* .tr-grid / .tr-panel / legacy .grid: stack to single column instead
+     of a horizontally-scrolling 12-column grid. `!important` here is
+     deliberate: dashboard.html's own inline <style> (loaded AFTER this
+     file, so page-specific rules can normally override it) still
+     declares the unconditional (non-mobile) `.tr-grid { display: grid;
+     grid-template-columns: repeat(12, 1fr) }` / `.tr-panel:first-of-type
+     { grid-column: span 8 }` rules with equal selector specificity --
+     without `!important` those later, unconditional rules would win the
+     cascade even inside this @media block and silently defeat the
+     mobile single-column layout below 640px. */
+  .tr-grid,
+  .grid {
+    display: block !important;
+  }
+  .tr-panel,
+  section.panel {
+    grid-column: auto !important;
+    margin-bottom: var(--space-4);
+  }
+  .tr-panel:first-of-type {
+    grid-column: auto !important;
+  }
+
+  /* Data-dense tables audit (design review, 2026-09): TR-06/07/09/13's
+     capability matrices, scorecards and reconciliation tables already
+     scroll horizontally below 640px (`.tr-panel`/`section.panel` both
+     already set `overflow-x: auto` -- see dashboard.html's inline
+     styles), which is an acceptable, common pattern for a dense
+     operator tool. The real break was that there was NO visual sign
+     any of that content existed at all: a table's later columns were
+     simply clipped at the panel edge with nothing suggesting more was
+     reachable by swiping, and a scrolled-right row lost the identity
+     cell (account/adapter/provider) that says what row it even is.
+     Scoped with :has(table) so only panels that actually contain a
+     table are touched -- chart/form panels (which already reflow fine)
+     get no visual change. */
+  .tr-panel:has(table),
+  section.panel:has(table) {
+    /* CSS-only "scroll shadow": two solid-panel-color layers pinned to
+       the scrolling content's own start/end (background-attachment:
+       local, so they travel with the table) mask two fixed shadow
+       layers (background-attachment: scroll, so they stay put relative
+       to the panel) at rest -- the shadow can only actually show once
+       there is real hidden content to reveal, and disappears again at
+       the opposite scroll extreme. No JS/overflow detection needed. */
+    background-image:
+      linear-gradient(to right, var(--panel) 0%, rgba(0, 0, 0, 0) 100%),
+      linear-gradient(to left, var(--panel) 0%, rgba(0, 0, 0, 0) 100%),
+      linear-gradient(to right, rgba(0, 0, 0, 0.45), rgba(0, 0, 0, 0) 70%),
+      linear-gradient(to left, rgba(0, 0, 0, 0.45), rgba(0, 0, 0, 0) 70%);
+    background-repeat: no-repeat;
+    background-size: 22px 100%, 22px 100%, 14px 100%, 14px 100%;
+    background-position: 0 0, 100% 0, 0 0, 100% 0;
+    background-attachment: local, local, scroll, scroll;
+  }
+  /* Redundant, non-color cue (the fade above is decorative only): a
+     small text+glyph hint, not relied on alone, so a table's scrollability
+     is never communicated by color/shadow alone. */
+  .tr-panel:has(table)::before,
+  section.panel:has(table)::before {
+    content: "\21c4 scroll for more columns";
+    display: block;
+    font-size: 0.7rem;
+    color: var(--muted);
+    margin-bottom: var(--space-2);
+  }
+
+  /* Keep each row's identity column (its first cell -- account id,
+     adapter, provider, order id) pinned while the rest of a wide row
+     scrolls underneath it, so a scrolled-right row stays attributable. */
+  .tr-panel table th:first-child,
+  .tr-panel table td:first-child,
+  section.panel table th:first-child,
+  section.panel table td:first-child {
+    position: sticky;
+    left: 0;
+    z-index: 1;
+    background: var(--panel);
+    box-shadow: 1px 0 0 var(--border);
+  }
+}

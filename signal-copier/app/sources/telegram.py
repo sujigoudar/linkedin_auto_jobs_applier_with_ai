@@ -44,6 +44,27 @@ class TelegramSource(SourceAdapter):
     def parse(self, message_text: str, analyst: str | None = None) -> Signal:
         return parse_text_signal(message_text, source=self.name, asset_class=self.asset_class, analyst=analyst)
 
+    async def handle_update(self, update) -> None:
+        """The real filtering/parsing/dispatch logic for one incoming
+        Telegram update: chat_id authorization check, analyst-name
+        derivation from the sender, and SignalValidationError handling for
+        unparseable text. Extracted out of `start()`'s registered handler
+        so it is directly callable/testable with a lightweight fake
+        `update` object, without needing a real python-telegram-bot
+        `Application` (that library is only needed to actually receive
+        updates over the network, not to exercise this logic)."""
+        if str(update.effective_chat.id) != str(self.chat_id):
+            return
+        text = update.effective_message.text or ""
+        user = update.effective_user
+        analyst = (user.username or user.full_name) if user else None
+        try:
+            signal = self.parse(text, analyst=analyst)
+        except SignalValidationError:
+            logger.debug("telegram message did not parse as a signal: %r", text)
+            return
+        await self.on_signal(signal)
+
     async def start(self) -> None:
         try:
             from telegram import Update
@@ -54,17 +75,7 @@ class TelegramSource(SourceAdapter):
             ) from exc
 
         async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-            if str(update.effective_chat.id) != str(self.chat_id):
-                return
-            text = update.effective_message.text or ""
-            user = update.effective_user
-            analyst = (user.username or user.full_name) if user else None
-            try:
-                signal = self.parse(text, analyst=analyst)
-            except SignalValidationError:
-                logger.debug("telegram message did not parse as a signal: %r", text)
-                return
-            await self.on_signal(signal)
+            await self.handle_update(update)
 
         self._app = Application.builder().token(self.bot_token).build()
         self._app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))

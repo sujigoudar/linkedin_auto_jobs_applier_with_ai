@@ -121,6 +121,18 @@ def client(tmp_path, monkeypatch):
     store = SignalStore(tmp_path / "test_http.db")
     monkeypatch.setattr(main_module, "store", store)
     monkeypatch.setattr(main_module.engine, "store", store)
+    # P0-5: main_module.brokers["paper"] is a module-level singleton shared
+    # by every test in this process -- its in-memory position book was
+    # already leaking across tests before this change, just harmlessly
+    # (nothing checked it against the per-test `store` above). Now that a
+    # plain close reconciles the broker's own tracked position against
+    # `store`'s, a fresh `store` paired with a STALE, cross-test-polluted
+    # broker book would wrongly reject a close that should succeed. Give
+    # each test its own PaperBroker the same way it already gets its own
+    # store -- `main_module.brokers` is the exact dict object
+    # `main_module.engine.brokers` holds too, so replacing this key
+    # updates both.
+    main_module.brokers["paper"] = PaperBroker()
     main_module.routing_config.accounts.clear()
     main_module.routing_config.rules.clear()
     main_module.routing_config.accounts["acct1"] = DestinationAccount(account_id="acct1", broker="paper")

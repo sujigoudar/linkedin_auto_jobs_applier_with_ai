@@ -88,7 +88,12 @@ def test_a_published_product_with_a_version_returns_its_real_facts(db_session):
     db_session.add(pv)
     db_session.flush()
     db_session.add(
-        PortfolioVersionSleeve(portfolio_version_id=pv.portfolio_version_id, sleeve_id=sleeve.sleeve_id, weight=Decimal("1.0"))
+        PortfolioVersionSleeve(
+            portfolio_version_id=pv.portfolio_version_id,
+            sleeve_id=sleeve.sleeve_id,
+            weight=Decimal("1.0"),
+            tenant_id="tenant-a",
+        )
     )
     db_session.add(
         Product(

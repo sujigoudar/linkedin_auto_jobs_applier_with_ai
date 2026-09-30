@@ -6,6 +6,7 @@ from app.services.copy_mandate import create_copy_mandate_draft
 from app.services.customer_selection_detail import get_own_selection_detail
 from app.services.platform_connection import create_platform_connection, disconnect_platform_connection
 from app.services.portfolio_selection import create_portfolio_selection
+from tests._onboarding_fixtures import complete_onboarding_prerequisites
 
 
 def _seed_membership(db_session, *, tenant_id="tenant-a", user_id="user-a"):
@@ -16,6 +17,10 @@ def _seed_membership(db_session, *, tenant_id="tenant-a", user_id="user-a"):
     db_session.flush()
     db_session.add(Membership(tenant_id=tenant_id, user_id=user_id, role=MembershipRole.CUSTOMER))
     db_session.commit()
+    #: This file's own `create_copy_mandate_draft` calls now need this
+    #: customer's onboarding to have reached `ALERT_PREFERENCES_SET`
+    #: (see app/services/onboarding_progress.py's own docstring).
+    complete_onboarding_prerequisites(db_session, tenant_id=tenant_id, user_id=user_id)
 
 
 def _published_product(db_session, *, tenant_id="tenant-a", slug="detail-product"):

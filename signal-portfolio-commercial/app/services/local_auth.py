@@ -51,6 +51,7 @@ from pwdlib.exceptions import UnknownHashError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.db import set_tenant_scope
 from app.models.local_auth import AuthToken, AuthTokenType, WebSession
 from app.models.tenancy import Membership, MembershipRole, Tenant, UserIdentity
 from app.services.audit_log import append_audit_event
@@ -89,7 +90,20 @@ def create_account(session: Session, *, email: str, password: str, tenant_displa
     email that's already registered (No email enumeration -- ID-01's
     own acceptance text -- is honored by the caller raising the SAME
     generic error message it would for any other signup failure, never
-    "that email is taken")."""
+    "that email is taken").
+
+    `memberships` is one of ADR-0001's `_TENANT_SCOPED_TABLES` (FORCE ROW
+    LEVEL SECURITY, `tenant_isolation` policy) -- against the real,
+    RLS-enforced `commercial`/`app_role` connection this route actually
+    runs on in production (never the test suite's superuser `db_session`
+    fixture, which silently bypasses RLS and would never have caught
+    this), inserting the new Membership row with no `app.tenant_id`
+    session scope set fails the policy's WITH CHECK outright
+    ("new row violates row-level security policy for table
+    'memberships'") -- self-service signup was completely broken. The
+    new tenant's own id is known immediately after `flush()`, so
+    `set_tenant_scope` here is exactly ADR-0001's own documented
+    pattern, not a new exception to it."""
     existing = session.scalar(select(UserIdentity).where(UserIdentity.email == email))
     if existing is not None:
         raise AccountAlreadyExistsError(email)
@@ -98,6 +112,7 @@ def create_account(session: Session, *, email: str, password: str, tenant_displa
     tenant = Tenant(display_name=tenant_display_name, environment="LOCAL_SIM")
     session.add_all([user, tenant])
     session.flush()
+    set_tenant_scope(session, tenant.tenant_id)
     session.add(Membership(tenant_id=tenant.tenant_id, user_id=user.user_id, role=MembershipRole.CUSTOMER))
 
     token = _issue_token(session, user_id=user.user_id, token_type=AuthTokenType.EMAIL_VERIFICATION)

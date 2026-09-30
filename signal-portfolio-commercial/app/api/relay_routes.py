@@ -58,7 +58,12 @@ async def ingest_batch(
     raw_body = await request.body()
     sig_header = request.headers.get("x-relay-signature", "")
     try:
-        verify_relay_signature(raw_body, sig_header, config.RELAY_SIGNING_SECRET)
+        verify_relay_signature(
+            raw_body,
+            sig_header,
+            config.RELAY_SIGNING_SECRET,
+            secret_previous=config.RELAY_SIGNING_SECRET_PREVIOUS or None,
+        )
     except (InvalidRelaySignatureHeaderError, RelaySignatureMismatchError, StaleRelayTimestampError) as exc:
         raise HTTPException(status_code=401, detail=str(exc)) from exc
 

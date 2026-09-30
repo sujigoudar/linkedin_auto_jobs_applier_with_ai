@@ -170,9 +170,9 @@ class CCXTBroker(BrokerAdapter):
                     ),
                 )
             if signal.stop_loss:
-                params["stopLoss"] = signal.stop_loss
+                params["stopLossPrice"] = signal.stop_loss
             if signal.take_profit:
-                params["takeProfit"] = signal.take_profit
+                params["takeProfitPrice"] = signal.take_profit
 
         try:
             order = await exchange.create_order(

@@ -49,6 +49,7 @@ def _portfolio_version(session, *, tenant_id, portfolio_id, portfolio_version_id
 def _intent(**overrides):
     now = datetime.now(timezone.utc)
     defaults = dict(
+        tenant_id="tenant-a",
         environment=Environment.LOCAL_SIM,
         portfolio_version_id="pv-1",
         episode_id="ep-1",
@@ -112,6 +113,14 @@ def test_get_publication_intent_detail_is_none_for_a_cross_tenant_intent(db_sess
         intent = _intent(portfolio_version_id="pv-1")
         session_a.add(intent)
         session_a.commit()
+        # `set_config(..., true)`'s scope is transaction-local -- it reverts
+        # once the transaction above commits, same as
+        # `test_get_publication_intent_detail_returns_the_real_intent`'s own
+        # re-`set_tenant_scope` call after its commit. Needed now that
+        # `publication_intents` itself carries RLS (85f9e0e6c123): without
+        # re-scoping, this attribute access is an unscoped read of a
+        # newly-RLS-protected table and sees no rows at all.
+        set_tenant_scope(session_a, "tenant-a")
         intent_id = intent.intent_id
     finally:
         session_a.close()

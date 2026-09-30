@@ -15,11 +15,14 @@ have an implemented payload model for S12's own "first complete proof"
 (one simulated source instruction -> one paper execution -> one exported
 event -> one staff view), `FEE` (slice 16, INT-012 "Late fee revises
 net report") for the out-of-band fee confirmation that follows a fill,
-and `POSITION_SNAPSHOT` (slice 23, INT-008/INT-009 "Snapshot and delta
+`POSITION_SNAPSHOT` (slice 23, INT-008/INT-009 "Snapshot and delta
 overlap"/"Interrupted bootstrap resumes") for a manifest-bound bootstrap
-snapshot page. Every other `EventType` member is a real, intentional
-placeholder for a later slice, not a promise this slice already
-carries that data.
+snapshot page, and `ROUTING_ADMISSION_OUTCOME` (INT-027 "All permitted
+source outcomes reach research") for the real routing/admission/fill
+outcome that follows a `SOURCE_RECEIPT`, correlated back to it by
+`RoutingAdmissionOutcomePayload.originating_source_event_id`. Every
+other `EventType` member is a real, intentional placeholder for a
+later slice, not a promise this slice already carries that data.
 """
 from __future__ import annotations
 
@@ -46,6 +49,7 @@ from signal_platform_contracts.payloads import (
     FeePayload,
     PositionSnapshotEntry,
     PositionSnapshotPayload,
+    RoutingAdmissionOutcomePayload,
     SourceReceiptPayload,
 )
 
@@ -65,6 +69,7 @@ __all__ = [
     "PositionSnapshotPayload",
     "PrivateAccountIdentity",
     "PublicationIdentity",
+    "RoutingAdmissionOutcomePayload",
     "SourceIdentity",
     "SourceReceiptPayload",
     "build_subject",

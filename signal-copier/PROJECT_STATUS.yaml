@@ -1,0 +1,70 @@
+# Machine-readable snapshot of signal-copier's build/lint/typecheck/test
+# health and documentation coverage. Numbers below are real measurements,
+# not estimates — reproduce with:
+#   cd signal-copier
+#   python -m venv .venv && source .venv/bin/activate
+#   pip install -r requirements.txt
+#   ruff check .
+#   python -m mypy app/db.py app/engine.py app/reconciliation.py app/lifecycle/manager.py app/lifecycle/models.py \
+#        app/routing.py app/risk.py app/models.py app/main.py app/backtest/simulator.py app/sources/webhook.py \
+#        app/sources/whatsapp.py app/sources/sms_twilio.py app/sources/ninjatrader.py \
+#        app/sources/text_parser.py app/sources/base.py app/brokers/alpaca.py app/brokers/base.py \
+#        app/brokers/paper.py app/brokers/ccxt_broker.py app/brokers/signalstack.py app/brokers/ninjatrader.py \
+#        app/config.py app/auth.py app/rate_limit.py app/context/sec_edgar.py app/context/fred.py app/context/fx.py \
+#        app/capital_allocator.py app/provider_value.py app/provider_scout.py \
+#        --follow-imports=silent
+#   pytest -q
+# (exact command per .github/workflows/signal-copier-ci.yml)
+
+version: 1
+last_verified_at: "2026-09-29"
+last_verified_commit: cdfee8b
+phase: development
+
+health:
+  build: passing
+  lint: passing
+  typecheck: passing
+  tests: passing
+
+lint:
+  tool: ruff
+  ruleset: "F (pyflakes) + B (bugbear), scoped per pyproject.toml [tool.ruff]"
+  result: "All checks passed!"
+  errors: 0
+
+typecheck:
+  tool: mypy
+  scope: "CI-scoped file list — core engine/lifecycle/reconciliation/db/broker/context modules; excludes optional-dependency stub adapters (Telegram/IBKR/MT5/Rithmic/etc.) which need their real packages installed to type-check meaningfully"
+  result: "Success: no issues found in 31 source files"
+  errors: 0
+
+tests:
+  tool: pytest
+  total: 1321
+  passing: 1313
+  failing: 0
+  skipped: 8
+  duration_seconds: 192
+
+documentation:
+  architecture: current
+  system_context: current
+  components: current
+  dependencies: current
+  data_flows: current
+  repo_map: current
+  glossary: current
+  database: not_tracked      # owned by a parallel documentation effort (docs/database/)
+  design: not_tracked        # owned by a parallel documentation effort (docs/design/)
+  security: not_tracked      # owned by a parallel documentation effort (docs/security/)
+  standards: not_tracked     # owned by a parallel documentation effort (docs/standards/)
+  testing: not_tracked       # owned by a parallel documentation effort (docs/testing/)
+  operations: not_tracked    # owned by a parallel documentation effort (docs/operations/)
+  agents: not_tracked        # owned by a parallel documentation effort (docs/agents/)
+  adr: not_tracked           # owned by a parallel documentation effort (docs/adr/)
+
+notes:
+  - "This file was populated by actually running ruff/mypy/pytest against a fresh venv on 2026-09-29 — not estimated."
+  - "The 8 pytest skips existed before this documentation change and were not investigated as part of it; see the pytest run's own -rs output for their reasons."
+  - "See app/qualification.py and README.md's 'What's real vs. stubbed' table for the per-broker/per-source LIVE (not just code-level) qualification status — that is a materially different, narrower claim than 'tests pass'."

@@ -1,0 +1,45 @@
+{
+  "as_of_commit": "cdfee8b1dc4d5daea58e178ce679aff37adecba8",
+  "tasks": [
+    {
+      "id": "P0-7",
+      "title": "Qualification/release-approval taxonomy",
+      "status": "not_started_on_this_branch",
+      "evidence": "app/main.py's release_status placeholder ('No qualification/release-approval taxonomy exists yet in this build. FOLLOW-UP: integrate with the P0-7 qualification/release-state work once it lands.'); app/models.py lines ~145-147 and ~307 both reference P0-7 as building this taxonomy.",
+      "still_accurate": true,
+      "note": "As of HEAD, this genuinely has not landed -- the placeholder in app/main.py correctly describes current reality."
+    },
+    {
+      "id": "trading_authority-wiring-to-P0-6",
+      "title": "Wire GET /system/readiness's trading_authority dimension to the real P0-6 writer-lease state",
+      "status": "stale_follow_up_now_actionable",
+      "evidence": "app/main.py's trading_authority placeholder still reads: 'FOLLOW-UP: integrate the P0-6 fencing/lease work once it lands so this can report a real held state instead.' P0-6 (55976eb, 'cross-process fencing + manual-only failover for the writer lease') has since landed on this same branch and added app/writer_lease.py's WriterLeaseGuard/fencing-token state.",
+      "still_accurate": false,
+      "note": "This follow-up is now RESOLVABLE but not yet resolved -- it has NOT been done, despite its trigger condition (P0-6 landing) being satisfied. This is a real, current gap: the readiness endpoint still reports 'not_tracked' for trading_authority (or 'not_held' under STANDBY_MODE) rather than reading the real fencing-token/lease state WriterLeaseGuard now maintains. Flagging this explicitly so it isn't mistaken for still-blocked-on-P0-6."
+    },
+    {
+      "id": "ninjatrader-signal-source",
+      "title": "NinjaTrader as a signal SOURCE (not just an execution destination)",
+      "status": "resolved_since_readme_was_written_but_partially_unverified",
+      "evidence": "README.md still states 'One gap remains genuinely open -- NinjaTrader as a signal source' but app/sources/ninjatrader.py now exists, with a docstring headed '## Why this used to be a stub, and what changed' describing a real /ninjatrader/webhook route plus a fresh-written NinjaScript indicator (ninjascript/SignalCopierAutoJournal.cs) modeled on two verified real reference implementations (Apex-Logics/TradVue, Shadowscr-7/tradingadmin).",
+      "still_accurate": false,
+      "note": "README.md's 'genuinely open' claim is STALE and should be corrected -- see docs/FEATURES.md and docs/KNOWN_ISSUES.md. The module's own docstring is explicit that this is only PARTIALLY closed: the Python side (parse() and the FastAPI route) is real, tested code, but the C# NinjaScript side has never been compiled or run against a real or Sim101 NinjaTrader 8 install -- there is no NinjaTrader or Windows in this development environment to do so. Treat it as a reviewed reference implementation, not a verified one, until someone actually runs it in NinjaTrader Sim101."
+    },
+    {
+      "id": "capital-allocator-scope-gaps",
+      "title": "Capital allocator: multi-currency/FX conversion, per-analyst overlap accounting, portfolio stress-loss modeling, cross-account netting beyond plain summation",
+      "status": "disclosed_and_still_unimplemented",
+      "evidence": "app/capital_allocator.py's own module docstring: 'Still genuinely unimplemented ... multi-currency/FX conversion, per-analyst overlap accounting, portfolio stress-loss modeling, and cross-account netting beyond plain summation.'",
+      "still_accurate": true,
+      "note": "No commit on this branch's recent history touches these. See docs/TECH_DEBT.md / docs/ASSUMPTIONS.md."
+    },
+    {
+      "id": "c07-timing-flake",
+      "title": "tests/test_c07_context_rate_limiting.py wall-clock timing flake under heavy CI load",
+      "status": "accepted_known_noise",
+      "evidence": "Test asserts real elapsed wall-clock time (e.g. 'assert elapsed >= 0.3') against a deliberately tiny AsyncLimiter window, so it can prove real throttling without waiting out production-scale windows -- this makes it inherently sensitive to CI scheduler jitter under load.",
+      "still_accurate": true,
+      "note": "Documented mitigation: rerun standalone to confirm. See docs/process/DEFINITION_OF_DONE.md item 3."
+    }
+  ]
+}

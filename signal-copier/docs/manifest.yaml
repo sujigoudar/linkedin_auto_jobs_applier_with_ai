@@ -1,0 +1,356 @@
+# Machine-readable index of signal-copier's documentation set.
+#
+# Purpose: tell an agent (human or Claude) which doc to read before doing a
+# given kind of work, and which docs a given kind of change must update.
+# `read_when` triggers are keyed to the KIND of change, not a file path,
+# because the same subsystem is touched from several files (e.g. capital
+# admission logic lives in app/capital_allocator.py AND app/engine.py).
+#
+# Each category's `paths` list is the authoritative, exhaustive list of
+# real files in that category as of the commit that last updated this
+# manifest (verified against the actual docs/ tree, not aspirational).
+# `path` (singular) is kept for backward compatibility and always equals
+# `paths[0]`.
+#
+# This file is owned by the "foundation" documentation layer along with
+# CLAUDE.md, docs/architecture/*, docs/REPO_MAP.md, docs/GLOSSARY.md,
+# PROJECT_STATUS.yaml, and .agent/context-map.yaml. The other document
+# categories below were written by separate, parallel documentation
+# efforts; this file indexes them so they discover each other.
+
+version: 2
+
+documents:
+  architecture:
+    path: docs/architecture/ARCHITECTURE.md
+    paths:
+      - docs/architecture/ARCHITECTURE.md
+    read_when:
+      - adding a component or background loop
+      - modifying system boundaries
+      - changing how signal -> routing -> risk -> broker data flows
+      - onboarding to the codebase
+    update_when:
+      - a new component, background task, or major subsystem is added
+      - a data flow through the pipeline changes
+
+  system_context:
+    path: docs/architecture/SYSTEM_CONTEXT.md
+    paths:
+      - docs/architecture/SYSTEM_CONTEXT.md
+    read_when:
+      - adding or changing an external signal source integration
+      - adding or changing a broker/exchange integration
+      - changing what crosses the boundary to signal-portfolio-commercial
+    update_when:
+      - a new external actor (source, broker, or downstream platform) is added
+
+  components:
+    path: docs/architecture/COMPONENTS.md
+    paths:
+      - docs/architecture/COMPONENTS.md
+    read_when:
+      - locating which module owns a responsibility
+      - reviewing a change's blast radius before starting it
+    update_when:
+      - a module's public functions/classes change meaningfully
+
+  dependencies:
+    path: docs/architecture/DEPENDENCIES.md
+    paths:
+      - docs/architecture/DEPENDENCIES.md
+    read_when:
+      - adding a new internal import between subsystems
+      - adding or upgrading a third-party dependency in requirements.txt
+      - checking whether a change would create a circular dependency
+    update_when:
+      - requirements.txt changes
+      - a new cross-module dependency direction is introduced
+
+  data_flows:
+    path: docs/architecture/DATA_FLOWS.md
+    paths:
+      - docs/architecture/DATA_FLOWS.md
+    read_when:
+      - tracing a signal from ingestion to broker fill
+      - debugging where in the pipeline a value is set, lost, or overwritten
+      - adding a new pipeline stage (a new gate, a new ledger write)
+    update_when:
+      - the entry/close/exit sequence changes
+      - a new admission gate or ledger stage is inserted into the pipeline
+
+  repo_map:
+    path: docs/REPO_MAP.md
+    paths:
+      - docs/REPO_MAP.md
+    read_when:
+      - orienting in the repository for the first time
+      - looking for where a kind of file lives (tests, migrations, deploy)
+
+  glossary:
+    path: docs/GLOSSARY.md
+    paths:
+      - docs/GLOSSARY.md
+    read_when:
+      - encountering an unfamiliar domain term (managed lifecycle, writer
+        lease, command ledger, qualification ladder, quantity ledger, etc.)
+      - writing documentation or a commit message that uses a domain term
+
+  database:
+    path: docs/database/SCHEMA.md
+    paths:
+      - docs/database/SCHEMA.md
+      - docs/database/DATA_DICTIONARY.md
+      - docs/database/MIGRATIONS.md
+    read_when:
+      - changing persistence (app/db.py)
+      - writing a new Alembic migration
+      - modifying app/models.py dataclasses that round-trip to SQLite
+      - changing config_accounts/config_routing_rules/config_providers/
+        config_analysts shape (the live-managed config tables)
+    update_when:
+      - a table is added, dropped, or a column is added via Alembic
+
+  design:
+    path: docs/design/POSITION_LIFECYCLE.md
+    paths:
+      - docs/design/POSITION_LIFECYCLE.md
+      - docs/design/CAPITAL_ALLOCATION.md
+      - docs/design/WRITER_FENCING.md
+    read_when:
+      - designing a new subsystem before writing code
+      - reviewing whether a proposed change fits existing design conventions
+      - working on the managed-lifecycle state machine, capital admission
+        gates, or writer-lease/fencing internals specifically
+
+  security:
+    path: docs/security/ARCHITECTURE.md
+    paths:
+      - docs/security/ARCHITECTURE.md
+      - docs/security/THREAT_MODEL.md
+      - docs/security/SECRETS.md
+      - docs/security/AUTHORIZATION.md
+    read_when:
+      - authentication or session changes (app/auth.py)
+      - authorization/owner-gating changes on any endpoint
+      - secrets handling (credentials, OWNER_PASSWORD_HASH, webhook secrets)
+      - changes to external-facing ingress (webhook, SMS, WhatsApp routes)
+      - anything touching CSRF, rate limiting, or the writer-lease fencing
+        token as a security boundary
+    update_when:
+      - a new authenticated or public route is added
+      - a new secret/credential category is introduced
+
+  standards:
+    path: docs/standards/CODING.md
+    paths:
+      - docs/standards/CODING.md
+      - docs/standards/NAMING.md
+      - docs/standards/ERROR_HANDLING.md
+      - docs/standards/LOGGING.md
+      - docs/standards/TESTING.md
+      - docs/standards/PERFORMANCE.md
+    read_when:
+      - implementing a feature
+      - fixing a bug (a regression test is expected)
+      - changing an existing test's assertions
+      - unsure of naming/error-handling/logging convention for new code
+    update_when:
+      - the test strategy, fixture conventions, or CI-scoped mypy file list
+        changes
+      - a new coding/naming/error-handling convention is established
+
+  testing:
+    path: docs/testing/TEST_MATRIX.md
+    paths:
+      - docs/testing/TEST_MATRIX.md
+      - docs/testing/E2E.md
+      - docs/testing/FIXTURES.md
+      - docs/testing/REGRESSIONS.md
+    read_when:
+      - deciding how to test a new broker or source adapter
+      - deciding whether a case needs a unit test, an integration test, or
+        both
+      - looking for the exact regression test a specific past bug added
+
+  operations:
+    path: docs/operations/DEPLOYMENT.md
+    paths:
+      - docs/operations/DEPLOYMENT.md
+      - docs/operations/ENVIRONMENTS.md
+      - docs/operations/CONFIGURATION.md
+      - docs/operations/DR.md
+      - docs/operations/BACKUPS.md
+      - docs/operations/SLO.md
+    read_when:
+      - deploying or redeploying the service
+      - responding to a production incident
+      - running a failover/promotion (see also deploy/RUNBOOK.md,
+        docs/FAILOVER.md, app/promote_cli.py)
+    update_when:
+      - the deployment topology or promotion procedure changes
+
+  observability:
+    path: docs/observability/OVERVIEW.md
+    paths:
+      - docs/observability/OVERVIEW.md
+    read_when:
+      - adding or changing a metric (app/metrics.py)
+      - changing GET /health, GET /metrics, or GET /system/readiness
+      - debugging why a background loop (PriceMonitor, OrderReconciler,
+        ProviderScout) looks stuck
+    update_when:
+      - a new metric, health signal, or structured log field is added
+
+  integrations:
+    path: docs/integrations/CATALOG.md
+    paths:
+      - docs/integrations/CATALOG.md
+      - docs/integrations/MATRIX.md
+    read_when:
+      - integrating a new broker or signal source
+      - changing how an existing broker/source integration works
+      - checking what a third-party library (ccxt, ib_async, MetaApi,
+        async_rithmic, TradeRouter) actually guarantees before relying on it
+    update_when:
+      - a new broker/source adapter is added
+      - a third-party integration's verified behavior changes
+
+  troubleshooting:
+    path: docs/TROUBLESHOOTING.md
+    paths:
+      - docs/TROUBLESHOOTING.md
+    read_when:
+      - a test fails intermittently and the cause isn't obvious
+      - a migration-stamping or writer-lease error appears unexpectedly
+
+  agents:
+    path: docs/agents/HANDBOOK.md
+    paths:
+      - docs/agents/HANDBOOK.md
+      - docs/agents/ROLES.md
+      - docs/agents/ROUTING.md
+      - docs/agents/HANDOFF.md
+      - docs/agents/TOOLS.md
+      - docs/agents/VERIFICATION.md
+    read_when:
+      - starting any agent-driven change to this codebase
+      - unsure which doc governs a given kind of task
+      - handing work off between agent sessions
+    update_when:
+      - the agent workflow itself changes (see also .agent/context-map.yaml)
+
+  process:
+    path: docs/process/GIT.md
+    paths:
+      - docs/process/GIT.md
+      - docs/process/DEFINITION_OF_DONE.md
+      - docs/process/DEVELOPMENT.md
+      - docs/process/REVIEW_CHECKLIST.md
+      - docs/process/RELEASE.md
+      - docs/process/ROLLBACK.md
+    read_when:
+      - opening a PR
+      - deciding how a change should be reviewed or released
+      - using worktrees for parallel agent work
+    update_when:
+      - the contribution/review/release process changes
+
+  state:
+    path: docs/state/PROGRESS.md
+    paths:
+      - docs/state/PROGRESS.md
+      - docs/state/state.json
+      - docs/state/tasks.json
+      - docs/state/BLOCKERS.md
+      - docs/state/HANDOFF.md
+      - docs/state/PENDING_DECISIONS.md
+    read_when:
+      - starting a development session
+      - resuming previous work
+    update_when:
+      - during long-running work, at meaningful checkpoints
+
+  project_status:
+    path: PROJECT_STATUS.yaml
+    paths:
+      - PROJECT_STATUS.yaml
+    read_when:
+      - checking whether the build/lint/typecheck/tests are currently green
+      - deciding whether it's safe to build on top of the current state
+    update_when:
+      - after running ruff/mypy/pytest and getting different real numbers
+
+  adr:
+    path: docs/adr/0001-sqlite-persistence.md
+    paths:
+      - docs/adr/0001-sqlite-persistence.md
+      - docs/adr/0002-writer-lease-fencing-token.md
+      - docs/adr/0003-no-automatic-failover.md
+      - docs/adr/0004-durable-command-ledger.md
+      - docs/adr/0005-distinct-quantity-fields.md
+      - docs/adr/0006-separate-qualification-ladder.md
+      - docs/adr/0007-fail-closed-capital-allocator.md
+      - docs/adr/0008-plain-vs-managed-lifecycle-products.md
+    read_when:
+      - understanding why an existing architectural choice was made
+      - about to revisit or reverse a prior significant decision
+    update_when:
+      - a significant, hard-to-reverse architectural decision is made
+        (e.g. adopting the command ledger, the writer-lease fencing model,
+        SQLite-over-Postgres, the managed-lifecycle protect-first design)
+        -- add a new numbered ADR file, don't edit an existing one
+
+  requirements:
+    path: docs/requirements/FUNCTIONAL.md
+    paths:
+      - docs/requirements/FUNCTIONAL.md
+      - docs/requirements/NFR.md
+      - docs/requirements/ACCEPTANCE.md
+    read_when:
+      - unsure whether a behavior is an intentional product decision or a
+        gap (cross-check against README.md's "What's real vs. stubbed"
+        and "What's still open" sections first -- they are the most
+        current source of truth for scope)
+    update_when:
+      - a disclosed scope boundary changes (a gap closes, or a new one is
+        deliberately introduced and disclosed)
+
+  history:
+    path: docs/history/ENGINEERING_LOG.md
+    paths:
+      - docs/history/ENGINEERING_LOG.md
+    read_when:
+      - understanding how the codebase got to its current state
+      - looking for the narrative behind a past architectural shift
+
+  roadmap_and_debt:
+    paths:
+      - docs/ROADMAP.md
+      - docs/FEATURES.md
+      - docs/KNOWN_ISSUES.md
+      - docs/TECH_DEBT.md
+      - docs/ASSUMPTIONS.md
+    read_when:
+      - deciding what to work on next
+      - checking whether a gap is already known and tracked
+      - checking a standing assumption before relying on it
+
+  failover:
+    path: docs/FAILOVER.md
+    paths:
+      - docs/FAILOVER.md
+    read_when:
+      - running or reviewing the manual promotion/failover procedure
+      - changing app/promote_cli.py or the writer-lease promotion flow
+
+  changelog:
+    path: CHANGELOG.md
+    paths:
+      - CHANGELOG.md
+    read_when:
+      - checking what changed recently
+    update_when:
+      - externally observable behavior changes (new endpoint, changed
+        response shape, new broker/source support, a fixed bug that
+        affected live trading behavior)

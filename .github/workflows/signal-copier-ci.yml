@@ -60,7 +60,15 @@ jobs:
       - name: Audit dependencies for known advisories (C36, adoption plan)
         run: |
           uv pip install --system pip-audit
-          pip-audit -r requirements.txt
+          # CVE-2026-49265 (oauthlib < 4.0.0): tweepy (the Twitter/X source
+          # adapter's own real dependency -- see requirements.txt and
+          # tests/test_sig05_bridge_collector_lifecycle_handling.py) pins
+          # `oauthlib<4,>=3.2.0` as of its latest release (4.17.0) on PyPI;
+          # there is currently no tweepy release compatible with oauthlib
+          # 4.0.0, so this cannot be closed by a version bump today. Ignored
+          # here, not silently -- re-check this exception whenever tweepy
+          # publishes a release without the <4 cap.
+          pip-audit -r requirements.txt --ignore-vuln CVE-2026-49265
 
   secret-scan:
     runs-on: ubuntu-latest

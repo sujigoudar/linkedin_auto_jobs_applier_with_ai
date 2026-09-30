@@ -1,0 +1,258 @@
+# Machine-readable index of every documentation category for
+# signal-portfolio-commercial. An agent (or a human) should consult
+# `read_when` triggers before touching the matching subsystem.
+#
+# Each category's `docs` list is the authoritative, exhaustive list of
+# real files in that category as of the commit that last updated this
+# manifest (verified against the actual docs/ tree, not aspirational).
+
+version: 2
+repo: signal-portfolio-commercial
+
+categories:
+  architecture:
+    owner: foundation-agent
+    path: docs/architecture/
+    docs:
+      - docs/architecture/ARCHITECTURE.md
+      - docs/architecture/SYSTEM_CONTEXT.md
+      - docs/architecture/COMPONENTS.md
+      - docs/architecture/DEPENDENCIES.md
+      - docs/architecture/DATA_FLOWS.md
+    read_when:
+      - "Before adding, moving or removing an API route"
+      - "Before changing the relay ingest state machine (integration_inbox.py)"
+      - "Before changing the RLS/append-only DDL in app/db.py"
+      - "Before adding a new service module or changing which layer calls which"
+      - "Before changing how the four ledger books relate to each other"
+      - "When onboarding to this repo for the first time"
+
+  design:
+    owner: sibling-agent
+    path: docs/design/
+    docs:
+      - docs/design/LEDGER_MODEL.md
+      - docs/design/INGEST_PIPELINE.md
+      - docs/design/ATTRIBUTION.md
+    read_when:
+      - "Before changing a dashboard screen's UI/UX contract"
+      - "Before adding a new screen or customer/staff-facing flow"
+      - "Before changing the four-book ledger, relay ingest pipeline, or
+         FIFO-lot analyst attribution specifically"
+
+  database:
+    owner: sibling-agent
+    path: docs/database/
+    docs:
+      - docs/database/SCHEMA.md
+      - docs/database/DATA_DICTIONARY.md
+      - docs/database/MIGRATIONS.md
+    read_when:
+      - "Before writing a new Alembic migration"
+      - "Before adding or modifying a table, index or constraint"
+      - "Before changing RLS policy scope or the append-only table list"
+
+  security:
+    owner: sibling-agent
+    path: docs/security/
+    docs:
+      - docs/security/ARCHITECTURE.md
+      - docs/security/THREAT_MODEL.md
+      - docs/security/SECRETS.md
+      - docs/security/AUTHORIZATION.md
+    read_when:
+      - "Before changing auth (JWT, sessions, password handling)"
+      - "Before changing permissions.py's role/action allow-list"
+      - "Before changing relay_role's grants or the relay signing/HMAC scheme"
+      - "Before handling any customer PII or credential-shaped data"
+
+  standards:
+    owner: sibling-agent
+    path: docs/standards/
+    docs:
+      - docs/standards/CODING.md
+      - docs/standards/NAMING.md
+      - docs/standards/ERROR_HANDLING.md
+      - docs/standards/LOGGING.md
+      - docs/standards/TESTING.md
+      - docs/standards/PERFORMANCE.md
+    read_when:
+      - "Before writing new code, to match this repo's conventions"
+      - "Before a code review"
+
+  testing:
+    owner: sibling-agent
+    path: docs/testing/
+    docs:
+      - docs/testing/TEST_MATRIX.md
+      - docs/testing/E2E.md
+      - docs/testing/FIXTURES.md
+      - docs/testing/REGRESSIONS.md
+    read_when:
+      - "Before writing or modifying a test"
+      - "Before changing tests/conftest.py's Postgres fixture setup"
+      - "Before running the full verification suite"
+
+  operations:
+    owner: sibling-agent
+    path: docs/operations/
+    docs:
+      - docs/operations/DEPLOYMENT.md
+      - docs/operations/ENVIRONMENTS.md
+      - docs/operations/CONFIGURATION.md
+      - docs/operations/DR.md
+      - docs/operations/BACKUPS.md
+      - docs/operations/SLO.md
+    read_when:
+      - "Before deploying or changing deployment configuration"
+      - "Before changing environment variables / secrets handling"
+      - "When diagnosing a production incident"
+
+  observability:
+    owner: sibling-agent
+    path: docs/observability/
+    docs:
+      - docs/observability/OVERVIEW.md
+    read_when:
+      - "Before changing logging, audit-event emission, or the evidence-manifest export"
+      - "Before adding a new metric or health-check surface"
+
+  integrations:
+    owner: sibling-agent
+    path: docs/integrations/
+    docs:
+      - docs/integrations/CATALOG.md
+    read_when:
+      - "Before changing the relay contract with signal-copier"
+      - "Before touching a publisher adapter (Collective2/eToro/CopyFactory)"
+      - "Before changing the Stripe webhook integration"
+
+  troubleshooting:
+    owner: sibling-agent
+    path: docs/TROUBLESHOOTING.md
+    docs:
+      - docs/TROUBLESHOOTING.md
+    read_when:
+      - "A test fails intermittently or an RLS/role error appears unexpectedly"
+      - "An ingest event is stuck in a parked_reason state"
+
+  agents:
+    owner: sibling-agent
+    path: docs/agents/
+    docs:
+      - docs/agents/HANDBOOK.md
+      - docs/agents/ROLES.md
+      - docs/agents/ROUTING.md
+      - docs/agents/HANDOFF.md
+      - docs/agents/TOOLS.md
+      - docs/agents/VERIFICATION.md
+    read_when:
+      - "Before starting any autonomous multi-step task in this repo"
+      - "Before resuming a long-running or previously-interrupted build"
+
+  state:
+    owner: sibling-agent
+    path: docs/state/
+    docs:
+      - docs/state/PROGRESS.md
+      - docs/state/state.json
+      - docs/state/tasks.json
+      - docs/state/BLOCKERS.md
+      - docs/state/HANDOFF.md
+      - docs/state/PENDING_DECISIONS.md
+    read_when:
+      - "Before starting new work, to see what is already in flight"
+      - "During long-running work, to record progress"
+
+  adr:
+    owner: sibling-agent
+    path: docs/adr/
+    docs:
+      - docs/adr/0001-postgres-row-level-security-multi-tenant-isolation.md
+      - docs/adr/0002-relay-role-export-ingest-boundary.md
+      - docs/adr/0003-idempotent-ordered-ingest-inbox.md
+      - docs/adr/0004-four-book-economic-ledger.md
+      - docs/adr/0005-fifo-lot-analyst-attribution.md
+      - docs/adr/0006-bootstrap-snapshot-protocol.md
+      - docs/adr/0007-local-auth-revocable-jwt-sessions.md
+      - docs/adr/0008-append-only-triggers-on-ledger-tables.md
+      - docs/adr/0009-membership-self-lookup-rls-policy.md
+    read_when:
+      - "Before reversing or significantly altering a past architectural decision"
+      - "After making a significant architectural decision, to record it"
+
+  requirements:
+    owner: sibling-agent
+    path: docs/requirements/
+    docs:
+      - docs/requirements/FUNCTIONAL.md
+      - docs/requirements/NFR.md
+      - docs/requirements/ACCEPTANCE.md
+    read_when:
+      - "Before changing behavior that a screen/requirement spec (spec/, dashboard_spec/) depends on"
+      - "Before deciding whether a feature gap is in-scope for this build"
+
+  process:
+    owner: sibling-agent
+    path: docs/process/
+    docs:
+      - docs/process/GIT.md
+      - docs/process/DEFINITION_OF_DONE.md
+      - docs/process/DEVELOPMENT.md
+      - docs/process/REVIEW_CHECKLIST.md
+      - docs/process/RELEASE.md
+      - docs/process/ROLLBACK.md
+    read_when:
+      - "Before changing the CI pipeline or release process"
+      - "Before changing how ADRs, CHANGELOG entries or progress notes are recorded"
+
+  history:
+    owner: sibling-agent
+    path: docs/history/
+    docs:
+      - docs/history/ENGINEERING_LOG.md
+    read_when:
+      - "Understanding how the codebase got to its current state"
+      - "Looking for the narrative behind a past architectural shift"
+
+  roadmap_and_debt:
+    owner: sibling-agent
+    path: docs/
+    docs:
+      - docs/ROADMAP.md
+      - docs/FEATURES.md
+      - docs/KNOWN_ISSUES.md
+      - docs/TECH_DEBT.md
+      - docs/ASSUMPTIONS.md
+    read_when:
+      - "Deciding what to work on next"
+      - "Checking whether a gap is already known and tracked"
+      - "Checking a standing assumption before relying on it"
+
+  legacy_planning_docs:
+    owner: pre-existing
+    path: docs/
+    docs:
+      - docs/00_discovery.md
+      - docs/12_validation_report.md
+      - docs/12_addendum_post_phase12_work.md
+    read_when:
+      - "Understanding the original Phase 00-12 build plan and its
+         post-Phase-12 validation findings (historical, pre-dates the
+         docs/history/ENGINEERING_LOG.md narrative doc)"
+
+root_docs:
+  - path: CLAUDE.md
+    read_when: ["Always, before any work in this repo"]
+  - path: PROJECT_STATUS.yaml
+    read_when: ["Before claiming build/lint/typecheck/test health"]
+  - path: CHANGELOG.md
+    read_when: ["Checking what changed recently"]
+  - path: docs/REPO_MAP.md
+    read_when: ["When locating a file/module by responsibility"]
+  - path: docs/GLOSSARY.md
+    read_when: ["When encountering an unfamiliar domain term"]
+  - path: .agent/context-map.yaml
+    read_when: ["Before starting a task, to find which docs it implies reading"]
+  - path: .agent/autonomy.yaml
+    read_when: ["Before deciding whether a change can proceed without asking the owner"]

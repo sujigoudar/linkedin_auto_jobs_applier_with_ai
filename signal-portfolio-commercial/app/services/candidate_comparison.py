@@ -259,6 +259,7 @@ def create_portfolio_version_draft_from_candidate(
                 portfolio_version_id=version.portfolio_version_id,
                 sleeve_id=sleeve_id,
                 weight=weight,
+                tenant_id=version.tenant_id,
             )
         )
     session.flush()

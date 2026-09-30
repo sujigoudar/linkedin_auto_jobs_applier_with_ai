@@ -188,6 +188,37 @@ class BrokerAdapter(abc.ABC):
     def has_balance_capability(self) -> bool:
         return type(self).get_account_balance is not BrokerAdapter.get_account_balance
 
+    @property
+    def has_account_order_position_feedback(self) -> bool:
+        """Whether this adapter can verify ANYTHING back about the
+        account, an order, or a position after submission -- order-status
+        confirmation, position readback, or balance readback (any one of
+        the three is enough; a broker doesn't need all three to have SOME
+        real feedback channel).
+
+        This is the genuine, structural prerequisite for
+        `app/qualification.py`'s `account_entitled` rung and everything
+        above it: a route can be `authenticated` (a real auth handshake
+        succeeded) on an adapter with none of the three, but it can never
+        honestly be verified as account-entitled, protocol-tested or
+        venue-tested, because there is no real channel to verify it
+        with -- see app/qualification.py's `FEEDBACK_DEPENDENT_FLOOR` and
+        `SignalStore.record_route_qualification`, which enforces this as a
+        hard write-path rejection, not operator discipline.
+
+        SignalStack is the concrete case this was written for (see its own
+        module docstring: it POSTs to a webhook and gets only an HTTP
+        accept confirming SignalStack itself received the request --
+        never a fill, a position, or a balance figure back from the
+        downstream broker it routed to), but this property is adapter-
+        generic, not SignalStack-specific -- any adapter with none of
+        these three real implementations is capped the same way."""
+        return (
+            self.has_order_status_capability
+            or self.has_position_readback_capability
+            or self.has_balance_capability
+        )
+
     def can_protect_a_managed_position(self) -> bool:
         """Whether `PositionLifecycleManager` can actually keep a position
         protected on this broker.

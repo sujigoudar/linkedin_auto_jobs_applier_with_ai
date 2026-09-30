@@ -1,0 +1,157 @@
+# Task-aware verification scoping for the signal-copier monorepo.
+#
+# Built per docs/agents/TOKEN_COST_AUDIT.md finding #6 (Phase 14 of the
+# Claude Code development-efficiency initiative): before this file
+# existed, "run the tests to confirm nothing broke" defaulted to a full
+# suite re-run regardless of blast radius -- ~15 times in one session,
+# several of them full-suite runs after touching nothing. This file lets
+# an agent (or a human) map the files a change actually touches to the
+# verification tier that change genuinely requires, instead of always
+# defaulting to the most expensive option OR (the opposite failure mode)
+# under-verifying a change to genuinely dangerous code.
+#
+# Scope: covers BOTH apps in this monorepo (signal-copier and
+# signal-portfolio-commercial) plus the shared cross-service contract
+# package, since verification scoping is a cross-repo concern -- an
+# agent working across the relay boundary needs one file to consult, not
+# two per-app copies that can drift out of sync with each other.
+#
+# How to use this file (for an agent or a human):
+#   1. Take the set of file paths a change touches (git diff --name-only).
+#   2. For each path, find the FIRST matching pattern below, checked in
+#      the order the tiers are listed (financial_critical, then
+#      standard, then minimal, then docs_only) -- i.e. financial_critical
+#      always wins a tie, docs_only only applies when NOTHING else in the
+#      changeset matches a higher tier.
+#   3. The change's required tier is the HIGHEST tier any touched path
+#      maps to. A changeset that touches even one financial_critical
+#      path requires the full battery for the whole changeset, even if
+#      every other touched file would individually qualify for `minimal`.
+#   4. Run the commands listed under that tier's `verification` key
+#      (these are the same `make` targets each app's own Makefile
+#      defines -- see signal-portfolio-commercial/Makefile; signal-copier's
+#      equivalent Makefile, if not yet present when you read this, defines
+#      the same target names by convention).
+#
+# This file encodes SCOPING only (which tier a change needs). It does
+# not replace either app's CI, which always runs its own full pipeline
+# regardless of this file -- this is for agents deciding how much LOCAL
+# verification to run before considering a change done, or before
+# reporting a change as verified.
+
+version: 1
+
+tiers:
+  minimal:
+    description: >
+      A change with no plausible effect on runtime behavior: docs,
+      comments, this file itself, non-code config that nothing reads at
+      runtime. Confirm the change is what was intended; no test run
+      required.
+    verification:
+      - "make lint"
+
+  standard:
+    description: >
+      An ordinary code change outside the financial-critical file list
+      below: a new non-critical service module, a dashboard template, a
+      non-critical test, a non-critical route handler. Run that app's own
+      scoped test file(s) plus lint/typecheck -- not necessarily the
+      entire suite, unless the change is broad enough that scoping to
+      specific test files isn't meaningful.
+    verification:
+      - "make lint"
+      - "make typecheck"
+      - "pytest <the specific test file(s) covering the changed module> -q"
+
+  full:
+    description: >
+      A change touching financial-critical code (see financial_critical
+      patterns below) or anything matching a financial_critical pattern
+      for either app. NEVER scope this down to a subset -- run the
+      complete local battery: unit + integration + the relevant
+      contract/regression tests + a full suite run. This tier exists
+      specifically because a scoped subset can miss a regression in code
+      that moves real capital, asserts tenant isolation, or governs
+      auth/session validity -- the token/time cost of a full run is
+      accepted deliberately here (see docs/agents/TOKEN_COST_AUDIT.md's
+      explicit caveat on model-routing finding #9: routing/scoping
+      savings must never weaken verification of correctness-critical
+      code).
+    verification:
+      - "make audit"
+      - "make test-migrations"
+
+# --- pattern -> tier mapping ------------------------------------------
+# Globs are relative to the monorepo root. Checked top-to-bottom within
+# a tier's list is not meaningful; what matters is which TIER (see
+# `tiers` above) a path belongs to. A path matching nothing below falls
+# back to `standard`.
+
+patterns:
+  docs_only:
+    tier: minimal
+    globs:
+      - "**/*.md"
+      - "**/docs/**"
+      - ".agent/quality-gates.yaml"
+      - ".agent/context-map.yaml"
+      - "**/CHANGELOG.md"
+      - "**/docs/manifest.yaml"
+
+  financial_critical:
+    tier: full
+    globs:
+      # --- signal-portfolio-commercial ---
+      - "signal-portfolio-commercial/app/services/ledger.py"
+      - "signal-portfolio-commercial/app/models/ledger.py"
+      - "signal-portfolio-commercial/app/services/analyst_attribution.py"
+      - "signal-portfolio-commercial/app/services/relay_auth.py"
+      - "signal-portfolio-commercial/app/services/local_auth.py"
+      - "signal-portfolio-commercial/app/models/local_auth.py"
+      - "signal-portfolio-commercial/app/services/token_revocation.py"
+      - "signal-portfolio-commercial/app/models/token_revocation.py"
+      - "signal-portfolio-commercial/app/services/rights_registry.py"
+      - "signal-portfolio-commercial/app/services/stripe_webhook.py"
+      - "signal-portfolio-commercial/app/db.py"  # RLS / tenant-isolation policies live here
+      - "signal-portfolio-commercial/alembic/versions/**"  # migrations touch the same tables
+      # --- signal-copier ---
+      - "signal-copier/app/capital_allocator.py"
+      - "signal-copier/app/risk.py"
+      - "signal-copier/app/qualification.py"
+      - "signal-copier/app/command_ledger.py"
+      - "signal-copier/app/writer_lease.py"
+      # --- shared contract package: both apps depend on it ---
+      - "signal_platform_contracts/**"
+
+  standard_code:
+    tier: standard
+    globs:
+      - "signal-portfolio-commercial/app/**"
+      - "signal-portfolio-commercial/tests/**"
+      - "signal-portfolio-commercial/alembic/**"
+      - "signal-copier/app/**"
+      - "signal-copier/tests/**"
+      - "signal-copier/alembic/**"
+
+# --- worked examples (for a reader's sanity-check, not consulted by tooling) ---
+examples:
+  - change: "Fix a typo in docs/architecture/ARCHITECTURE.md"
+    tier: minimal
+    why: "Matches docs_only; no runtime code touched."
+  - change: "Add a new non-critical route in app/routes/reports.py"
+    tier: standard
+    why: "Matches standard_code (app/**), no financial_critical path touched."
+  - change: "Add a column to app/services/ledger.py and its migration"
+    tier: full
+    why: >
+      ledger.py is financial_critical; the accompanying migration under
+      alembic/versions/** is also financial_critical for the same
+      reason (same tables). Full battery required for the whole change,
+      including make test-migrations.
+  - change: "Update app/db.py's RLS policy plus an unrelated dashboard template"
+    tier: full
+    why: >
+      db.py's RLS/tenant-isolation policies are financial_critical; the
+      whole changeset is verified at the full tier even though the
+      dashboard template alone would only need standard.

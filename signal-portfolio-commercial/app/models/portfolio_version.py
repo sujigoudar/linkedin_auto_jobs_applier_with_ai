@@ -78,3 +78,9 @@ class PortfolioVersionSleeve(Base):
     )
     sleeve_id: Mapped[str] = mapped_column(ForeignKey("sleeves.sleeve_id"), primary_key=True)
     weight: Mapped[Decimal] = mapped_column(Numeric(28, 10), nullable=False)
+    #: A database-level RLS backstop (ADR-0001), not this table's own
+    #: scoping mechanism -- app/services/portfolio_rights.py already
+    #: scopes correctly via an inner join through `PortfolioVersion`
+    #: (which IS tenant-scoped). Backfilled from that same join path by
+    #: alembic/versions/85f9e0e6c123_publication_intent_and_sleeve_tenant_id.py.
+    tenant_id: Mapped[str] = mapped_column(String, nullable=False, index=True)

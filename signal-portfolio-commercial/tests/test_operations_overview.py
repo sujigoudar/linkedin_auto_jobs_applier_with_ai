@@ -50,6 +50,7 @@ def _portfolio_version(session, *, tenant_id, portfolio_id):
 def _intent(**overrides):
     now = datetime.now(timezone.utc)
     defaults = dict(
+        tenant_id="tenant-a",
         environment=Environment.LOCAL_SIM,
         portfolio_version_id="pv-1",
         episode_id="ep-1",
@@ -191,7 +192,13 @@ def test_another_tenants_unknown_publications_are_not_counted(db_session, tenant
     try:
         set_tenant_scope(session_b, "tenant-b")
         pv_b = _portfolio_version(session_b, tenant_id="tenant-b", portfolio_id="p-b")
-        session_b.add(_intent(portfolio_version_id=pv_b.portfolio_version_id, idempotency_key="idem-unknown-b"))
+        session_b.add(
+            _intent(
+                tenant_id="tenant-b",
+                portfolio_version_id=pv_b.portfolio_version_id,
+                idempotency_key="idem-unknown-b",
+            )
+        )
         session_b.commit()
         set_tenant_scope(session_b, "tenant-b")
 

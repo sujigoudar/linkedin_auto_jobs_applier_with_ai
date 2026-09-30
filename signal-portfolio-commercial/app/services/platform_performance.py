@@ -57,10 +57,21 @@ is a no-op at the inbox layer (the same `event_id`/`payload_hash`
 redelivery-dedup every event type gets), so a duplicate fee correction
 never appends a second correction row and never lowers `net_pnl` twice.
 
-Does NOT compute win rates or episode counts (signal-copier's own
-`SymbolEconomics` does) -- out of scope for this bounded slice; a
-later one can port that half of the same algorithm the same way if a
-real screen needs it.
+Does NOT compute win rates or episode counts itself (see
+`app/services/analyst_attribution.py`'s own FIFO-lot replay, which
+does, ported the same way from signal-copier's own `SymbolEconomics`)
+-- out of scope for this module's own per-instrument average-cost
+replay.
+
+`load_ordered_root_entries` and `apply_entry` below are this module's
+own replay steps, factored out so a caller needing something this
+module's own aggregate return value doesn't expose (e.g.
+`app/services/customer_performance_report.py`'s own chronological
+cumulative-realized-P&L series for a real max-drawdown walk) can
+REPLAY the exact same real query + correction-folding + volume-
+weighted-average-cost position math this module's own
+`compute_book_performance` runs, rather than a second, potentially-
+diverging implementation of the same logic.
 """
 from __future__ import annotations
 
@@ -126,15 +137,28 @@ def compute_platform_performance(session: Session, *, tenant_id: str) -> Platfor
     return compute_book_performance(session, tenant_id=tenant_id, book=Book.PLATFORM)
 
 
-def compute_book_performance(
+def load_ordered_root_entries(
     session: Session,
     *,
     tenant_id: str,
     book: Book,
     follower_connection_ids: frozenset[str] | None = None,
-) -> PlatformPerformanceReport:
-    """`follower_connection_ids`, when given, additionally restricts the
-    replay to `LedgerEntry.follower_connection_id` in that set -- only
+) -> tuple[list[LedgerEntry], dict[str, LedgerEntry]]:
+    """The real, timestamp-ordered, correction-folded query this
+    module's own `compute_book_performance` replays -- factored out so
+    another caller needing the SAME real entries in the SAME order (not
+    a second, potentially-diverging query) can replay them for its own
+    purpose (e.g. a chronological cumulative-P&L series).
+
+    Returns `(root_entries, latest_correction_by_original)`:
+    `root_entries` excludes correction rows themselves (`correction_of
+    IS NULL`), in real `(event_time, created_at)` order; the map is
+    keyed by the corrected entry's own `entry_id` and gives, for any
+    root entry that has one, its most-recently-created correction row
+    (never summed -- see this module's own docstring on why).
+
+    `follower_connection_ids`, when given, additionally restricts the
+    query to `LedgerEntry.follower_connection_id` in that set -- only
     meaningful (and only ever passed) for `book == Book.FOLLOWER`: a
     tenant's own `Book.FOLLOWER` rows span every one of its customers'
     own connections, so a caller reporting ONE customer's own reconciled
@@ -167,6 +191,69 @@ def compute_book_performance(
             latest_correction_by_original[entry.correction_of] = entry
     entries = [entry for entry in all_entries if entry.correction_of is None]
 
+    return entries, latest_correction_by_original
+
+
+def apply_entry(ip: InstrumentPerformance, entry: LedgerEntry) -> Decimal:
+    """The real volume-weighted-average-cost position math for exactly
+    ONE entry against ONE instrument's own running `InstrumentPerformance`
+    state -- this module's single, real replay step, called by
+    `compute_book_performance` below and by any other caller (e.g. a
+    chronological equity-series builder) that needs the same real
+    position math applied entry-by-entry rather than reimplemented.
+    Returns the realized P&L delta THIS entry contributed (`Decimal(0)`
+    for an opening/adding entry that realizes nothing yet). Mutates `ip`
+    in place; does not touch fee bookkeeping or `report.realized_pnl`
+    -- a caller does that itself, same as `compute_book_performance`
+    does below."""
+    signed_qty = entry.quantity if entry.side == Side.BUY else -entry.quantity
+
+    if ip.open_quantity == 0 or (ip.open_quantity > 0) == (signed_qty > 0):
+        # Opening or adding to a position on the same side: only the
+        # volume-weighted average cost moves, nothing is realized yet.
+        new_quantity = ip.open_quantity + signed_qty
+        existing_cost = (ip.average_cost or Decimal(0)) * abs(ip.open_quantity)
+        ip.average_cost = (existing_cost + entry.price * abs(signed_qty)) / abs(new_quantity)
+        ip.open_quantity = new_quantity
+        return Decimal(0)
+
+    # Opposite side: this entry reduces (and possibly flips) the
+    # existing position. Realize P&L on whatever it closes, using the
+    # average cost at the moment of this entry, scaled by the
+    # contract multiplier.
+    assert ip.average_cost is not None  # guaranteed: open_quantity != 0 always implies a set average_cost
+    closing_quantity = min(abs(signed_qty), abs(ip.open_quantity))
+    direction = Decimal(1) if ip.open_quantity > 0 else Decimal(-1)
+    realized = (entry.price - ip.average_cost) * direction * closing_quantity * entry.multiplier
+    ip.realized_pnl += realized
+    ip.closing_fills += 1
+
+    remainder = abs(signed_qty) - closing_quantity
+    ip.open_quantity += signed_qty
+    if remainder > 0:
+        # Flipped through flat: what's left opens a FRESH position in
+        # the new direction, priced at this same entry.
+        ip.average_cost = entry.price
+        ip.open_quantity = remainder if signed_qty > 0 else -remainder
+    elif ip.open_quantity == 0:
+        ip.average_cost = None
+
+    return realized
+
+
+def compute_book_performance(
+    session: Session,
+    *,
+    tenant_id: str,
+    book: Book,
+    follower_connection_ids: frozenset[str] | None = None,
+) -> PlatformPerformanceReport:
+    """`follower_connection_ids`: see `load_ordered_root_entries`'s own
+    docstring -- passed straight through."""
+    entries, latest_correction_by_original = load_ordered_root_entries(
+        session, tenant_id=tenant_id, book=book, follower_connection_ids=follower_connection_ids
+    )
+
     report = PlatformPerformanceReport()
     per_instrument = report.per_instrument
 
@@ -176,7 +263,6 @@ def compute_book_performance(
         if correction is not None:
             effective_fee = correction.fee
 
-        signed_qty = entry.quantity if entry.side == Side.BUY else -entry.quantity
         ip = per_instrument.setdefault(entry.instrument, InstrumentPerformance(instrument=entry.instrument))
         if effective_fee is None:
             ip.unknown_fee_entry_count += 1
@@ -184,36 +270,7 @@ def compute_book_performance(
             ip.total_fees += effective_fee
         ip.last_fill_price = entry.price
 
-        if ip.open_quantity == 0 or (ip.open_quantity > 0) == (signed_qty > 0):
-            # Opening or adding to a position on the same side: only the
-            # volume-weighted average cost moves, nothing is realized yet.
-            new_quantity = ip.open_quantity + signed_qty
-            existing_cost = (ip.average_cost or Decimal(0)) * abs(ip.open_quantity)
-            ip.average_cost = (existing_cost + entry.price * abs(signed_qty)) / abs(new_quantity)
-            ip.open_quantity = new_quantity
-            continue
-
-        # Opposite side: this entry reduces (and possibly flips) the
-        # existing position. Realize P&L on whatever it closes, using the
-        # average cost at the moment of this entry, scaled by the
-        # contract multiplier.
-        assert ip.average_cost is not None  # guaranteed: open_quantity != 0 always implies a set average_cost
-        closing_quantity = min(abs(signed_qty), abs(ip.open_quantity))
-        direction = Decimal(1) if ip.open_quantity > 0 else Decimal(-1)
-        realized = (entry.price - ip.average_cost) * direction * closing_quantity * entry.multiplier
-        ip.realized_pnl += realized
-        report.realized_pnl += realized
-        ip.closing_fills += 1
-
-        remainder = abs(signed_qty) - closing_quantity
-        ip.open_quantity += signed_qty
-        if remainder > 0:
-            # Flipped through flat: what's left opens a FRESH position in
-            # the new direction, priced at this same entry.
-            ip.average_cost = entry.price
-            ip.open_quantity = remainder if signed_qty > 0 else -remainder
-        elif ip.open_quantity == 0:
-            ip.average_cost = None
+        report.realized_pnl += apply_entry(ip, entry)
 
     for ip in per_instrument.values():
         if ip.unknown_fee_entry_count == 0:

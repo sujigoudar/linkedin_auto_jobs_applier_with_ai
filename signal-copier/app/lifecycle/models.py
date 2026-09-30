@@ -40,6 +40,53 @@ class TargetAction(str, enum.Enum):
     ACTIVATE_TRAIL = "activate_trail"
 
 
+class StopTargetEventType(str, enum.Enum):
+    """PU-A4: every REAL, already-occurring state-changing moment this
+    codebase's own `PositionLifecycleManager` produces for a position's
+    stop/target lifecycle — see app/db.py's `stop_target_events` table and
+    `PositionLifecycleManager`'s own call sites for exactly where each of
+    these is appended. Deliberately does NOT include a "breakeven" or
+    "trail_activated" event type: as of this pass, nothing in this
+    branch's live signal path (`app/engine.py`'s `_handle_managed_entry`)
+    ever constructs a `Target(action=ACTIVATE_TRAIL)`, a non-null
+    `TrailingPolicy`, or a move-to-breakeven command (that capability
+    exists only on the sibling `claude/signal-copier-safety-features`
+    branch, as `app/signal_commands.py`'s `MOVE_STOP`/"breakeven" handling
+    and `app/protection_auditor.py`'s `ProtectionAuditor` — neither file
+    exists here). Adding a distinct event type for a trigger this branch's
+    code can't actually reach would be a fabricated event, not a real one.
+    """
+
+    #: A protective stop got broker-confirmed resting (STOP_CONFIRMED) --
+    #: whether that's the very first stop for this position or a fresh
+    #: resubmission after a cancel (see
+    #: `PositionLifecycleManager._place_stop_locked`'s single success
+    #: branch, which is exactly Phase A2's `StopRecord.confirmed_at`
+    #: moment).
+    STOP_PLACED = "stop_placed"
+    #: An already-resting stop's PRICE changed in place (a logical
+    #: `TIGHTEN_STOP` target firing, or a trailing-stop ratchet) -- see
+    #: `PositionLifecycleManager._replace_stop_price`'s in-place-amend
+    #: success branch. Never emitted for a same-price resize (e.g.
+    #: `retry_unprotected_positions`' periodic re-attempt, or a
+    #: quantity-only resize after a partial exit) -- those aren't a
+    #: tightening, they're the same price still resting or a difference
+    #: this event type doesn't describe.
+    STOP_TIGHTENED = "stop_tightened"
+    #: A stop submission came back rejected/errored, or in the ambiguous
+    #: "FILLED-on-submission or no broker_order_id" state
+    #: `_place_stop_locked` treats as unprotected rather than fabricate
+    #: confirmed coverage -- see that method's two failure branches.
+    PROTECTION_FAILED = "protection_failed"
+    #: A logical profit target (a real `Target(action=SELL)`, e.g. the
+    #: single take-profit target `app/engine.py`'s `_handle_managed_entry`
+    #: builds from `signal.take_profit`) actually fired -- its exit order
+    #: reached FILLED or PENDING and `target.fired` was set True -- see
+    #: `PositionLifecycleManager.on_price_update`'s `TargetAction.SELL`
+    #: branch.
+    TARGET_HIT = "target_hit"
+
+
 @dataclass
 class Target:
     """A logical, app-managed profit action — not necessarily a standing broker order.
@@ -83,6 +130,20 @@ class PositionPlan:
     trailing: TrailingPolicy | None = None
     time_exit: datetime | None = None
     max_risk: float | None = None
+    #: DB-0X (order purpose/family): the id of the real `Signal` that
+    #: started THIS position episode (set once, at `app/engine.py`'s
+    #: `_handle_managed_entry`, from the entry signal it's building this
+    #: plan from) -- carried for the lifetime of the position so a later
+    #: CLOSE for the same (account_id, symbol), which has no real signal
+    #: linking it back to its own entry otherwise, can still be recorded
+    #: under the same `orders.family_id` as its entry. `""` (never
+    #: fabricated) for a plan built with no real entry signal to attribute
+    #: (shouldn't happen on the real entry path, but a test/direct
+    #: construction may still omit it) -- see `_lifecycle_to_state`/
+    #: `_lifecycle_from_state`'s `.get(..., "")` for why a lifecycle
+    #: persisted before this field existed restores safely instead of
+    #: raising.
+    entry_signal_id: str = ""
 
 
 @dataclass
@@ -93,6 +154,15 @@ class StopRecord:
     broker_order_id: str | None = None
     protected_quantity: float = 0.0
     status: ProtectionStatus = ProtectionStatus.UNPROTECTED
+    #: PU-A2: the real moment the broker confirmed this stop is actually
+    #: resting (i.e. the instant `status` last became STOP_CONFIRMED) --
+    #: app/execution_quality.py's "protection acknowledgment" stage. Reset
+    #: to None whenever protection stops being confirmed (rejected, errored,
+    #: or an ambiguous submission -- see PositionLifecycleManager._place_stop_locked),
+    #: so a stale confirmation timestamp never survives a later loss of
+    #: coverage. Never backfilled/guessed -- only set at the exact call
+    #: site that sets status = STOP_CONFIRMED.
+    confirmed_at: datetime | None = None
 
 
 @dataclass
@@ -174,6 +244,18 @@ class PendingEntry:
     #: nothing guarantees this will ever be polled to a terminal state.
     reserved_notional: float = 0.0
 
+    @property
+    def unresolved_remainder(self) -> float:
+        """How much of `requested_quantity` could still fill for this entry
+        — mirrors `PendingExit.unresolved_remainder`. This is exactly the
+        per-entry contribution to `PositionLifecycleManager.get_outstanding_possible_fill`:
+        genuine uncertain exposure (the broker could still confirm more of
+        this fill) that must be surfaced, never silently treated as zero
+        and never silently treated as already-owned."""
+        if self.remainder_resolved:
+            return 0.0
+        return max(0.0, self.requested_quantity - self.confirmed_filled_quantity)
+
 
 @dataclass
 class PositionLifecycle:
@@ -186,6 +268,115 @@ class PositionLifecycle:
     # Halt state lives on CloseArbiter, not here — it's the single source of
     # truth (app/lifecycle/close_arbiter.py's is_halted()/halt_reason()), so
     # this lifecycle and the arbiter's ledger can never disagree about it.
+
+    # --- PU-A1: real MAE/MFE (maximum adverse/favorable excursion) tracking ---
+    #
+    # `entry_price` is the actual confirmed fill price for this position's
+    # entry (set by `PositionLifecycleManager.on_entry_fill`'s `entry_price`
+    # argument) — None when that price is unknown (e.g. a caller that
+    # doesn't have one, or a position whose entry resolved through the
+    # PENDING-entry path, which doesn't yet thread a price through). `mae`/
+    # `mfe` below are deliberately None (not 0.0) whenever there's no entry
+    # price to measure from — "unknown" and "zero excursion" are different
+    # facts and must not be conflated.
+    #
+    # `highest_price_since_entry`/`lowest_price_since_entry` are updated
+    # ONLY from real price observations (see `observe_price`) — a genuine
+    # fill price at entry, or a real feed tick via
+    # `PositionLifecycleManager.on_price_update` (itself only ever called
+    # with a real broker-reported price — see app/pricing.py's
+    # `PriceMonitor`). A broker/account with no live-price capability at
+    # all (`BrokerAdapter.has_last_price_capability` False) simply never
+    # calls `on_price_update` for this position, so these two fields never
+    # move past the entry price — see `has_price_data`, which distinguishes
+    # "we have observed real prices and they never moved" from "no
+    # observation has ever come in beyond the entry fill itself." Neither
+    # case is ever a fabricated value.
+    entry_price: float | None = None
+    highest_price_since_entry: float | None = None
+    highest_price_at: datetime | None = None
+    lowest_price_since_entry: float | None = None
+    lowest_price_at: datetime | None = None
+
+    # --- PU-A3: real last-known price, for equity/unrealized-P&L snapshots ---
+    #
+    # `highest_price_since_entry`/`lowest_price_since_entry` above are
+    # EXTREMES (for MAE/MFE), not "what price is this position at right
+    # now" -- app/equity_history.py needs the latter to value an open
+    # position against its real cost basis, and must not misuse an extreme
+    # for that. `last_observed_price` is simply the most recent real price
+    # `observe_price` was called with (a genuine entry fill or feed tick --
+    # same provenance guarantee as the two fields above), so it moves with
+    # every observation instead of only ratcheting outward. None until at
+    # least one real observation has arrived -- never fabricated.
+    last_observed_price: float | None = None
+    last_observed_price_at: datetime | None = None
+
+    def observe_price(self, price: float, at: datetime) -> None:
+        """Record one real price observation for MAE/MFE tracking (and,
+        PU-A3, for the last-known-price snapshot consumers like
+        app/equity_history.py read). Callers must only ever pass a
+        genuine, broker/feed-reported price (or a confirmed fill price) --
+        never an estimated or synthetic one; see this dataclass's field
+        docstrings above for why."""
+        if self.highest_price_since_entry is None or price > self.highest_price_since_entry:
+            self.highest_price_since_entry = price
+            self.highest_price_at = at
+        if self.lowest_price_since_entry is None or price < self.lowest_price_since_entry:
+            self.lowest_price_since_entry = price
+            self.lowest_price_at = at
+        self.last_observed_price = price
+        self.last_observed_price_at = at
+
+    @property
+    def has_price_data(self) -> bool:
+        """True once at least one real price observation has been recorded
+        (including the entry fill itself, if `entry_price` was known) --
+        False means there is honestly nothing to report MAE/MFE from yet
+        (e.g. a broker with no live-price capability and no entry price
+        either), as distinct from a real observation that simply hasn't
+        moved."""
+        return self.highest_price_since_entry is not None
+
+    @property
+    def mae(self) -> float | None:
+        """Maximum adverse excursion, in price terms: how far price moved
+        AGAINST this position from its entry price, at the worst point
+        observed so far. Always >= 0 (0.0 means no adverse move has been
+        observed yet, not that none is possible). None when there's no
+        entry price or no price observation at all to compute it from —
+        never fabricated as 0.0 in that case.
+
+        Direction is side-dependent: a LONG's adverse move is a price
+        DECREASE (entry minus the lowest price seen); a SHORT's adverse
+        move is a price INCREASE (the highest price seen minus entry) —
+        being short and having the price rise against you is the loss
+        side, not the reverse."""
+        if self.entry_price is None or not self.has_price_data:
+            return None
+        if self.plan.side == Side.BUY:
+            assert self.lowest_price_since_entry is not None  # has_price_data guarantees this
+            return max(0.0, self.entry_price - self.lowest_price_since_entry)
+        assert self.highest_price_since_entry is not None  # has_price_data guarantees this
+        return max(0.0, self.highest_price_since_entry - self.entry_price)
+
+    @property
+    def mfe(self) -> float | None:
+        """Maximum favorable excursion, in price terms: how far price moved
+        IN THIS POSITION'S FAVOR from its entry price, at the best point
+        observed so far. Always >= 0. None under the same conditions as
+        `mae` above.
+
+        Mirror of `mae`'s side handling: a LONG's favorable move is a price
+        INCREASE (the highest price seen minus entry); a SHORT's favorable
+        move is a price DECREASE (entry minus the lowest price seen)."""
+        if self.entry_price is None or not self.has_price_data:
+            return None
+        if self.plan.side == Side.BUY:
+            assert self.highest_price_since_entry is not None  # has_price_data guarantees this
+            return max(0.0, self.highest_price_since_entry - self.entry_price)
+        assert self.lowest_price_since_entry is not None  # has_price_data guarantees this
+        return max(0.0, self.entry_price - self.lowest_price_since_entry)
 
     @property
     def exit_side(self) -> Side:

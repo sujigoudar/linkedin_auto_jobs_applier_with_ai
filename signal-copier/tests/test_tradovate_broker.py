@@ -80,6 +80,39 @@ async def test_successful_order_reports_pending_and_sends_isautomated_true(monke
 
 
 @pytest.mark.asyncio
+async def test_a_fractional_contract_quantity_is_rejected_not_silently_truncated(monkeypatch):
+    """`orderQty=int(quantity)` truncates toward zero with no warning at
+    all -- a computed size of 4.9 contracts must never quietly become 4.
+    This must be refused, not rounded, and no order request sent."""
+    _set_env(monkeypatch)
+    broker = TradovateBroker()
+    post_calls = []
+
+    async def fake_post(self, url, json=None, headers=None):
+        post_calls.append(url)
+        request = httpx.Request("POST", url)
+        if url.endswith("/auth/accesstokenrequest"):
+            return httpx.Response(200, json={"accessToken": "tok-1", "expirationTime": "2099-01-01T00:00:00Z"}, request=request)
+        return httpx.Response(200, json={"orderId": 1}, request=request)
+
+    async def fake_get(self, url, params=None, headers=None):
+        request = httpx.Request("GET", url)
+        return httpx.Response(200, json=[{"id": 999, "name": "DEMO123456"}], request=request)
+
+    broker._client.post = fake_post.__get__(broker._client)
+    broker._client.get = fake_get.__get__(broker._client)
+
+    account = DestinationAccount(account_id="acct1", broker="tradovate")
+    result = await broker.place_order(
+        Signal(source="test", symbol="MNQZ4", side=Side.BUY), account, quantity=4.9, symbol="MNQZ4"
+    )
+
+    assert result.status == OrderStatus.ERROR
+    assert not any(url.endswith("/order/placeOrder") for url in post_calls)
+    await broker.close()
+
+
+@pytest.mark.asyncio
 async def test_failure_text_reports_rejected(monkeypatch):
     _set_env(monkeypatch)
     broker = TradovateBroker()

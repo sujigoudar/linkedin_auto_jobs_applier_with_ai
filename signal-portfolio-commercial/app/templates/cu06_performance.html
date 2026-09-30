@@ -46,7 +46,11 @@
   {% else %}
   <p><span class="badge badge-unknown">NOT_CONNECTED</span> -- no platform connection backs this account yet.</p>
   {% endif %}
-  <p><span class="badge badge-unknown">UNSUPPORTED</span> -- maximum drawdown (M-CU-06-02) needs a chronological normalized-equity series this build does not compute; never a guessed figure.</p>
+  {% if report.max_drawdown is not none %}
+  <p><strong>M-CU-06-02 Maximum drawdown:</strong> {{ report.max_drawdown.max_drawdown }} (real peak-to-trough walk of this account's own cumulative realized P&amp;L, over {{ report.equity_series | length }} real points)</p>
+  {% else %}
+  <p><span class="badge badge-unknown">AWAITING_OBSERVATIONS</span> -- maximum drawdown (M-CU-06-02) needs at least 2 real cumulative-P&amp;L points from this account's own executions; none recorded yet. Never a guessed figure.</p>
+  {% endif %}
 </div>
 
 <div class="panel">
@@ -57,7 +61,11 @@
 <div class="panel">
   <h2>Attribution</h2>
   <p><span class="badge badge-unknown">UNSUPPORTED</span> -- no cost/return attribution model exists in this build.</p>
-  <p><span class="badge badge-unknown">UNSUPPORTED</span> -- completed-episode win rate (M-CU-06-03) needs an episode/trade-completion concept this build does not compute.</p>
+  {% if report.win_rate is not none %}
+  <p><strong>M-CU-06-03 Completed-episode win rate:</strong> {{ (report.win_rate * 100) | round(1) }}% ({{ report.winning_episode_count }} of {{ report.completed_episode_count }} real completed episodes)</p>
+  {% else %}
+  <p><span class="badge badge-unknown">AWAITING_OBSERVATIONS</span> -- completed-episode win rate (M-CU-06-03) needs at least one real completed episode (a real lot opened then fully closed) from this account's own executions; none recorded yet.</p>
+  {% endif %}
 </div>
 
 <div class="panel">
