@@ -247,7 +247,24 @@ The transactional private export outbox (Signal Platform Integration
 Correction Pack, S4.2/S6). A row here is written in the **same**
 sqlite3 transaction as the authoritative local state change it
 describes — never a best-effort HTTP POST after commit as the only
-export mechanism.
+export mechanism (with the one documented exception below).
+
+`EXECUTION_APPLIED` coverage (TRK-23): every real confirmed fill on a
+`managed_lifecycle` account now builds and persists one of these, using
+the same `build_execution_applied_envelope`/`_build_export_envelope`
+machinery a plain account's fill already used — a synchronous managed
+entry/close fill (`app/engine.py`'s `_handle_signal`/`close_position`,
+same-transaction row-write as `save_order_result`), and a protective stop
+filling on its own with no `orders`-row-writing caller of its own
+(`PositionLifecycleManager.on_stop_filled` via
+`_apply_exit_fill`/`_persist_self_initiated_exit`, also same-transaction).
+An asynchronously-confirmed managed entry/CLOSE
+(`OrderReconciler.reconcile_once`'s own lifecycle-owned-pending-order
+branch) is the one documented exception: like the plain-account
+reconciler's own `_export_reconciled_fill`, it appends its envelope in
+its own separate transaction (`append_export_event`), since the
+`orders` row it's confirming was already committed earlier at placement
+time.
 
 | column | type | notes |
 |---|---|---|

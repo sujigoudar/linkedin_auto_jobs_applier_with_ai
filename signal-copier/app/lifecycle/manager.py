@@ -66,9 +66,12 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
-from app import command_ledger
+from signal_platform_contracts import Environment, EvidenceClass
+
+from app import command_ledger, config
 from app.brokers.base import BrokerAdapter
 from app.capital_allocator import CapitalAllocator
+from app.export_events import build_execution_applied_envelope
 from app.lifecycle.close_arbiter import CloseArbiter
 from app.lifecycle.models import (
     PendingEntry,
@@ -881,6 +884,14 @@ class PositionLifecycleManager:
             lifecycle = self._lifecycles.get((account.account_id, symbol))
             if lifecycle is None:
                 return
+            # TRK-23: the real broker_order_id this stop fill belongs to,
+            # captured BEFORE either branch below clears
+            # `lifecycle.stop.broker_order_id` -- `_apply_exit_fill`'s own
+            # export (see its docstring) needs the actual id this fill
+            # happened under, not whatever's left on the lifecycle
+            # afterward (which is None precisely when protection just
+            # ran out, i.e. exactly the case this fill IS).
+            stop_broker_order_id = lifecycle.stop.broker_order_id
             tx.settle(reserved_quantity=0.0, filled_quantity=filled_quantity)
             lifecycle.confirmed_owned_quantity = tx.owned
             if tx.owned <= 0:
@@ -932,6 +943,7 @@ class PositionLifecycleManager:
             filled_quantity,
             exit_kind="stop",
             exit_price=exit_price,
+            broker_order_id=stop_broker_order_id,
             reason="trailing_stop" if was_trailing else "stop",
         )
 
@@ -1184,6 +1196,7 @@ class PositionLifecycleManager:
                 actual_filled,
                 exit_kind=source,
                 exit_price=exit_result.filled_price,
+                broker_order_id=exit_result.broker_order_id,
                 reason=reason or source,
             )
             return exit_result
@@ -1235,7 +1248,13 @@ class PositionLifecycleManager:
                     # layer (see this method's own docstring) -- `exit_price`
                     # stays honestly None rather than guessed.
                     self._apply_exit_fill(
-                        lifecycle, account, symbol, delta, exit_kind=pending.source, reason=pending.reason
+                        lifecycle,
+                        account,
+                        symbol,
+                        delta,
+                        exit_kind=pending.source,
+                        broker_order_id=pending.broker_order_id,
+                        reason=pending.reason,
                     )
                 else:
                     self._persist(lifecycle)
@@ -1272,7 +1291,13 @@ class PositionLifecycleManager:
 
         if delta > 0:
             self._apply_exit_fill(
-                lifecycle, account, symbol, delta, exit_kind=pending.source, reason=pending.reason
+                lifecycle,
+                account,
+                symbol,
+                delta,
+                exit_kind=pending.source,
+                broker_order_id=pending.broker_order_id,
+                reason=pending.reason,
             )
         else:
             self._persist(lifecycle)
@@ -1301,6 +1326,7 @@ class PositionLifecycleManager:
         *,
         exit_kind: str = "",
         exit_price: float | None = None,
+        broker_order_id: str | None = None,
         reason: str = "",
     ) -> None:
         """Single execution-application owner for a confirmed exit fill —
@@ -1326,7 +1352,17 @@ class PositionLifecycleManager:
         this specific fill (or None, honestly, when none is available at
         all yet -- see `on_stop_filled`'s own fallback chain and
         `resolve_pending_exit`'s docstring for the one case where no real
-        price is available at this layer); it is NEVER guessed here."""
+        price is available at this layer); it is NEVER guessed here.
+
+        TRK-23: `broker_order_id` (also never guessed -- `None` when the
+        caller has no real one for this specific fill) is the real
+        broker-assigned id this fill happened under -- `on_stop_filled`'s
+        own `lifecycle.stop.broker_order_id` (captured there BEFORE it's
+        cleared), or `request_exit`/`resolve_pending_exit`'s own exit
+        order id. Threaded through only so `_persist_self_initiated_exit`
+        can build a real EXECUTION_APPLIED envelope alongside its `orders`
+        row -- unused for any `exit_kind` outside
+        `_SELF_PERSISTED_EXIT_KINDS`."""
         if lifecycle.closed:
             self._persist_closed_excursion(lifecycle, account, symbol)
         if self.store is not None and filled_quantity > 0:
@@ -1338,7 +1374,14 @@ class PositionLifecycleManager:
                 self.store.delete_lifecycle_state(account.account_id, symbol)
             if exit_kind in self._SELF_PERSISTED_EXIT_KINDS:
                 self._persist_self_initiated_exit(
-                    lifecycle, account, symbol, filled_quantity, exit_kind=exit_kind, exit_price=exit_price, reason=reason
+                    lifecycle,
+                    account,
+                    symbol,
+                    filled_quantity,
+                    exit_kind=exit_kind,
+                    exit_price=exit_price,
+                    broker_order_id=broker_order_id,
+                    reason=reason,
                 )
         else:
             self._persist(lifecycle)
@@ -1352,12 +1395,24 @@ class PositionLifecycleManager:
         *,
         exit_kind: str,
         exit_price: float | None,
+        broker_order_id: str | None,
         reason: str,
     ) -> None:
         """Persist one real `orders` row (plus its originating `signals`
         row) for a stop/target/time_exit fill this module itself
         triggered -- see `_apply_exit_fill`'s docstring. `self.store` is
-        guaranteed non-None by the only caller."""
+        guaranteed non-None by the only caller.
+
+        TRK-23: also builds and persists this fill's own EXECUTION_APPLIED
+        export envelope, the same `build_execution_applied_envelope`/
+        outbox mechanism app/engine.py's own fills already use (see
+        app/export_events.py) -- this was the one real confirmed-fill
+        point (a stop/target/time_exit triggered from *inside* this
+        module, with no app/engine.py caller of its own) that never built
+        one at all, not merely one with a missing field. `broker_order_id`
+        is `None` (no envelope built -- `build_execution_applied_envelope`
+        itself refuses one without it, never fabricated) whenever the
+        caller genuinely has no real one for this specific fill."""
         assert self.store is not None
         exit_signal = Signal(
             source="lifecycle_manager",
@@ -1371,8 +1426,24 @@ class PositionLifecycleManager:
             account_id=account.account_id,
             status=OrderStatus.FILLED,
             signal_id=exit_signal.id,
+            broker_order_id=broker_order_id,
             filled_quantity=filled_quantity,
             filled_price=exit_price,
+        )
+        source_stream = f"signal-copier:{account.account_id}"
+        export_envelope = build_execution_applied_envelope(
+            result,
+            account=account,
+            symbol=symbol,
+            side=lifecycle.exit_side,
+            asset_class=lifecycle.plan.asset_class,
+            source_stream=source_stream,
+            export_sequence=self.store.next_export_sequence(source_stream),
+            producer_id=config.RELAY_PRODUCER_ID,
+            evidence_class=EvidenceClass[config.RELAY_EVIDENCE_CLASS],
+            environment=Environment[config.RELAY_ENVIRONMENT],
+            originating_source_event_id=exit_signal.id,
+            originating_analyst_id=None,
         )
         self.store.save_order_result(
             result,
@@ -1380,6 +1451,7 @@ class PositionLifecycleManager:
             symbol=symbol,
             side=lifecycle.exit_side,
             applied_quantity=filled_quantity,
+            export_envelope=export_envelope,
             purpose=exit_kind if exit_kind.endswith("_exit") else f"{exit_kind}_exit",
             family_id=lifecycle.plan.entry_signal_id or None,
         )
