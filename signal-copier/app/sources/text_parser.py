@@ -21,7 +21,13 @@ import re
 from dataclasses import dataclass
 
 from app.errors import SignalValidationError
-from app.models import AssetClass, Signal, Side
+from app.models import AssetClass, ProfitTarget, Signal, Side
+
+#: This parser's own exact interpretation implementation -- see
+#: `Signal.parser_version`'s own docstring. Bump whenever this grammar's
+#: field-by-field reading of message text changes in a way that would
+#: matter to a consumer replaying a past raw message.
+PARSER_VERSION = "text-parser-v2-multi-target"
 
 _SIDE_ALIASES = {
     "buy": Side.BUY,
@@ -60,15 +66,21 @@ _PATTERN = re.compile(
     re.IGNORECASE | re.VERBOSE | re.DOTALL,
 )
 
-# SIG-02: more than one side keyword, or more than one TP level, in the same
-# message means this is either a compound instruction (two distinct trades
-# in one message -- "BUY AAPL 10 and SELL MSFT 5") or a multi-target
-# instruction this single-TP grammar can't faithfully represent ("TP1 105
-# TP2 110") -- either way, picking just the first one and silently
-# discarding the rest would trade on less than what the message actually
-# said. Refuse rather than guess.
+# SIG-02: more than one side keyword in the same message means this is a
+# compound instruction (two distinct trades in one message -- "BUY AAPL 10
+# and SELL MSFT 5") -- picking just the first one and silently discarding
+# the rest would trade on less than what the message actually said. Refuse
+# rather than guess.
 _SIDE_WORD_PATTERN = re.compile(r"\b(?:buy|sell|long|short|close|exit)\b", re.IGNORECASE)
-_TP_LEVEL_PATTERN = re.compile(r"\bTP\d*\b", re.IGNORECASE)
+
+#: Every TP mention in the message, each with its own optional level number
+#: (bare "TP"/"TP:" has an empty `num`; "TP1", "TP2", ... carry one) and its
+#: own value. A multi-target instruction ("TP1 105 TP2 110") is now
+#: REPRESENTABLE (see `_resolve_take_profit_targets` below) -- this no
+#: longer forces every multi-TP message into AMBIGUOUS, only the genuinely
+#: unparseable/inconsistent ones (bare repeated TP with no level numbers to
+#: order by, or level numbers that aren't a clean 1..n sequence).
+_TP_ENTRY_PATTERN = re.compile(r"\bTP(?P<num>\d*)[:=]?\s*(?P<val>" + _NUMBER + r")", re.IGNORECASE)
 
 # A plain substring match doesn't prove the message is actually giving that
 # instruction -- "DO NOT BUY AAPL 10" contains "BUY AAPL 10" too. This is not
@@ -207,6 +219,58 @@ class MessageDisposition:
     detail: str | None = None
 
 
+@dataclass
+class _TpLevel:
+    """One raw TP mention found by `_TP_ENTRY_PATTERN`, resolved to its
+    final target ordinal -- `label` is that ordinal as a string ("1",
+    "2", ... or "" for a single unlabeled TP), `value` is its raw
+    (comma/zero-unvalidated) numeric text."""
+
+    label: str
+    value: str
+
+
+def _resolve_take_profit_targets(stripped: str) -> str | tuple[str | None, list[_TpLevel]]:
+    """Resolves every TP mention in the message to either a genuine
+    multi-target ordered collection or a single primary take-profit --
+    returning a `str` (the AMBIGUOUS detail message) when the message's
+    own TP labeling doesn't unambiguously determine an order.
+
+    - No TP mention: `(None, [])`.
+    - Exactly one TP mention (labeled or not): `(that value, [that level])`
+      -- unchanged from this parser's previous single-TP behavior.
+    - Two or more TP mentions, each carrying a distinct level number that
+      forms a clean `1..n` sequence (e.g. "TP1 105 TP2 110", in any word
+      order): REPRESENTABLE -- returns them sorted into target order,
+      `take_profit` set to TP1's own value (the back-compat primary/
+      first-target convention -- see `Signal.take_profit`'s own
+      docstring).
+    - Two or more TP mentions that are NOT a clean `1..n` sequence (a bare
+      repeated "TP" with no level numbers to order by, a repeated same
+      number, or numbers that skip/aren't sequential): genuinely
+      ambiguous -- this grammar has no reliable way to determine which
+      mention is "first", so it refuses rather than guessing, same as
+      before this multi-target capability existed."""
+    entries = list(_TP_ENTRY_PATTERN.finditer(stripped))
+    if not entries:
+        return (None, [])
+    if len(entries) == 1:
+        entry = entries[0]
+        level = _TpLevel(label=entry.group("num") or "", value=entry.group("val"))
+        return (level.value, [level])
+
+    nums = [entry.group("num") for entry in entries]
+    if any(n == "" for n in nums):
+        return "more than one take-profit level, but not consistently numbered (TP1, TP2, ...) -- can't determine target order"
+    ints = [int(n) for n in nums]
+    if len(set(ints)) != len(ints) or sorted(ints) != list(range(1, len(ints) + 1)):
+        return "take-profit levels are not a clean TP1, TP2, ... sequence -- can't determine target order"
+
+    ordered = sorted(zip(ints, entries, strict=True), key=lambda pair: pair[0])
+    targets_raw = [_TpLevel(label=str(num), value=entry.group("val")) for num, entry in ordered]
+    return (targets_raw[0].value, targets_raw)
+
+
 def classify_text_signal(
     text: str, *, source: str, asset_class: AssetClass = AssetClass.CRYPTO, analyst: str | None = None
 ) -> MessageDisposition:
@@ -242,15 +306,22 @@ def classify_text_signal(
             outcome=DispositionOutcome.AMBIGUOUS,
             detail="more than one trade instruction in a single message",
         )
-    if len(_TP_LEVEL_PATTERN.findall(stripped)) > 1:
-        return MessageDisposition(
-            text=text,
-            outcome=DispositionOutcome.AMBIGUOUS,
-            detail="more than one take-profit level -- no way to represent a multi-target exit",
-        )
 
-    for field in ("quantity", "price", "sl", "tp"):
-        raw = match.group(field)
+    tp_resolution = _resolve_take_profit_targets(stripped)
+    if isinstance(tp_resolution, str):
+        # Genuinely unparseable/inconsistent TP labeling -- see
+        # `_resolve_take_profit_targets`'s own docstring for exactly which
+        # shapes still fall here (bare repeated TP with nothing to order
+        # by, or level numbers that aren't a clean 1..n sequence).
+        return MessageDisposition(text=text, outcome=DispositionOutcome.AMBIGUOUS, detail=tp_resolution)
+    take_profit_raw, targets_raw = tp_resolution
+
+    for field, raw in (
+        ("quantity", match.group("quantity")),
+        ("price", match.group("price")),
+        ("sl", match.group("sl")),
+        *((f"tp{level.label}", level.value) for level in targets_raw),
+    ):
         if raw is not None and (raw.startswith("-") or float(raw.replace(",", "")) == 0):
             # A quantity, price, or stop/target level of zero (or less) is
             # never a valid trade instruction -- app/sources/webhook.py's
@@ -282,6 +353,16 @@ def classify_text_signal(
         inferred_asset_class if inferred_asset_class is not None else asset_class
     )
 
+    # Only a GENUINE multi-target message (2+ cleanly-numbered TP levels)
+    # populates `targets` -- a single TP mention keeps this parser's
+    # previous behavior exactly (`targets` stays empty, `take_profit`
+    # alone carries the value).
+    targets = (
+        [ProfitTarget(price=float(level.value.replace(",", "")), label=f"TP{level.label}") for level in targets_raw]
+        if len(targets_raw) > 1
+        else []
+    )
+
     signal = Signal(
         source=source,
         symbol=symbol,
@@ -291,7 +372,9 @@ def classify_text_signal(
         quantity=_optional_float(match.group("quantity")),
         price=_optional_float(match.group("price")),
         stop_loss=_optional_float(match.group("sl")),
-        take_profit=_optional_float(match.group("tp")),
+        take_profit=_optional_float(take_profit_raw),
+        targets=targets,
+        parser_version=PARSER_VERSION,
         raw={"text": text},
     )
     return MessageDisposition(text=text, outcome=DispositionOutcome.PARSED, signal=signal)

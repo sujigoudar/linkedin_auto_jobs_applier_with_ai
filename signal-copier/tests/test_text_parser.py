@@ -107,15 +107,48 @@ def test_zero_valued_numeric_field_is_refused_not_traded(text):
         "BUY AAPL -10 shares",
         "BUY AAPL 10 SL -5 TP 110",
         "BUY AAPL 10 and SELL MSFT 5",
-        "BUY AAPL 10 SL 95 TP1 105 TP2 110",
+        # A bare repeated "TP" with no level numbers to order by, or level
+        # numbers that aren't a clean 1..n sequence, are still genuinely
+        # ambiguous -- see test_multi_target_take_profit_is_now_parsed
+        # below for the now-representable TP1/TP2/... case this used to
+        # include.
+        "BUY AAPL 10 SL 95 TP 105 TP 110",
+        "BUY AAPL 10 SL 95 TP1 105 TP3 110",
     ],
 )
 def test_ambiguous_or_compound_text_is_refused_not_immediate_entry(text):
     """SIG-02: reproduces the audit's exact cases (test_adapter_research_audit.py::
     test_unreleased_ambiguous_or_compound_text_not_immediate_entry) -- past-tense
     reporting of someone else's call, a silently-truncated negative
-    quantity/level, more than one trade instruction, and more than one
-    take-profit level must all be refused, not silently narrowed to
-    whatever the grammar happens to capture first."""
+    quantity/level, more than one trade instruction, and an inconsistently
+    labeled take-profit level must all be refused, not silently narrowed
+    to whatever the grammar happens to capture first."""
     with pytest.raises(SignalValidationError):
         parse_text_signal(text, source="test")
+
+
+def test_multi_target_take_profit_is_now_parsed():
+    """A release review found the previous single-take-profit shape made
+    multiple, cleanly-numbered profit targets (TP1/TP2/...) unrepresentable
+    -- this is now PARSED with an ordered `targets` collection instead of
+    AMBIGUOUS."""
+    signal = parse_text_signal("BUY AAPL 10 SL 95 TP1 105 TP2 110", source="test")
+    assert signal.stop_loss == 95.0
+    assert [t.price for t in signal.targets] == [105.0, 110.0]
+    assert signal.take_profit == 105.0
+
+
+def test_multi_target_take_profit_in_reverse_word_order_still_sorts_by_level():
+    signal = parse_text_signal("BUY AAPL 10 TP2 110 TP1 105", source="test")
+    assert [t.price for t in signal.targets] == [105.0, 110.0]
+
+
+def test_three_level_multi_target_take_profit():
+    signal = parse_text_signal("BUY AAPL 10 TP1 105 TP2 110 TP3 115", source="test")
+    assert [t.price for t in signal.targets] == [105.0, 110.0, 115.0]
+    assert [t.label for t in signal.targets] == ["TP1", "TP2", "TP3"]
+
+
+def test_multi_target_zero_valued_level_is_refused():
+    with pytest.raises(SignalValidationError):
+        parse_text_signal("BUY AAPL 10 TP1 105 TP2 0", source="test")
