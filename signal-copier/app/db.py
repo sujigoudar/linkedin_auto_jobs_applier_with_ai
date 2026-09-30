@@ -1475,6 +1475,49 @@ _COLUMN_MIGRATIONS = [
     # escalation / resolve_notification_bridge_event_escalation).
     ("notification_bridge_events", "needs_escalation", "INTEGER NOT NULL DEFAULT 0"),
     ("notification_bridge_events", "escalation_status", "TEXT"),
+    # Track 16 (canonical signal lifecycle -- the user's own spec: "Store:
+    # source created time, source modified time, first observed time,
+    # received time, parsed time, decision time"). `received_at` already
+    # existed (Track 1); these five are the rest, each NULL/honestly
+    # absent for every signal (this codebase's own adapters included)
+    # that doesn't populate it -- never guessed/backfilled from
+    # received_at. See app/models.py's Signal docstrings for exactly what
+    # each one means and app/signal_freshness.py's own module docstring
+    # for why freshness math must never reduce to received_at alone.
+    ("signals", "source_created_at", "TEXT"),
+    ("signals", "source_modified_at", "TEXT"),
+    ("signals", "first_observed_at", "TEXT"),
+    ("signals", "parsed_at", "TEXT"),
+    ("signals", "decision_at", "TEXT"),
+    # Track 16 (freshness config, generalizing Track 14's reserved-but-
+    # unwired providers.max_entry_age_seconds/stale_exit_policy/
+    # correlation_window_seconds -- see app/signal_freshness.py's module
+    # docstring): the remaining fields the user's own spec named that
+    # Track 14 didn't already reserve a column for.
+    ("providers", "max_add_age_seconds", "INTEGER"),
+    ("providers", "adjustment_stale_behavior", "TEXT"),
+    ("providers", "timestamp_source_preference", "TEXT"),
+    ("providers", "clock_skew_tolerance_seconds", "INTEGER"),
+    ("providers", "recovered_event_behavior", "TEXT"),
+    # Track 16 (conflict-resolution policy -- see
+    # app/signal_correlation.py's own ConflictResolutionPolicy docstring).
+    # Default 'HOLD': the conservative floor, and Track 12's own original
+    # (and still current, for any provider that never sets this) behavior
+    # -- adding this column can never change what an existing/unconfigured
+    # provider's conflicting signals do.
+    ("providers", "conflict_resolution_policy", "TEXT NOT NULL DEFAULT 'HOLD'"),
+    # Track 16: the explicit, operator-set source id PROVIDER_DETERMINISTIC
+    # resolves conflicts by trusting -- see ConflictResolutionPolicy's own
+    # docstring for why this is a structural comparison, never a runtime
+    # judgment call.
+    ("providers", "deterministic_primary_source_id", "TEXT"),
+    # Track 16: the correlation TOLERANCE fields the user's own spec named
+    # ("entry tolerance") that Track 14 didn't already reserve a column
+    # for -- correlation_window_seconds (timestamp tolerance) already
+    # existed. See app/signal_correlation.py's module docstring for where
+    # this overrides the global SIGNAL_CORRELATION_PRICE_TOLERANCE_PCT
+    # default, per provider.
+    ("providers", "correlation_price_tolerance_pct", "REAL"),
 ]
 
 
@@ -1591,8 +1634,9 @@ class SignalStore:
                 """INSERT OR REPLACE INTO signals
                    (id, source, symbol, side, asset_class, quantity, price, stop_loss, take_profit,
                     analyst, received_at, raw, import_batch, channel_id, message_id, revision_id,
-                    correlation_fingerprint)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    correlation_fingerprint, source_created_at, source_modified_at, first_observed_at,
+                    parsed_at, decision_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     signal.id,
                     signal.source,
@@ -1611,6 +1655,11 @@ class SignalStore:
                     signal.message_id,
                     signal.revision_id,
                     correlation_fingerprint,
+                    signal.source_created_at.isoformat() if signal.source_created_at else None,
+                    signal.source_modified_at.isoformat() if signal.source_modified_at else None,
+                    signal.first_observed_at.isoformat() if signal.first_observed_at else None,
+                    signal.parsed_at.isoformat() if signal.parsed_at else None,
+                    signal.decision_at.isoformat() if signal.decision_at else None,
                 ),
             )
 
@@ -1783,6 +1832,324 @@ class SignalStore:
             "match_type": row[10],
             "created_at": row[11],
         }
+
+    # --- Track 16: transport dedup vs. semantic correlation -- kept as    -
+    # two DISTINCT read paths, never conflated (the user's own spec: "Same
+    # Telegram update delivered twice = transport duplicate. Same provider
+    # trade delivered by Telegram + Whop + email = semantic duplicate.
+    # Never conflate them -- two distinct pages/metrics/read paths.") ----
+
+    def list_transport_duplicate_groups(self) -> list[dict]:
+        """TRANSPORT-level duplication/revision groups -- see this
+        method's own note on what is and isn't observable given
+        `find_signal_id_by_provider_identity`'s existing collapse-onto-
+        one-row dedup: an EXACT (channel_id, message_id, revision_id)
+        redelivery is, by design, never persisted twice (`save_signal`'s
+        `INSERT OR REPLACE` reuses the same signal id for it) -- there is
+        no separate row a listing here could show for that specific case,
+        and inventing a redelivery counter nothing else in this codebase
+        tracks would not be honest. What IS observable, and IS still a
+        transport-level (never cross-transport/semantic) fact, is a
+        (channel_id, message_id) identity seen under more than one
+        `revision_id` -- i.e. the SAME message, on the SAME transport,
+        edited more than once. Grouped and returned only where more than
+        one revision exists (a single-revision message is not a
+        duplicate of anything). Never conflated with
+        `list_semantic_correlations`/`list_conflicting_signal_
+        correlations` (a DIFFERENT channel_id) -- see this module's own
+        section docstring."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT channel_id, message_id, id, revision_id, received_at, symbol, side, source
+                   FROM signals WHERE channel_id IS NOT NULL AND message_id IS NOT NULL
+                   ORDER BY channel_id, message_id, received_at ASC"""
+            ).fetchall()
+        groups: dict[tuple, list[dict]] = {}
+        for r in rows:
+            key = (r[0], r[1])
+            groups.setdefault(key, []).append(
+                {
+                    "signal_id": r[2],
+                    "revision_id": r[3],
+                    "received_at": r[4],
+                    "symbol": r[5],
+                    "side": r[6],
+                    "source": r[7],
+                }
+            )
+        return [
+            {"channel_id": k[0], "message_id": k[1], "revision_count": len(v), "revisions": v}
+            for k, v in groups.items()
+            if len(v) > 1
+        ]
+
+    def list_semantic_correlations(self) -> list[dict]:
+        """Cross-transport SEMANTIC correlation -- Track 12's `signal_
+        correlation_evidence` table, BOTH corroborating and conflicting
+        rows, grouped by `canonical_signal_id`. Distinct from
+        `list_transport_duplicate_groups` (same-transport redelivery/
+        revision) -- never the same read path, per this module's own
+        section docstring. This is the read path for the user's own spec
+        display example ("Canonical Signal #18421 / Telegram 09:31:02 ✓ /
+        Whop 09:31:04 ✓ / Email 09:31:09 ✓ / 3 observations / 1 canonical
+        signal / 1 execution") -- `observations` below is `len(evidence) +
+        1` (the canonical signal itself counts as the first observation).
+        `execution_count` is how many of this canonical signal's own
+        orders (via `list_orders_for_signal`) are non-REJECTED/non-ERROR
+        -- a real, derived count, never fabricated."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT id, canonical_signal_id, evidence_signal_id, fingerprint_key, source, channel_id,
+                          message_id, price, side, received_at, match_type, created_at
+                   FROM signal_correlation_evidence ORDER BY canonical_signal_id, created_at ASC"""
+            ).fetchall()
+        groups: dict[str, list[dict]] = {}
+        for r in rows:
+            d = self._signal_correlation_evidence_row_to_dict(r)
+            groups.setdefault(d["canonical_signal_id"], []).append(d)
+        result = []
+        for canonical_id, evidence in groups.items():
+            orders = self.list_orders_for_signal(canonical_id)
+            execution_count = sum(1 for o in orders if o["status"] in ("filled", "pending"))
+            result.append(
+                {
+                    "canonical_signal_id": canonical_id,
+                    "observations": len(evidence) + 1,
+                    "evidence": evidence,
+                    "has_conflict": any(e["match_type"] == "conflicting" for e in evidence),
+                    "execution_count": execution_count,
+                }
+            )
+        return result
+
+    def get_primary_source_native_id(self, provider_id: str) -> tuple[str | None, int]:
+        """`(native_id, count)` of this provider's PRIMARY-role `sources`
+        rows -- used by `app.signal_correlation.ConflictResolutionPolicy.
+        REQUIRE_PRIMARY_SOURCE` (see that enum's own docstring).
+        `native_id` is only ever non-`None` when `count == 1` -- an
+        ambiguous 0-or-many-PRIMARY provider must never be silently
+        resolved to "the first one found"."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT source_native_id FROM sources WHERE provider_id = ? AND role = 'PRIMARY' AND enabled = 1",
+                (provider_id,),
+            ).fetchall()
+        if len(rows) != 1:
+            return None, len(rows)
+        return rows[0][0], 1
+
+    def get_signal(self, signal_id: str) -> dict | None:
+        """The full `signals` row (every column, including Track 16's
+        timeline fields) for one signal id -- distinct from
+        `get_signal_raw` (which returns only the `raw` JSON blob).
+        `None` when no such signal is recorded."""
+        with self._connect() as conn:
+            row = conn.execute(
+                """SELECT id, source, symbol, side, asset_class, quantity, price, stop_loss, take_profit,
+                          analyst, received_at, import_batch, channel_id, message_id, revision_id,
+                          correlation_fingerprint, source_created_at, source_modified_at, first_observed_at,
+                          parsed_at, decision_at
+                   FROM signals WHERE id = ?""",
+                (signal_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "id": row[0],
+            "source": row[1],
+            "symbol": row[2],
+            "side": row[3],
+            "asset_class": row[4],
+            "quantity": row[5],
+            "price": row[6],
+            "stop_loss": row[7],
+            "take_profit": row[8],
+            "analyst": row[9],
+            "received_at": row[10],
+            "import_batch": row[11],
+            "channel_id": row[12],
+            "message_id": row[13],
+            "revision_id": row[14],
+            "correlation_fingerprint": row[15],
+            "source_created_at": row[16],
+            "source_modified_at": row[17],
+            "first_observed_at": row[18],
+            "parsed_at": row[19],
+            "decision_at": row[20],
+        }
+
+    def get_signal_lifecycle(self, signal_id: str) -> dict | None:
+        """The canonical signal lifecycle timeline (the user's own spec:
+        "Every canonical signal needs a timeline: received, parsed,
+        correlated, validation passed, risk approved, order submitted,
+        accepted, filled, [later] target update received, position
+        adjusted") ASSEMBLED AT READ TIME from data this codebase already
+        persists elsewhere -- no new event-log table (see this task's
+        own final report for why: every step below already has a real,
+        queryable source of truth, so a separate log would only be able
+        to drift from it).
+
+        Sources, per step:
+        - received/parsed/decision: `signals.received_at`/`parsed_at`/
+          `decision_at` (Track 16's own new timeline columns).
+        - correlated: the earliest `signal_correlation_evidence` row this
+          signal appears in, either as the canonical signal or as
+          evidence for one (Track 12).
+        - validation_passed / risk_approved: this codebase's route-
+          qualification gate (`_check_route_qualified`) and capital-
+          admission check (`_try_reserve_capital`) both run SYNCHRONOUSLY,
+          immediately before `broker.place_order`, with no separately
+          timestamped fact of their own -- inferred (`"inferred": True`)
+          from the existence of a non-REJECTED-for-that-reason order row,
+          sharing that order's own `submitted_at`, never a fabricated
+          independent timestamp. Omitted entirely for a signal with no
+          such order (nothing to infer it from).
+        - order_submitted / order_accepted / order_filled / rejected: one
+          entry per `orders` row for this signal id (`submitted_at`,
+          `broker_order_id` presence, `status`/`executed_at`).
+        - position_adjusted: every OTHER order row whose `family_id`
+          equals this signal id (a later close/adjustment belonging to
+          the position THIS signal opened) -- `app/engine.py`'s own
+          DB-0X `family_id` convention.
+
+        Returns `None` when this signal id was never recorded at all."""
+        signal = self.get_signal(signal_id)
+        if signal is None:
+            return None
+
+        events: list[dict] = []
+
+        def add(kind: str, at: str | None, **detail: Any) -> None:
+            if at is None:
+                return
+            events.append({"kind": kind, "at": at, **detail})
+
+        add("received", signal["received_at"])
+        add("parsed", signal["parsed_at"])
+        add("decision", signal["decision_at"])
+        add("source_created", signal["source_created_at"])
+        add("source_modified", signal["source_modified_at"])
+        add("first_observed", signal["first_observed_at"])
+
+        with self._connect() as conn:
+            corr_row = conn.execute(
+                """SELECT created_at, canonical_signal_id, evidence_signal_id, match_type FROM
+                   signal_correlation_evidence WHERE canonical_signal_id = ? OR evidence_signal_id = ?
+                   ORDER BY created_at ASC LIMIT 1""",
+                (signal_id, signal_id),
+            ).fetchone()
+        if corr_row is not None:
+            add(
+                "correlated",
+                corr_row[0],
+                canonical_signal_id=corr_row[1],
+                evidence_signal_id=corr_row[2],
+                match_type=corr_row[3],
+            )
+
+        for order in self.list_orders_for_signal(signal_id):
+            submitted_at = order.get("executed_at")
+            if order["status"] == "rejected":
+                add("rejected", submitted_at, order_id=order["id"], message=order.get("message"))
+                continue
+            if order["status"] == "error":
+                add("error", submitted_at, order_id=order["id"], message=order.get("message"))
+                continue
+            add(
+                "validation_passed",
+                submitted_at,
+                order_id=order["id"],
+                inferred=True,
+            )
+            add(
+                "risk_approved",
+                submitted_at,
+                order_id=order["id"],
+                inferred=True,
+            )
+            add("order_submitted", submitted_at, order_id=order["id"], account_id=order["account_id"])
+            if order.get("broker_order_id"):
+                add("order_accepted", submitted_at, order_id=order["id"], broker_order_id=order["broker_order_id"])
+            if order["status"] == "filled":
+                add(
+                    "order_filled",
+                    submitted_at,
+                    order_id=order["id"],
+                    filled_quantity=order.get("filled_quantity"),
+                    filled_price=order.get("filled_price"),
+                )
+
+        with self._connect() as conn:
+            family_rows = conn.execute(
+                """SELECT id, status, executed_at, message, purpose, filled_quantity, account_id
+                   FROM orders WHERE family_id = ? AND signal_id != ? ORDER BY executed_at ASC""",
+                (signal_id, signal_id),
+            ).fetchall()
+        for r in family_rows:
+            add(
+                "position_adjusted",
+                r[2],
+                order_id=r[0],
+                status=r[1],
+                message=r[3],
+                purpose=r[4],
+                filled_quantity=r[5],
+                account_id=r[6],
+            )
+
+        events.sort(key=lambda e: e["at"])
+        return {"signal_id": signal_id, "signal": signal, "events": events}
+
+    def get_position_provider_allocations(self, symbol: str) -> dict:
+        """READ-ONLY visibility: broker-level (per-account) tracked
+        position for `symbol` vs. each provider's own best-effort
+        ATTRIBUTABLE contribution to it, derived from this service's
+        existing AUD-01 distinct-field quantity model (`orders.
+        applied_execution_delta`, signed by `side`, joined to `signals.
+        source` -- the ONLY quantity this codebase ever applies to a
+        tracked position; see app/engine.py's own module docstring
+        section on it). This is DERIVED/INFORMATIONAL ONLY -- see this
+        task's own final report's "position ownership" section for why:
+        `positions`/`lifecycle_state` are tracked ONLY per (account_id,
+        symbol), pooled across every provider routed to that same
+        account, with no separate per-provider ownership ledger this
+        method could instead just read back. Never used by any
+        live-routing decision -- app/engine.py's own close/exit
+        resolution continues to use `SignalStore.get_position`/
+        `PositionLifecycleManager` exactly as before, unchanged by this
+        method's existence."""
+        with self._connect() as conn:
+            position_rows = conn.execute(
+                "SELECT account_id, net_quantity, updated_at FROM positions WHERE symbol = ? AND net_quantity != 0",
+                (symbol,),
+            ).fetchall()
+            contribution_rows = conn.execute(
+                """SELECT o.account_id, s.source, o.side, o.applied_execution_delta
+                   FROM orders o JOIN signals s ON o.signal_id = s.id
+                   WHERE o.symbol = ? AND o.applied_execution_delta IS NOT NULL AND o.applied_execution_delta != 0""",
+                (symbol,),
+            ).fetchall()
+        by_account: dict[str, dict[str, float]] = {}
+        for account_id, source, side, delta in contribution_rows:
+            signed = delta if side == "buy" else -delta
+            by_account.setdefault(account_id, {}).setdefault(source, 0.0)
+            by_account[account_id][source] += signed
+        accounts = []
+        for account_id, total_quantity, updated_at in position_rows:
+            provider_totals = by_account.get(account_id, {})
+            accounts.append(
+                {
+                    "account_id": account_id,
+                    "total_quantity": total_quantity,
+                    "updated_at": updated_at,
+                    "provider_allocations": [
+                        {"provider": provider, "attributable_quantity": qty}
+                        for provider, qty in provider_totals.items()
+                    ],
+                    "unattributed_quantity": total_quantity - sum(provider_totals.values()),
+                }
+            )
+        return {"symbol": symbol, "accounts": accounts}
 
     def save_order_result(
         self,
@@ -4166,7 +4533,13 @@ class SignalStore:
         "subscription_status, classification, asset_classes, strategy_types, provider_timezone, "
         "execution_eligibility, default_parser_profile, max_entry_age_seconds, stale_exit_policy, "
         "min_parse_confidence, correlation_window_seconds, risk_policy_ref, certification_state, "
-        "certification_version, certified_at, operator_notes, created_at, updated_at"
+        "certification_version, certified_at, operator_notes, created_at, updated_at, "
+        # Track 16 -- appended at the end so every existing positional
+        # index above stays correct; see app/signal_freshness.py's/
+        # app/signal_correlation.py's own docstrings for what each means.
+        "max_add_age_seconds, adjustment_stale_behavior, timestamp_source_preference, "
+        "clock_skew_tolerance_seconds, recovered_event_behavior, conflict_resolution_policy, "
+        "deterministic_primary_source_id, correlation_price_tolerance_pct"
     )
 
     def _provider_catalog_row_to_dict(self, row: tuple) -> dict:
@@ -4197,6 +4570,14 @@ class SignalStore:
             "operator_notes": row[23],
             "created_at": row[24],
             "updated_at": row[25],
+            "max_add_age_seconds": row[26],
+            "adjustment_stale_behavior": row[27],
+            "timestamp_source_preference": row[28],
+            "clock_skew_tolerance_seconds": row[29],
+            "recovered_event_behavior": row[30],
+            "conflict_resolution_policy": row[31],
+            "deterministic_primary_source_id": row[32],
+            "correlation_price_tolerance_pct": row[33],
         }
 
     def register_provider(
@@ -4226,6 +4607,14 @@ class SignalStore:
         certification_version: str | None = None,
         certified_at: datetime | None = None,
         operator_notes: str | None = None,
+        max_add_age_seconds: int | None = None,
+        adjustment_stale_behavior: str | None = None,
+        timestamp_source_preference: str | None = None,
+        clock_skew_tolerance_seconds: int | None = None,
+        recovered_event_behavior: str | None = None,
+        conflict_resolution_policy: str = "HOLD",
+        deterministic_primary_source_id: str | None = None,
+        correlation_price_tolerance_pct: float | None = None,
     ) -> dict:
         """Insert (or idempotently re-describe) one `providers` row.
         Re-registering the SAME `provider_id` replaces every field given
@@ -4254,8 +4643,11 @@ class SignalStore:
                         subscription_status, classification, asset_classes, strategy_types, provider_timezone,
                         execution_eligibility, default_parser_profile, max_entry_age_seconds, stale_exit_policy,
                         min_parse_confidence, correlation_window_seconds, risk_policy_ref, certification_state,
-                        certification_version, certified_at, operator_notes, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        certification_version, certified_at, operator_notes, created_at, updated_at,
+                        max_add_age_seconds, adjustment_stale_behavior, timestamp_source_preference,
+                        clock_skew_tolerance_seconds, recovered_event_behavior, conflict_resolution_policy,
+                        deterministic_primary_source_id, correlation_price_tolerance_pct)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(id) DO UPDATE SET
                        display_name = excluded.display_name,
                        aliases = excluded.aliases,
@@ -4280,6 +4672,14 @@ class SignalStore:
                        certification_version = excluded.certification_version,
                        certified_at = excluded.certified_at,
                        operator_notes = excluded.operator_notes,
+                       max_add_age_seconds = excluded.max_add_age_seconds,
+                       adjustment_stale_behavior = excluded.adjustment_stale_behavior,
+                       timestamp_source_preference = excluded.timestamp_source_preference,
+                       clock_skew_tolerance_seconds = excluded.clock_skew_tolerance_seconds,
+                       recovered_event_behavior = excluded.recovered_event_behavior,
+                       conflict_resolution_policy = excluded.conflict_resolution_policy,
+                       deterministic_primary_source_id = excluded.deterministic_primary_source_id,
+                       correlation_price_tolerance_pct = excluded.correlation_price_tolerance_pct,
                        updated_at = excluded.updated_at""",
                 (
                     provider_id,
@@ -4308,6 +4708,14 @@ class SignalStore:
                     operator_notes,
                     created_at,
                     now,
+                    max_add_age_seconds,
+                    adjustment_stale_behavior,
+                    timestamp_source_preference,
+                    clock_skew_tolerance_seconds,
+                    recovered_event_behavior,
+                    conflict_resolution_policy,
+                    deterministic_primary_source_id,
+                    correlation_price_tolerance_pct,
                 ),
             )
         return self.get_provider_catalog_entry(provider_id)  # type: ignore[return-value]

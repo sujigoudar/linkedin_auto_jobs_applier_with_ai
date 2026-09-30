@@ -216,6 +216,45 @@ class Signal:
     #: populated.
     raw_source_event: Optional[dict[str, Any]] = None
 
+    # -- Track 16: canonical signal lifecycle timeline -----------------
+    # The user's own spec, verbatim: "Do not reduce freshness to
+    # received_at. Store: source created time, source modified time,
+    # first observed time, received time, parsed time, decision time."
+    # `received_at` above already covers the last of those; these five
+    # are honestly `None` (never guessed/backfilled from received_at)
+    # for every adapter that hasn't been wired to report a real value.
+    # See app/signal_freshness.py's own module docstring for how these
+    # feed freshness evaluation, and app/db.py's `get_signal_lifecycle`
+    # for how they feed the lifecycle timeline read.
+
+    #: When the PROVIDER itself says this event happened (e.g. a
+    #: Telegram message's own `date`, a webhook payload's own
+    #: `created_at`) -- distinct from `received_at` (when THIS SERVICE
+    #: saw it). Mirrors `SourceEvent.provider_timestamp`.
+    source_created_at: Optional[datetime] = None
+    #: When the provider says this event was last EDITED/updated, if it
+    #: reports one distinct from its creation time -- `None` for an
+    #: original, never-edited message, or a source that doesn't report
+    #: edit timestamps at all.
+    source_modified_at: Optional[datetime] = None
+    #: When THIS DEPLOYMENT first became aware of the underlying real-
+    #: world event this signal describes -- distinct from `received_at`
+    #: (when this specific parsed Signal was produced), for the case
+    #: where an earlier, less-complete sighting (e.g. a bare pointer
+    #: notification later followed by its full content) preceded it.
+    #: `None` when there was no earlier sighting to distinguish this
+    #: from `received_at`.
+    first_observed_at: Optional[datetime] = None
+    #: When this raw event finished being PARSED into this Signal's own
+    #: structured fields -- `None` for a source whose adapter doesn't
+    #: report a distinct parse timestamp from receipt.
+    parsed_at: Optional[datetime] = None
+    #: When app/engine.py finished making its routing/admission DECISION
+    #: for this signal (set by the engine itself, not by any adapter --
+    #: see `app/db.py`'s `save_signal` call site in `_handle_signal`).
+    #: `None` until that decision has actually been made.
+    decision_at: Optional[datetime] = None
+
     def __post_init__(self) -> None:
         if isinstance(self.side, str):
             self.side = Side(self.side.lower())

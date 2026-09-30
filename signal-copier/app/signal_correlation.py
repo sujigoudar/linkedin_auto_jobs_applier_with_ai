@@ -56,6 +56,7 @@ from __future__ import annotations
 
 import enum
 import hashlib
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -137,6 +138,158 @@ def prices_within_tolerance(a: float, b: float, *, tolerance_pct: float) -> bool
     if a <= 0 or b <= 0:
         return False
     return abs(a - b) / max(a, b) <= tolerance_pct
+
+
+class ConflictResolutionPolicy(str, enum.Enum):
+    """Track 16: how a CONFLICTING cross-transport correlation (see
+    `classify_candidate`'s own docstring) is resolved -- an explicit,
+    operator-set, per-provider (`providers.conflict_resolution_policy`)
+    configuration. Every member here is a closed, structural rule; NONE
+    of them, including `PROVIDER_DETERMINISTIC`, ever invoke an LLM or
+    any other model-judgment call -- see `resolve_conflict`'s own
+    docstring for exactly what each one mechanically does. The user's own
+    spec, verbatim: "Do not provide an 'AI decides whatever looks right'
+    production setting" -- there is structurally no such setting to pick
+    here."""
+
+    #: Never auto-resolve a conflict -- hold BOTH the new signal and the
+    #: fact of the conflict for human review, exactly Track 12's original
+    #: (and still current, unconfigured-provider) behavior. The
+    #: conservative floor: every OTHER policy below falls back to this
+    #: one whenever it cannot make its own specific determination (an
+    #: unconfigured/ambiguous PRIMARY source, a `PROVIDER_DETERMINISTIC`
+    #: policy with no deterministic source set, fewer than 2 independent
+    #: sources for `REQUIRE_MATCHING_SOURCES`) -- see each member's own
+    #: note below.
+    HOLD = "HOLD"
+    #: Trust whichever of the two conflicting signals came from this
+    #: provider's own configured PRIMARY-role `sources` row (`app.
+    #: provider_catalog.SourceRole.PRIMARY`) -- a source's `role` is an
+    #: operator-set fact, not an inference. Falls back to `HOLD` when the
+    #: provider has zero or more than one PRIMARY source, or when NEITHER
+    #: conflicting signal's `channel_id` matches that source's
+    #: `source_native_id` (can't tell which side, if either, is primary).
+    REQUIRE_PRIMARY_SOURCE = "REQUIRE_PRIMARY_SOURCE"
+    #: Never act on a single source alone -- only once at least 2
+    #: INDEPENDENT sources (distinct `channel_id`s) agree (CORROBORATING,
+    #: not merely present) is the signal admitted to live routing. This
+    #: is Track 12's original CORROBORATING-passes-through-immediately
+    #: behavior made OPT-IN (the user's own spec: "the current single-
+    #: source-triggers-immediately behavior becomes opt-in via this
+    #: policy, not default") -- every other policy, `HOLD` included,
+    #: keeps letting a single-source signal with no conflicting candidate
+    #: at all route immediately, exactly as before Track 16.
+    REQUIRE_MATCHING_SOURCES = "REQUIRE_MATCHING_SOURCES"
+    #: A documented, explicit, OPERATOR-set per-provider override
+    #: (`providers.deterministic_primary_source_id`) naming exactly one
+    #: `sources` row to trust deterministically whenever this provider's
+    #: signals conflict -- never a runtime judgment call of any kind.
+    #: Falls back to `HOLD` when that field isn't set, or (same as
+    #: `REQUIRE_PRIMARY_SOURCE`) when neither conflicting signal's
+    #: `channel_id` matches it.
+    PROVIDER_DETERMINISTIC = "PROVIDER_DETERMINISTIC"
+
+
+@dataclass
+class ConflictResolution:
+    """The outcome of `resolve_conflict` -- `action` is one of
+    `"hold"` (record for human review, never route either signal --
+    Track 12's original behavior), `"trust_new"` (the newly-arrived
+    signal is trusted; proceed to route IT, not the candidate), or
+    `"trust_candidate"` (the already-recorded candidate is trusted; treat
+    the new signal as corroborating evidence, canonicalize onto the
+    candidate's id, same as Track 12's CORROBORATING path -- never submit
+    a second order for it). `reason` is always set, for the evidence
+    row's/log line's own audit trail."""
+
+    action: str
+    reason: str
+
+
+def resolve_conflict(
+    *,
+    policy: ConflictResolutionPolicy,
+    new_channel_id: Optional[str],
+    candidate_channel_id: Optional[str],
+    primary_source_native_id: Optional[str] = None,
+    primary_source_count: int = 0,
+    deterministic_source_native_id: Optional[str] = None,
+    independent_channel_ids_for_fingerprint: Optional[frozenset] = None,
+) -> ConflictResolution:
+    """Pure, structural (NO model call, NO heuristic "looks right"
+    judgment -- see `ConflictResolutionPolicy`'s own docstring)
+    resolution of one CONFLICTING candidate pair. Every branch either
+    returns a definite `"trust_new"`/`"trust_candidate"` outcome from a
+    closed comparison against operator-set configuration, or falls back
+    to `"hold"` -- there is no third, "best guess" outcome this function
+    can ever produce."""
+    if policy is ConflictResolutionPolicy.HOLD:
+        return ConflictResolution(action="hold", reason="ConflictResolutionPolicy.HOLD -- never auto-resolved")
+
+    if policy is ConflictResolutionPolicy.REQUIRE_MATCHING_SOURCES:
+        # This policy's real effect is upstream of a CONFLICT even being
+        # possible to observe here (see app/engine.py's own wiring note);
+        # if a caller still reaches this branch with an outright conflict,
+        # there is by definition no agreement to trust either side on.
+        return ConflictResolution(
+            action="hold",
+            reason="ConflictResolutionPolicy.REQUIRE_MATCHING_SOURCES -- a material disagreement between "
+            "sources is never resolved by this policy, only single-source under-corroboration is gated "
+            "by it (see app/engine.py's _correlate_cross_transport wiring)",
+        )
+
+    if policy is ConflictResolutionPolicy.REQUIRE_PRIMARY_SOURCE:
+        if primary_source_count != 1 or not primary_source_native_id:
+            return ConflictResolution(
+                action="hold",
+                reason=f"REQUIRE_PRIMARY_SOURCE: provider has {primary_source_count} PRIMARY source(s) "
+                "(need exactly 1) -- falling back to HOLD",
+            )
+        if new_channel_id == primary_source_native_id:
+            return ConflictResolution(
+                action="trust_new", reason=f"REQUIRE_PRIMARY_SOURCE: new signal's channel_id matches this "
+                f"provider's PRIMARY source ({primary_source_native_id!r})"
+            )
+        if candidate_channel_id == primary_source_native_id:
+            return ConflictResolution(
+                action="trust_candidate",
+                reason=f"REQUIRE_PRIMARY_SOURCE: candidate signal's channel_id matches this provider's "
+                f"PRIMARY source ({primary_source_native_id!r})",
+            )
+        return ConflictResolution(
+            action="hold",
+            reason=f"REQUIRE_PRIMARY_SOURCE: neither side's channel_id matches this provider's PRIMARY "
+            f"source ({primary_source_native_id!r}) -- falling back to HOLD",
+        )
+
+    if policy is ConflictResolutionPolicy.PROVIDER_DETERMINISTIC:
+        if not deterministic_source_native_id:
+            return ConflictResolution(
+                action="hold",
+                reason="PROVIDER_DETERMINISTIC: providers.deterministic_primary_source_id is not set -- "
+                "falling back to HOLD (never a runtime guess)",
+            )
+        if new_channel_id == deterministic_source_native_id:
+            return ConflictResolution(
+                action="trust_new",
+                reason=f"PROVIDER_DETERMINISTIC: new signal's channel_id matches the configured "
+                f"deterministic source ({deterministic_source_native_id!r})",
+            )
+        if candidate_channel_id == deterministic_source_native_id:
+            return ConflictResolution(
+                action="trust_candidate",
+                reason=f"PROVIDER_DETERMINISTIC: candidate signal's channel_id matches the configured "
+                f"deterministic source ({deterministic_source_native_id!r})",
+            )
+        return ConflictResolution(
+            action="hold",
+            reason=f"PROVIDER_DETERMINISTIC: neither side's channel_id matches the configured deterministic "
+            f"source ({deterministic_source_native_id!r}) -- falling back to HOLD",
+        )
+
+    # Unreachable for a real ConflictResolutionPolicy member -- fail
+    # closed rather than assume anything about an unrecognized policy.
+    return ConflictResolution(action="hold", reason=f"unrecognized policy {policy!r} -- failing closed to HOLD")
 
 
 def classify_candidate(
