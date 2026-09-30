@@ -1,4 +1,4 @@
-/* TR-17: "+Add Signal Provider" onboarding wizard (`#/providers/add`).
+/* TR-17: "+Add Signal Provider" onboarding wizard (`#/trade/providers/add`).
  *
  * This is the Track 21 capstone view: it drives the three new, thin
  * catalog-creation primitives Track 21 added to app/main.py -- POST
@@ -32,12 +32,14 @@
  *   var + chat id). Whop is reachable through Advanced Add's
  *   android_notification type once a device is already paired.
  *
- * - Advanced Add: a 4-step stepper -- pick a connection_type from the
- *   real catalog (implemented types selectable, not_implemented types
- *   shown, disabled, with their real `notes` as the "not yet supported"
- *   reason -- never hidden, never silently omitted) -> fill in exactly
- *   the fields that type's real setup-fields response asks for -> name
- *   the provider -> review and submit.
+ * - Advanced Add: a single flat form covering 4 concerns -- pick a
+ *   connection_type from the real catalog (implemented types selectable,
+ *   not_implemented types shown, disabled, with their real `notes` as the
+ *   "not yet supported" reason -- never hidden, never silently omitted),
+ *   fill in exactly the fields that type's real setup-fields response asks
+ *   for, name the provider, and review before submit. This is NOT a
+ *   paginated/stepped wizard (no per-step focus management) -- all four
+ *   concerns render at once with a live-updating review paragraph.
  *
  * Every step reads real capability data (GET /connections/catalog, GET
  * /connections/catalog/{type}/setup-fields) -- no fabricated provider
@@ -109,7 +111,9 @@
     }
   }
 
-  async function submitWizard(ctx, resultEl, { providerId, displayName, connectionType, connectionId, sourceId, fieldEls }) {
+  async function submitWizard(ctx, resultEl, { providerId, displayName, connectionType, connectionId, sourceId, fieldEls }, submitBtn) {
+    if (submitBtn && submitBtn.disabled) return; // already submitting -- ignore a double-click/duplicate event
+    if (submitBtn) submitBtn.disabled = true;
     resultEl.innerHTML = `<p class="section-note">Submitting...</p>`;
     const payloads = { connection: {}, source: {} };
     for (const el of fieldEls) {
@@ -119,15 +123,17 @@
       setTargetValue(payloads, target, el.value, el.type);
     }
 
+    let provider = null;
+    let connection = null;
     try {
-      const provider = await postJSON("/providers", {
+      provider = await postJSON("/providers", {
         provider_id: providerId,
         display_name: displayName,
         status: "onboarding",
         execution_eligibility: "disabled",
       });
 
-      const connection = await postJSON("/connections", {
+      connection = await postJSON("/connections", {
         connection_id: connectionId,
         connection_type: connectionType,
         display_name: displayName,
@@ -153,7 +159,18 @@
         <div class="tr-controls-row"><a href="#/trade/sources">Open Signal providers and collectors (TR-09)</a></div>
       `;
     } catch (err) {
-      resultEl.innerHTML = `<div class="form-error">${escapeHtml(err.message)}</div>`;
+      // Disclose exactly how far the 3-call sequence got, since a retry
+      // re-derives the same provider_id slug and will otherwise collide
+      // with a row this same failed attempt already created.
+      const partial = [];
+      if (provider) partial.push(`provider <span class="mono">${escapeHtml(provider.id)}</span>`);
+      if (connection) partial.push(`connection <span class="mono">${escapeHtml(connection.id)}</span>`);
+      const partialNote = partial.length
+        ? `<p class="section-note">Already created before this failure: ${partial.join(", ")} (left in place, not rolled back). A retry with the same name will reuse/collide with these rather than creating fresh rows -- check <a href="#/trade/sources">Signal providers and collectors (TR-09)</a> before retrying.</p>`
+        : "";
+      resultEl.innerHTML = `<div class="form-error">${escapeHtml(err.message)}</div>${partialNote}`;
+    } finally {
+      if (submitBtn) submitBtn.disabled = false;
     }
   }
 
@@ -175,7 +192,7 @@
           <div id="tr17-quick-${escapeAttr(p.key)}-fields"></div>
           <label>Provider display name <input type="text" id="tr17-quick-${escapeAttr(p.key)}-name" placeholder="${escapeAttr(p.title)}"></label>
           <button type="button" data-quick-add="${escapeAttr(p.key)}">Add with ${escapeHtml(p.title)}</button>
-          <div id="tr17-quick-${escapeAttr(p.key)}-result"></div>
+          <div id="tr17-quick-${escapeAttr(p.key)}-result" role="status" aria-live="polite"></div>
         </div>
       `
       )
@@ -191,7 +208,9 @@
       const requiredFields = (setup.fields || []).filter((f) => f.required || f.target === null);
       fieldsEl.innerHTML = requiredFields.map((f) => fieldInputHtml(f, `tr17-quick-${p.key}`)).join("") || `<p class="section-note">No fields required.</p>`;
 
-      els.quick.querySelector(`[data-quick-add="${p.key}"]`).addEventListener("click", async () => {
+      const quickAddBtn = els.quick.querySelector(`[data-quick-add="${p.key}"]`);
+      quickAddBtn.addEventListener("click", async () => {
+        if (quickAddBtn.disabled) return;
         const nameEl = els.quick.querySelector(`#tr17-quick-${p.key}-name`);
         const displayName = nameEl.value.trim() || p.title;
         const slug = slugify(displayName) || p.key;
@@ -202,14 +221,19 @@
           resultEl.innerHTML = `<div class="form-error">Fill in: ${missing.map((el) => el.dataset.field).join(", ")}</div>`;
           return;
         }
-        await submitWizard(ctx, resultEl, {
-          providerId: slug,
-          displayName,
-          connectionType: p.connection_type,
-          connectionId: `${slug}_${p.connection_type}`,
-          sourceId: `${slug}_${p.connection_type}_source`,
-          fieldEls,
-        });
+        await submitWizard(
+          ctx,
+          resultEl,
+          {
+            providerId: slug,
+            displayName,
+            connectionType: p.connection_type,
+            connectionId: `${slug}_${p.connection_type}`,
+            sourceId: `${slug}_${p.connection_type}_source`,
+            fieldEls,
+          },
+          quickAddBtn
+        );
       });
     });
   }
@@ -245,7 +269,7 @@
         <div class="tr-controls-row">
           <button type="button" id="tr17-adv-submit">Create provider / connection / source</button>
         </div>
-        <div id="tr17-adv-result"></div>
+        <div id="tr17-adv-result" role="status" aria-live="polite"></div>
         <h3 class="section-note" style="margin-top:16px;">Not yet supported (shown honestly, never hidden)</h3>
         <ul class="section-note">${disabledListHtml || "<li>None -- every catalog entry is implemented.</li>"}</ul>
       `,
@@ -288,7 +312,9 @@
       fieldsEl.innerHTML = `<p class="section-note">No implemented connection types are available in this build.</p>`;
     }
 
-    els.advanced.querySelector("#tr17-adv-submit").addEventListener("click", async () => {
+    const advSubmitBtn = els.advanced.querySelector("#tr17-adv-submit");
+    advSubmitBtn.addEventListener("click", async () => {
+      if (advSubmitBtn.disabled) return;
       if (!implemented.length) {
         resultEl.innerHTML = `<div class="form-error">No implemented connection type to submit.</div>`;
         return;
@@ -306,14 +332,19 @@
         resultEl.innerHTML = `<div class="form-error">Fill in: ${missing.map((el) => el.dataset.field).join(", ")}</div>`;
         return;
       }
-      await submitWizard(ctx, resultEl, {
-        providerId: slug,
-        displayName,
-        connectionType: type,
-        connectionId: `${slug}_${type}`,
-        sourceId: `${slug}_${type}_source`,
-        fieldEls,
-      });
+      await submitWizard(
+        ctx,
+        resultEl,
+        {
+          providerId: slug,
+          displayName,
+          connectionType: type,
+          connectionId: `${slug}_${type}`,
+          sourceId: `${slug}_${type}_source`,
+          fieldEls,
+        },
+        advSubmitBtn
+      );
     });
   }
 
@@ -377,5 +408,5 @@
       await load(ctx);
     },
   };
-  Router.register("/providers/add", "tr17");
+  Router.register("/trade/providers/add", "tr17");
 })();
