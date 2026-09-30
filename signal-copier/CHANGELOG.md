@@ -48,6 +48,35 @@ engine's data integrity and operational-safety guarantees.
   `c88bb66`).
 
 ### Fixed
+- Managed-lifecycle fills never built or exported a real `EXECUTION_APPLIED`
+  envelope (`signal_platform_contracts.EventEnvelope`/
+  `ExecutionAppliedPayload`) to the private export outbox — only
+  TRK-22's own-`orders`-table quantity fields were populated. Since
+  managed-lifecycle fills are "the majority of real trading activity"
+  (see TRK-22's own entry below), this left signal-portfolio-commercial's
+  `Book.PLATFORM` ledger and customer performance reports silently
+  missing most fills, with no error and no failed test (a HIGH-severity
+  cross-repo audit finding). Every real confirmed-fill point now builds
+  and persists one, using the exact same `build_execution_applied_envelope`/
+  `_build_export_envelope` machinery the plain-account path already used,
+  never a fabricated quantity/price/fee: a synchronous managed entry or
+  provider-CLOSE fill (`_handle_signal`'s managed branch, app/engine.py),
+  a manual "Exit now"/"Flatten" fill (`close_position`), an
+  asynchronously-confirmed managed entry or CLOSE
+  (`OrderReconciler.reconcile_once`'s own lifecycle-owned-pending-order
+  branch, which never reached the plain-account `_correct_position`/
+  `_export_reconciled_fill` path at all), and a protective stop filling
+  on its own with no engine/reconciler call site of its own
+  (`PositionLifecycleManager.on_stop_filled`, via
+  `_apply_exit_fill`/`_persist_self_initiated_exit`, which also gained a
+  real `broker_order_id` threaded through from `request_exit`/
+  `resolve_pending_exit`/the stop's own record — required by
+  `build_execution_applied_envelope` and previously never set for a
+  self-initiated exit's `OrderResult` at all). A managed CLOSE's `side`
+  is resolved from the lifecycle's own `exit_side`/`plan.side`, never the
+  literal `Side.CLOSE` some of these call sites already store in
+  `orders.side` — `build_execution_applied_envelope` refuses that outright
+  rather than silently mis-exporting it (TRK-23).
 - Managed-lifecycle orders (`_handle_managed_entry`/`_handle_managed_close`)
   never populated `orders.applied_execution_delta`/`confirmed_cumulative_
   fill`/`outstanding_possible_fill`/`acknowledged_quantity` — leaving

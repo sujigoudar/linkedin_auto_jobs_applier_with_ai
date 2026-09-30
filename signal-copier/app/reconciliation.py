@@ -197,6 +197,32 @@ class OrderReconciler:
                 self._correct_position(order, result.status, result.filled_quantity, result, account)
             else:
                 self.store.update_order_status(order["id"], result)
+                # TRK-23: the audit's HIGH-severity gap -- this exact
+                # branch is a managed-lifecycle fill THIS reconciler itself
+                # is the sole confirmation of (a provider-entry or
+                # provider_exit/manual_exit CLOSE that reported PENDING at
+                # submission time -- see app/engine.py's own managed-
+                # lifecycle `save_order_result` calls, which only ever
+                # build an export envelope for a SYNCHRONOUS FILLED). It
+                # never reached `_correct_position`/`_export_reconciled_
+                # fill` above (that path is deliberately excluded for a
+                # lifecycle's own pending order -- see this branch's own
+                # comment above), so without this it was never exported at
+                # all. `order["side"]` itself can't be used here -- a
+                # managed CLOSE's own `orders` row stores `signal.side`
+                # (literally `Side.CLOSE`) for this branch's own save
+                # (see app/engine.py's managed branch), which
+                # `build_execution_applied_envelope` refuses outright --
+                # the lifecycle's own `plan.side`/`exit_side` is the real,
+                # resolved BUY/SELL instead.
+                if result.status == OrderStatus.FILLED:
+                    assert lifecycle is not None  # order_is_lifecycles_own_pending_order guarantees this
+                    is_pending_entry_order = (
+                        lifecycle.pending_entry is not None
+                        and order["broker_order_id"] == lifecycle.pending_entry.broker_order_id
+                    )
+                    export_side = lifecycle.plan.side if is_pending_entry_order else lifecycle.exit_side
+                    self._export_lifecycle_resolved_fill(order, account, export_side, lifecycle.plan.asset_class, result)
             corrected += 1
 
         corrected += await self._reconcile_pending_exits()
@@ -504,6 +530,41 @@ class OrderReconciler:
             symbol=order["symbol"],
             side=side,
             asset_class=AssetClass(order["asset_class"]),
+            source_stream=source_stream,
+            export_sequence=self.store.next_export_sequence(source_stream),
+            producer_id=config.RELAY_PRODUCER_ID,
+            evidence_class=EvidenceClass[config.RELAY_EVIDENCE_CLASS],
+            environment=Environment[config.RELAY_ENVIRONMENT],
+            originating_source_event_id=order["signal_id"],
+            originating_analyst_id=order["analyst"],
+        )
+        if envelope is not None:
+            self.store.append_export_event(envelope)
+
+    def _export_lifecycle_resolved_fill(
+        self, order: dict, account: DestinationAccount, side: Side, asset_class: AssetClass, result: OrderResult
+    ) -> None:
+        """TRK-23: `_export_reconciled_fill`'s counterpart for a managed-
+        lifecycle order this reconciler itself resolved (a provider entry,
+        or a provider_exit/manual_exit CLOSE) -- see `reconcile_once`'s own
+        comment on why `_export_reconciled_fill` above is never reached for
+        one of these. `side`/`asset_class` are passed in explicitly, read
+        from the lifecycle's own `PositionPlan` (`plan.side` for an entry,
+        `exit_side` for an exit) rather than `order["side"]`/
+        `order["asset_class"]` -- a managed CLOSE's own `orders` row can
+        store `Side.CLOSE` for `side` (see the call site's own comment),
+        which `build_execution_applied_envelope` refuses outright; the
+        lifecycle is the one real source of the resolved BUY/SELL here.
+        Same builder/config/per-(account, source_stream) export sequence as
+        `_export_reconciled_fill`; same honest no-export contract when
+        `result` is missing a field the payload actually requires."""
+        source_stream = f"signal-copier:{account.account_id}"
+        envelope = build_execution_applied_envelope(
+            result,
+            account=account,
+            symbol=order["symbol"],
+            side=side,
+            asset_class=asset_class,
             source_stream=source_stream,
             export_sequence=self.store.next_export_sequence(source_stream),
             producer_id=config.RELAY_PRODUCER_ID,

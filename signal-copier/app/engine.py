@@ -698,6 +698,7 @@ class SignalCopierEngine:
             symbol = symbol_for_account(signal, account)
 
             if account.managed_lifecycle:
+                existing_lifecycle = None
                 if order_purpose == "close":
                     # DB-0X: the real family this close belongs to is
                     # whatever entry signal started this same position --
@@ -715,6 +716,48 @@ class SignalCopierEngine:
                         order_family_id = existing_lifecycle.plan.entry_signal_id
                 managed_outcome = await self._handle_managed_signal(signal, account, symbol)
                 result = managed_outcome.result
+                # TRK-23: the audit's HIGH-severity gap -- a managed-
+                # lifecycle fill never built/exported an EXECUTION_APPLIED
+                # envelope at all (only its own internal `orders` row via
+                # TRK-22's fields above), leaving signal-portfolio-
+                # commercial's `Book.PLATFORM` ledger silently missing the
+                # majority of real trading activity. `side` must be the
+                # resolved BUY/SELL actually sent to the broker, never
+                # `Side.CLOSE` (see `build_execution_applied_envelope`'s
+                # own docstring) -- for an entry, `signal.side` already is
+                # that (a CLOSE signal never reaches this branch as an
+                # entry); for a close, `existing_lifecycle.exit_side`
+                # (captured above, BEFORE a fully-flattening close can
+                # delete this lifecycle's state) is the only real resolved
+                # side available here -- mirrors `close_position`'s own
+                # `resolved_side` for the identical reason. `None` (no
+                # envelope built) when there's no lifecycle to resolve a
+                # close's side from at all -- exactly the "no open position
+                # to close" rejection, which never reaches FILLED anyway,
+                # so `_build_export_envelope` would have returned `None`
+                # regardless.
+                export_side = (
+                    signal.side
+                    if order_purpose != "close"
+                    else (existing_lifecycle.exit_side if existing_lifecycle is not None else None)
+                )
+                export_envelope = (
+                    self._build_export_envelope(
+                        result,
+                        account=account,
+                        symbol=symbol,
+                        side=export_side,
+                        asset_class=(
+                            existing_lifecycle.plan.asset_class
+                            if existing_lifecycle is not None
+                            else signal.asset_class
+                        ),
+                        originating_source_event_id=signal.id,
+                        originating_analyst_id=signal.analyst,
+                    )
+                    if export_side is not None
+                    else None
+                )
                 # TRK-22: threads AUD-01's distinct-field quantity model
                 # through for a managed-lifecycle order -- previously this
                 # call never passed applied_quantity/confirmed_cumulative_
@@ -736,6 +779,7 @@ class SignalCopierEngine:
                     applied_execution_delta=managed_outcome.applied_execution_delta,
                     outstanding_possible_fill=managed_outcome.outstanding_possible_fill,
                     acknowledged_quantity=managed_outcome.acknowledged_quantity,
+                    export_envelope=export_envelope,
                     submitted_at=managed_outcome.submitted_at,
                     protection_confirmed_at=managed_outcome.protection_confirmed_at,
                     purpose=order_purpose,
@@ -2943,6 +2987,33 @@ class SignalCopierEngine:
                 if lifecycle_before_close is not None and lifecycle_before_close.plan.entry_signal_id
                 else None
             )
+            # TRK-23: same audit gap as `_handle_signal`'s managed branch
+            # (see its own comment) -- a manual "Exit now"/"Flatten" fill
+            # never exported an EXECUTION_APPLIED envelope either.
+            # `resolved_side` above is already the real BUY/SELL for every
+            # case that can reach FILLED (it only falls back to the
+            # sentinel `Side.CLOSE` when `lifecycle_before_close` is None,
+            # i.e. "no open position to close," which never fills) --
+            # guarded here anyway rather than trusted blindly, since
+            # `build_execution_applied_envelope` itself raises for
+            # `Side.CLOSE` rather than silently mis-exporting it.
+            export_envelope = (
+                self._build_export_envelope(
+                    result,
+                    account=account,
+                    symbol=symbol,
+                    side=resolved_side,
+                    asset_class=(
+                        lifecycle_before_close.plan.asset_class
+                        if lifecycle_before_close is not None
+                        else close_signal.asset_class
+                    ),
+                    originating_source_event_id=close_signal.id,
+                    originating_analyst_id=None,
+                )
+                if resolved_side != Side.CLOSE
+                else None
+            )
             # TRK-22: same fix as `_handle_signal`'s managed branch -- see
             # its own comment for exactly what was missing before.
             self.store.save_order_result(
@@ -2955,6 +3026,7 @@ class SignalCopierEngine:
                 applied_execution_delta=managed_outcome.applied_execution_delta,
                 outstanding_possible_fill=managed_outcome.outstanding_possible_fill,
                 acknowledged_quantity=managed_outcome.acknowledged_quantity,
+                export_envelope=export_envelope,
                 purpose="close",
                 family_id=family_id,
             )

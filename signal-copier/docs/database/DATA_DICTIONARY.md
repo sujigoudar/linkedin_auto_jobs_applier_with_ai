@@ -249,3 +249,52 @@ call; nothing in this codebase writes it automatically.
   `"qualified"`. Distinct from `route_qualifications`' own structured
   ladder (ADR-0006) — this is the account's own simple, independent
   label, which may later reference that taxonomy but does not today.
+
+## `export_events`: `EXECUTION_APPLIED` coverage for `managed_lifecycle` fills (TRK-23)
+
+Before this fix, a `managed_lifecycle` account's fill populated this
+row's AUD-01 quantity fields above in its own `orders` table (TRK-22)
+but never built or persisted a real `EXECUTION_APPLIED` envelope here —
+signal-portfolio-commercial's `app/services/integration_inbox.py`
+(which consumes this outbox to build its customer-facing `Book.PLATFORM`
+ledger) silently never saw the majority of real trading activity.
+
+Every real confirmed-fill point for a `managed_lifecycle` position now
+builds one, via the same `build_execution_applied_envelope`/
+`_build_export_envelope` machinery a plain account's fill already used
+(see `app/export_events.py`):
+
+- A synchronous managed entry or provider-CLOSE fill —
+  `app/engine.py`'s `_handle_signal` managed branch, same sqlite3
+  transaction as its `save_order_result` call.
+- A manual "Exit now"/"Flatten" fill — `SignalCopierEngine.close_position`,
+  same transaction as its own `save_order_result` call.
+- A protective stop filling on its own, with no `orders`-row-writing
+  engine/reconciler call site of its own —
+  `PositionLifecycleManager.on_stop_filled`, via `_apply_exit_fill`'s
+  `_persist_self_initiated_exit` (the same place that already persists
+  this fill's `orders`/`signals` rows, TR-EPISODE-01), same transaction.
+  This also required threading a real `broker_order_id` through
+  `_apply_exit_fill` from `request_exit`/`resolve_pending_exit`/the
+  stop's own record (captured *before* it's cleared) — previously never
+  set on a self-initiated exit's `OrderResult` at all, and
+  `build_execution_applied_envelope` refuses to build an envelope
+  without one.
+- An asynchronously-confirmed managed entry or CLOSE —
+  `OrderReconciler.reconcile_once`'s own lifecycle-owned-pending-order
+  branch (the branch that calls `update_order_status` instead of
+  `_correct_position`, since a lifecycle's own pending entry/exit is
+  resolved via `resolve_pending_entry`/`resolve_pending_exit`, not
+  `_correct_position`) — this is the one case that appends its envelope
+  in its own separate transaction (`append_export_event`), mirroring
+  the plain-account reconciler's own `_export_reconciled_fill`, since
+  the `orders` row it's confirming was already committed earlier at
+  placement time.
+
+A managed CLOSE's real BUY/SELL `side` for the envelope is resolved
+from the lifecycle itself (`PositionLifecycle.exit_side` /
+`PositionPlan.side`), **never** `order["side"]`/the literal
+`Side.CLOSE` some of these same call sites already store in
+`orders.side` (see `app/engine.py`'s managed branch, which stores
+`signal.side` as-is) — `build_execution_applied_envelope` raises rather
+than silently mis-exporting a close as `"close"`.
