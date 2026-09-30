@@ -850,6 +850,75 @@ CREATE TABLE IF NOT EXISTS telegram_collectors (
 CREATE INDEX IF NOT EXISTS idx_telegram_collectors_provider ON telegram_collectors (provider_name);
 CREATE INDEX IF NOT EXISTS idx_telegram_collectors_chat ON telegram_collectors (chat_id);
 
+-- Track 9: the persistent website/article collector registry -- see
+-- app/website_collectors.py's module docstring for the full contract.
+-- Mirrors telegram_collectors's shape: one row per site/section this
+-- deployment polls, either via a configured RSS/Atom feed_url or a
+-- configured article_list_url (diffed against a seen-URL checkpoint --
+-- see checkpoint_seen_urls below). Exactly one of feed_url/
+-- article_list_url is expected to be set, per site_format -- enforced at
+-- the application layer by app.website_collectors.validate_registration,
+-- never guessed/scanned by this table or any adapter.
+--
+-- auth_state_env_var is a REFERENCE ONLY (same convention as Telegram's
+-- credential_env_var) -- the name of an environment variable pointing to
+-- a stored auth-state FILE PATH for paywalled content, never a
+-- session/cookie value itself. NULL (the default) means this collector
+-- fetches with no stored auth at all.
+--
+-- checkpoint_seen_urls is a JSON array of article URLs this collector
+-- has already admitted to live routing (the ARTICLE_LIST mode's own
+-- "seen URL set" diff checkpoint; FEED mode instead uses
+-- checkpoint_article_url, the single most-recent admitted URL, since a
+-- feed's own ordering makes a full seen-set unnecessary there).
+CREATE TABLE IF NOT EXISTS website_collectors (
+    id TEXT PRIMARY KEY,
+    site_format TEXT NOT NULL,
+    site_id TEXT NOT NULL,
+    provider_name TEXT NOT NULL,
+    feed_url TEXT,
+    article_list_url TEXT,
+    analyst TEXT,
+    auth_state_env_var TEXT,
+    allowed_uses TEXT NOT NULL DEFAULT '["private_trading"]',
+    last_qualified_at TEXT,
+    qualification_evidence TEXT NOT NULL DEFAULT '{}',
+    checkpoint_article_url TEXT,
+    checkpoint_seen_urls TEXT NOT NULL DEFAULT '[]',
+    checkpoint_updated_at TEXT,
+    health_state TEXT NOT NULL DEFAULT 'unqualified',
+    health_detail TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_website_collectors_provider ON website_collectors (provider_name);
+CREATE INDEX IF NOT EXISTS idx_website_collectors_site ON website_collectors (site_id);
+
+-- Track 9: extracted/classified article trade candidates -- see
+-- app/sources/article_classifier.py's TradeCandidate docstring. Keyed by
+-- (channel_id, message_id) == (site_id, canonical article URL), the same
+-- provider-identity dedup convention as `signals.channel_id`/
+-- `message_id` (find_signal_id_by_provider_identity). A later revision
+-- of the SAME URL (a newer modified_at) UPDATES this row in place --
+-- never a duplicate insert -- see upsert_website_candidate.
+CREATE TABLE IF NOT EXISTS website_article_candidates (
+    id TEXT PRIMARY KEY,
+    channel_id TEXT NOT NULL,
+    message_id TEXT NOT NULL,
+    classification TEXT NOT NULL,
+    resolved INTEGER NOT NULL DEFAULT 0,
+    signal_id TEXT,
+    published_at TEXT,
+    modified_at TEXT,
+    candidate_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE (channel_id, message_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_website_article_candidates_channel ON website_article_candidates (channel_id);
+
 CREATE INDEX IF NOT EXISTS idx_orders_executed_at ON orders (executed_at);
 CREATE INDEX IF NOT EXISTS idx_orders_account_id ON orders (account_id);
 CREATE INDEX IF NOT EXISTS idx_orders_signal_id ON orders (signal_id);
@@ -3431,6 +3500,295 @@ class SignalStore:
             )
             if cur.rowcount == 0:
                 raise KeyError(f"no telegram collector registered with id={collector_id!r}")
+
+    # -- Track 9: website collector registry (app/website_collectors.py) --
+
+    def register_website_collector(
+        self,
+        *,
+        collector_id: str,
+        site_format: str,
+        site_id: str,
+        provider_name: str,
+        feed_url: str | None = None,
+        article_list_url: str | None = None,
+        analyst: str | None = None,
+        auth_state_env_var: str | None = None,
+        allowed_uses: list[str] | None = None,
+    ) -> dict:
+        """Insert (or, idempotently, re-describe) one website collector
+        row -- same reasoning as `register_telegram_collector`: validated
+        BEFORE anything is written, and re-registering the SAME
+        `collector_id` preserves qualification evidence, checkpoints, and
+        health state."""
+        from app.website_collectors import validate_registration
+
+        fmt, uses = validate_registration(
+            collector_id=collector_id,
+            site_format=site_format,
+            site_id=site_id,
+            provider_name=provider_name,
+            feed_url=feed_url,
+            article_list_url=article_list_url,
+            allowed_uses=allowed_uses,
+        )
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            existing = conn.execute(
+                "SELECT created_at FROM website_collectors WHERE id = ?", (collector_id,)
+            ).fetchone()
+            created_at = existing[0] if existing else now
+            conn.execute(
+                """INSERT INTO website_collectors
+                       (id, site_format, site_id, provider_name, feed_url, article_list_url, analyst,
+                        auth_state_env_var, allowed_uses, qualification_evidence, health_state,
+                        created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '{}', 'unqualified', ?, ?)
+                   ON CONFLICT(id) DO UPDATE SET
+                       site_format = excluded.site_format,
+                       site_id = excluded.site_id,
+                       provider_name = excluded.provider_name,
+                       feed_url = excluded.feed_url,
+                       article_list_url = excluded.article_list_url,
+                       analyst = excluded.analyst,
+                       auth_state_env_var = excluded.auth_state_env_var,
+                       allowed_uses = excluded.allowed_uses,
+                       updated_at = excluded.updated_at""",
+                (
+                    collector_id,
+                    fmt.value,
+                    site_id,
+                    provider_name,
+                    feed_url,
+                    article_list_url,
+                    analyst,
+                    auth_state_env_var,
+                    json.dumps(uses),
+                    created_at,
+                    now,
+                ),
+            )
+        return self.get_website_collector(collector_id)  # type: ignore[return-value]
+
+    def _website_collector_row_to_dict(self, row: tuple) -> dict:
+        return {
+            "id": row[0],
+            "site_format": row[1],
+            "site_id": row[2],
+            "provider_name": row[3],
+            "feed_url": row[4],
+            "article_list_url": row[5],
+            "analyst": row[6],
+            "auth_state_env_var": row[7],
+            "allowed_uses": json.loads(row[8]) if row[8] else [],
+            "last_qualified_at": row[9],
+            "qualification_evidence": json.loads(row[10]) if row[10] else {},
+            "checkpoint_article_url": row[11],
+            "checkpoint_seen_urls": json.loads(row[12]) if row[12] else [],
+            "checkpoint_updated_at": row[13],
+            "health_state": row[14],
+            "health_detail": row[15],
+            "created_at": row[16],
+            "updated_at": row[17],
+        }
+
+    _WEBSITE_COLLECTOR_COLUMNS = (
+        "id, site_format, site_id, provider_name, feed_url, article_list_url, analyst, "
+        "auth_state_env_var, allowed_uses, last_qualified_at, qualification_evidence, "
+        "checkpoint_article_url, checkpoint_seen_urls, checkpoint_updated_at, health_state, "
+        "health_detail, created_at, updated_at"
+    )
+
+    def get_website_collector(self, collector_id: str) -> dict | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                f"SELECT {self._WEBSITE_COLLECTOR_COLUMNS} FROM website_collectors WHERE id = ?",
+                (collector_id,),
+            ).fetchone()
+        return self._website_collector_row_to_dict(row) if row else None
+
+    def list_website_collectors(self) -> list[dict]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"SELECT {self._WEBSITE_COLLECTOR_COLUMNS} FROM website_collectors ORDER BY id"
+            ).fetchall()
+        return [self._website_collector_row_to_dict(r) for r in rows]
+
+    def update_website_collector_health(
+        self, collector_id: str, health_state: str, *, detail: str | None = None
+    ) -> None:
+        """The ONE place a website collector's incident/health state is
+        written -- validated against `app.website_collectors.
+        CollectorHealth`, same as `update_telegram_collector_health`."""
+        from app.website_collectors import CollectorHealth
+
+        state = CollectorHealth(health_state)  # raises ValueError for an unrecognized state
+        with self._connect() as conn:
+            cur = conn.execute(
+                "UPDATE website_collectors SET health_state = ?, health_detail = ?, updated_at = ? WHERE id = ?",
+                (state.value, detail, datetime.now(timezone.utc).isoformat(), collector_id),
+            )
+            if cur.rowcount == 0:
+                raise KeyError(f"no website collector registered with id={collector_id!r}")
+
+    def record_website_collector_qualification_evidence(
+        self, collector_id: str, *, evidence: dict, qualified_at: datetime | None = None
+    ) -> None:
+        """Real evidence that a real article was genuinely fetched and
+        processed for this collector -- advances health_state to
+        `healthy_qualified` (the only state a dashboard may render as
+        green)."""
+        from app.website_collectors import CollectorHealth
+
+        when = (qualified_at or datetime.now(timezone.utc)).isoformat()
+        with self._connect() as conn:
+            cur = conn.execute(
+                """UPDATE website_collectors
+                   SET qualification_evidence = ?, last_qualified_at = ?,
+                       health_state = ?, health_detail = NULL, updated_at = ?
+                   WHERE id = ?""",
+                (json.dumps(evidence), when, CollectorHealth.HEALTHY_QUALIFIED.value, when, collector_id),
+            )
+            if cur.rowcount == 0:
+                raise KeyError(f"no website collector registered with id={collector_id!r}")
+
+    def get_website_collector_seen_urls(self, collector_id: str) -> set[str]:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT checkpoint_seen_urls FROM website_collectors WHERE id = ?", (collector_id,)
+            ).fetchone()
+        if row is None:
+            raise KeyError(f"no website collector registered with id={collector_id!r}")
+        return set(json.loads(row[0]) if row[0] else [])
+
+    def advance_website_collector_checkpoint(self, collector_id: str, *, article_url: str) -> None:
+        """Called ONLY after an article has been genuinely admitted to
+        live processing. Appends to the seen-URL set (ARTICLE_LIST mode's
+        checkpoint) AND advances `checkpoint_article_url` to the latest
+        one seen (FEED mode's checkpoint) -- a collector may switch
+        `site_format` later, so both are kept current regardless of which
+        mode is currently configured."""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT checkpoint_seen_urls FROM website_collectors WHERE id = ?", (collector_id,)
+            ).fetchone()
+            if row is None:
+                raise KeyError(f"no website collector registered with id={collector_id!r}")
+            seen = set(json.loads(row[0]) if row[0] else [])
+            seen.add(article_url)
+            now = datetime.now(timezone.utc).isoformat()
+            conn.execute(
+                """UPDATE website_collectors
+                   SET checkpoint_seen_urls = ?, checkpoint_article_url = ?,
+                       checkpoint_updated_at = ?, updated_at = ?
+                   WHERE id = ?""",
+                (json.dumps(sorted(seen)), article_url, now, now, collector_id),
+            )
+
+    # -- Track 9: website article trade candidates ------------------------
+
+    def find_website_candidate_by_url(self, *, channel_id: str, message_id: str) -> dict | None:
+        """The dedup lookup keyed on this source's own provider identity
+        -- (site_id, canonical article URL) -- mirrors
+        `find_signal_id_by_provider_identity`'s reasoning exactly, just
+        for a candidate row rather than a `signals` row."""
+        with self._connect() as conn:
+            row = conn.execute(
+                """SELECT id, channel_id, message_id, classification, resolved, signal_id,
+                          published_at, modified_at, candidate_json, created_at, updated_at
+                   FROM website_article_candidates WHERE channel_id = ? AND message_id = ?""",
+                (channel_id, message_id),
+            ).fetchone()
+        return self._website_candidate_row_to_dict(row) if row else None
+
+    def _website_candidate_row_to_dict(self, row: tuple) -> dict:
+        return {
+            "id": row[0],
+            "channel_id": row[1],
+            "message_id": row[2],
+            "classification": row[3],
+            "resolved": bool(row[4]),
+            "signal_id": row[5],
+            "published_at": row[6],
+            "modified_at": row[7],
+            "candidate": json.loads(row[8]),
+            "created_at": row[9],
+            "updated_at": row[10],
+        }
+
+    def upsert_website_candidate(
+        self,
+        *,
+        channel_id: str,
+        message_id: str,
+        classification: str,
+        resolved: bool,
+        candidate_json: dict,
+        signal_id: str | None = None,
+        published_at: datetime | None = None,
+        modified_at: datetime | None = None,
+    ) -> dict:
+        """Insert a new candidate, or -- for the SAME (channel_id,
+        message_id) -- update the EXISTING row in place. Never creates a
+        duplicate for the same canonical URL (the Track 9 brief's own
+        explicit requirement: 'an article revision ... should update the
+        EXISTING candidate record ... never create a duplicate').
+
+        A revision only actually overwrites when the new `modified_at` is
+        strictly newer than what's already stored (or the existing row
+        has no `modified_at` at all) -- a redelivery of the SAME
+        unmodified article is a no-op re-observe, not treated as a fresh
+        revision."""
+        import uuid as _uuid
+
+        existing = self.find_website_candidate_by_url(channel_id=channel_id, message_id=message_id)
+        now = datetime.now(timezone.utc).isoformat()
+        if existing is not None:
+            existing_modified = existing.get("modified_at")
+            if modified_at is not None and existing_modified and modified_at.isoformat() <= existing_modified:
+                return existing  # not a newer revision -- leave the stored row untouched
+            with self._connect() as conn:
+                conn.execute(
+                    """UPDATE website_article_candidates
+                       SET classification = ?, resolved = ?, signal_id = ?, published_at = ?,
+                           modified_at = ?, candidate_json = ?, updated_at = ?
+                       WHERE channel_id = ? AND message_id = ?""",
+                    (
+                        classification,
+                        int(resolved),
+                        signal_id,
+                        published_at.isoformat() if published_at else None,
+                        modified_at.isoformat() if modified_at else None,
+                        json.dumps(candidate_json),
+                        now,
+                        channel_id,
+                        message_id,
+                    ),
+                )
+            return self.find_website_candidate_by_url(channel_id=channel_id, message_id=message_id)  # type: ignore[return-value]
+
+        candidate_id = str(_uuid.uuid4())
+        with self._connect() as conn:
+            conn.execute(
+                """INSERT INTO website_article_candidates
+                       (id, channel_id, message_id, classification, resolved, signal_id,
+                        published_at, modified_at, candidate_json, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    candidate_id,
+                    channel_id,
+                    message_id,
+                    classification,
+                    int(resolved),
+                    signal_id,
+                    published_at.isoformat() if published_at else None,
+                    modified_at.isoformat() if modified_at else None,
+                    json.dumps(candidate_json),
+                    now,
+                    now,
+                ),
+            )
+        return self.find_website_candidate_by_url(channel_id=channel_id, message_id=message_id)  # type: ignore[return-value]
 
     def list_orders_for_signal(self, signal_id: str) -> list[dict]:
         """Every order already recorded against this exact signal id — what

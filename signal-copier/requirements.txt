@@ -14,6 +14,11 @@ python-multipart>=0.0.9  # required by FastAPI's Form() parsing, used by the /sm
 slowapi>=0.1.9           # C06: per-IP rate limiting on the webhook/SMS ingress routes (app/rate_limit.py)
 aiolimiter>=1.1          # C07: outbound quota limiter for app/context/* (SEC EDGAR, FRED, Frankfurter)
 pwdlib[argon2]>=0.2      # C05: optional OWNER_PASSWORD_HASH (argon2id) alternative to plain OWNER_PASSWORD (app/auth.py)
+feedparser>=6.0          # Track 9: RSS/Atom feed discovery/polling for WebsiteSource (app/sources/website.py) --
+                         # small, well-maintained, no problematic transitive deps; installed unconditionally
+                         # like twilio/tweepy/ib_async/async_rithmic below, not an optional adapter extra.
+trafilatura>=2.0         # Track 9: clean article text/title/author/timestamp extraction from fetched HTML
+                         # (app/sources/article_extraction.py) -- MIT-licensed, well-maintained.
 
 # Optional, needed only for adapters you actually enable:
 # ccxt>=4.3                    # crypto exchange execution (CCXTBroker)
@@ -50,7 +55,10 @@ schemathesis>=4.20       # test-only: OpenAPI schema fuzzing for the bounded rea
 mutmut>=3.0              # test-only: mutation testing config scoped to app/auth.py (C31, see pyproject.toml)
 playwright>=1.40         # test-only: real-browser dashboard tests (C14 XSS regression, C33/C34 accessibility).
                          # CI installs the matching browser separately (`playwright install chromium`) --
-                         # see .github/workflows/signal-copier-ci.yml.
+                         # see .github/workflows/signal-copier-ci.yml. ALSO used, optionally, at runtime by
+                         # app/sources/article_extraction.py as a JS-rendering fallback when a plain HTTP
+                         # fetch + trafilatura extraction clearly fails (empty/too-short result) -- see that
+                         # module's own docstring. Not a new dependency for that purpose: already installed.
 axe-playwright-python>=0.1.8  # test-only: C33/C34 -- runs axe-core against the real rendered dashboard
 ruff>=0.6                # dev-only: lint (C38, see pyproject.toml's [tool.ruff] for the exact scoped ruleset)
 mypy>=1.11               # dev-only: type checking (C38, see pyproject.toml's [tool.mypy])
