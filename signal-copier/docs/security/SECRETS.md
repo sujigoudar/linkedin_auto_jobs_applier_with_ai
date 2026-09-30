@@ -32,6 +32,25 @@ endpoint fails closed with `503` (see `docs/security/ARCHITECTURE.md`).
 | `WHATSAPP_ALLOWED_FROM_NUMBERS` | Comma-separated `wa_id` numbers (no leading `+`) authorized to send trading instructions. Empty means no sender is authorized. |
 | `NINJATRADER_WEBHOOK_SECRET` | Plain shared secret checked against the `X-NinjaTrader-Secret` header (NinjaScript has no built-in request signing). |
 
+### Notification-bridge device pairing tokens (`app/notification_bridge.py`)
+
+Track 10: the Android `NotificationListenerService` companion app
+(`mobile/notification-bridge/`) authenticates to `POST
+/ingest/notification-bridge/{device_id}` with a per-device bearer token,
+NOT a global env var like `WEBHOOK_SHARED_SECRET` above -- one compromised
+phone must not authorize forwarding on every other device's behalf. The
+token is generated server-side by the owner-gated `POST
+/notification-bridge/devices` call, returned in that response body
+**exactly once**, and only its argon2id hash (via `pwdlib`, the same
+algorithm choice as `OWNER_PASSWORD_HASH`) is ever persisted, in the
+`notification_bridge_devices` table's `pairing_token_hash` column. There
+is no env var for this credential at all -- it lives only (a) briefly in
+the registration HTTP response and (b) at rest on the paired Android
+device itself (see `mobile/notification-bridge/README.md`'s "Known
+limitations" for that storage's own disclosed limitation). Lost/rotated
+the same way: re-run `POST /notification-bridge/devices` with the same
+`device_id` to issue a fresh token.
+
 ## Broker credentials (per destination account)
 
 Broker credentials are namespaced per `account_id` (as defined in
