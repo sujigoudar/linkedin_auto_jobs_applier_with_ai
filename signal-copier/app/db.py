@@ -1140,6 +1140,18 @@ CREATE INDEX IF NOT EXISTS idx_email_collectors_mailbox ON email_collectors (ima
 -- "needs_review_incomplete_content" (point 5: content_completeness was
 -- not "complete" -- recorded, never parsed as if it were the full
 -- alert), "duplicate_retry", or "rejected_unauthorized_app_package".
+--
+-- Track 12: `content_completeness` now stores app.notification_bridge.
+-- ContentCompleteness's five-state PER-EVENT classification (see that
+-- enum's own docstring) rather than a passthrough of the device's own
+-- three-state report. `needs_escalation`/`escalation_status` are the
+-- interface Track 13's active AI phone-retrieval escalation layer reads
+-- and writes -- see SignalStore.list_notification_bridge_events_
+-- needing_escalation's own docstring for the exact read/write contract.
+-- `escalation_status` is NULL until an event is actually flagged
+-- (needs_escalation=0), then "pending" until Track 13 (or an owner,
+-- manually) resolves it to "resolved"/"failed" via
+-- SignalStore.resolve_notification_bridge_event_escalation.
 CREATE TABLE IF NOT EXISTS notification_bridge_events (
     id TEXT PRIMARY KEY,
     device_id TEXT NOT NULL,
@@ -1152,10 +1164,42 @@ CREATE TABLE IF NOT EXISTS notification_bridge_events (
     received_at TEXT NOT NULL,
     classification TEXT NOT NULL,
     signal_id TEXT,
-    created_at TEXT NOT NULL
+    created_at TEXT NOT NULL,
+    needs_escalation INTEGER NOT NULL DEFAULT 0,
+    escalation_status TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_notification_bridge_events_key ON notification_bridge_events (device_id, notification_key);
+CREATE INDEX IF NOT EXISTS idx_notification_bridge_events_escalation ON notification_bridge_events (needs_escalation, escalation_status);
+
+-- Track 12: cross-transport signal correlation evidence -- see
+-- app/signal_correlation.py's own module docstring for the fingerprint
+-- this is keyed by. One row per OTHER transport's signal that was
+-- compared against an already-recorded "canonical" signal sharing its
+-- fingerprint key: `match_type` "corroborating" means it was folded
+-- into the canonical signal (no second order -- see app/engine.py's
+-- `_handle_signal`), "conflicting" means it shared the fingerprint key
+-- but disagreed materially on price/side and was held out of live
+-- routing entirely (see Signal.import_batch's "cross_transport_
+-- conflict:" prefix) rather than either being silently dropped or
+-- silently preferred over the canonical signal.
+CREATE TABLE IF NOT EXISTS signal_correlation_evidence (
+    id TEXT PRIMARY KEY,
+    canonical_signal_id TEXT NOT NULL,
+    evidence_signal_id TEXT NOT NULL,
+    fingerprint_key TEXT NOT NULL,
+    source TEXT NOT NULL,
+    channel_id TEXT,
+    message_id TEXT,
+    price REAL,
+    side TEXT,
+    received_at TEXT NOT NULL,
+    match_type TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_signal_correlation_evidence_canonical ON signal_correlation_evidence (canonical_signal_id);
+CREATE INDEX IF NOT EXISTS idx_signal_correlation_evidence_fp ON signal_correlation_evidence (fingerprint_key);
 
 CREATE INDEX IF NOT EXISTS idx_orders_executed_at ON orders (executed_at);
 CREATE INDEX IF NOT EXISTS idx_orders_account_id ON orders (account_id);
@@ -1217,6 +1261,21 @@ _COLUMN_MIGRATIONS = [
     ("signals", "channel_id", "TEXT"),
     ("signals", "message_id", "TEXT"),
     ("signals", "revision_id", "TEXT"),
+    # Track 12 (cross-transport correlation): the discrete part of
+    # app.signal_correlation.fingerprint_key for this signal, computed
+    # and stored by save_signal ONLY when there's real provider identity
+    # (channel_id) to correlate from -- NULL for every signal this
+    # doesn't apply to (an honest "not eligible", never a fabricated
+    # key). See app/signal_correlation.py's own module docstring and
+    # SignalStore.find_correlation_candidates.
+    ("signals", "correlation_fingerprint", "TEXT"),
+    # Track 12 (per-event completeness escalation, app/notification_
+    # bridge.py's ContentCompleteness): see notification_bridge_events's
+    # own CREATE TABLE comment above for the read/write contract these
+    # serve (SignalStore.list_notification_bridge_events_needing_
+    # escalation / resolve_notification_bridge_event_escalation).
+    ("notification_bridge_events", "needs_escalation", "INTEGER NOT NULL DEFAULT 0"),
+    ("notification_bridge_events", "escalation_status", "TEXT"),
 ]
 
 
@@ -1239,6 +1298,13 @@ class SignalStore:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_signals_provider_identity "
                 "ON signals (channel_id, message_id, revision_id)"
+            )
+            # Same "must run after the migration loop" reasoning as the
+            # index just above -- see this column's own _COLUMN_MIGRATIONS
+            # comment.
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_signals_correlation_fingerprint "
+                "ON signals (correlation_fingerprint)"
             )
         self._stamp_alembic_head_if_needed()
 
@@ -1311,12 +1377,23 @@ class SignalStore:
             return {}
 
     def save_signal(self, signal: Signal) -> None:
+        # Track 12 (cross-transport correlation): computed and stored
+        # ONLY when this signal has real provider identity to correlate
+        # from -- see this column's own _COLUMN_MIGRATIONS comment and
+        # app/signal_correlation.py's own module docstring. `None` for
+        # every signal this doesn't apply to, never a fabricated key.
+        correlation_fingerprint = None
+        if signal.channel_id is not None:
+            from app.signal_correlation import fingerprint_key
+
+            correlation_fingerprint = fingerprint_key(signal)
         with self._connect() as conn:
             conn.execute(
                 """INSERT OR REPLACE INTO signals
                    (id, source, symbol, side, asset_class, quantity, price, stop_loss, take_profit,
-                    analyst, received_at, raw, import_batch, channel_id, message_id, revision_id)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    analyst, received_at, raw, import_batch, channel_id, message_id, revision_id,
+                    correlation_fingerprint)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     signal.id,
                     signal.source,
@@ -1334,6 +1411,7 @@ class SignalStore:
                     signal.channel_id,
                     signal.message_id,
                     signal.revision_id,
+                    correlation_fingerprint,
                 ),
             )
 
@@ -1371,6 +1449,141 @@ class SignalStore:
                 (channel_id, message_id, revision_id, revision_id),
             ).fetchone()
         return row[0] if row else None
+
+    # -- Track 12: cross-transport signal correlation (app/signal_correlation.py) --
+
+    def find_correlation_candidates(
+        self, *, fingerprint_key: str, exclude_channel_id: str, since: datetime, until: datetime
+    ) -> list[dict]:
+        """Every already-recorded signal sharing this exact discrete
+        fingerprint key, received within [`since`, `until`], from a
+        DIFFERENT `channel_id` than the new signal's own -- i.e. real
+        candidates for "the SAME underlying alert, arriving via a
+        DIFFERENT transport" (same-channel matches are already handled,
+        earlier and more strongly, by `find_signal_id_by_provider_
+        identity`'s exact-identity dedup -- this is deliberately scoped
+        to never re-cover that ground). Ordered earliest-first so the
+        first real match is the natural "canonical" signal an evidence
+        row attaches to. `exclude_channel_id` is required (not optional)
+        -- see `app/engine.py`'s own call site for why this is only ever
+        invoked for a signal that already has real channel_id/message_id
+        identity."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT id, source, symbol, side, price, channel_id, message_id, received_at
+                   FROM signals
+                   WHERE correlation_fingerprint = ? AND channel_id IS NOT NULL AND channel_id != ?
+                         AND received_at >= ? AND received_at <= ?
+                   ORDER BY received_at ASC""",
+                (fingerprint_key, exclude_channel_id, since.isoformat(), until.isoformat()),
+            ).fetchall()
+        return [
+            {
+                "id": r[0],
+                "source": r[1],
+                "symbol": r[2],
+                "side": r[3],
+                "price": r[4],
+                "channel_id": r[5],
+                "message_id": r[6],
+                "received_at": r[7],
+            }
+            for r in rows
+        ]
+
+    def record_signal_correlation_evidence(
+        self,
+        *,
+        canonical_signal_id: str,
+        evidence_signal_id: str,
+        fingerprint_key: str,
+        source: str,
+        channel_id: str | None,
+        message_id: str | None,
+        price: float | None,
+        side: str | None,
+        received_at: datetime,
+        match_type: str,
+    ) -> str:
+        """Appends one evidence row -- `match_type` is `"corroborating"`
+        or `"conflicting"` (see `signal_correlation_evidence`'s own
+        CREATE TABLE comment); this store never validates that string
+        against an enum itself (the caller, app/engine.py, always passes
+        a `CorrelationOutcome.value`), same "vocabulary owned by the
+        calling module" convention as `save_notification_bridge_event`'s
+        own `classification` parameter."""
+        evidence_id = str(uuid.uuid4())
+        with self._connect() as conn:
+            conn.execute(
+                """INSERT INTO signal_correlation_evidence
+                       (id, canonical_signal_id, evidence_signal_id, fingerprint_key, source, channel_id,
+                        message_id, price, side, received_at, match_type, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    evidence_id,
+                    canonical_signal_id,
+                    evidence_signal_id,
+                    fingerprint_key,
+                    source,
+                    channel_id,
+                    message_id,
+                    price,
+                    side,
+                    received_at.isoformat(),
+                    match_type,
+                    datetime.now(timezone.utc).isoformat(),
+                ),
+            )
+        return evidence_id
+
+    def list_signal_correlation_evidence(self, canonical_signal_id: str) -> list[dict]:
+        """Every corroborating/conflicting evidence row recorded against
+        one canonical signal id -- an audit read, e.g. "which other
+        transports also reported this exact trade"."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT id, canonical_signal_id, evidence_signal_id, fingerprint_key, source, channel_id,
+                          message_id, price, side, received_at, match_type, created_at
+                   FROM signal_correlation_evidence WHERE canonical_signal_id = ? ORDER BY created_at ASC""",
+                (canonical_signal_id,),
+            ).fetchall()
+        return [self._signal_correlation_evidence_row_to_dict(r) for r in rows]
+
+    def list_conflicting_signal_correlations(self) -> list[dict]:
+        """Every recorded `CONFLICTING_SOURCE_DATA` evidence row, across
+        every canonical signal -- the review-facing read for "two
+        transports disagreed on the same trade and neither was silently
+        preferred" (see app/engine.py's `_handle_signal` and this
+        table's own CREATE TABLE comment). The conflicting signal itself
+        (never engine.handle_signal'd) is recorded separately via
+        `save_signal` under an `import_batch` of
+        `"cross_transport_conflict:{canonical_signal_id}"` -- fetch it
+        with `get_signal_raw`/a direct read of the `signals` table by
+        this row's own `evidence_signal_id` for its full parsed content."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT id, canonical_signal_id, evidence_signal_id, fingerprint_key, source, channel_id,
+                          message_id, price, side, received_at, match_type, created_at
+                   FROM signal_correlation_evidence WHERE match_type = 'conflicting' ORDER BY created_at DESC"""
+            ).fetchall()
+        return [self._signal_correlation_evidence_row_to_dict(r) for r in rows]
+
+    @staticmethod
+    def _signal_correlation_evidence_row_to_dict(row: tuple) -> dict:
+        return {
+            "id": row[0],
+            "canonical_signal_id": row[1],
+            "evidence_signal_id": row[2],
+            "fingerprint_key": row[3],
+            "source": row[4],
+            "channel_id": row[5],
+            "message_id": row[6],
+            "price": row[7],
+            "side": row[8],
+            "received_at": row[9],
+            "match_type": row[10],
+            "created_at": row[11],
+        }
 
     def save_order_result(
         self,
@@ -4665,7 +4878,8 @@ class SignalStore:
         with self._connect() as conn:
             row = conn.execute(
                 """SELECT id, device_id, app_package, notification_key, content_hash, revision_seq,
-                          content_completeness, posted_at, received_at, classification, signal_id, created_at
+                          content_completeness, posted_at, received_at, classification, signal_id, created_at,
+                          needs_escalation, escalation_status
                    FROM notification_bridge_events
                    WHERE device_id = ? AND notification_key = ?
                    ORDER BY revision_seq DESC LIMIT 1""",
@@ -4673,20 +4887,7 @@ class SignalStore:
             ).fetchone()
         if row is None:
             return None
-        return {
-            "id": row[0],
-            "device_id": row[1],
-            "app_package": row[2],
-            "notification_key": row[3],
-            "content_hash": row[4],
-            "revision_seq": row[5],
-            "content_completeness": row[6],
-            "posted_at": row[7],
-            "received_at": row[8],
-            "classification": row[9],
-            "signal_id": row[10],
-            "created_at": row[11],
-        }
+        return self._notification_bridge_event_row_to_dict(row)
 
     def save_notification_bridge_event(
         self,
@@ -4701,14 +4902,22 @@ class SignalStore:
         received_at: datetime,
         classification: str,
         signal_id: str | None,
+        needs_escalation: bool = False,
     ) -> str:
+        """`needs_escalation` (Track 12): true for any event whose
+        `content_completeness` (app.notification_bridge.
+        ContentCompleteness) isn't COMPLETE -- see this table's own
+        CREATE TABLE comment for the escalation_status state machine
+        this seeds (`"pending"` here, `None` for an event that was never
+        flagged at all)."""
         event_id = str(uuid.uuid4())
         with self._connect() as conn:
             conn.execute(
                 """INSERT INTO notification_bridge_events
                        (id, device_id, app_package, notification_key, content_hash, revision_seq,
-                        content_completeness, posted_at, received_at, classification, signal_id, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        content_completeness, posted_at, received_at, classification, signal_id, created_at,
+                        needs_escalation, escalation_status)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     event_id,
                     device_id,
@@ -4722,6 +4931,8 @@ class SignalStore:
                     classification,
                     signal_id,
                     datetime.now(timezone.utc).isoformat(),
+                    1 if needs_escalation else 0,
+                    "pending" if needs_escalation else None,
                 ),
             )
         return event_id
@@ -4733,27 +4944,102 @@ class SignalStore:
         with self._connect() as conn:
             rows = conn.execute(
                 """SELECT id, device_id, app_package, notification_key, content_hash, revision_seq,
-                          content_completeness, posted_at, received_at, classification, signal_id, created_at
+                          content_completeness, posted_at, received_at, classification, signal_id, created_at,
+                          needs_escalation, escalation_status
                    FROM notification_bridge_events WHERE device_id = ? ORDER BY created_at DESC""",
                 (device_id,),
             ).fetchall()
-        return [
-            {
-                "id": r[0],
-                "device_id": r[1],
-                "app_package": r[2],
-                "notification_key": r[3],
-                "content_hash": r[4],
-                "revision_seq": r[5],
-                "content_completeness": r[6],
-                "posted_at": r[7],
-                "received_at": r[8],
-                "classification": r[9],
-                "signal_id": r[10],
-                "created_at": r[11],
-            }
-            for r in rows
-        ]
+        return [self._notification_bridge_event_row_to_dict(r) for r in rows]
+
+    @staticmethod
+    def _notification_bridge_event_row_to_dict(row: tuple) -> dict:
+        return {
+            "id": row[0],
+            "device_id": row[1],
+            "app_package": row[2],
+            "notification_key": row[3],
+            "content_hash": row[4],
+            "revision_seq": row[5],
+            "content_completeness": row[6],
+            "posted_at": row[7],
+            "received_at": row[8],
+            "classification": row[9],
+            "signal_id": row[10],
+            "created_at": row[11],
+            "needs_escalation": bool(row[12]),
+            "escalation_status": row[13],
+        }
+
+    def list_notification_bridge_events_needing_escalation(self, device_id: str | None = None) -> list[dict]:
+        """Track 12/Track 13 interface: every notification-bridge event
+        still awaiting escalation -- `needs_escalation = 1 AND
+        escalation_status = 'pending'` -- optionally scoped to one
+        device. THIS is the read Track 13's active AI phone-retrieval
+        escalation layer polls (or is woken by) to find PARTIAL/
+        POINTER_ONLY/TRUNCATED/UNKNOWN captures that a human/AI-assisted
+        follow-up (e.g. calling the provider, opening the source app)
+        might be able to fill in -- this codebase does not attempt that
+        retrieval itself; it only classifies and flags (see
+        app.notification_bridge.classify_notification_completeness and
+        app/main.py's `_process_notification_bridge_event`).
+
+        Once Track 13 (or an owner, manually) has resolved one of these
+        -- successfully recovered the full content and, if it now
+        parses, produced a real Signal, OR determined it genuinely
+        can't be recovered -- it calls
+        `resolve_notification_bridge_event_escalation` to close it out;
+        this read never returns an event a second time once resolved."""
+        with self._connect() as conn:
+            if device_id is not None:
+                rows = conn.execute(
+                    """SELECT id, device_id, app_package, notification_key, content_hash, revision_seq,
+                              content_completeness, posted_at, received_at, classification, signal_id, created_at,
+                              needs_escalation, escalation_status
+                       FROM notification_bridge_events
+                       WHERE needs_escalation = 1 AND escalation_status = 'pending' AND device_id = ?
+                       ORDER BY created_at ASC""",
+                    (device_id,),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """SELECT id, device_id, app_package, notification_key, content_hash, revision_seq,
+                              content_completeness, posted_at, received_at, classification, signal_id, created_at,
+                              needs_escalation, escalation_status
+                       FROM notification_bridge_events
+                       WHERE needs_escalation = 1 AND escalation_status = 'pending'
+                       ORDER BY created_at ASC"""
+                ).fetchall()
+        return [self._notification_bridge_event_row_to_dict(r) for r in rows]
+
+    def resolve_notification_bridge_event_escalation(
+        self, event_id: str, *, status: str, resolved_signal_id: str | None = None
+    ) -> None:
+        """Track 12/Track 13 interface (the write half -- see `list_
+        notification_bridge_events_needing_escalation`'s own docstring).
+        `status` is caller-owned vocabulary (same "the calling module
+        owns this string" convention as `record_signal_correlation_
+        evidence`'s `match_type`) -- Track 13 is expected to use
+        `"resolved"` (content was recovered) or `"failed"` (recovery was
+        attempted and genuinely could not succeed), never silently
+        reusing `"pending"`. `resolved_signal_id`, when given, overwrites
+        this event's own `signal_id` -- the real Signal Track 13's
+        recovered content produced, if any (a resolution that recovered
+        no parseable trade at all, e.g. it turned out to be a closed
+        position update already handled elsewhere, passes `None` and
+        leaves `signal_id` as whatever it already was)."""
+        with self._connect() as conn:
+            if resolved_signal_id is not None:
+                cur = conn.execute(
+                    "UPDATE notification_bridge_events SET escalation_status = ?, signal_id = ? WHERE id = ?",
+                    (status, resolved_signal_id, event_id),
+                )
+            else:
+                cur = conn.execute(
+                    "UPDATE notification_bridge_events SET escalation_status = ? WHERE id = ?",
+                    (status, event_id),
+                )
+            if cur.rowcount == 0:
+                raise KeyError(f"no notification-bridge event with id={event_id!r}")
 
     def list_orders_for_signal(self, signal_id: str) -> list[dict]:
         """Every order already recorded against this exact signal id — what

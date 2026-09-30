@@ -23,11 +23,34 @@ below.
 
 Content completeness (point 5 of the Track 10 brief): a notification
 saying "New trade posted" is DISCOVERY, not an executable instruction --
-`ContentCompleteness.TRUNCATED`/`TITLE_ONLY` must never be silently
+`ContentCompleteness.TRUNCATED`/`POINTER_ONLY` must never be silently
 routed as if it were the full alert. See `app/main.py`'s
 `_process_notification_bridge_event` for exactly how each completeness
 value changes what happens to the event (never a live order for
 anything but `COMPLETE`).
+
+Track 12 extends this from a device-level rolling-window health signal
+into an explicit PER-EVENT classification (`ContentCompleteness`, five
+states: `COMPLETE`/`PARTIAL`/`POINTER_ONLY`/`TRUNCATED`/`UNKNOWN`),
+stored per-event in `notification_bridge_events.content_completeness`
+(same column Track 10 already used -- see that table's own CREATE TABLE
+comment in app/db.py). This is DISTINCT from `DeviceReportedCompleteness`
+below (the three-value vocabulary the Android app itself reports on the
+wire, in `NotificationBridgeEventPayload.content_completeness`, based
+purely on which `Notification` fields it could extract) -- the device's
+own report is one INPUT to `classify_notification_completeness`, which
+also looks at the actual extracted text and how far this codebase's own
+text parser (`app/sources/text_parser.py`) got with it, since a
+provider (Whop chief among them -- it truncates trade content to a bare
+"New trade posted" pointer in the OS notification shade even though
+Android itself sees nothing elided) can report `complete` while what it
+actually gave the OS is not usable content at all. `UNKNOWN` is the
+honest fallback when neither signal lets the classifier tell -- it is
+NEVER silently defaulted to `COMPLETE`. Only `COMPLETE` is eligible for
+live signal routing; every other state is recorded and flagged
+`needs_escalation` for Track 13's phone-retrieval escalation layer to
+later resolve -- see `SignalStore.list_notification_bridge_events_
+needing_escalation`'s own docstring for that read/write interface.
 
 Health states (point 8, same "never silently green" convention as
 `app/telegram_collectors.py`'s `CollectorHealth`):
@@ -71,15 +94,54 @@ from pwdlib import PasswordHash
 from pwdlib.exceptions import UnknownHashError
 
 
-class ContentCompleteness(str, enum.Enum):
-    """What the Android app actually had available to forward -- set by
-    the app itself based on which `Notification`/`StatusBarNotification`
-    fields were populated (see `mobile/notification-bridge/README.md`'s
-    own extraction table), never guessed server-side."""
+class DeviceReportedCompleteness(str, enum.Enum):
+    """The wire vocabulary `NotificationBridgeEventPayload.content_
+    completeness` carries -- set by the Android app itself based on
+    which `Notification`/`StatusBarNotification` fields were populated
+    (see `mobile/notification-bridge/README.md`'s own extraction table),
+    never guessed server-side. This is the device's own, narrower report
+    ("did Android hand me an elided string") -- see
+    `classify_notification_completeness` for how this is combined with
+    server-side content inspection into the richer, per-event
+    `ContentCompleteness` this codebase actually stores/gates on."""
 
     COMPLETE = "complete"
     TRUNCATED = "truncated"
     TITLE_ONLY = "title_only"
+
+
+class ContentCompleteness(str, enum.Enum):
+    """Track 12: the explicit, five-state PER-EVENT completeness
+    classification this codebase stores and gates live routing on (see
+    this module's own docstring). Computed server-side by
+    `classify_notification_completeness`, never taken verbatim from the
+    device's own `DeviceReportedCompleteness` report -- a provider can
+    (and Whop specifically does) report nothing-elided while still
+    having put nothing but a bare pointer phrase in the notification."""
+
+    #: A real, actionable trade instruction was both fully captured AND
+    #: (when applicable) unambiguously parsed by app/sources/
+    #: text_parser.py, OR the text was fully captured and genuinely isn't
+    #: a trade instruction at all (recognized commentary/negation) -- see
+    #: `classify_notification_completeness`.
+    COMPLETE = "complete"
+    #: Real trade-instruction shape was recognized (this grammar saw
+    #: something that looks like an entry/side) but a required field was
+    #: missing or ambiguous -- not nothing, not enough.
+    PARTIAL = "partial"
+    #: A bare "something happened, open the app" pointer with no
+    #: extractable trade content at all -- Whop's own common shape (see
+    #: this module's docstring) as well as Android's own TITLE_ONLY case.
+    POINTER_ONLY = "pointer_only"
+    #: The device itself reports this text was cut off mid-content.
+    TRUNCATED = "truncated"
+    #: Real, non-empty text was captured, the device reports nothing was
+    #: elided, and it isn't a recognized bare-pointer phrase -- but this
+    #: codebase's own parser couldn't tell whether it's a trade
+    #: instruction in a format it doesn't understand or unrelated
+    #: content. The honest "the classifier can't tell" fallback -- NEVER
+    #: silently treated as COMPLETE.
+    UNKNOWN = "unknown"
 
 
 class DeviceHealth(str, enum.Enum):
@@ -166,11 +228,27 @@ class NotificationBridgeDevice:
     #: with any other package is rejected -- see `DeviceHealth.
     #: UNAUTHORIZED_APP_PACKAGE`.
     app_packages: list[str] = field(default_factory=list)
-    #: app_package -> {"provider_name": ..., "analyst": ...} -- how an
-    #: accepted notification's `Signal.source`/`Signal.analyst` are
-    #: resolved. A package with no entry here falls back to using the
-    #: bare package name as `Signal.source` (an honest, undecorated
-    #: default, never a guessed provider name).
+    #: app_package -> {"provider_name": ..., "analyst": ..., "rules":
+    #: [...]} -- how an accepted notification's `Signal.source`/
+    #: `Signal.analyst` are resolved. A package with no entry here falls
+    #: back to using the bare package name as `Signal.source` (an
+    #: honest, undecorated default, never a guessed provider name).
+    #:
+    #: Track 12 (Whop): a single Android app package can carry alerts
+    #: from MANY distinct trading-signal providers at once -- Whop
+    #: (`com.whop.whop`) is exactly this shape, since it's a marketplace
+    #: app, not a per-provider one, and many different signal sellers'
+    #: notifications all arrive through that one package. The optional
+    #: `"rules"` list disambiguates: an ordered list of `{"title_
+    #: pattern": ..., "provider_name": ..., "analyst": ...}` objects,
+    #: each matched by case-insensitive substring against the
+    #: notification's own `title` (first match wins, same "explicit
+    #: order settles ambiguity" convention as this module's other
+    #: ordered lists). A package with `"rules"` but no notification title
+    #: matching any of them -- or a package with no `"rules"` at all --
+    #: falls back to that package's own top-level `"provider_name"`/
+    #: `"analyst"`, or (still no entry at all) the bare package name.
+    #: See `resolve_provider_mapping`.
     provider_mapping: dict[str, dict[str, Any]] = field(default_factory=dict)
     last_heartbeat_at: Optional[datetime] = None
     #: Rolling window of up to `_COMPLETENESS_WINDOW_SIZE` most-recent
@@ -232,20 +310,174 @@ def validate_device_registration(
         if not pkg or not pkg.strip() or " " in pkg:
             raise NotificationBridgeError(f"app_package must be a bare Android package name (no spaces), got {pkg!r}")
     if provider_mapping:
-        for pkg in provider_mapping:
+        for pkg, entry in provider_mapping.items():
             if pkg not in app_packages:
                 raise NotificationBridgeError(
                     f"provider_mapping references app_package {pkg!r}, which is not in app_packages {app_packages!r}"
                 )
+            rules = entry.get("rules") if isinstance(entry, dict) else None
+            if rules is None:
+                continue
+            if not isinstance(rules, list):
+                raise NotificationBridgeError(f"provider_mapping[{pkg!r}]['rules'] must be a list, got {rules!r}")
+            for index, rule in enumerate(rules):
+                if not isinstance(rule, dict):
+                    raise NotificationBridgeError(f"provider_mapping[{pkg!r}]['rules'][{index}] must be an object")
+                title_pattern = rule.get("title_pattern")
+                if not title_pattern or not str(title_pattern).strip():
+                    raise NotificationBridgeError(
+                        f"provider_mapping[{pkg!r}]['rules'][{index}] is missing a non-empty 'title_pattern'"
+                    )
+                if not rule.get("provider_name") or not str(rule.get("provider_name")).strip():
+                    raise NotificationBridgeError(
+                        f"provider_mapping[{pkg!r}]['rules'][{index}] is missing a non-empty 'provider_name'"
+                    )
 
 
-def validate_content_completeness(value: str) -> ContentCompleteness:
+def resolve_provider_mapping(
+    mapping: dict[str, dict[str, Any]], *, app_package: str, title: str | None
+) -> tuple[str, Optional[str]]:
+    """Resolves ONE accepted notification's `(provider_name, analyst)` --
+    the single place this decision is made, used by
+    `app/main.py`'s `_process_notification_bridge_event` instead of that
+    route reading `provider_mapping` directly. See `NotificationBridge
+    Device.provider_mapping`'s own docstring for the Whop-motivated
+    `"rules"` (title-pattern) shape this resolves, in order:
+
+    1. `mapping[app_package]["rules"]`, first entry whose `title_pattern`
+       is a case-insensitive substring of `title` (`title` is `None` for
+       a notification with no title at all, which matches no rule).
+    2. `mapping[app_package]["provider_name"]`/`["analyst"]` (the
+       existing, pre-Track-12 per-package default).
+    3. The bare `app_package` as `provider_name`, `None` as `analyst` --
+       the honest, undecorated fallback this module has always used for
+       a package with no mapping entry at all."""
+    entry = mapping.get(app_package, {})
+    rules = entry.get("rules") or []
+    if title:
+        lowered_title = title.lower()
+        for rule in rules:
+            pattern = str(rule.get("title_pattern", "")).lower()
+            if pattern and pattern in lowered_title:
+                return str(rule["provider_name"]), rule.get("analyst")
+    provider_name = entry.get("provider_name") or app_package
+    analyst = entry.get("analyst")
+    return str(provider_name), analyst
+
+
+def validate_content_completeness(value: str) -> DeviceReportedCompleteness:
+    """Validates the WIRE value `NotificationBridgeEventPayload.content_
+    completeness` carries -- the device's own three-value self-report
+    (see `DeviceReportedCompleteness`'s own docstring), not this
+    codebase's richer, five-state stored `ContentCompleteness`
+    classification (see `classify_notification_completeness` for that)."""
     try:
-        return ContentCompleteness(value)
+        return DeviceReportedCompleteness(value)
     except ValueError as exc:
         raise NotificationBridgeError(
-            f"content_completeness must be one of {[c.value for c in ContentCompleteness]}, got {value!r}"
+            f"content_completeness must be one of {[c.value for c in DeviceReportedCompleteness]}, got {value!r}"
         ) from exc
+
+
+#: Track 12: known bare-pointer notification phrasings -- providers
+#: (Whop's own OS notification shade chief among them, per this module's
+#: docstring) whose in-app content is real but whose OS notification is
+#: deliberately just "something happened, open the app" with no trade
+#: content at all. Matched as a case-insensitive SUBSTRING of the
+#: captured text -- deliberately narrow/literal (never a fuzzy/ML guess)
+#: so this can never mis-flag a real, terse trade instruction ("BUY
+#: BTCUSDT" has no numbers... actually it does not match any of these
+#: phrases at all, by design) as pointer-only.
+_POINTER_ONLY_PHRASES = (
+    "new trade posted",
+    "new trade alert",
+    "posted a new trade",
+    "new alert posted",
+    "new post in",
+    "tap to view",
+    "open the app to view",
+    "check the app for details",
+    "view in app",
+)
+
+
+def _looks_like_pointer_only(stripped_text: str) -> bool:
+    lowered = stripped_text.lower()
+    if any(phrase in lowered for phrase in _POINTER_ONLY_PHRASES):
+        return True
+    # A short, digit-free line of text is, in practice, never a real
+    # trade instruction (every grammar this codebase parses requires at
+    # least one numeric field -- a symbol, a price, a level) -- it's
+    # either a bare pointer or empty chrome. Kept conservative (both
+    # conditions, not either alone) so a genuinely short-but-numeric
+    # alert (e.g. "BUY BTC 65000") is never misclassified.
+    return len(stripped_text) < 40 and not any(ch.isdigit() for ch in stripped_text)
+
+
+def classify_notification_completeness(
+    *,
+    device_reported: DeviceReportedCompleteness,
+    best_text: str,
+    disposition_outcome: Optional[str],
+) -> ContentCompleteness:
+    """Track 12: the one place a captured notification's PER-EVENT
+    `ContentCompleteness` is decided -- see this module's own docstring
+    for why this combines the device's own report with server-side
+    content inspection rather than trusting either alone, and why
+    `UNKNOWN` (never a silent `COMPLETE`) is the fallback when neither
+    signal is conclusive.
+
+    `disposition_outcome` is `app.sources.text_parser.DispositionOutcome
+    .value` (a plain `str` here to avoid this module importing that
+    parser module at all when the caller has no text to classify) for
+    whatever `best_text` resolved to when non-empty, or `None` when
+    `best_text` itself is empty (nothing was ever passed to the
+    parser)."""
+    stripped = (best_text or "").strip()
+
+    if device_reported is DeviceReportedCompleteness.TITLE_ONLY:
+        # A title-only notification IS, definitionally, a bare pointer --
+        # no body text was ever extracted for Android to even judge as
+        # elided or not.
+        return ContentCompleteness.POINTER_ONLY
+    if not stripped:
+        return ContentCompleteness.POINTER_ONLY
+    if device_reported is DeviceReportedCompleteness.TRUNCATED:
+        # Android itself reports this was cut off -- trust that over any
+        # content heuristic, checked BEFORE the parser outcome below on
+        # purpose: a truncated fragment can still accidentally parse
+        # into a (wrong) resolved instruction -- e.g. "BUY BTCUSDT @ 5"
+        # with a trailing "0000" cut off -- and a device-confirmed
+        # truncation must never be silently upgraded to COMPLETE just
+        # because the fragment happened to parse.
+        return ContentCompleteness.TRUNCATED
+
+    if disposition_outcome in ("parsed", "ignored"):
+        # PARSED: a real, resolved trade instruction -- checked BEFORE
+        # the pointer-phrase/short-text heuristic below on purpose: a
+        # short, digit-free instruction this grammar genuinely resolved
+        # (e.g. "BUY BTCUSDT", a bare market order with no numeric
+        # price) must never be misclassified as a bare pointer just
+        # because it happens to be short. IGNORED: this grammar
+        # positively recognized negated/conditional/past-tense
+        # commentary -- fully captured, correctly not a trade
+        # instruction. Both are complete captures of whatever this
+        # notification actually was.
+        return ContentCompleteness.COMPLETE
+    if disposition_outcome in ("ambiguous", "missing_data"):
+        # Real trade-instruction SHAPE was recognized but a field was
+        # missing/unresolvable -- genuinely partial, not a guess.
+        return ContentCompleteness.PARTIAL
+    if _looks_like_pointer_only(stripped):
+        return ContentCompleteness.POINTER_ONLY
+    # disposition_outcome == "no_match" (or None, if this caller never
+    # had a parser outcome to pass): real text was captured, the device
+    # reports nothing elided, it isn't a recognized bare-pointer phrase,
+    # and this grammar found no trade-instruction shape in it at all --
+    # could genuinely be unrelated content, or a real alert in a format
+    # this parser doesn't understand. Neither signal lets this function
+    # tell which -- the honest UNKNOWN fallback, never silently COMPLETE.
+    return ContentCompleteness.UNKNOWN
 
 
 def now_utc() -> datetime:
