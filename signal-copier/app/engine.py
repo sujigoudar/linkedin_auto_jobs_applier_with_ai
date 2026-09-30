@@ -1974,8 +1974,76 @@ class SignalCopierEngine:
             ),
         )
 
+    def _gate_close_by_provider_ownership(
+        self, signal: Signal, account: DestinationAccount, symbol: str, local_position: float
+    ) -> tuple[float, OrderResult | None]:
+        """Track 18: the per-provider ownership gate for a plain-account
+        close, consulted BEFORE `_resolve_close` builds an opposing order.
+        `RoutingConfig` legitimately allows several different providers to
+        route to the SAME destination account/symbol (see app/routing.py's
+        module docstring) -- but `positions` is tracked ONLY per
+        (account_id, symbol), pooled across every provider routed there,
+        with no separate per-provider ownership ledger. Before this
+        existed, a provider with ZERO attributable quantity in a pooled
+        position could still close/reduce ANOTHER provider's entire
+        position, with no rejection at all.
+
+        Reuses `SignalStore.get_provider_position_ownership` -- the SAME
+        computation (`orders.applied_execution_delta`, signed by side,
+        joined through `signals.source`) Track 16's `GET /positions/
+        {symbol}/provider-allocations` visibility endpoint already uses,
+        never a second, parallel ledger that could drift out of sync with
+        what that endpoint reports.
+
+        Returns `(quantity_to_close, rejection)`: exactly one of
+        `quantity_to_close > 0` or `rejection is not None`.
+        `quantity_to_close` is capped to THIS provider's own attributable
+        share -- never more, even when the pooled account position has
+        more available (e.g. account owns 150, provider A built 100 and
+        provider B built 50: provider B's full-exit signal caps to 50).
+
+        When NO order/signal attribution exists at all for this
+        account/symbol (`total_attributed == 0` -- e.g. a position
+        reconciled or seeded outside this service's own tracked order
+        pipeline, see `DestinationAccount.exclusive_writer_qualified`),
+        there is no competing-provider data to gate against: this returns
+        the full `local_position` unchanged, exactly matching this
+        method's pre-Track-18 behavior for that case -- gating here would
+        regress an already-supported, unrelated scenario rather than fix
+        the multi-provider pooling gap this method exists for."""
+        this_provider, total_attributed = self.store.get_provider_position_ownership(
+            account.account_id, symbol, signal.source
+        )
+        if total_attributed == 0:
+            return local_position, None
+        same_direction_owned = this_provider if local_position > 0 else -this_provider
+        quantity_to_close = min(max(0.0, same_direction_owned), abs(local_position))
+        if quantity_to_close <= 0:
+            rejection = OrderResult(
+                account_id=account.account_id,
+                status=OrderStatus.REJECTED,
+                signal_id=signal.id,
+                message=(
+                    f"EXIT RECEIVED / Provider: {signal.source} / Owned quantity: 0 / "
+                    "NO ORDER CREATED / Reason: NO_PROVIDER_POSITION -- this provider has no "
+                    f"attributable quantity in account '{account.account_id}' symbol '{symbol}' "
+                    "(the tracked position here was built by a different provider); refusing to "
+                    "close/reduce it. See GET /positions/{symbol}/provider-allocations for the "
+                    "current per-provider breakdown."
+                ),
+            )
+            return 0.0, rejection
+        capped_position = quantity_to_close if local_position > 0 else -quantity_to_close
+        return capped_position, None
+
     async def _resolve_and_submit_plain_close(
-        self, signal: Signal, account: DestinationAccount, symbol: str, broker: BrokerAdapter
+        self,
+        signal: Signal,
+        account: DestinationAccount,
+        symbol: str,
+        broker: BrokerAdapter,
+        *,
+        enforce_provider_ownership: bool = True,
     ) -> OrderResult:
         """The plain-account (non-managed_lifecycle) equivalent of
         `PositionLifecycleManager.request_exit`'s serialization: reading the
@@ -1994,7 +2062,19 @@ class SignalCopierEngine:
         `SignalStore.claim_close` claim below is the real cross-process
         guard, enforced by the database itself via a UNIQUE constraint;
         the in-memory lock stays as a fast, uncontended first check within
-        one process."""
+        one process.
+
+        `enforce_provider_ownership` (Track 18, default True): gates the
+        resolved close to `signal.source`'s own attributable share of this
+        pooled position -- see `_gate_close_by_provider_ownership`'s own
+        docstring. The one caller that passes False is `close_position`'s
+        manual dashboard "Exit now"/"Flatten" action, which is explicitly
+        NOT provider-scoped (see that method's own docstring, "bypasses
+        routing rules entirely") -- gating it against `close_signal.source`
+        (a synthetic reason string like "manual_exit", never a real
+        provider) would incorrectly reject the one action meant to flatten
+        the WHOLE pooled position regardless of which provider(s) built
+        it."""
         lock = self._plain_close_locks[(account.account_id, symbol)]
         async with lock:
             if not self.store.claim_close(account.account_id, symbol):
@@ -2032,8 +2112,23 @@ class SignalCopierEngine:
                     self.store.save_order_result(reconciliation_rejection, purpose="close", family_id=None)
                     return reconciliation_rejection
 
-                resolved = self._resolve_close(signal, account, symbol, position=local_position)
-                assert resolved is not None  # local_position != 0 already checked above
+                # Track 18: per-provider ownership gate -- caps the close
+                # to `signal.source`'s own attributable share of this
+                # pooled position (or rejects outright with
+                # NO_PROVIDER_POSITION if it owns none of it), BEFORE
+                # `_resolve_close` builds an opposing order. See
+                # `_gate_close_by_provider_ownership`'s own docstring.
+                close_position_value = local_position
+                if enforce_provider_ownership:
+                    close_position_value, ownership_rejection = self._gate_close_by_provider_ownership(
+                        signal, account, symbol, local_position
+                    )
+                    if ownership_rejection is not None:
+                        self.store.save_order_result(ownership_rejection, purpose="close", family_id=None)
+                        return ownership_rejection
+
+                resolved = self._resolve_close(signal, account, symbol, position=close_position_value)
+                assert resolved is not None  # close_position_value != 0 whenever no rejection was returned above
 
                 order_signal, quantity = resolved
                 (
@@ -2065,7 +2160,7 @@ class SignalCopierEngine:
                 self.store.release_close(account.account_id, symbol)
 
     async def _handle_managed_signal(
-        self, signal: Signal, account: DestinationAccount, symbol: str
+        self, signal: Signal, account: DestinationAccount, symbol: str, *, enforce_provider_ownership: bool = True
     ) -> tuple[OrderResult, datetime | None, datetime | None]:
         """Route a BUY/SELL/CLOSE signal for a `managed_lifecycle` account through
         `PositionLifecycleManager` instead of the plain broker.place_order path.
@@ -2074,9 +2169,14 @@ class SignalCopierEngine:
         two are PU-A2's execution-quality timestamps, both None for a CLOSE
         (an exit, not an entry: nothing here submits a fresh protective stop
         for it, and app/execution_quality.py's protection stage is entry-only
-        -- see _handle_managed_close)."""
+        -- see _handle_managed_close). `enforce_provider_ownership` (Track 18)
+        is forwarded to `_handle_managed_close` unchanged -- see its own
+        docstring; entries have no equivalent gate (there is nothing pooled
+        yet to gate an entry against)."""
         if signal.side == Side.CLOSE:
-            return await self._handle_managed_close(signal, account, symbol)
+            return await self._handle_managed_close(
+                signal, account, symbol, enforce_provider_ownership=enforce_provider_ownership
+            )
         return await self._handle_managed_entry(signal, account, symbol)
 
     async def _handle_managed_entry(
@@ -2397,7 +2497,13 @@ class SignalCopierEngine:
         return result, submitted_at, protection_confirmed_at
 
     async def _handle_managed_close(
-        self, signal: Signal, account: DestinationAccount, symbol: str, source: str = "provider_exit"
+        self,
+        signal: Signal,
+        account: DestinationAccount,
+        symbol: str,
+        source: str = "provider_exit",
+        *,
+        enforce_provider_ownership: bool = True,
     ) -> tuple[OrderResult, datetime | None, datetime | None]:
         """Returns (result, submitted_at, protection_confirmed_at) like
         `_handle_managed_entry`, for the same call-site shape -- but a CLOSE
@@ -2407,7 +2513,29 @@ class SignalCopierEngine:
         is also None here -- unlike the plain-account close path (see
         `_submit_order`), `request_exit`'s own submission call is inside
         app/lifecycle/manager.py, not this method, so there is no real
-        submission instant available at this call site to report honestly."""
+        submission instant available at this call site to report honestly.
+
+        `source` here is `request_exit`'s exit-KIND label (e.g.
+        "provider_exit", the manual-flatten reason) -- NOT necessarily the
+        real provider identity; `PositionLifecycleManager._submit_exit_
+        order`/`_persist_self_initiated_exit` always save the resulting
+        order's own `signals.source` as the synthetic `"lifecycle_manager"`
+        regardless of what's passed here (self-initiated stop/target/
+        trailing/time exits have no provider to attribute to at all). Track
+        18's ownership gate below therefore reads `signal.source` (this
+        CLOSE signal's REAL provider, e.g. "tradingview") instead, and only
+        for GATING which quantity this call may request -- never passed
+        through to `request_exit` itself, so it can't be confused with an
+        exit-kind label downstream.
+
+        `enforce_provider_ownership` (Track 18, default True): rejects this
+        CLOSE outright if `signal.source` isn't the provider that owns this
+        position's CURRENT lifecycle -- see the gating block below for
+        exactly how that's determined and why it's a binary allow/reject
+        here rather than the plain path's proportional cap. The one caller
+        that passes False is `close_position`'s manual dashboard "Exit
+        now"/"Flatten" action -- see that method's own docstring for why
+        gating it against a synthetic reason string would be wrong."""
         lifecycle = self.lifecycle_manager.get_lifecycle(account.account_id, symbol)
         if lifecycle is None or lifecycle.closed:
             return (
@@ -2434,6 +2562,62 @@ class SignalCopierEngine:
                 None,
             )
 
+        if enforce_provider_ownership:
+            # Track 18: managed_lifecycle's own EXE-09 entry gate
+            # (`PositionLifecycleManager.validate_plan`) already refuses a
+            # second, concurrent entry for the same (account_id, symbol)
+            # while one is already active -- so unlike a plain account, a
+            # managed lifecycle's CURRENT position is never pooled across
+            # more than one provider at a time; it belongs entirely to
+            # whichever provider's signal started it. That real, existing
+            # invariant is what this checks -- NOT `orders.applied_
+            # execution_delta` (Track 16's own attribution computation,
+            # reused by the plain-account gate in
+            # `_gate_close_by_provider_ownership`): this engine's managed-
+            # lifecycle save_order_result call (in the `_handle_signal`
+            # loop, and `_persist_self_initiated_exit`) never populates
+            # that field for a managed order today (a pre-existing gap,
+            # not introduced here -- Track 16's own `/positions/{symbol}/
+            # provider-allocations` endpoint is equally blind to managed-
+            # lifecycle activity for the same reason). Fixing that gap
+            # safely would need `_handle_managed_entry`/`_handle_managed_
+            # close`/`close_position` to thread the real applied quantity
+            # back to that save call, a broader refactor outside this
+            # pass's confidence -- see this task's own final report.
+            # `lifecycle.plan.entry_signal_id` is the reliable, ALREADY-
+            # EXISTING source of truth for "which provider owns this
+            # lifecycle" instead (see its own docstring in app/lifecycle/
+            # models.py -- already used by `close_position`'s `family_id`
+            # lookup for the identical purpose): always a real signal id
+            # for a lifecycle started through the normal entry path (see
+            # `_handle_managed_entry`'s `PositionPlan(entry_signal_id=
+            # signal.id)`), so `owning_source is None` here only for a
+            # lifecycle this engine didn't itself start -- fails closed
+            # (rejected) exactly like a real ownership mismatch, never
+            # guessed.
+            owning_source = None
+            if lifecycle.plan.entry_signal_id:
+                entry_signal_row = self.store.get_signal(lifecycle.plan.entry_signal_id)
+                if entry_signal_row is not None:
+                    owning_source = entry_signal_row["source"]
+            if owning_source != signal.source:
+                return (
+                    OrderResult(
+                        account_id=account.account_id,
+                        status=OrderStatus.REJECTED,
+                        signal_id=signal.id,
+                        message=(
+                            f"EXIT RECEIVED / Provider: {signal.source} / Owned quantity: 0 / "
+                            "NO ORDER CREATED / Reason: NO_PROVIDER_POSITION -- this provider does not "
+                            f"own the active lifecycle for account '{account.account_id}' symbol "
+                            f"'{symbol}' (it was started by a different provider, or its owning "
+                            "provider could not be confirmed); refusing to close/reduce it."
+                        ),
+                    ),
+                    None,
+                    None,
+                )
+
         # `request_exit` is now the single execution-application owner for this
         # fill (see PositionLifecycleManager._apply_exit_fill): it applies the
         # confirmed delta to SignalStore itself, once, whether the exit fills
@@ -2442,7 +2626,9 @@ class SignalCopierEngine:
         # "PENDING commitment recorded as a completed sale" bug this closes
         # (a partial fill followed by a cancelled remainder used to leave the
         # tracked position flat/wrong forever, since nothing ever corrected
-        # this optimistic write).
+        # this optimistic write). `available` is unchanged by Track 18's
+        # gate above (a binary allow/reject, not a proportional cap -- see
+        # that block's own comment for why).
         result = await self.lifecycle_manager.request_exit(account, symbol, available, source=source)
         return result, None, None
 
@@ -2504,8 +2690,14 @@ class SignalCopierEngine:
             lifecycle_before_close = self.lifecycle_manager.get_lifecycle(account.account_id, symbol)
             resolved_side = lifecycle_before_close.exit_side if lifecycle_before_close is not None else Side.CLOSE
 
+            # Track 18: manual flatten is explicitly NOT provider-scoped
+            # (see this method's own docstring) -- `close_signal.source`
+            # is a synthetic reason string (e.g. "manual_exit"), never a
+            # real provider, so ownership-gating it would incorrectly
+            # reject the one action meant to flatten the WHOLE pooled
+            # position regardless of which provider(s) built it.
             result, _submitted_at, _protection_confirmed_at = await self._handle_managed_close(
-                close_signal, account, symbol, source=reason
+                close_signal, account, symbol, source=reason, enforce_provider_ownership=False
             )
             # DB-01: PositionLifecycleManager.request_exit (which this
             # ultimately calls into) reports some outcomes with
@@ -2537,7 +2729,11 @@ class SignalCopierEngine:
             # "Exit now"/"Flatten" click can't race a concurrent provider EXIT
             # signal, or a second click, into a double-sell. This also persists
             # its own order-result row, so no separate save here.
-            result = await self._resolve_and_submit_plain_close(close_signal, account, symbol, broker)
+            # Track 18: same reasoning as the managed branch above -- manual
+            # flatten bypasses provider-ownership gating entirely.
+            result = await self._resolve_and_submit_plain_close(
+                close_signal, account, symbol, broker, enforce_provider_ownership=False
+            )
         return result
 
 
