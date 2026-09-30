@@ -68,7 +68,7 @@ from app.metrics import render_metrics
 from app.errors import SignalValidationError
 from app.lifecycle.manager import PositionLifecycleManager
 from app.lifecycle.models import ProtectionStatus
-from app.models import AccountBalance, AssetClass, ManagementRecipe, Side, Signal
+from app.models import AccountBalance, AssetClass, ManagementRecipe, Side, Signal, SourceEvent, SourceEventKind
 from app.pricing import PriceMonitor
 from app.qualification import QUALIFICATION_STATE_ORDER, QualificationError
 from app.providers import SettingsOverride, load_provider_registry_from_store
@@ -222,7 +222,7 @@ engine = SignalCopierEngine(
     provider_registry=provider_registry,
     lease_guard=writer_lease_guard,
 )
-webhook_source = WebhookSource(on_signal=engine.handle_signal)
+webhook_source = WebhookSource(on_signal=engine.handle_signal, on_source_event=engine.export_source_event)
 sms_source = TwilioSMSSource(on_signal=engine.handle_signal)
 whatsapp_source = WhatsAppSource(on_signal=engine.handle_signal)
 ninjatrader_source = NinjaTraderSource(on_signal=engine.handle_signal)
@@ -256,7 +256,12 @@ relay_scheduler = RelayScheduler(store=store, interval_seconds=config.RELAY_POLL
 _background_sources: list[SourceAdapter] = []
 if config.TELEGRAM_BOT_TOKEN and config.TELEGRAM_CHAT_ID:
     _background_sources.append(
-        TelegramSource(engine.handle_signal, config.TELEGRAM_BOT_TOKEN, config.TELEGRAM_CHAT_ID)
+        TelegramSource(
+            engine.handle_signal,
+            config.TELEGRAM_BOT_TOKEN,
+            config.TELEGRAM_CHAT_ID,
+            on_source_event=engine.export_source_event,
+        )
     )
 if config.DISCORD_BOT_TOKEN and config.DISCORD_CHANNEL_ID:
     _background_sources.append(
@@ -1106,6 +1111,23 @@ async def receive_webhook(
         signal = webhook_source.parse(payload, source_override=source_name)
     except SignalValidationError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    # Source ledger (this is the real production ingress route --
+    # `WebhookSource.ingest`'s own emission doesn't run on this path,
+    # which parses+dispatches directly): one ORIGINAL SOURCE_EVENT per
+    # accepted alert, carrying whatever provider message identity `parse`
+    # resolved (see `WebhookSource.parse`'s own docstring).
+    await engine.export_source_event(
+        SourceEvent(
+            source=signal.source,
+            kind=SourceEventKind.ORIGINAL,
+            channel_id=signal.channel_id,
+            message_id=signal.message_id,
+            local_receipt_timestamp=signal.received_at,
+            signal=signal,
+            raw_source_event=payload,
+        )
+    )
 
     results = await engine.handle_signal(signal)
     response = _orders_response(signal.id, results)

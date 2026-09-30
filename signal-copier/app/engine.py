@@ -127,6 +127,7 @@ from app.db import SignalStore
 from app.export_events import (
 build_execution_applied_envelope,
     build_routing_admission_outcome_envelope,
+    build_source_event_envelope,
     build_source_receipt_envelope,
 )
 from app.lifecycle.manager import PositionLifecycleManager
@@ -140,6 +141,7 @@ from app.models import (
     OrderStatus,
     Side,
     Signal,
+    SourceEvent,
     UncertaintyState,
 )
 from app.providers import ProviderRegistry, SettingsOverride
@@ -300,6 +302,27 @@ class SignalCopierEngine:
         )
         if envelope is not None:
             self.store.append_export_event(envelope)
+
+    async def export_source_event(self, event: SourceEvent) -> None:
+        """The public counterpart to `_export_source_receipt`, matching
+        `app.sources.base.SourceEventHandler`'s own shape so it can be
+        wired directly as a `SourceAdapter`'s `on_source_event` (see
+        app/main.py) -- appends one `SOURCE_EVENT` ledger row per
+        ORIGINAL/EDIT/DELETE/... an adapter recognizes. Async (unlike the
+        sync `_export_source_receipt`) because `SourceEventHandler` is;
+        unlike `build_source_receipt_envelope`,
+        `build_source_event_envelope` never returns `None`, so this
+        always appends."""
+        source_stream = f"signal-copier:source:{event.source}"
+        envelope = build_source_event_envelope(
+            event,
+            source_stream=source_stream,
+            export_sequence=self.store.next_export_sequence(source_stream),
+            producer_id=config.RELAY_PRODUCER_ID,
+            evidence_class=EvidenceClass[config.RELAY_EVIDENCE_CLASS],
+            environment=Environment[config.RELAY_ENVIRONMENT],
+        )
+        self.store.append_export_event(envelope)
 
     def _export_routing_outcome(
         self,
@@ -1419,9 +1442,38 @@ class SignalCopierEngine:
             )
 
         quantity = size_for_account(signal, account)
-        targets = []
-        if signal.take_profit is not None:
-            targets.append(Target(trigger_price=signal.take_profit, action=TargetAction.SELL, reduce_fraction=1.0))
+        # Multi-provider representability: a signal with an ORDERED
+        # `targets` collection (see `Signal.targets`'s own docstring) is
+        # now representable here directly -- one `Target(action=SELL)`
+        # per level, in the same order, each with its own `reduce_fraction`
+        # when the source gave one. Full multi-target ROUTING/sizing
+        # semantics (e.g. resolving an absolute `quantity` on a level
+        # against this account's own sized `quantity` above) stay out of
+        # scope for this pass; this only makes an incoming multi-target
+        # signal representable and non-crashing to consume, degrading to
+        # the existing single-take_profit behavior when `targets` is
+        # empty (every producer this task didn't touch).
+        if signal.targets:
+            # Known, disclosed gap (full multi-target execution logic is
+            # out of scope for this pass): a level that carries a
+            # `quantity` but no `fraction` (see `ProfitTarget`'s own
+            # docstring -- each is independent/optional) resolves here to
+            # `reduce_fraction=None`, which `PositionLifecycleManager`
+            # itself already treats as a real, harmless 0.0-fraction
+            # no-op-on-fire SELL (see its own `target.reduce_fraction or
+            # 0.0`), never a crash -- it just doesn't yet reduce the
+            # position at that level. A real per-level `quantity`
+            # resolved against this account's own sized `quantity` (not
+            # merely converted to a fraction here) needs its own,
+            # separately-scoped follow-up.
+            targets = [
+                Target(trigger_price=level.price, action=TargetAction.SELL, reduce_fraction=level.fraction)
+                for level in signal.targets
+            ]
+        elif signal.take_profit is not None:
+            targets = [Target(trigger_price=signal.take_profit, action=TargetAction.SELL, reduce_fraction=1.0)]
+        else:
+            targets = []
 
         plan = PositionPlan(
             account_id=account.account_id,
