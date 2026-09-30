@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Signal Copier Notification Bridge</string>
+    <string name="checking_notification_access">Checking notification access…</string>
+    <string name="notification_access_granted">Notification access: GRANTED</string>
+    <string name="notification_access_not_granted">Notification access: NOT granted -- tap below to enable it in system Settings</string>
+    <string name="grant_notification_access">Open notification access settings</string>
+    <string name="server_base_url_label">Server base URL</string>
+    <string name="server_base_url_hint">https://your-signal-copier-host</string>
+    <string name="device_id_label">Device ID</string>
+    <string name="device_id_hint">exactly what you registered server-side</string>
+    <string name="pairing_token_label">Pairing token</string>
+    <string name="pairing_token_hint">from the POST /notification-bridge/devices response</string>
+    <string name="app_packages_label">Authorized app packages (comma-separated)</string>
+    <string name="app_packages_hint">com.example.tradingapp, com.example.otherapp</string>
+    <string name="pick_from_installed_apps">Pick from installed apps</string>
+    <string name="save_and_start">Save and start bridging</string>
+    <string name="status_label">Status</string>
+    <string name="no_upload_yet">No successful upload yet</string>
+    <string name="last_upload_at">Last successful upload: %1$s</string>
+    <string name="last_error">Last upload error: %1$s</string>
+</resources>
