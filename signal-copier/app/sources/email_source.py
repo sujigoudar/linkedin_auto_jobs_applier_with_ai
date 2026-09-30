@@ -99,7 +99,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from email.message import EmailMessage
 from html.parser import HTMLParser
-from typing import Any, Callable, Optional, Protocol
+from typing import Callable, Optional, Protocol
 
 from app.email_collectors import CollectorHealth, ConnectionMode
 from app.errors import SignalValidationError

@@ -14,7 +14,6 @@ from app.models import Side, SourceEventKind
 from app.sources.email_source import (
     EmailSource,
     UnsupportedFormatEvent,
-    extract_plain_text,
     parse_email_bytes,
     strip_html_to_text,
 )
