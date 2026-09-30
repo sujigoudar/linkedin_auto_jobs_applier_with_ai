@@ -2262,6 +2262,40 @@ class SignalStore:
         events.sort(key=lambda e: e["at"])
         return {"signal_id": signal_id, "signal": signal, "events": events}
 
+    def _provider_signed_deltas(
+        self, conn: sqlite3.Connection, symbol: str, *, account_id: str | None = None, source: str | None = None
+    ) -> list[tuple[str, str, float]]:
+        """Track 18: the ONE shared computation behind both
+        `get_position_provider_allocations` (Track 16's read-only
+        visibility endpoint) and `get_provider_position_ownership` (Track
+        18's live enforcement gate) -- every `orders` row's `applied_
+        execution_delta`, signed by `side` (BUY positive, SELL negative;
+        this is AUD-01's distinct-field quantity model, the ONLY quantity
+        this codebase ever applies to a tracked position -- see
+        app/engine.py's own module docstring), joined through `signals.
+        source` to attribute it to a provider. Returns
+        `(account_id, source, signed_delta)` tuples, one per matching
+        order row -- callers aggregate as they need. Optionally scoped to
+        one `account_id` and/or `source` so the narrow enforcement call
+        doesn't have to fetch and filter every account's full history,
+        while still running the EXACT SAME query shape as the visibility
+        endpoint (never a second, independently-written computation that
+        could drift out of sync with what that endpoint reports)."""
+        query = (
+            "SELECT o.account_id, s.source, o.side, o.applied_execution_delta "
+            "FROM orders o JOIN signals s ON o.signal_id = s.id "
+            "WHERE o.symbol = ? AND o.applied_execution_delta IS NOT NULL AND o.applied_execution_delta != 0"
+        )
+        params: list[Any] = [symbol]
+        if account_id is not None:
+            query += " AND o.account_id = ?"
+            params.append(account_id)
+        if source is not None:
+            query += " AND s.source = ?"
+            params.append(source)
+        rows = conn.execute(query, params).fetchall()
+        return [(row[0], row[1], (row[3] if row[2] == "buy" else -row[3])) for row in rows]
+
     def get_position_provider_allocations(self, symbol: str) -> dict:
         """READ-ONLY visibility: broker-level (per-account) tracked
         position for `symbol` vs. each provider's own best-effort
@@ -2270,30 +2304,23 @@ class SignalStore:
         applied_execution_delta`, signed by `side`, joined to `signals.
         source` -- the ONLY quantity this codebase ever applies to a
         tracked position; see app/engine.py's own module docstring
-        section on it). This is DERIVED/INFORMATIONAL ONLY -- see this
-        task's own final report's "position ownership" section for why:
-        `positions`/`lifecycle_state` are tracked ONLY per (account_id,
-        symbol), pooled across every provider routed to that same
-        account, with no separate per-provider ownership ledger this
-        method could instead just read back. Never used by any
-        live-routing decision -- app/engine.py's own close/exit
-        resolution continues to use `SignalStore.get_position`/
-        `PositionLifecycleManager` exactly as before, unchanged by this
-        method's existence."""
+        section on it -- see `_provider_signed_deltas` for the shared
+        computation). This read itself stays DERIVED/INFORMATIONAL ONLY,
+        never consulted by any live-routing decision -- but Track 18 added
+        a SEPARATE, narrower enforcement gate (`get_provider_position_
+        ownership`, consulted by app/engine.py's close/exit resolution
+        BEFORE submitting an order) that reuses this exact same
+        computation rather than a second, parallel one. See that method's
+        own docstring for what changed and app/engine.py's `_resolve_and_
+        submit_plain_close`/`_handle_managed_close` for where it's used."""
         with self._connect() as conn:
             position_rows = conn.execute(
                 "SELECT account_id, net_quantity, updated_at FROM positions WHERE symbol = ? AND net_quantity != 0",
                 (symbol,),
             ).fetchall()
-            contribution_rows = conn.execute(
-                """SELECT o.account_id, s.source, o.side, o.applied_execution_delta
-                   FROM orders o JOIN signals s ON o.signal_id = s.id
-                   WHERE o.symbol = ? AND o.applied_execution_delta IS NOT NULL AND o.applied_execution_delta != 0""",
-                (symbol,),
-            ).fetchall()
+            contribution_rows = self._provider_signed_deltas(conn, symbol)
         by_account: dict[str, dict[str, float]] = {}
-        for account_id, source, side, delta in contribution_rows:
-            signed = delta if side == "buy" else -delta
+        for account_id, source, signed in contribution_rows:
             by_account.setdefault(account_id, {}).setdefault(source, 0.0)
             by_account[account_id][source] += signed
         accounts = []
@@ -2312,6 +2339,53 @@ class SignalStore:
                 }
             )
         return {"symbol": symbol, "accounts": accounts}
+
+    def get_provider_position_ownership(self, account_id: str, symbol: str, source: str) -> tuple[float, float]:
+        """Track 18's ENFORCEMENT source of truth for per-provider
+        position ownership, consulted by app/engine.py's `_resolve_and_
+        submit_plain_close`/`_handle_managed_close` BEFORE constructing or
+        submitting a close/exit order -- reuses the exact same computation
+        as `get_position_provider_allocations` (`_provider_signed_deltas`
+        above), scoped to one (account_id, symbol, source) triple, rather
+        than a second, independently-written query that could drift out
+        of sync with what that visibility endpoint reports.
+
+        Returns `(this_provider_quantity, total_attributed_quantity)`:
+
+        - `this_provider_quantity`: this `source`'s own signed net
+          contribution to this account/symbol's tracked position
+          (positive = net long, negative = net short; 0.0 when this
+          source has no attributable orders at all here).
+        - `total_attributed_quantity`: the SAME signed sum across EVERY
+          source that has ever contributed to this account/symbol --
+          i.e. what `get_position_provider_allocations` would report as
+          this account's total attributed quantity (attributed +
+          unattributed, since this is unfiltered by source).
+
+        The caller uses `total_attributed_quantity == 0` to distinguish
+        two genuinely different situations: (a) real multi-provider
+        attribution data exists, so a requesting source with 0 of it is a
+        real ownership conflict (Track 16's finding) and must be
+        rejected, vs. (b) NO order/signal attribution exists at all for
+        this account/symbol -- e.g. a position reconciled or seeded
+        outside this service's own tracked order pipeline (see
+        `DestinationAccount.exclusive_writer_qualified` and
+        `_reconcile_before_plain_close`'s "manual intervention, an
+        external fill placed directly at the broker" cases) -- where
+        there is no competing-provider data to gate against at all, and
+        failing closed here would regress an already-supported,
+        unrelated scenario rather than fix the multi-provider pooling gap
+        this method exists for. See app/engine.py's call sites for
+        exactly how each is handled."""
+        with self._connect() as conn:
+            rows = self._provider_signed_deltas(conn, symbol, account_id=account_id)
+        this_provider = 0.0
+        total = 0.0
+        for _account_id, row_source, signed in rows:
+            total += signed
+            if row_source == source:
+                this_provider += signed
+        return this_provider, total
 
     def save_order_result(
         self,
