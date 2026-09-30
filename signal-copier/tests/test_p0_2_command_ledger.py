@@ -252,7 +252,7 @@ def test_duplicate_entry_command_never_double_submits_to_the_broker(store):
     order_signal = Signal(source="tradingview", symbol="AAPL", side=Side.SELL, id="close-sig-1")
     signal_store.save_signal(order_signal)
 
-    first_result, _applied, _confirmed, _delta, _outstanding, _submitted_at = asyncio.run(
+    first_result, _applied, _confirmed, _delta, _outstanding, _submitted_at, _acknowledged = asyncio.run(
         engine._submit_order(order_signal, 10.0, account, "AAPL", broker)
     )
     assert first_result.status == OrderStatus.FILLED
@@ -260,7 +260,7 @@ def test_duplicate_entry_command_never_double_submits_to_the_broker(store):
 
     # A retried call for the exact same close (same order_signal.id/side/
     # quantity/symbol/account) must not place a second order.
-    second_result, _applied2, _confirmed2, _delta2, _outstanding2, _submitted_at2 = asyncio.run(
+    second_result, _applied2, _confirmed2, _delta2, _outstanding2, _submitted_at2, _acknowledged2 = asyncio.run(
         engine._submit_order(order_signal, 10.0, account, "AAPL", broker)
     )
     assert broker.calls == 1  # still just one real broker call
@@ -278,7 +278,7 @@ def test_ambiguous_broker_exception_lands_the_ledger_row_in_unknown_ambiguous(st
     order_signal = Signal(source="tradingview", symbol="AAPL", side=Side.SELL, id="close-sig-ambiguous")
     signal_store.save_signal(order_signal)
 
-    result, applied, _confirmed, _delta, _outstanding, _submitted_at = asyncio.run(
+    result, applied, _confirmed, _delta, _outstanding, _submitted_at, _acknowledged = asyncio.run(
         engine._submit_order(order_signal, 10.0, account, "AAPL", broker)
     )
     assert result.status == OrderStatus.ERROR

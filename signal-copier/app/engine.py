@@ -121,6 +121,7 @@ import structlog
 from signal_platform_contracts import Environment, EventEnvelope, EvidenceClass
 
 from app import command_ledger, config
+from app import quantity as quantity_module
 from app.brokers.base import BrokerAdapter
 from app.capital_allocator import CapitalAllocator, confirmed_open_notional, owner_wide_exposure
 from app.db import SignalStore
@@ -735,10 +736,28 @@ class SignalCopierEngine:
             # it would risk a reservation that's never released (see
             # app/capital_allocator.py's "Known gap").
             reserved_notional = None
+            reserved_quantity = None
             if result.status == OrderStatus.PENDING and result.broker_order_id is not None:
                 reserved_notional = notional
+                # TRK-Q1: the same reservation, in units instead of notional
+                # -- see app/models.py's `QuantityBreakdown.reserved_quantity`
+                # and this column's own SCHEMA comment in app/db.py. Follows
+                # the identical broker_order_id-gated rule as
+                # `reserved_notional` immediately above -- `0.0` (not the
+                # full `quantity`), same as `notional` itself, whenever no
+                # gate was actually configured for this account/owner (see
+                # `_try_reserve_capital`'s `has_gate` branch), never a
+                # fabricated full-quantity reservation for an order nothing
+                # actually reserved capital against.
+                reserved_quantity = quantity if notional else 0.0
             else:
                 self.capital_allocator.release(account.account_id, notional)
+
+            # TRK-Q1: how much of `quantity` the broker has actually
+            # ACCEPTED an order for -- see app/quantity.py's
+            # `acknowledged_quantity_for` for the exact rule (distinct from
+            # how much has executed, computed just below).
+            acknowledged_quantity = quantity_module.acknowledged_quantity_for(result, quantity)
 
             # AUD-01: `applied_quantity`/`confirmed_cumulative_fill`/
             # `applied_execution_delta`/`outstanding_possible_fill` --
@@ -797,6 +816,8 @@ class SignalCopierEngine:
                 applied_execution_delta=applied_execution_delta,
                 outstanding_possible_fill=outstanding_possible_fill,
                 reserved_notional=reserved_notional,
+                reserved_quantity=reserved_quantity,
+                acknowledged_quantity=acknowledged_quantity,
                 export_envelope=export_envelope,
                 submitted_at=submitted_at,
                 purpose=order_purpose,
@@ -1106,19 +1127,24 @@ class SignalCopierEngine:
 
     async def _submit_order(
         self, order_signal: Signal, quantity: float, account: DestinationAccount, symbol: str, broker: BrokerAdapter
-    ) -> tuple[OrderResult, float | None, float | None, float, float, datetime]:
+    ) -> tuple[OrderResult, float | None, float | None, float, float, datetime, float | None]:
         """Returns (result, applied_quantity, confirmed_cumulative_fill,
-        applied_execution_delta, outstanding_possible_fill, submitted_at).
+        applied_execution_delta, outstanding_possible_fill, submitted_at,
+        acknowledged_quantity).
         `applied_quantity` is what was actually applied to the tracked
         position (None if nothing was), for the caller to pass into
         `save_order_result`'s `applied_quantity` so the stored row matches
         what `record_fill` did (see that parameter's docstring for why the
-        two must agree). The remaining three are AUD-01's distinct-field
+        two must agree). The next three are AUD-01's distinct-field
         quantity model -- see handle_signal's identical computation and
         this module's own docstring section for the shared contract.
         `submitted_at` (PU-A2) is the real moment this call actually reached
         the broker, captured immediately before it -- see handle_signal's
-        identical field for what it feeds into.
+        identical field for what it feeds into. `acknowledged_quantity`
+        (TRK-Q1) is app/quantity.py's `acknowledged_quantity_for` --
+        see handle_signal's identical computation. This call site never
+        reserves capital for a close (see this module's own docstring,
+        "Close signals"), so there is no `reserved_quantity` to report here.
 
         P0-2: this is the plain-account (non-managed_lifecycle) close's
         one real broker.place_order call site -- `_resolve_and_submit_
@@ -1164,7 +1190,7 @@ class SignalCopierEngine:
                     f"{ledger_entry.uncertainty_state.value}, not resubmitted"
                 ),
             )
-            return result, None, None, 0.0, 0.0, datetime.now(timezone.utc)
+            return result, None, None, 0.0, 0.0, datetime.now(timezone.utc), None
 
         submitted_at = datetime.now(timezone.utc)
         try:
@@ -1204,6 +1230,7 @@ class SignalCopierEngine:
         if applied_quantity is not None:
             self.store.record_fill(account.account_id, symbol, order_signal.side, applied_quantity)
         applied_execution_delta = applied_quantity if applied_quantity is not None else 0.0
+        acknowledged_quantity = quantity_module.acknowledged_quantity_for(result, quantity)
         return (
             result,
             applied_quantity,
@@ -1211,6 +1238,7 @@ class SignalCopierEngine:
             applied_execution_delta,
             outstanding_possible_fill,
             submitted_at,
+            acknowledged_quantity,
         )
 
     async def _reconcile_before_plain_close(
@@ -1368,6 +1396,7 @@ class SignalCopierEngine:
                     applied_execution_delta,
                     outstanding_possible_fill,
                     submitted_at,
+                    acknowledged_quantity,
                 ) = await self._submit_order(order_signal, quantity, account, symbol, broker)
                 self.store.save_order_result(
                     result,
@@ -1379,6 +1408,7 @@ class SignalCopierEngine:
                     confirmed_cumulative_fill=confirmed_cumulative_fill,
                     applied_execution_delta=applied_execution_delta,
                     outstanding_possible_fill=outstanding_possible_fill,
+                    acknowledged_quantity=acknowledged_quantity,
                     submitted_at=submitted_at,
                     purpose="close",
                     family_id=None,
@@ -1657,7 +1687,16 @@ class SignalCopierEngine:
             # ERROR/exception branches above, so it releases immediately.
             if result.broker_order_id is not None:
                 self.lifecycle_manager.register_pending_entry(
-                    account, symbol, result.broker_order_id, quantity, reserved_notional=notional
+                    account,
+                    symbol,
+                    result.broker_order_id,
+                    quantity,
+                    reserved_notional=notional,
+                    # TRK-Q1: same `notional`-gated rule as the plain path
+                    # (see handle_signal's identical comment) -- 0.0, not
+                    # the full quantity, when no gate was actually
+                    # configured for this account/owner.
+                    reserved_quantity=quantity if notional else 0.0,
                 )
             else:
                 self.capital_allocator.release(account.account_id, notional)

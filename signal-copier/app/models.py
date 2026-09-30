@@ -128,6 +128,93 @@ class AccountBalance:
         }
 
 
+@dataclass(frozen=True)
+class QuantityBreakdown:
+    """TRK-Q1: the explicit, distinct-field quantity model for one
+    order/position event -- formalizing (never renaming) the seven
+    genuinely different quantities a release review named as the single
+    most important architectural principle for this system: "requested
+    quantity != reserved quantity != acknowledged quantity != cumulative
+    executed quantity != currently owned quantity != quantity still
+    executable != protected quantity."
+
+    This dataclass does not introduce new bookkeeping where this codebase
+    already tracks a fact correctly under a different name -- it names and
+    collects values that (mostly) already exist scattered across
+    app/engine.py's own AUD-01 model, app/lifecycle/models.py's
+    `PendingEntry`/`PendingExit`/`StopRecord`, and app/db.py's `orders`
+    table, so every caller has ONE place to build/read the full picture
+    instead of five ad hoc local variables. See `app/quantity.py`'s
+    `build_quantity_breakdown` for how these are actually assembled from
+    real order/position/protection state, and each field below for exactly
+    which existing concept it corresponds to (never invented independently
+    of one).
+
+    Every field is `None` (never a fabricated 0.0) when this specific
+    event/order/position genuinely has nothing real to report for it --
+    e.g. a REJECTED order was never acknowledged and has nothing still
+    executable; a plain (non-managed_lifecycle) account has no
+    `protected_quantity` concept at all, since this codebase's protective-
+    stop machinery is a managed-lifecycle-only concern (see
+    app/lifecycle/manager.py's module docstring)."""
+
+    #: What was actually asked for -- app/engine.py's own `requested_quantity`
+    #: (the `quantity` argument every `BrokerAdapter.place_order` call is
+    #: made with), `PendingEntry.requested_quantity`/`PendingExit
+    #: .requested_quantity`.
+    requested_quantity: float
+    #: Capital admission has set this many units of capacity aside for this
+    #: order and NOT yet released it -- `PendingEntry.reserved_quantity`
+    #: (units) / `PendingEntry.reserved_notional`,
+    #: `CapitalAllocator.pending_reservation` (notional; this field is the
+    #: same fact in units, when a per-order quantity reservation is
+    #: tracked). Distinct from `requested_quantity`: a partially-resolved
+    #: entry's reservation can already have been narrowed down (see
+    #: `PositionLifecycleManager.resolve_pending_entry`) while
+    #: `requested_quantity` still reports the original ask. `None` when
+    #: nothing in this deployment reserves capital for this event at all
+    #: (e.g. no notional/risk gate configured for the account).
+    reserved_quantity: float | None = None
+    #: The broker/venue has ACCEPTED an order at this size -- true the
+    #: instant a real `broker_order_id` exists (FILLED, or PENDING with a
+    #: real id to poll -- see app/command_ledger.py's `SUBMITTED_UNCONFIRMED`/
+    #: `CONFIRMED` states, which mark exactly this same acceptance), even
+    #: before any of it has actually executed. Distinct from
+    #: `cumulative_executed_quantity`: an order can be fully acknowledged
+    #: (accepted resting at the venue) while 0 units have executed so far.
+    #: `0.0` (not `None`) for a definite non-acceptance (REJECTED, or no
+    #: broker_order_id at all -- app/command_ledger.py's
+    #: `UNKNOWN_AMBIGUOUS`); `None` only when this event hasn't reached the
+    #: broker at all yet (e.g. a pre-submission intent record).
+    acknowledged_quantity: float | None = None
+    #: The broker's own reported cumulative filled quantity, exactly as
+    #: given -- app/engine.py's AUD-01 `confirmed_cumulative_fill` /
+    #: `orders.confirmed_cumulative_fill`. Never guessed, never defaulted
+    #: to `requested_quantity`.
+    cumulative_executed_quantity: float | None = None
+    #: This service's own current belief about what's actually owned right
+    #: now, updated ONLY from confirmed fills/exits -- AUD-01's
+    #: `actual_remaining_ownership` (== `positions.net_quantity` /
+    #: `PositionLifecycle.confirmed_owned_quantity` for a managed position).
+    currently_owned_quantity: float | None = None
+    #: How much of `requested_quantity` could STILL be confirmed by the
+    #: broker later -- AUD-01's `outstanding_possible_fill`
+    #: (`requested_quantity - confirmed_cumulative_fill` while PENDING,
+    #: `0.0` once terminal) / `PendingEntry.unresolved_remainder` /
+    #: `PendingExit.unresolved_remainder`. Genuine uncertain exposure --
+    #: never silently treated as already-owned, never silently treated as
+    #: zero while still open.
+    quantity_still_executable: float | None = None
+    #: How much of the position currently sits behind a broker-CONFIRMED
+    #: protective stop -- `StopRecord.protected_quantity` /
+    #: `PositionLifecycle.covered_quantity` (`0.0`, not the stop's own
+    #: `protected_quantity` value, whenever `StopRecord.status !=
+    #: STOP_CONFIRMED` -- an unconfirmed/pending stop protects nothing yet).
+    #: `None` for a plain (non-managed_lifecycle) account, which has no
+    #: protective-stop concept in this codebase's execution path at all.
+    protected_quantity: float | None = None
+
+
 class ManagementRecipe(str, enum.Enum):
     """P0-5: an account's explicit, PERSISTED declaration of which safety
     product it actually is -- managed and unmanaged positions are

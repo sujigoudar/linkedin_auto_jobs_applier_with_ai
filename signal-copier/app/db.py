@@ -186,6 +186,35 @@ CREATE TABLE IF NOT EXISTS orders (
     confirmed_cumulative_fill REAL,
     applied_execution_delta REAL,
     outstanding_possible_fill REAL,
+    -- TRK-Q1: the two remaining named fields of app/models.py's
+    -- `QuantityBreakdown` (see that dataclass's own docstring) that had no
+    -- persisted column of their own before this pass -- `requested_quantity`,
+    -- `confirmed_cumulative_fill`/`applied_execution_delta`/
+    -- `outstanding_possible_fill` above (AUD-01) and `positions.net_quantity`
+    -- already covered the other five. Both nullable, same "never
+    -- fabricated" rule as every other column here: NULL means this row
+    -- predates the column, or genuinely has nothing to report for it (e.g.
+    -- a close, which reserves no capital and so has no reserved_quantity).
+    --
+    -- `reserved_quantity`: the QUANTITY (units, not notional) capital
+    -- admission set aside for this specific order, set under the exact same
+    -- rule as `reserved_notional` above (non-NULL only while status is
+    -- 'pending' with a real broker_order_id to poll) -- see
+    -- app/capital_allocator.py's own reservation-timing docstring, which
+    -- this column mirrors in units rather than notional.
+    --
+    -- `acknowledged_quantity`: how much of `requested_quantity` the
+    -- broker/venue has actually ACCEPTED an order for -- `requested_quantity`
+    -- the instant a real broker_order_id exists (FILLED, or PENDING with an
+    -- id to poll), `0.0` for a definite non-acceptance (REJECTED, or PENDING
+    -- with no broker_order_id at all). See app/quantity.py's
+    -- `acknowledged_quantity_for` for the exact rule -- deliberately the
+    -- same FILLED/PENDING-with-id vs. everything-else split
+    -- app/command_ledger.py's `classify_order_result` already uses to
+    -- distinguish CONFIRMED/SUBMITTED_UNCONFIRMED from
+    -- REJECTED_CONFIRMED/UNKNOWN_AMBIGUOUS.
+    reserved_quantity REAL,
+    acknowledged_quantity REAL,
     FOREIGN KEY (signal_id) REFERENCES signals (id)
 );
 
@@ -806,6 +835,10 @@ _COLUMN_MIGRATIONS = [
     ("config_accounts", "management_recipe", "TEXT"),
     ("config_accounts", "qualification_level", "TEXT"),
     ("config_accounts", "exclusive_writer_qualified", "INTEGER NOT NULL DEFAULT 0"),
+    # TRK-Q1: the two remaining named `QuantityBreakdown` fields with no
+    # existing column -- see the `orders` table's own SCHEMA comment above.
+    ("orders", "reserved_quantity", "REAL"),
+    ("orders", "acknowledged_quantity", "REAL"),
 ]
 
 
@@ -909,6 +942,8 @@ class SignalStore:
         applied_execution_delta: float | None = None,
         outstanding_possible_fill: float | None = None,
         reserved_notional: float | None = None,
+        reserved_quantity: float | None = None,
+        acknowledged_quantity: float | None = None,
         export_envelope: EventEnvelope | None = None,
         submitted_at: datetime | None = None,
         protection_confirmed_at: datetime | None = None,
@@ -995,6 +1030,14 @@ class SignalStore:
         close. Both `None` for a caller that hasn't been updated to pass
         them (or a genuinely unclassifiable row) -- never guessed from
         `side`/`status` after the fact.
+
+        `reserved_quantity`/`acknowledged_quantity` (TRK-Q1, the two
+        `QuantityBreakdown` fields with no pre-existing column): see the
+        `orders` table's own SCHEMA comment for exactly what each means and
+        the rule for when each is non-NULL. `app/quantity.py`'s
+        `build_quantity_breakdown`/`acknowledged_quantity_for` are the
+        preferred way for a caller to compute these consistently rather
+        than re-deriving the rule inline.
         """
         stored_filled_quantity = applied_quantity if applied_quantity is not None else result.filled_quantity
         with self._connect() as conn:
@@ -1003,8 +1046,9 @@ class SignalStore:
                    (account_id, broker, symbol, side, requested_quantity, signal_id, status,
                     broker_order_id, filled_quantity, filled_price, message, executed_at, reserved_notional,
                     submitted_at, protection_confirmed_at, purpose, family_id,
-                    confirmed_cumulative_fill, applied_execution_delta, outstanding_possible_fill)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    confirmed_cumulative_fill, applied_execution_delta, outstanding_possible_fill,
+                    reserved_quantity, acknowledged_quantity)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     result.account_id,
                     broker,
@@ -1026,6 +1070,8 @@ class SignalStore:
                     confirmed_cumulative_fill,
                     applied_execution_delta,
                     outstanding_possible_fill,
+                    reserved_quantity,
+                    acknowledged_quantity,
                 ),
             )
             if export_envelope is not None:

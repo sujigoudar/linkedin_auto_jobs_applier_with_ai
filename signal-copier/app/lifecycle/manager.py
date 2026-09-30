@@ -691,6 +691,7 @@ class PositionLifecycleManager:
         broker_order_id: str | None,
         requested_quantity: float,
         reserved_notional: float = 0.0,
+        reserved_quantity: float = 0.0,
     ) -> None:
         """Call instead of `on_entry_fill` when the entry order's broker
         response is PENDING rather than a synchronous fill: retains the
@@ -706,7 +707,11 @@ class PositionLifecycleManager:
         when `broker_order_id` is set (see PendingEntry's docstring on why
         that's the one case `resolve_pending_entry` is guaranteed to
         eventually release it for); every other caller releases
-        immediately at the call site instead and leaves this 0.0."""
+        immediately at the call site instead and leaves this 0.0.
+
+        `reserved_quantity` (TRK-Q1): the same reservation expressed in
+        units instead of notional -- see `PendingEntry.reserved_quantity`'s
+        own docstring. Follows the identical broker_order_id-gated rule."""
         lifecycle = self._lifecycles.get((account.account_id, symbol))
         if lifecycle is None:
             return
@@ -714,6 +719,7 @@ class PositionLifecycleManager:
             broker_order_id=broker_order_id,
             requested_quantity=requested_quantity,
             reserved_notional=reserved_notional,
+            reserved_quantity=reserved_quantity,
         )
         self._persist(lifecycle)
 
@@ -1914,6 +1920,7 @@ def _lifecycle_to_state(lifecycle: PositionLifecycle, ledger: dict) -> dict:
             "confirmed_filled_quantity": lifecycle.pending_entry.confirmed_filled_quantity,
             "remainder_resolved": lifecycle.pending_entry.remainder_resolved,
             "reserved_notional": lifecycle.pending_entry.reserved_notional,
+            "reserved_quantity": lifecycle.pending_entry.reserved_quantity,
         },
         "ledger": ledger,
     }
@@ -1991,6 +1998,7 @@ def _lifecycle_from_state(row: dict) -> PositionLifecycle:
             confirmed_filled_quantity=pending_entry_row.get("confirmed_filled_quantity", 0.0),
             remainder_resolved=pending_entry_row.get("remainder_resolved", False),
             reserved_notional=pending_entry_row.get("reserved_notional", 0.0),
+            reserved_quantity=pending_entry_row.get("reserved_quantity", 0.0),
         )
     )
 

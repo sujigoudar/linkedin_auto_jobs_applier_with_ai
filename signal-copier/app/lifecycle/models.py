@@ -243,6 +243,21 @@ class PendingEntry:
     #: that case releases immediately at the call site instead, since
     #: nothing guarantees this will ever be polled to a terminal state.
     reserved_notional: float = 0.0
+    #: TRK-Q1 (distinct-field quantity model): the QUANTITY (units, not
+    #: dollars) this entry has reserved capital admission for -- the sibling
+    #: field to `reserved_notional` above, tracked in the same units as
+    #: `requested_quantity` rather than notional. Follows the exact same
+    #: rule as `reserved_notional`: non-zero ONLY when `broker_order_id` is
+    #: set (a real order this deployment is guaranteed to eventually poll to
+    #: a terminal outcome via `resolve_pending_entry`); 0.0 for a
+    #: `broker_order_id=None` entry, whose reservation already released
+    #: immediately at the call site. This is deliberately a SEPARATE fact
+    #: from `requested_quantity`: for a partial fill whose remainder was
+    #: cancelled, `requested_quantity` still reports what was originally
+    #: asked for, while this field is what capital is still held against --
+    #: they are equal only until `resolve_pending_entry` narrows the
+    #: reservation down (see that method's own release accounting).
+    reserved_quantity: float = 0.0
 
     @property
     def unresolved_remainder(self) -> float:
