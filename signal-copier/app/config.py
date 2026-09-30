@@ -117,6 +117,20 @@ class _Settings(BaseSettings):
     TELEGRAM_BOT_TOKEN: str = ""
     TELEGRAM_CHAT_ID: str = ""
 
+    # Track 5: Telegram USER-ACCOUNT collectors (app/sources/telegram_user.py,
+    # TelegramUserSource) -- global Telethon API app credentials, shared
+    # across every user-account collector this deployment runs. Each
+    # collector's own session lives at a SEPARATE, per-collector env var
+    # (TELEGRAM_USER_<COLLECTOR_ID>_SESSION_PATH, read directly via
+    # os.environ at collector-start time, not a fixed pydantic-settings
+    # field, since the set of collector ids is only known at runtime from
+    # the telegram_collectors registry) -- see
+    # docs/security/TELEGRAM_USER_LOGIN.md for the full setup procedure.
+    # This credential is NEVER obtained inside this service or an AI
+    # session -- see that doc and scripts/telegram_user_login.py.
+    TELEGRAM_API_ID: str = ""
+    TELEGRAM_API_HASH: str = ""
+
     DISCORD_BOT_TOKEN: str = ""
     DISCORD_CHANNEL_ID: str = ""
 
@@ -410,6 +424,8 @@ LEGACY_DASHBOARD_ENABLED = _settings.LEGACY_DASHBOARD_ENABLED
 
 TELEGRAM_BOT_TOKEN = _settings.TELEGRAM_BOT_TOKEN
 TELEGRAM_CHAT_ID = _settings.TELEGRAM_CHAT_ID
+TELEGRAM_API_ID = _settings.TELEGRAM_API_ID
+TELEGRAM_API_HASH = _settings.TELEGRAM_API_HASH
 
 MAX_OWNER_NOTIONAL_EXPOSURE = _settings.MAX_OWNER_NOTIONAL_EXPOSURE
 

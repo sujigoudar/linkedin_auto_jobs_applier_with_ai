@@ -47,9 +47,11 @@ signal-copier/
 │   │   └── manager.py         # PositionLifecycleManager
 │   ├── sources/                # one adapter per signal source
 │   │   ├── base.py             # SourceAdapter interface
-│   │   ├── webhook.py, telegram.py, discord.py, slack.py, twitter.py,
-│   │   │   sms_twilio.py, whatsapp.py, mt4_mt5.py, ninjatrader.py, rithmic.py
+│   │   ├── webhook.py, telegram.py, telegram_user.py, discord.py, slack.py,
+│   │   │   twitter.py, sms_twilio.py, whatsapp.py, mt4_mt5.py, ninjatrader.py,
+│   │   │   rithmic.py
 │   │   └── text_parser.py      # shared free-text signal parser
+│   ├── telegram_collectors.py  # persistent multi-collector Telegram registry (bot/user-account)
 │   ├── brokers/                 # one adapter per execution destination
 │   │   ├── base.py              # BrokerAdapter interface, capability introspection
 │   │   └── paper.py, alpaca.py, ccxt_broker.py, ibkr.py, mt4_mt5.py,
