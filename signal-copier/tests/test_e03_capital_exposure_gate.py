@@ -70,12 +70,23 @@ async def test_second_entry_rejected_once_confirmed_exposure_already_fills_the_c
 
 @pytest.mark.asyncio
 async def test_no_ceiling_configured_never_gates_anything(tmp_path):
+    """Track 1b: this account has neither of this module's own opt-in
+    ceilings configured (`max_notional_exposure`/`risk_percent_of_equity`)
+    -- but it's still subject to the separate, always-on buying-power
+    gate (`_check_buying_power`), which is real and intentional (see
+    app/engine.py's own module docstring on that check and
+    tests/test_track1b_buying_power_gate.py for its own dedicated
+    coverage). Quantity here is sized to stay within PaperBroker's
+    documented STARTING_CASH (100_000) so this test keeps demonstrating
+    exactly what it says: no *ceiling* gates anything, without being
+    confused with the separate buying-power gate this same admission
+    path now also enforces."""
     store = SignalStore(tmp_path / "test.db")
     broker = PaperBroker()
     account = DestinationAccount(account_id="acct1", broker="paper")  # max_notional_exposure=None
     engine = _engine(store, account, broker)
 
-    signal = Signal(source=SOURCE, symbol=SYMBOL, side=Side.BUY, quantity=10_000.0, price=100.0)
+    signal = Signal(source=SOURCE, symbol=SYMBOL, side=Side.BUY, quantity=500.0, price=100.0)  # notional 50,000
     results = await engine.handle_signal(signal)
 
     assert results[0].status == OrderStatus.FILLED

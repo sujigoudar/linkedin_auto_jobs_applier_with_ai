@@ -59,9 +59,15 @@ def test_account_created_via_api_is_immediately_usable_no_restart(client):
         assert rule.status_code == 200
 
         # no restart between the writes above and this signal
+        # Track 1b: quantity kept small enough that notional stays within
+        # PaperBroker's own documented STARTING_CASH (100_000) -- this
+        # account is genuinely subject to the new, always-on buying-power
+        # admission gate (app/engine.py's `_check_buying_power`), same as
+        # every other account; this test is about live CRUD-to-routing
+        # wiring, not that gate, so it's sized to pass it cleanly.
         response = client.post(
             "/webhook/tradingview",
-            json={"symbol": "BTCUSDT", "side": "buy", "quantity": 5.0, "price": 65000},
+            json={"symbol": "BTCUSDT", "side": "buy", "quantity": 0.5, "price": 65000},
         )
         assert response.status_code == 200
         orders = response.json()["orders"]

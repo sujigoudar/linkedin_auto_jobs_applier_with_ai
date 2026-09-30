@@ -123,6 +123,7 @@ from signal_platform_contracts import Environment, EventEnvelope, EvidenceClass
 from app import command_ledger, config
 from app import quantity as quantity_module
 from app.brokers.base import BrokerAdapter
+from app.brokers.paper import PaperBroker
 from app.capital_allocator import CapitalAllocator, confirmed_open_notional, owner_wide_exposure
 from app.db import SignalStore
 from app.export_events import (
@@ -177,6 +178,26 @@ _OUTCOME_BY_ORDER_STATUS = {
 #: fractional crypto position and a large equity/futures one.
 _RECONCILIATION_ABS_TOLERANCE = 1e-6
 _RECONCILIATION_REL_TOLERANCE = 1e-6
+
+#: Track 1b live-routing gate (audit finding: "the qualification ladder
+#: never enforced as a live-routing gate" -- see app/qualification.py's
+#: module docstring for the full 4-tuple this ladder is tracked per).
+#: `DestinationAccount` has no dedicated field distinguishing multiple
+#: distinct trading PRODUCTS sharing one account/route (e.g. a CCXT spot
+#: market vs a CCXT perpetual market both trading through the same
+#: account_id) -- every account/route configured in this codebase today
+#: gets its own distinct `account_id` per product instead (see
+#: tests/test_route_qualification.py's own "ccxt_binance_spot" vs
+#: "ccxt_binance_perp" fixture, which are two different route_keys, not
+#: one route_key with two product_types). So `route_key` below
+#: (`account.account_id`) already carries the real per-product
+#: distinction this codebase actually uses, and `product_type` is a
+#: fixed, honestly-labeled placeholder -- never fabricated per-account
+#: specificity that doesn't exist in this schema. FLAGGED FINDING: if an
+#: operator ever needs two distinct products sharing one account_id, this
+#: schema (and this constant) will need a real per-account product_type
+#: field added; nothing here can honestly support that today.
+_UNDECLARED_ROUTE_PRODUCT_TYPE = "default"
 
 
 def _positions_reconcile(broker_position: float, local_position: float) -> bool:
@@ -506,6 +527,31 @@ class SignalCopierEngine:
                     message=result.message,
                 )
                 continue
+
+            if signal.side != Side.CLOSE:
+                # Track 1b: refuse a live ENTRY before anything else broker/
+                # asset-class-specific is even checked -- see
+                # `_check_route_qualified`'s own docstring for exactly what
+                # this gates, why CLOSE is exempt, and why PAPER accounts
+                # are exempt.
+                route_qualified, qualification_rejection = self._check_route_qualified(account, signal, broker)
+                if not route_qualified:
+                    assert qualification_rejection is not None
+                    self.store.save_order_result(
+                        qualification_rejection,
+                        broker=account.broker,
+                        purpose=order_purpose,
+                        family_id=order_family_id,
+                    )
+                    results.append(qualification_rejection)
+                    self._export_routing_outcome(
+                        signal,
+                        outcome=_OUTCOME_BY_ORDER_STATUS[qualification_rejection.status],
+                        account=account,
+                        order_status=qualification_rejection.status,
+                        message=qualification_rejection.message,
+                    )
+                    continue
 
             if not broker.can_trade_asset_class(signal.asset_class):
                 # e.g. an OPTION signal reaching AlpacaBroker/IBKRBroker (equity-only
@@ -862,6 +908,66 @@ class SignalCopierEngine:
             account_id=account.account_id, status=OrderStatus.REJECTED, signal_id=order_signal.id, message=message
         )
 
+    def _check_route_qualified(
+        self, account: DestinationAccount, signal: Signal, broker: BrokerAdapter
+    ) -> tuple[bool, OrderResult | None]:
+        """Track 1b live-routing gate: refuse to route a live ENTRY through
+        an execution route -- (adapter_type, route_key, asset_class,
+        product_type), the exact tuple app/qualification.py's ladder is
+        tracked per -- that has never had a human operator record
+        `release_approved` for it (`POST /qualifications`, app/main.py).
+        See app/qualification.py's own module docstring for why this is a
+        deliberate human sign-off, never something this engine (or any
+        other code) may set on its own.
+
+        `adapter_type` is `account.broker` (the exact string key this
+        engine's own `self.brokers` dict -- and app/main.py's
+        `POST /qualifications` `brokers_by_name` -- is keyed by), and
+        `route_key` is `account.account_id` -- the finest per-route
+        distinction this schema actually carries (see
+        `_UNDECLARED_ROUTE_PRODUCT_TYPE`'s own comment on `product_type`).
+
+        PAPER accounts are exempt: `PaperBroker` never sends an order
+        anywhere outside this process's own memory (see that class's own
+        module docstring) -- there is no real live capital this gate is
+        meant to protect on a paper route, and gating it would make the
+        paper broker useless for the exact dev/test workflows it exists
+        for. Checked by `isinstance`, not by the string name
+        `account.broker` happens to be registered under, so this can't be
+        bypassed by an operator naming some other, real adapter "paper".
+
+        A CLOSE signal is NOT gated here -- same "entry pause, not exit
+        block" reasoning as EXE-10's `account.enabled`/provider-disable
+        handling elsewhere in this loop (see `_handle_signal`'s own call
+        site): refusing to let an already-open live position on an
+        unqualified route ever be closed through this engine would trap
+        it, which is strictly more dangerous than the unqualified route
+        existing in the first place. Only a live ENTRY -- new risk this
+        route has never been signed off to carry -- is refused.
+        """
+        if isinstance(broker, PaperBroker):
+            return True, None
+        route_key = account.account_id
+        asset_class = signal.asset_class.value
+        approved = self.store.is_route_release_approved(
+            adapter_type=account.broker,
+            route_key=route_key,
+            asset_class=asset_class,
+            product_type=_UNDECLARED_ROUTE_PRODUCT_TYPE,
+        )
+        if not approved:
+            return False, self._reject(
+                account,
+                signal,
+                "route not qualified for live release: no 'release_approved' qualification recorded for "
+                f"route (adapter_type='{account.broker}', route_key='{route_key}', "
+                f"asset_class='{asset_class}', product_type='{_UNDECLARED_ROUTE_PRODUCT_TYPE}') -- "
+                "see app/qualification.py; a human operator must record every ladder rung up through "
+                "release_approved for this exact route via POST /qualifications before it may route a "
+                "live order",
+            )
+        return True, None
+
     async def _check_risk_basis(
         self, account: DestinationAccount, order_signal: Signal, quantity: float
     ) -> tuple[bool, OrderResult | None]:
@@ -969,6 +1075,85 @@ class SignalCopierEngine:
             )
         return True, None
 
+    async def _check_buying_power(
+        self, account: DestinationAccount, order_signal: Signal, quantity: float
+    ) -> tuple[bool, OrderResult | None]:
+        """Track 1b (audit finding: "AccountBalance.buying_power is
+        fetched and displayed ... but is never used as an admission gate
+        anywhere"): refuses an entry whose notional (|quantity| *
+        |price|) would exceed this account's real, just-fetched
+        broker-reported `buying_power`, wherever the broker can report
+        one.
+
+        Deliberately NOT conditioned on `account.max_notional_exposure`/
+        `risk_percent_of_equity` being configured -- broker buying power
+        is a real, hard constraint on what CAN be submitted regardless of
+        whether the operator opted into either of this service's own
+        ceilings, so this runs for every entry, on every account. It is
+        independent of, and never a substitute for, `account.
+        max_notional_exposure`/`risk_percent_of_equity`/the owner-wide
+        ceiling below -- passing this check proves nothing about those,
+        and a broker reporting ample buying power never overrides or
+        loosens them.
+
+        Mirrors `_check_risk_basis`'s fail-closed-everywhere-verifiable
+        pattern, with one deliberate difference driven by this check
+        being unconditional rather than opt-in: it fails OPEN (admits,
+        logs that the check was skipped) wherever buying power genuinely
+        can't be verified for this signal/account/broker --
+        - no broker registered, or `broker.has_balance_capability` is
+          `False` (no real `get_account_balance` override at all, e.g.
+          CCXTBroker on a spot market -- see `AccountBalance.
+          buying_power`'s own docstring on why that's not a universal
+          concept).
+        - `get_account_balance` returns `None`, or a real `AccountBalance`
+          whose `buying_power` is itself `None` (broker reachable, this
+          particular figure genuinely not reported for this account).
+        - the signal carries no resolvable finite positive `price` --
+          notional can't be computed. Unlike `_try_reserve_capital`'s own
+          price checks (which REJECT because those gates are something
+          the operator explicitly opted into for this account), this
+          check applies unconditionally, so a priceless signal that would
+          have sailed through with zero gates configured before this
+          existed must not newly be rejected by a check nobody asked for.
+        Every other case -- a real, current `buying_power` figure IS
+        available -- fails CLOSED: `notional > buying_power` is refused,
+        exactly like `_check_risk_basis` refuses when risk-to-stop would
+        exceed its ceiling."""
+        broker = self.brokers.get(account.broker)
+        if broker is None or not broker.has_balance_capability:
+            logger.info(
+                "buying_power_check_skipped account=%s broker=%s reason=no_verified_balance_capability",
+                account.account_id,
+                account.broker,
+            )
+            return True, None
+        if order_signal.price is None or not math.isfinite(order_signal.price) or order_signal.price <= 0:
+            logger.info(
+                "buying_power_check_skipped account=%s broker=%s reason=no_resolvable_price",
+                account.account_id,
+                account.broker,
+            )
+            return True, None
+        balance = await broker.get_account_balance(account)
+        if balance is None or balance.buying_power is None:
+            logger.info(
+                "buying_power_check_skipped account=%s broker=%s reason=buying_power_not_reported",
+                account.account_id,
+                account.broker,
+            )
+            return True, None
+        notional = abs(quantity) * abs(order_signal.price)
+        if notional > balance.buying_power:
+            return False, self._reject(
+                account,
+                order_signal,
+                f"account '{account.account_id}' insufficient buying power: broker-reported buying_power "
+                f"({balance.buying_power:.2f}) is less than this entry's notional ({notional:.2f}) -- "
+                "refusing",
+            )
+        return True, None
+
     async def _try_reserve_capital(
         self, account: DestinationAccount, order_signal: Signal, quantity: float
     ) -> tuple[bool, float, OrderResult | None]:
@@ -1009,7 +1194,20 @@ class SignalCopierEngine:
           REJECTED -- new admissions are blocked for this account until
           the position resolves (see app/capital_allocator.py's module
           docstring, point 2, for why this is safer than inventing a
-          worst-case notional estimate here)."""
+          worst-case notional estimate here).
+
+        Track 1b: also runs `_check_buying_power` first, unconditionally
+        -- an independent admission gate against this account's real,
+        broker-reported buying power, regardless of whether any of the
+        gates above are configured for this account at all (see that
+        method's own docstring). It never weakens or substitutes for the
+        gates below -- both must pass; this one simply runs first, before
+        anything here has taken a lock or reserved anything."""
+        bp_ok, bp_rejection = await self._check_buying_power(account, order_signal, quantity)
+        if not bp_ok:
+            assert bp_rejection is not None
+            return False, 0.0, bp_rejection
+
         has_gate = (
             account.max_notional_exposure is not None
             or account.risk_percent_of_equity is not None
