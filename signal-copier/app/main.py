@@ -15,6 +15,7 @@ import hashlib
 import hmac
 import json
 import logging
+import os
 import sqlite3
 from collections import defaultdict
 from contextlib import asynccontextmanager
@@ -95,6 +96,8 @@ from app.sources.slack import SlackSource
 from app.sources.base import SourceAdapter
 from app.sources.sms_twilio import TwilioSMSSource
 from app.sources.telegram import TelegramSource
+from app.sources.telegram_user import TelegramUserSource
+from app.telegram_collectors import ConnectionMode, TelegramCollectorError
 from app.sources.twitter import TwitterSource
 from app.sources.webhook import WebhookSource
 from app.sources.whatsapp import WhatsAppSource
@@ -268,6 +271,39 @@ if config.DISCORD_BOT_TOKEN and config.DISCORD_CHANNEL_ID:
     _background_sources.append(
         DiscordSource(engine.handle_signal, config.DISCORD_BOT_TOKEN, int(config.DISCORD_CHANNEL_ID))
     )
+# Track 5: every registered user_account collector in the persistent
+# registry (app/telegram_collectors.py) -- unlike every other pull-based
+# source above, this list is data-driven (one row per collector, not one
+# fixed env-var pair), so it's read from the registry rather than a
+# single config.* check. A collector whose credential_env_var isn't set
+# in THIS process's environment is simply never started -- see
+# app/telegram_collectors.py's CollectorHealth.MISSING_CREDENTIALS for
+# how that's surfaced instead of silently pretending to be healthy.
+if config.TELEGRAM_API_ID and config.TELEGRAM_API_HASH:
+    for _collector in store.list_telegram_collectors():
+        if _collector["connection_mode"] != ConnectionMode.USER_ACCOUNT.value:
+            continue
+        _session_path = os.environ.get(_collector["credential_env_var"])
+        if not _session_path:
+            store.update_telegram_collector_health(
+                _collector["id"], "missing_credentials",
+                detail=f"env var {_collector['credential_env_var']!r} is not set in this process's environment",
+            )
+            continue
+        _background_sources.append(
+            TelegramUserSource(
+                engine.handle_signal,
+                collector_id=_collector["id"],
+                chat_id=_collector["chat_id"],
+                topic_id=_collector["topic_id"],
+                api_id=int(config.TELEGRAM_API_ID),
+                api_hash=config.TELEGRAM_API_HASH,
+                session_path=_session_path,
+                on_source_event=engine.export_source_event,
+                registry=store,
+                save_historical_signal=store.save_signal,
+            )
+        )
 if config.SLACK_BOT_TOKEN and config.SLACK_APP_TOKEN and config.SLACK_CHANNEL_ID:
     _background_sources.append(
         SlackSource(engine.handle_signal, config.SLACK_BOT_TOKEN, config.SLACK_APP_TOKEN, config.SLACK_CHANNEL_ID)
@@ -3086,6 +3122,91 @@ async def import_signals(
         else:
             skipped.append({"text": d.text, "outcome": d.outcome.value, "detail": d.detail})
     return {"batch_label": label, "imported": imported, "skipped": skipped}
+
+
+# -- Track 5: Telegram collector registry (app/telegram_collectors.py) ------
+
+
+class RegisterTelegramCollectorRequest(BaseModel):
+    """See app/telegram_collectors.py's module docstring and
+    docs/security/TELEGRAM_USER_LOGIN.md for the full registration
+    procedure. `credential_env_var` is a REFERENCE (the name of an env
+    var), never a credential value -- `validate_registration` rejects
+    anything that doesn't look like a bare env-var name."""
+
+    id: str
+    connection_mode: str
+    identity_ref: str
+    credential_env_var: str
+    chat_id: str
+    provider_name: str
+    topic_id: str | None = None
+    allowed_uses: list[str] | None = None
+
+
+@app.post("/telegram-collectors")
+async def register_telegram_collector(
+    request: RegisterTelegramCollectorRequest, _owner: dict = Depends(require_owner)
+) -> dict:
+    """Owner-gated: register (or re-describe) one Telegram collector.
+    Never accepts or stores a credential value -- see
+    `RegisterTelegramCollectorRequest`'s own docstring."""
+    try:
+        return store.register_telegram_collector(
+            collector_id=request.id,
+            connection_mode=request.connection_mode,
+            identity_ref=request.identity_ref,
+            credential_env_var=request.credential_env_var,
+            chat_id=request.chat_id,
+            provider_name=request.provider_name,
+            topic_id=request.topic_id,
+            allowed_uses=request.allowed_uses,
+        )
+    except TelegramCollectorError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.get("/telegram-collectors")
+async def list_telegram_collectors(_owner: dict = Depends(require_owner_read)) -> dict:
+    """Every registered collector, including its current `health_state`
+    (point 8) -- a dashboard reads this, never a hardcoded green, for
+    every collector regardless of `connection_mode`."""
+    return {"collectors": store.list_telegram_collectors()}
+
+
+@app.get("/telegram-collectors/{collector_id}")
+async def get_telegram_collector(collector_id: str, _owner: dict = Depends(require_owner_read)) -> dict:
+    collector = store.get_telegram_collector(collector_id)
+    if collector is None:
+        raise HTTPException(status_code=404, detail=f"no telegram collector registered with id={collector_id!r}")
+    return collector
+
+
+class RecordTelegramCollectorQualificationRequest(BaseModel):
+    """Point 4/8: real evidence of authorized message receipt -- e.g.
+    `{"observed_message_id": "42", "method": "manual_owner_confirmation"}`.
+    Never a claim this endpoint verifies itself; the CALLER is asserting
+    they have real evidence (this mirrors app/qualification.py's own
+    `POST /qualifications` -- a deliberate, owner-asserted record, not an
+    automatic technical check)."""
+
+    evidence: dict
+    noforwards: bool | None = None
+
+
+@app.post("/telegram-collectors/{collector_id}/qualification-evidence")
+async def record_telegram_collector_qualification_evidence(
+    collector_id: str,
+    request: RecordTelegramCollectorQualificationRequest,
+    _owner: dict = Depends(require_owner),
+) -> dict:
+    try:
+        store.record_telegram_collector_qualification_evidence(
+            collector_id, evidence=request.evidence, noforwards=request.noforwards
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return store.get_telegram_collector(collector_id)  # type: ignore[return-value]
 
 
 class BacktestRequest(BaseModel):

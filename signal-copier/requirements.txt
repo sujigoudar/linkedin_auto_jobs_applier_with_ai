@@ -17,7 +17,11 @@ pwdlib[argon2]>=0.2      # C05: optional OWNER_PASSWORD_HASH (argon2id) alternat
 
 # Optional, needed only for adapters you actually enable:
 # ccxt>=4.3                    # crypto exchange execution (CCXTBroker)
-# python-telegram-bot>=21.0    # Telegram source
+# python-telegram-bot>=21.0    # Telegram source (bot-based, TelegramSource)
+# telethon>=1.34               # Telegram USER-ACCOUNT source (TelegramUserSource) --
+                                # see docs/security/TELEGRAM_USER_LOGIN.md; the login
+                                # itself always happens via the standalone
+                                # scripts/telegram_user_login.py, never inside this service.
 # discord.py>=2.4              # Discord source
 # slack-bolt>=1.19             # Slack source
 # MetaTrader5>=5.0.45          # MT5Broker, same-host Windows only

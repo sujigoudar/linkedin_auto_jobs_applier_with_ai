@@ -66,6 +66,27 @@ its own required env vars are set — an unconfigured source is simply never
 started, not a security gap by itself. Push-based sources (webhook, SMS)
 need no startup config beyond the shared secrets above.
 
+### Telegram USER-ACCOUNT collectors (`app/sources/telegram_user.py`)
+
+Track 5: for a Telegram channel the owner can only read via their own
+personal account (the provider won't allow adding a bot, or the channel
+restricts forwarding) — see `docs/security/TELEGRAM_USER_LOGIN.md` for
+the full, mandatory authorization procedure. **This credential is never
+obtained by an AI agent or inside an AI-visible session** — it is
+produced entirely by the owner running `scripts/telegram_user_login.py`
+themselves, locally, outside this codebase.
+
+| Field | Purpose |
+|---|---|
+| `TELEGRAM_API_ID` / `TELEGRAM_API_HASH` | This deployment's Telegram API app credentials (from <https://my.telegram.org/apps>), global — shared across every user-account collector this deployment runs. |
+| `TELEGRAM_USER_<COLLECTOR_ID>_SESSION_PATH` | Per-collector (namespaced by the registry's own `collector_id`, same `<PREFIX>_<ID>_<FIELD>` convention as the broker env vars above): the path to the `.session` file (or session-string file) `scripts/telegram_user_login.py` produced for that collector. Never a session string/token passed directly as a Python argument or logged. |
+
+The `telegram_collectors` registry table (`app/telegram_collectors.py`,
+`app/db.py`) never stores a credential VALUE — only `credential_env_var`,
+the NAME of the environment variable above that holds it, so the registry
+itself stays safe to read/export/back up like any other non-secret
+config.
+
 ## Export relay to the commercial platform
 
 | Field | Purpose | Rotation |

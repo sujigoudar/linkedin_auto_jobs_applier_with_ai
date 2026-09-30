@@ -37,6 +37,8 @@ docs/architecture/DATA_FLOWS.md for how these interact end to end.
 | `app/sources/base.py` | `SourceAdapter` interface: `start()`, optional `stop()` |
 | `app/sources/webhook.py` | Generic/TradingView JSON webhook, push |
 | `app/sources/telegram.py` | Telegram bot, pull |
+| `app/sources/telegram_user.py` | Telethon-based Telegram USER-ACCOUNT collector, pull -- for a channel the owner can only read via their own account (see `docs/security/TELEGRAM_USER_LOGIN.md`); parallel to, never a replacement for, `telegram.py`'s bot-based collector |
+| `app/telegram_collectors.py` | Persistent, multi-collector Telegram registry (bot or user-account, checkpoint, health, qualification evidence) -- not itself a `SourceAdapter` |
 | `app/sources/discord.py` | Discord bot, pull |
 | `app/sources/slack.py` | Slack bot, pull |
 | `app/sources/twitter.py` | X/Twitter filtered stream, pull |

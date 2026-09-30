@@ -130,6 +130,7 @@ documents:
       - docs/security/THREAT_MODEL.md
       - docs/security/SECRETS.md
       - docs/security/AUTHORIZATION.md
+      - docs/security/TELEGRAM_USER_LOGIN.md
     read_when:
       - authentication or session changes (app/auth.py)
       - authorization/owner-gating changes on any endpoint

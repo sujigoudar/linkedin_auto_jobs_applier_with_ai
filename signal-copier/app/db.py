@@ -795,6 +795,61 @@ CREATE INDEX IF NOT EXISTS idx_command_ledger_account_id ON command_ledger (acco
 CREATE INDEX IF NOT EXISTS idx_command_ledger_created_at ON command_ledger (created_at);
 CREATE INDEX IF NOT EXISTS idx_command_ledger_unresolved ON command_ledger (resolved_at) WHERE resolved_at IS NULL;
 
+-- Track 5: the persistent Telegram collector registry -- see
+-- app/telegram_collectors.py's module docstring for the full contract
+-- and each enum's own docstring for the real, closed set of values
+-- connection_mode/health_state take. One row per collector (a bot
+-- membership, or an authenticated Telethon user-account session) this
+-- deployment runs against one chat/topic.
+--
+-- `credential_env_var` is a REFERENCE ONLY -- the name of an environment
+-- variable this collector's real credential (bot token, or Telethon
+-- session file path) is read from at process startup. Never a secret
+-- value itself -- see docs/security/SECRETS.md and
+-- docs/security/TELEGRAM_USER_LOGIN.md.
+--
+-- `allowed_uses` is a JSON array of app/telegram_collectors.py's
+-- `AllowedUse` values, defaulting to `["private_trading"]` only (point
+-- 10: never automatically `commercial_redistribution` -- see that
+-- module's own docstring for the isolation this is asserting).
+--
+-- `checkpoint_message_id` is the per-collector restart-recovery
+-- checkpoint (point 7): the last message id this collector has admitted
+-- to LIVE routing. NULL for a collector that has never processed a live
+-- message. A historical import never advances this column -- see
+-- app/sources/telegram_user.py's `import_history`.
+--
+-- `qualification_evidence` is a JSON object recording WHEN/how real,
+-- authorized message receipt was last confirmed for this collector (see
+-- SignalStore.record_telegram_collector_qualification_evidence) --
+-- distinct from, and orthogonal to, app/qualification.py's live-ROUTING
+-- release ladder: a Telegram collector reaching `healthy_qualified` here
+-- means "this ingests real messages," never "this route may submit a
+-- live order" (that's still gated entirely by
+-- SignalStore.is_route_release_approved, untouched by this table).
+CREATE TABLE IF NOT EXISTS telegram_collectors (
+    id TEXT PRIMARY KEY,
+    connection_mode TEXT NOT NULL,
+    identity_ref TEXT NOT NULL,
+    credential_env_var TEXT NOT NULL,
+    chat_id TEXT NOT NULL,
+    topic_id TEXT,
+    provider_name TEXT NOT NULL,
+    allowed_uses TEXT NOT NULL DEFAULT '["private_trading"]',
+    noforwards INTEGER,
+    last_qualified_at TEXT,
+    qualification_evidence TEXT NOT NULL DEFAULT '{}',
+    checkpoint_message_id INTEGER,
+    checkpoint_updated_at TEXT,
+    health_state TEXT NOT NULL DEFAULT 'unqualified',
+    health_detail TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_telegram_collectors_provider ON telegram_collectors (provider_name);
+CREATE INDEX IF NOT EXISTS idx_telegram_collectors_chat ON telegram_collectors (chat_id);
+
 CREATE INDEX IF NOT EXISTS idx_orders_executed_at ON orders (executed_at);
 CREATE INDEX IF NOT EXISTS idx_orders_account_id ON orders (account_id);
 CREATE INDEX IF NOT EXISTS idx_orders_signal_id ON orders (signal_id);
@@ -845,6 +900,16 @@ _COLUMN_MIGRATIONS = [
     # existing column -- see the `orders` table's own SCHEMA comment above.
     ("orders", "reserved_quantity", "REAL"),
     ("orders", "acknowledged_quantity", "REAL"),
+    # Track 5 (point 6, cross-collector/cross-transport dedup): NULL for
+    # every adapter that hasn't been wired to report real provider message
+    # identity yet -- see Signal.channel_id/message_id/revision_id's own
+    # docstrings in app/models.py, and
+    # SignalStore.find_signal_id_by_provider_identity for the ONE place
+    # these three columns are read back, before app/engine.py's own
+    # SIG-01 per-signal-id replay-lookup runs.
+    ("signals", "channel_id", "TEXT"),
+    ("signals", "message_id", "TEXT"),
+    ("signals", "revision_id", "TEXT"),
 ]
 
 
@@ -859,6 +924,15 @@ class SignalStore:
                 except sqlite3.OperationalError as exc:
                     if "duplicate column name" not in str(exc):
                         raise
+            # Must run AFTER the _COLUMN_MIGRATIONS loop above (a brand new
+            # database gets these three columns from that loop, not from
+            # SCHEMA's own CREATE TABLE) -- see
+            # find_signal_id_by_provider_identity's docstring for what this
+            # index serves.
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_signals_provider_identity "
+                "ON signals (channel_id, message_id, revision_id)"
+            )
         self._stamp_alembic_head_if_needed()
 
     def _stamp_alembic_head_if_needed(self) -> None:
@@ -934,8 +1008,8 @@ class SignalStore:
             conn.execute(
                 """INSERT OR REPLACE INTO signals
                    (id, source, symbol, side, asset_class, quantity, price, stop_loss, take_profit,
-                    analyst, received_at, raw, import_batch)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    analyst, received_at, raw, import_batch, channel_id, message_id, revision_id)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     signal.id,
                     signal.source,
@@ -950,8 +1024,46 @@ class SignalStore:
                     signal.received_at.isoformat(),
                     json.dumps(signal.raw),
                     signal.import_batch,
+                    signal.channel_id,
+                    signal.message_id,
+                    signal.revision_id,
                 ),
             )
+
+    def find_signal_id_by_provider_identity(
+        self, *, channel_id: str | None, message_id: str | None, revision_id: str | None
+    ) -> str | None:
+        """Track 5, point 6 (cross-collector/cross-transport redelivery
+        dedup): the provider's own (channel_id, message_id, revision_id)
+        identity is the real dedup boundary for "is this the SAME
+        underlying provider event a different collector -- e.g. a bot AND
+        a user-account collector both configured against the same channel
+        -- (or the same collector's own reconnect) already observed" --
+        independent of whichever locally-generated `Signal.id` (a fresh
+        uuid4 minted by whichever adapter parsed it this time) happens to
+        be attached.
+
+        Returns the EARLIEST-persisted signal id sharing this exact
+        identity, or `None` the first time this identity is seen (or
+        whenever `channel_id`/`message_id` is `None`, e.g. every adapter
+        this task didn't touch, which never has real provider identity to
+        dedup on at all).
+
+        See `app/engine.py`'s `_handle_signal`: it canonicalizes a
+        freshly-parsed `Signal.id` onto whatever this returns BEFORE the
+        existing SIG-01 per-signal-id replay-lookup (`list_orders_for_
+        signal`) runs, so two collectors observing the same message never
+        each independently submit their own live order for it."""
+        if channel_id is None or message_id is None:
+            return None
+        with self._connect() as conn:
+            row = conn.execute(
+                """SELECT id FROM signals WHERE channel_id = ? AND message_id = ?
+                   AND ((revision_id IS NULL AND ? IS NULL) OR revision_id = ?)
+                   ORDER BY received_at ASC LIMIT 1""",
+                (channel_id, message_id, revision_id, revision_id),
+            ).fetchone()
+        return row[0] if row else None
 
     def save_order_result(
         self,
@@ -3103,6 +3215,222 @@ class SignalStore:
                 conn, adapter_type=adapter_type, route_key=route_key, asset_class=asset_class, product_type=product_type
             )
         return QualificationState.RELEASE_APPROVED in achieved
+
+    # -- Track 5: Telegram collector registry (app/telegram_collectors.py) --
+
+    def register_telegram_collector(
+        self,
+        *,
+        collector_id: str,
+        connection_mode: str,
+        identity_ref: str,
+        credential_env_var: str,
+        chat_id: str,
+        provider_name: str,
+        topic_id: str | None = None,
+        allowed_uses: list[str] | None = None,
+    ) -> dict:
+        """Insert (or, idempotently, re-describe) one collector row.
+        Validation (bad `connection_mode`/`allowed_uses`, a
+        `credential_env_var` that looks like a secret value rather than a
+        name) is enforced by `app.telegram_collectors.validate_registration`
+        BEFORE anything is written -- this method never stores a row this
+        registry's own vocabulary doesn't recognize.
+
+        Re-registering the SAME `collector_id` replaces its identity/
+        connection fields but preserves its qualification evidence,
+        checkpoint, and health state (an operator re-describing which env
+        var/chat a collector reads from -- e.g. after rotating a session
+        file's path -- must not silently reset "this collector was
+        already confirmed receiving real messages" or "here's how far
+        we've already caught up live")."""
+        from app.telegram_collectors import validate_registration
+
+        mode, uses = validate_registration(
+            collector_id=collector_id,
+            connection_mode=connection_mode,
+            identity_ref=identity_ref,
+            credential_env_var=credential_env_var,
+            chat_id=chat_id,
+            provider_name=provider_name,
+            allowed_uses=allowed_uses,
+        )
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            existing = conn.execute(
+                "SELECT created_at FROM telegram_collectors WHERE id = ?", (collector_id,)
+            ).fetchone()
+            created_at = existing[0] if existing else now
+            conn.execute(
+                """INSERT INTO telegram_collectors
+                       (id, connection_mode, identity_ref, credential_env_var, chat_id, topic_id,
+                        provider_name, allowed_uses, qualification_evidence, health_state, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, '{}', 'unqualified', ?, ?)
+                   ON CONFLICT(id) DO UPDATE SET
+                       connection_mode = excluded.connection_mode,
+                       identity_ref = excluded.identity_ref,
+                       credential_env_var = excluded.credential_env_var,
+                       chat_id = excluded.chat_id,
+                       topic_id = excluded.topic_id,
+                       provider_name = excluded.provider_name,
+                       allowed_uses = excluded.allowed_uses,
+                       updated_at = excluded.updated_at""",
+                (
+                    collector_id,
+                    mode.value,
+                    identity_ref,
+                    credential_env_var,
+                    str(chat_id),
+                    str(topic_id) if topic_id is not None else None,
+                    provider_name,
+                    json.dumps(uses),
+                    created_at,
+                    now,
+                ),
+            )
+        return self.get_telegram_collector(collector_id)  # type: ignore[return-value]
+
+    def _telegram_collector_row_to_dict(self, row: tuple) -> dict:
+        return {
+            "id": row[0],
+            "connection_mode": row[1],
+            "identity_ref": row[2],
+            "credential_env_var": row[3],
+            "chat_id": row[4],
+            "topic_id": row[5],
+            "provider_name": row[6],
+            "allowed_uses": json.loads(row[7]) if row[7] else [],
+            "noforwards": bool(row[8]) if row[8] is not None else None,
+            "last_qualified_at": row[9],
+            "qualification_evidence": json.loads(row[10]) if row[10] else {},
+            "checkpoint_message_id": row[11],
+            "checkpoint_updated_at": row[12],
+            "health_state": row[13],
+            "health_detail": row[14],
+            "created_at": row[15],
+            "updated_at": row[16],
+        }
+
+    _TELEGRAM_COLLECTOR_COLUMNS = (
+        "id, connection_mode, identity_ref, credential_env_var, chat_id, topic_id, provider_name, "
+        "allowed_uses, noforwards, last_qualified_at, qualification_evidence, checkpoint_message_id, "
+        "checkpoint_updated_at, health_state, health_detail, created_at, updated_at"
+    )
+
+    def get_telegram_collector(self, collector_id: str) -> dict | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                f"SELECT {self._TELEGRAM_COLLECTOR_COLUMNS} FROM telegram_collectors WHERE id = ?",
+                (collector_id,),
+            ).fetchone()
+        return self._telegram_collector_row_to_dict(row) if row else None
+
+    def list_telegram_collectors(self) -> list[dict]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"SELECT {self._TELEGRAM_COLLECTOR_COLUMNS} FROM telegram_collectors ORDER BY id"
+            ).fetchall()
+        return [self._telegram_collector_row_to_dict(r) for r in rows]
+
+    def update_telegram_collector_health(
+        self, collector_id: str, health_state: str, *, detail: str | None = None
+    ) -> None:
+        """Point 8: the ONE place a collector's incident/health state is
+        written. Validated against `app.telegram_collectors.
+        CollectorHealth` so a caller can never persist a state string this
+        registry doesn't recognize (which would otherwise silently render
+        as neither clearly healthy nor clearly broken on a dashboard)."""
+        from app.telegram_collectors import CollectorHealth
+
+        state = CollectorHealth(health_state)  # raises ValueError for an unrecognized state
+        with self._connect() as conn:
+            cur = conn.execute(
+                "UPDATE telegram_collectors SET health_state = ?, health_detail = ?, updated_at = ? WHERE id = ?",
+                (state.value, detail, datetime.now(timezone.utc).isoformat(), collector_id),
+            )
+            if cur.rowcount == 0:
+                raise KeyError(f"no telegram collector registered with id={collector_id!r}")
+
+    def record_telegram_collector_qualification_evidence(
+        self,
+        collector_id: str,
+        *,
+        evidence: dict,
+        noforwards: bool | None = None,
+        qualified_at: datetime | None = None,
+    ) -> None:
+        """Point 4/8: real evidence that authorized real-message receipt
+        was confirmed for this collector -- e.g. `{"observed_message_id":
+        "42", "observed_at": "...", "method": "live_event"}`. Setting this
+        also advances `health_state` to `healthy_qualified` (the only
+        state a dashboard may render as green -- see `CollectorHealth`'s
+        own docstring) UNLESS `noforwards` is explicitly `True`, in which
+        case `health_state` is instead set to
+        `protected_content_restricted` -- ingestion itself is still real
+        and recorded (this chat's protected-content flag governs
+        downstream forwarding/redistribution, not raw receipt -- see
+        `app/sources/telegram_user.py`'s module docstring), but a
+        dashboard must not render this collector identically to one with
+        no forwarding restriction at all."""
+        from app.telegram_collectors import CollectorHealth
+
+        when = (qualified_at or datetime.now(timezone.utc)).isoformat()
+        health = CollectorHealth.PROTECTED_CONTENT_RESTRICTED if noforwards else CollectorHealth.HEALTHY_QUALIFIED
+        with self._connect() as conn:
+            cur = conn.execute(
+                """UPDATE telegram_collectors
+                   SET qualification_evidence = ?, last_qualified_at = ?, noforwards = ?,
+                       health_state = ?, health_detail = NULL, updated_at = ?
+                   WHERE id = ?""",
+                (
+                    json.dumps(evidence),
+                    when,
+                    None if noforwards is None else int(bool(noforwards)),
+                    health.value,
+                    when,
+                    collector_id,
+                ),
+            )
+            if cur.rowcount == 0:
+                raise KeyError(f"no telegram collector registered with id={collector_id!r}")
+
+    def get_telegram_collector_checkpoint(self, collector_id: str) -> int | None:
+        """Point 7: the last message id this collector has admitted to
+        LIVE routing -- `None` for a collector that has never processed a
+        live message (including one that has only ever gone through a
+        historical import, which never touches this column -- see
+        `advance_telegram_collector_checkpoint`)."""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT checkpoint_message_id FROM telegram_collectors WHERE id = ?", (collector_id,)
+            ).fetchone()
+        if row is None:
+            raise KeyError(f"no telegram collector registered with id={collector_id!r}")
+        return row[0]
+
+    def advance_telegram_collector_checkpoint(self, collector_id: str, message_id: int) -> None:
+        """Point 7: called ONLY after a message has been genuinely
+        admitted to live routing (never for a historical-import row, and
+        never for a message this collector is merely re-observing at or
+        below its current checkpoint). Monotonic -- never moves the
+        checkpoint backward, so an out-of-order redelivery can't un-admit
+        messages that were already caught up to."""
+        with self._connect() as conn:
+            cur = conn.execute(
+                """UPDATE telegram_collectors
+                   SET checkpoint_message_id = MAX(COALESCE(checkpoint_message_id, ?), ?),
+                       checkpoint_updated_at = ?, updated_at = ?
+                   WHERE id = ?""",
+                (
+                    message_id,
+                    message_id,
+                    datetime.now(timezone.utc).isoformat(),
+                    datetime.now(timezone.utc).isoformat(),
+                    collector_id,
+                ),
+            )
+            if cur.rowcount == 0:
+                raise KeyError(f"no telegram collector registered with id={collector_id!r}")
 
     def list_orders_for_signal(self, signal_id: str) -> list[dict]:
         """Every order already recorded against this exact signal id — what
