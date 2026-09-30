@@ -149,6 +149,7 @@ from app.models import (
 from app.providers import ProviderRegistry, SettingsOverride
 from app.risk import size_for_account, symbol_for_account
 from app.routing import RoutingConfig
+from app.shadow_mode import evaluate_shadow, to_result_row
 from app.writer_lease import NullLeaseGuard, WriterLeaseGuard
 
 logger = logging.getLogger(__name__)
@@ -486,6 +487,18 @@ class SignalCopierEngine:
 
         self.store.save_signal(signal)
         self._export_source_receipt(signal)
+        # Track 17: SHADOW MODE -- "what would the live system have
+        # done?" for a provider not yet certified live. Purely additive
+        # and non-blocking: computed from the SAME routing/sizing logic
+        # (see app/shadow_mode.py's module docstring) as the real
+        # destination-resolution below, but never gates, delays, or
+        # replaces it -- a provider's live routing continues exactly as
+        # it already does today (app.provider_catalog.
+        # ExecutionEligibility is still not wired into this gate, per
+        # Track 14's own documented scoping). Wrapped so a failure here
+        # (a malformed provider row, a store error) can never break real
+        # signal processing -- see this method's own call site comment.
+        self._maybe_run_shadow_mode(signal)
 
         # EXE-10: an account's own `enabled=False` is an entry pause, not
         # an exit block -- a CLOSE signal must still reach an account that
@@ -1067,6 +1080,48 @@ class SignalCopierEngine:
                 )
             ]
         return None
+
+    #: `providers.certification_state` values (app.provider_catalog.
+    #: CertificationState) that mean "not yet certified live" -- shadow
+    #: mode runs for exactly these, per the user's own spec ("Wire this
+    #: to trigger automatically for any provider/source whose
+    #: certification_state is SHADOW (or lower)"). CERTIFIED is the one
+    #: state shadow mode does NOT run for -- a fully certified provider
+    #: has already been through this and every other certification
+    #: check; continuing to shadow-evaluate it forever would just be
+    #: noise, not signal.
+    _SHADOW_MODE_CERTIFICATION_STATES = frozenset({"uncertified", "draft", "tested", "shadow"})
+
+    def _maybe_run_shadow_mode(self, signal: Signal) -> None:
+        """Track 17: computes and records shadow-mode results for
+        `signal` when its provider (`providers.id == signal.source`) is
+        registered and not yet `certification_state == 'certified'`. See
+        `app/shadow_mode.py`'s own module docstring for the full design
+        and the structural guarantee that this NEVER submits a real
+        order -- `evaluate_shadow` returns plain, inert dataclasses; the
+        only side effect here is `self.store.record_shadow_mode_result`,
+        an INSERT into `shadow_mode_results`, never `save_order_result`
+        or any broker call.
+
+        A provider this engine has never heard of (most of this
+        codebase's own test fixtures, and any deployment that hasn't
+        adopted the Track 14 catalog yet) is silently skipped -- shadow
+        mode is additive coverage for a REGISTERED, not-yet-certified
+        provider, never a requirement every signal must satisfy.
+        Exceptions are caught and logged, never raised: a shadow-mode
+        computation failing must never be able to break real signal
+        processing (see this method's own call site)."""
+        try:
+            provider = self.store.get_provider_catalog_entry(signal.source)
+            if provider is None or provider.get("certification_state") not in self._SHADOW_MODE_CERTIFICATION_STATES:
+                return
+            intents = evaluate_shadow(
+                signal, self.routing, certification_version=provider.get("certification_version")
+            )
+            for intent in intents:
+                self.store.record_shadow_mode_result(to_result_row(intent))
+        except Exception:  # noqa: BLE001 -- shadow mode must never break real signal processing
+            logger.exception("shadow-mode evaluation failed for signal id=%s source=%s", signal.id, signal.source)
 
     def _reject(self, account: DestinationAccount, order_signal: Signal, message: str) -> OrderResult:
         return OrderResult(

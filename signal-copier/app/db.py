@@ -26,6 +26,16 @@ from app.models import (
     Signal,
     UncertaintyState,
 )
+from app.certification import (
+    ALL_CHECKS,
+    CHECK_KIND,
+    CertificationError,
+    CheckKind,
+    is_live_eligible,
+    parse_check_name,
+    validate_check_record,
+    validate_scope,
+)
 from app.connections import validate_connection_registration
 from app.provider_catalog import validate_provider_registration, validate_source_registration
 from app.unified_collectors import CollectorKind, UnifiedCollectorError, now_utc
@@ -1399,6 +1409,75 @@ CREATE TABLE IF NOT EXISTS connections (
 );
 
 CREATE INDEX IF NOT EXISTS idx_connections_connection_type ON connections (connection_type);
+
+-- Track 17: provider certification checklist -- see
+-- app/certification.py's module docstring for the full design. ONE row
+-- per (provider_id, source_id, asset_class, account_route, check_name)
+-- -- the scope tuple the user's own spec requires ("scoped by provider
+-- x source x asset class x account/broker route, not just provider"),
+-- plus which of the 14 checks this row is. `status` is one of
+-- app.certification.CheckStatus's own values, starting 'NOT_RUN' for
+-- every freshly-created row (never a fabricated default PASS).
+-- `evidence` is a JSON object -- for an AUTOMATED check (see
+-- app.certification.CHECK_KIND), the real data point(s)
+-- app/certification_evidence.py computed this verdict from; for an
+-- ATTESTATION_ONLY check, the operator's own note describing what they
+-- verified (REQUIRED, never empty, for a PASS/FAIL -- see
+-- app.certification.validate_check_record). `checked_by` is the owner/
+-- operator identity that recorded this row -- NULL only for an
+-- AUTOMATED check's freshly-recomputed view (nobody "checked" it by
+-- hand; see SignalStore.compute_certification_check). There is
+-- DELIBERATELY no `live_eligible` column anywhere in this table or
+-- schema -- that is always a derived computation
+-- (app.certification.is_live_eligible) over this table's own rows,
+-- never a separately-settable flag that could drift out of sync.
+CREATE TABLE IF NOT EXISTS certification_checks (
+    id TEXT PRIMARY KEY,
+    provider_id TEXT NOT NULL,
+    source_id TEXT NOT NULL,
+    asset_class TEXT NOT NULL,
+    account_route TEXT NOT NULL,
+    check_name TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'NOT_RUN',
+    evidence TEXT NOT NULL DEFAULT '{}',
+    checked_at TEXT,
+    checked_by TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE (provider_id, source_id, asset_class, account_route, check_name)
+);
+
+CREATE INDEX IF NOT EXISTS idx_certification_checks_scope
+    ON certification_checks (provider_id, source_id, asset_class, account_route);
+
+-- Track 17: SHADOW MODE results -- "what would the live system have
+-- done?" without submitting anything. See app/shadow_mode.py's module
+-- docstring for the full design (real routing/sizing logic reused, no
+-- broker ever touched). ONE row per computed hypothetical order --
+-- `signal_id` is the real triggering signal, `computed_hypothetical_order`
+-- is the full app.shadow_mode.ShadowOrderIntent, serialized (symbol,
+-- side, quantity, expected_entry, stop_price, targets) -- and
+-- `policy_reference` is the real config/version string that decision
+-- was computed from (the user's own example: "Why: TradeAlgo Options
+-- Policy v4"), never a decorative label.
+CREATE TABLE IF NOT EXISTS shadow_mode_results (
+    id TEXT PRIMARY KEY,
+    signal_id TEXT NOT NULL,
+    provider_id TEXT NOT NULL,
+    account_id TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    side TEXT NOT NULL,
+    quantity REAL,
+    expected_entry REAL,
+    stop_price REAL,
+    targets TEXT NOT NULL DEFAULT '[]',
+    policy_reference TEXT NOT NULL,
+    reasoning TEXT NOT NULL DEFAULT '',
+    computed_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_shadow_mode_results_signal_id ON shadow_mode_results (signal_id);
+CREATE INDEX IF NOT EXISTS idx_shadow_mode_results_provider_id ON shadow_mode_results (provider_id);
 
 CREATE INDEX IF NOT EXISTS idx_orders_executed_at ON orders (executed_at);
 CREATE INDEX IF NOT EXISTS idx_orders_account_id ON orders (account_id);
@@ -4717,6 +4796,274 @@ class SignalStore:
                     connection_id,
                 ),
             )
+
+    # -- Track 17: provider certification checklist (app/certification.py) --
+    # -- and shadow mode results (app/shadow_mode.py) --
+
+    _CERTIFICATION_CHECK_COLUMNS = (
+        "id, provider_id, source_id, asset_class, account_route, check_name, status, evidence, "
+        "checked_at, checked_by, created_at, updated_at"
+    )
+
+    def _certification_check_row_to_dict(self, row: tuple) -> dict:
+        return {
+            "id": row[0],
+            "provider_id": row[1],
+            "source_id": row[2],
+            "asset_class": row[3],
+            "account_route": row[4],
+            "check_name": row[5],
+            "status": row[6],
+            "evidence": json.loads(row[7]) if row[7] else {},
+            "checked_at": row[8],
+            "checked_by": row[9],
+            "created_at": row[10],
+            "updated_at": row[11],
+        }
+
+    def ensure_certification_checks(
+        self, *, provider_id: str, source_id: str, asset_class: str, account_route: str
+    ) -> list[dict]:
+        """Idempotently creates (never overwrites) one `NOT_RUN` row per
+        `app.certification.ALL_CHECKS` for this exact scope, then returns
+        every row for it -- the lazy-bootstrap this module's own REST
+        routes call before reading/computing a scope's checklist, so a
+        scope's 14 rows always exist by the time anything reads them,
+        without a separate migration/backfill step per scope. Existing
+        rows (already PASS/FAIL/SKIPPED, or a prior NOT_RUN) are left
+        completely untouched -- `INSERT OR IGNORE`, never `OR REPLACE`."""
+        validate_scope(
+            provider_id=provider_id, source_id=source_id, asset_class=asset_class, account_route=account_route
+        )
+        now = now_utc().isoformat()
+        with self._connect() as conn:
+            for check in ALL_CHECKS:
+                row_id = f"{provider_id}:{source_id}:{asset_class}:{account_route}:{check.value}"
+                conn.execute(
+                    """INSERT OR IGNORE INTO certification_checks
+                           (id, provider_id, source_id, asset_class, account_route, check_name, status,
+                            evidence, created_at, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?, 'NOT_RUN', '{}', ?, ?)""",
+                    (row_id, provider_id, source_id, asset_class, account_route, check.value, now, now),
+                )
+        return self.list_certification_checks(
+            provider_id=provider_id, source_id=source_id, asset_class=asset_class, account_route=account_route
+        )
+
+    def list_certification_checks(
+        self,
+        *,
+        provider_id: str,
+        source_id: str | None = None,
+        asset_class: str | None = None,
+        account_route: str | None = None,
+    ) -> list[dict]:
+        """Lists the real, CURRENT `certification_checks` rows for a
+        scope, with every `app.certification.CHECK_KIND.AUTOMATED` check
+        recomputed fresh from real underlying data before being
+        returned -- see `compute_certification_check`'s own docstring
+        for why this is never a stale cached read for those six checks.
+        `source_id`/`asset_class`/`account_route` narrow the scope
+        further; provider_id alone lists every scope this provider has
+        any recorded/bootstrapped checks for."""
+        clauses = ["provider_id = ?"]
+        params: list[Any] = [provider_id]
+        for column, value in (
+            ("source_id", source_id),
+            ("asset_class", asset_class),
+            ("account_route", account_route),
+        ):
+            if value is not None:
+                clauses.append(f"{column} = ?")
+                params.append(value)
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"SELECT {self._CERTIFICATION_CHECK_COLUMNS} FROM certification_checks "
+                f"WHERE {' AND '.join(clauses)} ORDER BY source_id, asset_class, account_route, check_name",
+                params,
+            ).fetchall()
+        checks = [self._certification_check_row_to_dict(r) for r in rows]
+        for row in checks:
+            if CHECK_KIND.get(parse_check_name(row["check_name"])) == CheckKind.AUTOMATED:
+                self._merge_automated_evidence(row)
+        return checks
+
+    def _merge_automated_evidence(self, row: dict) -> None:
+        """Recomputes ONE automated check's real status/evidence
+        in-place on `row` (a dict already shaped like a
+        `certification_checks` row) -- see
+        `app/certification_evidence.py` for exactly what each check
+        reads. Never persists the recomputed value back to the table:
+        an AUTOMATED check has no durable "last known status" at all,
+        by design (see this module's own SCHEMA comment on
+        `certification_checks` -- there is nothing to persist that
+        could go stale)."""
+        import app.certification_evidence as evidence_mod
+
+        name = row["check_name"]
+        provider_id = row["provider_id"]
+        source_id = row["source_id"]
+        account_route = row["account_route"]
+        result = None
+        if name == "connection":
+            result = evidence_mod.connection_check(self, source_id=source_id)
+        elif name == "historical_retrieval":
+            result = evidence_mod.historical_retrieval_check(self, provider_id=provider_id)
+        elif name == "parser":
+            result = evidence_mod.parser_check(self, provider_id=provider_id)
+        elif name == "duplicate_handling":
+            result = evidence_mod.duplicate_handling_check(self, provider_id=provider_id)
+        elif name == "cross_channel_correlation":
+            result = evidence_mod.cross_channel_correlation_check(self, provider_id=provider_id)
+        elif name == "paper_execution":
+            result = evidence_mod.paper_execution_check(self, provider_id=provider_id, account_route=account_route)
+        if result is not None:
+            row["status"] = result.status.value
+            row["evidence"] = result.evidence
+            row["computed"] = True  # marks this value as freshly computed, not a stored attestation
+            if result.detail:
+                row["detail"] = result.detail
+
+    def record_certification_check(
+        self,
+        *,
+        provider_id: str,
+        source_id: str,
+        asset_class: str,
+        account_route: str,
+        check_name: str,
+        status: str,
+        evidence: dict | None,
+        checked_by: str,
+    ) -> dict:
+        """The ONE write path for a manual/attestation check record --
+        owner-gated at the REST layer (`POST /provider-certification/
+        checks/{check_id}/record`, `Depends(require_owner)`). Refuses
+        (raises `app.certification.CertificationError`) to record an
+        AUTOMATED check this way -- those are computed fresh at read
+        time and can never be hand-set, which is what makes "never
+        auto-pass" AND "never let a human override real evidence with a
+        rubber stamp" both true at once. See `app.certification.
+        validate_check_record` for the evidence/checked_by requirement
+        this enforces before anything is persisted."""
+        name = parse_check_name(check_name)
+        if CHECK_KIND.get(name) == CheckKind.AUTOMATED:
+            raise CertificationError(
+                f"{name.value!r} is an AUTOMATED check (computed fresh from real evidence at read time) -- "
+                "it cannot be manually recorded; see app/certification_evidence.py for what it reads"
+            )
+        validate_scope(
+            provider_id=provider_id, source_id=source_id, asset_class=asset_class, account_route=account_route
+        )
+        validate_check_record(check_name=check_name, status=status, evidence=evidence, checked_by=checked_by)
+        self.ensure_certification_checks(
+            provider_id=provider_id, source_id=source_id, asset_class=asset_class, account_route=account_route
+        )
+        row_id = f"{provider_id}:{source_id}:{asset_class}:{account_route}:{name.value}"
+        now = now_utc().isoformat()
+        with self._connect() as conn:
+            cur = conn.execute(
+                """UPDATE certification_checks
+                   SET status = ?, evidence = ?, checked_at = ?, checked_by = ?, updated_at = ?
+                   WHERE id = ?""",
+                (status, json.dumps(evidence or {}), now, checked_by, now, row_id),
+            )
+            if cur.rowcount == 0:
+                raise KeyError(f"no certification check row for id={row_id!r}")
+            row = conn.execute(
+                f"SELECT {self._CERTIFICATION_CHECK_COLUMNS} FROM certification_checks WHERE id = ?", (row_id,)
+            ).fetchone()
+        return self._certification_check_row_to_dict(row)
+
+    def is_scope_live_eligible(
+        self, *, provider_id: str, source_id: str, asset_class: str, account_route: str
+    ) -> dict:
+        """The derived LIVE_ELIGIBLE view for one scope -- always freshly
+        computed from `list_certification_checks`' own current rows
+        (which itself recomputes every automated check fresh -- see that
+        method's docstring), never read from a stored flag (there is
+        none -- see `app.certification.is_live_eligible`'s own
+        docstring)."""
+        checks = self.ensure_certification_checks(
+            provider_id=provider_id, source_id=source_id, asset_class=asset_class, account_route=account_route
+        )
+        eligible, missing = is_live_eligible(checks)
+        return {
+            "provider_id": provider_id,
+            "source_id": source_id,
+            "asset_class": asset_class,
+            "account_route": account_route,
+            "live_eligible": eligible,
+            "missing_checks": [c.value for c in missing],
+            "checks": checks,
+        }
+
+    def record_shadow_mode_result(self, row: dict) -> dict:
+        """Persists ONE `app.shadow_mode.ShadowOrderIntent` (already
+        shaped by `app.shadow_mode.to_result_row`) -- append-only audit
+        trail, never updated/replaced in place, matching
+        `phone_escalation_attempts`'/`signal_correlation_evidence`'s own
+        "always record, never silently skip" convention for a decision
+        ledger."""
+        with self._connect() as conn:
+            conn.execute(
+                """INSERT INTO shadow_mode_results
+                       (id, signal_id, provider_id, account_id, symbol, side, quantity, expected_entry,
+                        stop_price, targets, policy_reference, reasoning, computed_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    row["id"],
+                    row["signal_id"],
+                    row["provider_id"],
+                    row["account_id"],
+                    row["symbol"],
+                    row["side"],
+                    row.get("quantity"),
+                    row.get("expected_entry"),
+                    row.get("stop_price"),
+                    json.dumps(row.get("targets") or []),
+                    row["policy_reference"],
+                    row.get("reasoning", ""),
+                    row["computed_at"],
+                ),
+            )
+        return row
+
+    def list_shadow_mode_results(self, *, provider_id: str | None = None, signal_id: str | None = None) -> list[dict]:
+        clauses = []
+        params: list[Any] = []
+        if provider_id is not None:
+            clauses.append("provider_id = ?")
+            params.append(provider_id)
+        if signal_id is not None:
+            clauses.append("signal_id = ?")
+            params.append(signal_id)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"SELECT id, signal_id, provider_id, account_id, symbol, side, quantity, expected_entry, "
+                f"stop_price, targets, policy_reference, reasoning, computed_at FROM shadow_mode_results "
+                f"{where} ORDER BY computed_at DESC",
+                params,
+            ).fetchall()
+        return [
+            {
+                "id": r[0],
+                "signal_id": r[1],
+                "provider_id": r[2],
+                "account_id": r[3],
+                "symbol": r[4],
+                "side": r[5],
+                "quantity": r[6],
+                "expected_entry": r[7],
+                "stop_price": r[8],
+                "targets": json.loads(r[9]) if r[9] else [],
+                "policy_reference": r[10],
+                "reasoning": r[11],
+                "computed_at": r[12],
+            }
+            for r in rows
+        ]
 
     # -- Track 5: Telegram collector registry (app/telegram_collectors.py) --
 
