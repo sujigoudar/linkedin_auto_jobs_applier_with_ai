@@ -35,10 +35,12 @@ DEPRECATED fallback -- not removed outright, since `app/provider_scout.py`
 and the dashboard's existing provider-value UI/tests may still reference
 them during the transition -- but nothing new should read
 `ProviderValue.win_rate`/`.closing_fills` as a provider's scorecard; use
-the episode-based report instead. See `.agent/autonomy.yaml`'s gate note
-in this codebase's own accounting-ledger review response for why no
-promotion/cancellation/capital-weighting decision may consume the OLD
-score automatically going forward.
+the episode-based report instead. A release review calls for no
+promotion/cancellation/capital-weighting/portfolio-selection decision to
+consume the OLD closing-fill score automatically going forward -- as of
+this pass, `app/provider_scout.py` (the only in-process automatic
+consumer of either report) reads the episode-based one exclusively; see
+that module's own docstring.
 
 ## Attribution method: FIFO lots, not this project's account-level
 volume-weighted average
