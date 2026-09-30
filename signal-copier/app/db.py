@@ -1157,6 +1157,68 @@ CREATE TABLE IF NOT EXISTS notification_bridge_events (
 
 CREATE INDEX IF NOT EXISTS idx_notification_bridge_events_key ON notification_bridge_events (device_id, notification_key);
 
+-- Track 13: per-provider/app active phone-control-retrieval config -- see
+-- app/phone_escalation.py's module docstring for the full escalation-only
+-- design and app.phone_escalation.CapabilityState for the closed
+-- state vocabulary. `app_package` is UNIQUE: one config row per Android
+-- app this deployment might ever escalate to. `capability_state` starts
+-- 'disabled' for every fresh row (enforced in Python by
+-- app.phone_escalation.validate_config_registration, which has no
+-- capability_state parameter at all -- see
+-- SignalStore.register_phone_escalation_config) and can only ever be
+-- promoted/demoted through an explicit, owner-gated call
+-- (SignalStore.set_phone_escalation_capability_state, validated against
+-- app.phone_escalation.validate_state_transition's DISABLED -> SHADOW ->
+-- ENABLED promotion policy).
+--
+-- `adapter_backend` names which app.phone_escalation.PhoneControlAdapter
+-- implementation this provider uses (e.g. 'adb') -- NULL (the default)
+-- means no real backend is wired, which app.phone_escalation.
+-- evaluate_escalation treats identically to capability_state='disabled'
+-- (fail closed: a state without a usable backend must never behave as if
+-- retrieval actually ran).
+CREATE TABLE IF NOT EXISTS phone_escalation_configs (
+    id TEXT PRIMARY KEY,
+    app_package TEXT NOT NULL UNIQUE,
+    provider_name TEXT NOT NULL,
+    adapter_backend TEXT,
+    capability_state TEXT NOT NULL DEFAULT 'disabled',
+    notes TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_phone_escalation_configs_app_package ON phone_escalation_configs (app_package);
+
+-- Track 13: the audit ledger of every escalation DECISION this deployment
+-- has ever made (attempted or not) -- see
+-- app.phone_escalation.EscalationAttempt/EscalationDisposition for the
+-- real, honest outcome vocabulary this table's `disposition` column is
+-- constrained to at the application layer. Recorded for EVERY captured
+-- event that reached app.phone_escalation.evaluate_escalation, never only
+-- for the ones where retrieval actually ran -- same "always record, never
+-- silently skip" audit convention as notification_bridge_events above.
+--
+-- `disposition='shadow_logged_only'` rows are, by construction (see
+-- app.phone_escalation.evaluate_escalation), never linked to a live
+-- signal_id -- shadow-mode extraction is recorded here for the operator
+-- to review accuracy against and NEVER fed into engine.handle_signal.
+CREATE TABLE IF NOT EXISTS phone_escalation_attempts (
+    id TEXT PRIMARY KEY,
+    device_id TEXT NOT NULL,
+    app_package TEXT NOT NULL,
+    notification_key TEXT NOT NULL,
+    content_hash TEXT NOT NULL,
+    capability_state_at_attempt TEXT NOT NULL,
+    disposition TEXT NOT NULL,
+    extraction_status TEXT,
+    extraction_detail TEXT,
+    signal_id TEXT,
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_phone_escalation_attempts_device ON phone_escalation_attempts (device_id, notification_key);
+
 CREATE INDEX IF NOT EXISTS idx_orders_executed_at ON orders (executed_at);
 CREATE INDEX IF NOT EXISTS idx_orders_account_id ON orders (account_id);
 CREATE INDEX IF NOT EXISTS idx_orders_signal_id ON orders (signal_id);
@@ -4751,6 +4813,183 @@ class SignalStore:
                 "classification": r[9],
                 "signal_id": r[10],
                 "created_at": r[11],
+            }
+            for r in rows
+        ]
+
+    # -- Track 13: phone-escalation config registry (app/phone_escalation.py) --
+
+    _PHONE_ESCALATION_CONFIG_COLUMNS = (
+        "id, app_package, provider_name, adapter_backend, capability_state, notes, created_at, updated_at"
+    )
+
+    def _phone_escalation_config_row_to_dict(self, row: tuple) -> dict:
+        return {
+            "id": row[0],
+            "app_package": row[1],
+            "provider_name": row[2],
+            "adapter_backend": row[3],
+            "capability_state": row[4],
+            "notes": row[5],
+            "created_at": row[6],
+            "updated_at": row[7],
+        }
+
+    def register_phone_escalation_config(
+        self,
+        *,
+        app_package: str,
+        provider_name: str,
+        adapter_backend: str | None = None,
+        notes: str | None = None,
+    ) -> dict:
+        """Insert (or, idempotently, re-describe) one provider's active-
+        retrieval config. Validated BEFORE anything is written by
+        `app.phone_escalation.validate_config_registration`, which
+        (deliberately) takes no `capability_state` argument at all -- a
+        FRESH row is always inserted at `capability_state='disabled'`; an
+        already-registered `app_package` re-registering here updates its
+        `provider_name`/`adapter_backend`/`notes` but NEVER its
+        `capability_state` (re-describing a provider must never silently
+        reset -- or silently preserve past a config change -- an
+        operator's own prior promotion decision; use
+        `set_phone_escalation_capability_state` explicitly for that)."""
+        from app.phone_escalation import validate_config_registration
+
+        validate_config_registration(app_package=app_package, provider_name=provider_name)
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            existing = conn.execute(
+                "SELECT id, created_at FROM phone_escalation_configs WHERE app_package = ?", (app_package,)
+            ).fetchone()
+            config_id = existing[0] if existing else str(uuid.uuid4())
+            created_at = existing[1] if existing else now
+            conn.execute(
+                """INSERT INTO phone_escalation_configs
+                       (id, app_package, provider_name, adapter_backend, capability_state, notes,
+                        created_at, updated_at)
+                   VALUES (?, ?, ?, ?, 'disabled', ?, ?, ?)
+                   ON CONFLICT(app_package) DO UPDATE SET
+                       provider_name = excluded.provider_name,
+                       adapter_backend = excluded.adapter_backend,
+                       notes = excluded.notes,
+                       updated_at = excluded.updated_at""",
+                (config_id, app_package, provider_name, adapter_backend, notes, created_at, now),
+            )
+        return self.get_phone_escalation_config(app_package)  # type: ignore[return-value]
+
+    def get_phone_escalation_config(self, app_package: str) -> dict | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                f"SELECT {self._PHONE_ESCALATION_CONFIG_COLUMNS} FROM phone_escalation_configs "
+                "WHERE app_package = ?",
+                (app_package,),
+            ).fetchone()
+        return self._phone_escalation_config_row_to_dict(row) if row else None
+
+    def list_phone_escalation_configs(self) -> list[dict]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"SELECT {self._PHONE_ESCALATION_CONFIG_COLUMNS} FROM phone_escalation_configs ORDER BY app_package"
+            ).fetchall()
+        return [self._phone_escalation_config_row_to_dict(r) for r in rows]
+
+    def set_phone_escalation_capability_state(self, app_package: str, target_state: str) -> dict:
+        """The ONE owner-gated write path that ever changes a provider's
+        `capability_state` -- validated against
+        `app.phone_escalation.validate_state_transition`'s DISABLED ->
+        SHADOW -> ENABLED promotion policy (raises
+        `app.phone_escalation.PhoneEscalationError` for a disallowed
+        jump, e.g. straight from DISABLED to ENABLED). The HTTP route
+        that calls this (`POST /phone-escalation/configs/{app_package}/
+        promote` in app/main.py) is itself behind
+        `Depends(require_owner)` -- the same owner-session gate every
+        other owner-action-card in this codebase uses."""
+        from app.phone_escalation import CapabilityState, validate_state_transition
+
+        current = self.get_phone_escalation_config(app_package)
+        if current is None:
+            raise KeyError(f"no phone-escalation config registered with app_package={app_package!r}")
+        current_state = CapabilityState(current["capability_state"])
+        target = CapabilityState(target_state)  # raises ValueError for an unrecognized state
+        validate_state_transition(current_state, target)
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE phone_escalation_configs SET capability_state = ?, updated_at = ? WHERE app_package = ?",
+                (target.value, datetime.now(timezone.utc).isoformat(), app_package),
+            )
+        return self.get_phone_escalation_config(app_package)  # type: ignore[return-value]
+
+    def record_phone_escalation_attempt(
+        self,
+        *,
+        device_id: str,
+        app_package: str,
+        notification_key: str,
+        content_hash: str,
+        capability_state_at_attempt: str,
+        disposition: str,
+        extraction_status: str | None = None,
+        extraction_detail: str | None = None,
+        signal_id: str | None = None,
+    ) -> str:
+        """Always called after `app.phone_escalation.evaluate_escalation`
+        returns, REGARDLESS of disposition -- see that function's own
+        docstring for why every decision (not only ones where retrieval
+        actually ran) is recorded here."""
+        attempt_id = str(uuid.uuid4())
+        with self._connect() as conn:
+            conn.execute(
+                """INSERT INTO phone_escalation_attempts
+                       (id, device_id, app_package, notification_key, content_hash,
+                        capability_state_at_attempt, disposition, extraction_status, extraction_detail,
+                        signal_id, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    attempt_id,
+                    device_id,
+                    app_package,
+                    notification_key,
+                    content_hash,
+                    capability_state_at_attempt,
+                    disposition,
+                    extraction_status,
+                    extraction_detail,
+                    signal_id,
+                    datetime.now(timezone.utc).isoformat(),
+                ),
+            )
+        return attempt_id
+
+    def list_phone_escalation_attempts(self, *, device_id: str | None = None) -> list[dict]:
+        """Every recorded escalation decision, most recent first --
+        optionally scoped to one device (a dashboard/audit read, never
+        used for dedup)."""
+        query = (
+            "SELECT id, device_id, app_package, notification_key, content_hash, capability_state_at_attempt, "
+            "disposition, extraction_status, extraction_detail, signal_id, created_at "
+            "FROM phone_escalation_attempts"
+        )
+        params: tuple = ()
+        if device_id is not None:
+            query += " WHERE device_id = ?"
+            params = (device_id,)
+        query += " ORDER BY created_at DESC"
+        with self._connect() as conn:
+            rows = conn.execute(query, params).fetchall()
+        return [
+            {
+                "id": r[0],
+                "device_id": r[1],
+                "app_package": r[2],
+                "notification_key": r[3],
+                "content_hash": r[4],
+                "capability_state_at_attempt": r[5],
+                "disposition": r[6],
+                "extraction_status": r[7],
+                "extraction_detail": r[8],
+                "signal_id": r[9],
+                "created_at": r[10],
             }
             for r in rows
         ]

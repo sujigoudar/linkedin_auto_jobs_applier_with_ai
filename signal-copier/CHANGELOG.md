@@ -26,6 +26,16 @@ engine's data integrity and operational-safety guarantees.
   inference (`a5d5aec`).
 - Plain-account CLOSE reconciliation against broker truth; explicit
   management-recipe declaration (`fe6dd76`).
+- Escalation-only active phone-control retrieval (`app/phone_escalation.py`,
+  Track 13): a per-provider `CapabilityState` lifecycle
+  (`disabled` -> `shadow` -> `enabled`, owner-gated promotion), a
+  hardcoded read-only `PhoneControlAdapter` action surface with no
+  send/type/submit-capable method, a broker/banking `open_app` deny-list
+  enforced structurally (raises, never just logs), and an
+  `EscalationAttempt` audit ledger (`phone_escalation_configs`/
+  `phone_escalation_attempts` tables, migration `0026`). No real device
+  backend is wired yet — see ADR-0009 and `AdbPhoneControlAdapter`'s own
+  docstring for the documented, not-yet-implemented ADB-based design.
 
 ### Changed
 - Capital allocator: fail-closed sizing on a missing price, an

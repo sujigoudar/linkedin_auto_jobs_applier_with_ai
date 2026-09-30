@@ -112,6 +112,7 @@ from app.notification_bridge import (
     validate_content_completeness,
     verify_pairing_token,
 )
+from app.phone_escalation import PhoneEscalationError, evaluate_escalation
 from app.sources.twitter import TwitterSource
 from app.sources.webhook import WebhookSource
 from app.sources.whatsapp import WhatsAppSource
@@ -3561,6 +3562,91 @@ async def list_notification_bridge_device_events(device_id: str, _owner: dict = 
     return {"device_id": device_id, "events": store.list_notification_bridge_events(device_id)}
 
 
+class RegisterPhoneEscalationConfigRequest(BaseModel):
+    """Owner-gated: register (or re-describe) one provider/app's active
+    phone-control-retrieval config -- see app/phone_escalation.py's
+    module docstring. A FRESH `app_package` always starts at
+    `capability_state='disabled'`; this request has no `capability_state`
+    field at all (see `SignalStore.register_phone_escalation_config`'s
+    own docstring for why), so it is structurally impossible to register
+    a config that starts anywhere else. Promotion is a separate call
+    (`POST /phone-escalation/configs/{app_package}/promote`)."""
+
+    app_package: str
+    provider_name: str
+    adapter_backend: str | None = None
+    notes: str | None = None
+
+
+@app.post("/phone-escalation/configs")
+async def register_phone_escalation_config(
+    request: RegisterPhoneEscalationConfigRequest, _owner: dict = Depends(require_owner)
+) -> dict:
+    try:
+        return store.register_phone_escalation_config(
+            app_package=request.app_package,
+            provider_name=request.provider_name,
+            adapter_backend=request.adapter_backend,
+            notes=request.notes,
+        )
+    except PhoneEscalationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.get("/phone-escalation/configs")
+async def list_phone_escalation_configs(_owner: dict = Depends(require_owner_read)) -> dict:
+    return {"configs": store.list_phone_escalation_configs()}
+
+
+@app.get("/phone-escalation/configs/{app_package}")
+async def get_phone_escalation_config(app_package: str, _owner: dict = Depends(require_owner_read)) -> dict:
+    config_row = store.get_phone_escalation_config(app_package)
+    if config_row is None:
+        raise HTTPException(status_code=404, detail=f"no phone-escalation config registered with app_package={app_package!r}")
+    return config_row
+
+
+class PromotePhoneEscalationConfigRequest(BaseModel):
+    #: One of app.phone_escalation.CapabilityState's own values
+    #: ("shadow" / "enabled" / "disabled"). Validated against
+    #: `app.phone_escalation.validate_state_transition`'s DISABLED ->
+    #: SHADOW -> ENABLED promotion policy -- a caller may never jump
+    #: straight from disabled to enabled, and demotion straight to
+    #: disabled is always allowed from any state (an operator's
+    #: emergency off-switch).
+    target_state: str
+
+
+@app.post("/phone-escalation/configs/{app_package}/promote")
+async def promote_phone_escalation_config(
+    app_package: str, request: PromotePhoneEscalationConfigRequest, _owner: dict = Depends(require_owner)
+) -> dict:
+    """Owner-gated: the ONE route that ever changes a provider's
+    `capability_state` -- same owner-action-card gating
+    (`Depends(require_owner)`, session + CSRF) as every other mutating
+    admin route in this codebase. See app/phone_escalation.py's module
+    docstring point 3 and `CapabilityState`'s own docstring for exactly
+    what SHADOW vs ENABLED means and why ENABLED is reachable only via
+    SHADOW, never directly from DISABLED."""
+    try:
+        return store.set_phone_escalation_capability_state(app_package, request.target_state)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except (PhoneEscalationError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.get("/phone-escalation/attempts")
+async def list_phone_escalation_attempts(
+    device_id: str | None = None, _owner: dict = Depends(require_owner_read)
+) -> dict:
+    """Audit read: every escalation decision this deployment has ever
+    made (attempted or not), including SHADOW-mode results an operator
+    reviews for accuracy before promoting a provider to ENABLED -- see
+    app/phone_escalation.py's own docstring."""
+    return {"attempts": store.list_phone_escalation_attempts(device_id=device_id)}
+
+
 def _extract_bearer_token(authorization: str | None) -> str | None:
     if not authorization:
         return None
@@ -3593,6 +3679,108 @@ class NotificationBridgeEventPayload(BaseModel):
 
 class NotificationBridgeIngestRequest(BaseModel):
     events: list[NotificationBridgeEventPayload]
+
+
+def _resolve_phone_control_adapter(config_row: dict | None) -> tuple[Any, Any]:
+    """Resolves the `(PhoneControlAdapter, SignalExtractor)` pair for one
+    provider's escalation config -- ALWAYS `(None, None)` in this
+    deployment today, deliberately: no real
+    `app.phone_escalation.PhoneControlAdapter` backend is wired here
+    because no physical Android device/ADB connection/emulator is
+    available in this environment (see `app.phone_escalation.
+    AdbPhoneControlAdapter`'s own docstring for the documented, NOT-yet-
+    implemented real backend design). `app.phone_escalation.
+    evaluate_escalation` treats `adapter is None` identically to
+    `CapabilityState.DISABLED` (fail closed), so an operator promoting a
+    provider's `capability_state` to `SHADOW`/`ENABLED` here has no
+    effect until a real adapter is wired into this function -- a
+    deliberate, documented follow-up that needs a real device, not a
+    silent gap. Tests inject `MockPhoneControlAdapter`/
+    `MockSignalExtractor` directly into `evaluate_escalation` instead of
+    going through this function."""
+    return None, None
+
+
+async def _evaluate_phone_escalation_for_event(
+    *,
+    device_id: str,
+    app_package: str,
+    notification_key: str,
+    content_hash: str,
+    completeness: ContentCompleteness,
+) -> dict | None:
+    """Track 13 hook: called from the `needs_review_incomplete_content`
+    path below for a notification whose passively-captured content alone
+    was not COMPLETE. Point 1 of app/phone_escalation.py's own docstring
+    ("no official direct source already delivered this same signal") is
+    NOT yet checked here against a real Track 12 query --
+    `agent-track12-whop-correlation` had not diverged from this task's
+    own base commit at the time this was written (see
+    `app.phone_escalation.EscalationCandidate`'s own docstring) -- so
+    `covered_by_direct_source=False` is passed unconditionally today;
+    reconcile this call site with Track 12's real "events needing
+    escalation" query once it lands, rather than leaving this hardcoded.
+    Always returns the recorded `EscalationAttempt` as a dict (never
+    raises for an individual event's own escalation-evaluation outcome,
+    same "one bad item doesn't sink the batch" convention as the caller
+    itself) -- `None` only if evaluation itself raised unexpectedly,
+    which is logged, never silently swallowed."""
+    config_row = store.get_phone_escalation_config(app_package)
+    from app.phone_escalation import ProviderEscalationConfig
+
+    config_obj = ProviderEscalationConfig(**config_row) if config_row else None
+    adapter, extractor = _resolve_phone_control_adapter(config_row)
+    try:
+        attempt, extraction = await evaluate_escalation(
+            device_id=device_id,
+            app_package=app_package,
+            notification_key=notification_key,
+            content_hash=content_hash,
+            completeness=completeness,
+            covered_by_direct_source=False,
+            config=config_obj,
+            adapter=adapter,
+            extractor=extractor,
+        )
+    except Exception:
+        logger.exception(
+            "phone_escalation.evaluate_failed device_id=%s app_package=%s notification_key=%s",
+            device_id,
+            app_package,
+            notification_key,
+        )
+        return None
+
+    store.record_phone_escalation_attempt(
+        device_id=attempt.device_id,
+        app_package=attempt.app_package,
+        notification_key=attempt.notification_key,
+        content_hash=attempt.content_hash,
+        capability_state_at_attempt=attempt.capability_state_at_attempt.value,
+        disposition=attempt.disposition.value,
+        extraction_status=attempt.extraction_status.value if attempt.extraction_status else None,
+        extraction_detail=attempt.extraction_detail,
+        signal_id=attempt.signal_id,
+    )
+    # ENABLED_CANDIDATE_READY is deliberately NOT routed to
+    # engine.handle_signal from here in this environment -- see
+    # `_resolve_phone_control_adapter`'s own docstring: `adapter` is
+    # always `None` today, so `evaluate_escalation` can never actually
+    # reach `ENABLED_CANDIDATE_READY` from THIS call site (only a test
+    # that injects a real adapter/extractor pair directly into
+    # `evaluate_escalation` can exercise that disposition). If/when a
+    # real adapter is wired into `_resolve_phone_control_adapter`, this
+    # branch is where `extraction.fields` would be built into a `Signal`
+    # (channel_id/message_id set from THIS SAME device_id/
+    # notification_key, so the engine's own provider-identity dedup
+    # applies exactly as it does for every other source) and passed to
+    # `engine.handle_signal` -- point 5 of app/phone_escalation.py's own
+    # docstring: no parallel execution path, ever.
+    return {
+        "disposition": attempt.disposition.value,
+        "capability_state_at_attempt": attempt.capability_state_at_attempt.value,
+        "extraction_status": attempt.extraction_status.value if attempt.extraction_status else None,
+    }
 
 
 async def _process_notification_bridge_event(device: dict, event: NotificationBridgeEventPayload) -> dict:
@@ -3772,6 +3960,20 @@ async def _process_notification_bridge_event(device: dict, event: NotificationBr
                     "expanded_text": event.expanded_text,
                 },
             )
+        )
+
+    if classification == "needs_review_incomplete_content":
+        # Track 13: this event's content_completeness means the passive
+        # capture alone wasn't enough to safely parse/route -- evaluate
+        # (and honestly record) whether escalation-only active retrieval
+        # applies, per app/phone_escalation.py's own docstring. Never
+        # blocks or fails this event's own classification either way.
+        await _evaluate_phone_escalation_for_event(
+            device_id=device_id,
+            app_package=event.app_package,
+            notification_key=event.notification_key,
+            content_hash=new_hash,
+            completeness=completeness,
         )
 
     store.save_notification_bridge_event(
