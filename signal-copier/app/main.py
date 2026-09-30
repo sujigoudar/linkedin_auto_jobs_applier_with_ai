@@ -17,6 +17,7 @@ import json
 import logging
 import os
 import sqlite3
+import uuid
 from collections import defaultdict
 from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta, timezone
@@ -71,6 +72,13 @@ from app.errors import SignalValidationError
 from app.lifecycle.manager import PositionLifecycleManager
 from app.lifecycle.models import ProtectionStatus
 from app.models import AccountBalance, AssetClass, ManagementRecipe, Side, Signal, SourceEvent, SourceEventKind
+from app.parser_tooling import (
+    ExtractedFields,
+    MessageType,
+    ParserToolingError,
+    classify_message_type,
+    extract_fields,
+)
 from app.pricing import PriceMonitor
 from app.qualification import QUALIFICATION_STATE_ORDER, QualificationError
 from app.providers import SettingsOverride, load_provider_registry_from_store
@@ -3222,6 +3230,202 @@ async def get_scorecard(provider_id: str, _owner: dict = Depends(require_owner_r
     if store.get_provider_catalog_entry(provider_id) is None:
         raise HTTPException(status_code=404, detail=f"no provider registered with id={provider_id!r}")
     return compute_scorecard(store, provider_id)
+
+# --- Track 15: sample-driven parser tooling ---------------------------
+#
+# See app/parser_tooling.py's module docstring for the full data model.
+# Backend/API only -- no wizard UI (this session's established
+# build-order decision: UI comes in a later, dedicated track). Every
+# route here is owner-gated, matching the `/provider-catalog/...`
+# convention above; the two write-capable batch/correction routes use
+# `require_owner` (CSRF-checked), the read-only listing routes use
+# `require_owner_read`.
+
+
+def _sample_dict_for_response(sample_text: str, sample_type: MessageType, extracted: ExtractedFields, disposition_outcome: str) -> dict:
+    """Shared shape for both the no-persistence batch-classify preview
+    and the persisted-sample listing below -- original message text
+    alongside its parsed/classified output, per the user's own spec
+    ("Show the original message next to parsed output")."""
+    return {
+        "text": sample_text,
+        "message_type": sample_type.value,
+        "disposition_outcome": disposition_outcome,
+        "extracted_fields": extracted.as_dict(),
+    }
+
+
+class ClassifySamplesRequest(BaseModel):
+    """Batch-classify raw historical message text against the CURRENT
+    parsing/classification logic, with NO persistence -- for previewing
+    what a "learn from samples" import would produce before committing
+    any of it. `source_id`/`provider_id` are optional context only (used
+    for nothing but round-tripped into the response), since nothing is
+    saved here."""
+
+    texts: list[str]
+    source_id: str | None = None
+    provider_id: str | None = None
+
+
+@app.post("/parser-tooling/classify-samples")
+async def classify_parser_samples(
+    request: ClassifySamplesRequest, _owner: dict = Depends(require_owner_read)
+) -> dict:
+    """Never persists anything -- pure classification/extraction preview
+    over `request.texts`. See app/parser_tooling.py's `classify_message_
+    type`/`extract_fields` for exactly what's genuinely computed vs.
+    honestly left `None`/`UNKNOWN`."""
+    results = []
+    for text in request.texts:
+        message_type = classify_message_type(text)
+        extracted = extract_fields(text, message_type=message_type)
+        disposition = classify_text_signal(text, source=request.source_id or "parser-tooling-preview")
+        results.append(_sample_dict_for_response(text, message_type, extracted, disposition.outcome.value))
+    return {"source_id": request.source_id, "provider_id": request.provider_id, "samples": results}
+
+
+class PersistSamplesRequest(BaseModel):
+    """A batch of historical raw messages to persist as `ParserSample`
+    rows for `source_id` (a Track 14 `sources.id`) -- each is classified
+    and extracted exactly as `POST /parser-tooling/classify-samples`
+    would, then saved so a correction can later be recorded against it."""
+
+    texts: list[str]
+
+
+@app.post("/parser-tooling/sources/{source_id}/samples")
+async def persist_parser_samples(
+    source_id: str, request: PersistSamplesRequest, _owner: dict = Depends(require_owner)
+) -> dict:
+    source = store.get_source(source_id)
+    if source is None:
+        raise HTTPException(status_code=404, detail=f"no source registered with id={source_id!r}")
+    saved = []
+    for text in request.texts:
+        message_type = classify_message_type(text)
+        extracted = extract_fields(text, message_type=message_type)
+        disposition = classify_text_signal(text, source=source_id)
+        sample = store.save_parser_sample(
+            sample_id=str(uuid.uuid4()),
+            source_id=source_id,
+            provider_id=source["provider_id"],
+            raw_text=text,
+            message_type=message_type.value,
+            extracted_fields=extracted.as_dict(),
+            disposition_outcome=disposition.outcome.value,
+        )
+        saved.append(sample)
+    return {"source_id": source_id, "samples": saved}
+
+
+@app.get("/parser-tooling/sources/{source_id}/samples")
+async def list_parser_samples(
+    source_id: str,
+    is_corrected: bool | None = None,
+    _owner: dict = Depends(require_owner_read),
+) -> dict:
+    if store.get_source(source_id) is None:
+        raise HTTPException(status_code=404, detail=f"no source registered with id={source_id!r}")
+    return {"source_id": source_id, "samples": store.list_parser_samples(source_id=source_id, is_corrected=is_corrected)}
+
+
+class CorrectSampleRequest(BaseModel):
+    """The owner's corrected ground truth for one previously-persisted
+    sample -- per the user's own spec, this correction becomes a NEW/
+    UPDATED TEST CASE for that provider's parser (see `SignalStore.
+    correct_parser_sample`'s own docstring), not merely an edit of the
+    one message. `corrected_message_type` and/or `corrected_fields` may
+    each be given independently -- a correction that only fixes the
+    message type need not resupply every extracted field, and vice
+    versa; whichever is omitted keeps this sample's existing corrected
+    value (or `None`, for a field never corrected before)."""
+
+    corrected_message_type: MessageType | None = None
+    corrected_fields: dict[str, Any] | None = None
+    correction_note: str | None = None
+
+
+@app.post("/parser-tooling/samples/{sample_id}/correct")
+async def correct_parser_sample(
+    sample_id: str, request: CorrectSampleRequest, _owner: dict = Depends(require_owner)
+) -> dict:
+    existing = store.get_parser_sample(sample_id)
+    if existing is None:
+        raise HTTPException(status_code=404, detail=f"no parser sample registered with id={sample_id!r}")
+    corrected_type = request.corrected_message_type.value if request.corrected_message_type else existing.get("corrected_message_type")
+    corrected_fields = request.corrected_fields if request.corrected_fields is not None else existing.get("corrected_fields") or {}
+    try:
+        return store.correct_parser_sample(
+            sample_id,
+            corrected_message_type=corrected_type,
+            corrected_fields=corrected_fields,
+            correction_note=request.correction_note,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+class CreateParserProfileRequest(BaseModel):
+    """Registers a brand-new parser profile -- ALWAYS starts at DRAFT
+    (see app.parser_tooling.ParserProfileStatus's own docstring); there
+    is no way to create one already TESTED/SHADOW/CERTIFIED/ACTIVE
+    through this route, by design."""
+
+    version: str
+    supported_message_types: list[MessageType] | None = None
+    fallback_model: str = "none"
+    prompt_version: str | None = None
+    schema_version: str | None = None
+    notes: str | None = None
+
+
+@app.post("/parser-tooling/providers/{provider_id}/parser-profiles")
+async def create_parser_profile(
+    provider_id: str, request: CreateParserProfileRequest, _owner: dict = Depends(require_owner)
+) -> dict:
+    if store.get_provider_catalog_entry(provider_id) is None:
+        raise HTTPException(status_code=404, detail=f"no provider registered with id={provider_id!r}")
+    try:
+        return store.register_parser_profile(
+            parser_id=str(uuid.uuid4()),
+            provider_id=provider_id,
+            version=request.version,
+            supported_message_types=[t.value for t in request.supported_message_types] if request.supported_message_types else None,
+            fallback_model=request.fallback_model,
+            prompt_version=request.prompt_version,
+            schema_version=request.schema_version,
+            notes=request.notes,
+        )
+    except (ParserToolingError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/parser-tooling/providers/{provider_id}/parser-profiles")
+async def list_parser_profiles(provider_id: str, _owner: dict = Depends(require_owner_read)) -> dict:
+    if store.get_provider_catalog_entry(provider_id) is None:
+        raise HTTPException(status_code=404, detail=f"no provider registered with id={provider_id!r}")
+    return {"provider_id": provider_id, "parser_profiles": store.list_parser_profiles(provider_id=provider_id)}
+
+
+class PromoteParserProfileRequest(BaseModel):
+    """Owner-gated state transition -- see `SignalStore.promote_parser_
+    profile`'s own docstring for the atomicity/RETIRED-demotion
+    guarantees this enforces."""
+
+    target_status: str
+
+
+@app.post("/parser-tooling/parser-profiles/{parser_id}/promote")
+async def promote_parser_profile(
+    parser_id: str, request: PromoteParserProfileRequest, _owner: dict = Depends(require_owner)
+) -> dict:
+    try:
+        return store.promote_parser_profile(parser_id, request.target_status)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except (ParserToolingError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 def _managed_lifecycle_snapshot() -> list[dict]:

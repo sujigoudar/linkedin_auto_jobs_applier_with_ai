@@ -54,6 +54,7 @@ jobs:
                app/capital_allocator.py app/provider_value.py app/provider_scout.py \
                app/provider_catalog.py app/connections.py \
                app/certification.py app/certification_evidence.py app/certification_scorecard.py app/shadow_mode.py \
+               app/parser_tooling.py \
                --follow-imports=silent
 
       - name: Run tests
