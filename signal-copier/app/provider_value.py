@@ -7,6 +7,39 @@ data into a "still worth paying for" recommendation. See
 app/provider_scout.py for the analogous "is this FREE provider worth
 promoting" scan.
 
+## TR-EPISODE-01: this module's CLOSING-FILL scoring is now deprecated
+
+A release review found a material bias in the functions below
+(`compute_provider_value`/`compute_provider_value_report`, and the
+`ProviderValue` dataclass they return): they score a provider from
+"closing fills in the ordinary order history," but (before this pass) a
+managed-lifecycle stop/target/time-exit fill did not reliably create a
+row there at all (see `app/lifecycle/manager.py`'s TR-EPISODE-01 fix) --
+so a provider's winning conventional closes could be counted while losses
+exited through lifecycle protection went missing. It also has a second,
+independent bias the review separately called out: "the misleading
+concept of a win rate where several reductions of the same trade can
+currently behave like several independent trades" -- `closing_fills`
+counts FILLS, so one position closed across three partial-exit fills
+counts as three observations, not one.
+
+`compute_provider_value_from_episodes`/`compute_provider_value_report_
+from_episodes` (below, backed by `app/trade_episode.py`'s one-row-per-
+position-lifecycle replay) are the corrected replacement: a stop-out loss
+counts against a provider exactly as a manual close would, and a
+three-step reduction of one position is ONE episode result, not three.
+
+The functions in THIS section (`compute_provider_value`/
+`compute_provider_value_report`/`ProviderValue`) are kept, unchanged, as a
+DEPRECATED fallback -- not removed outright, since `app/provider_scout.py`
+and the dashboard's existing provider-value UI/tests may still reference
+them during the transition -- but nothing new should read
+`ProviderValue.win_rate`/`.closing_fills` as a provider's scorecard; use
+the episode-based report instead. See `.agent/autonomy.yaml`'s gate note
+in this codebase's own accounting-ledger review response for why no
+promotion/cancellation/capital-weighting decision may consume the OLD
+score automatically going forward.
+
 ## Attribution method: FIFO lots, not this project's account-level
 volume-weighted average
 
@@ -69,6 +102,7 @@ from datetime import date, datetime, timezone
 
 from app import config
 from app.db import SignalStore
+from app.trade_episode import TradeEpisode, compute_trade_episodes
 
 
 @dataclass
@@ -326,6 +360,257 @@ def compute_provider_value_report(
 
     verdicts: dict[str, tuple[str, dict]] = {
         src: _verdict(
+            totals,
+            subscriptions.get(src),
+            min_sample_size=config.PROVIDER_VALUE_MIN_SAMPLE_SIZE,
+            win_rate_threshold=config.PROVIDER_VALUE_WIN_RATE_THRESHOLD,
+            profit_factor_threshold=config.PROVIDER_VALUE_PROFIT_FACTOR_THRESHOLD,
+        )
+        for src, totals in totals_by_source.items()
+    }
+
+    report = []
+    for pv in values.values():
+        if source is not None and pv.source != source:
+            continue
+        if analyst is not None and (pv.analyst or "") != analyst:
+            continue
+        if asset_class is not None and pv.asset_class != asset_class:
+            continue
+        verdict, verdict_detail = verdicts.get(pv.source, (VERDICT_INSUFFICIENT_DATA, {}))
+        entry = pv.to_dict()
+        entry["subscription"] = subscriptions.get(pv.source)
+        entry["provider_verdict"] = verdict
+        entry["provider_verdict_detail"] = verdict_detail
+        report.append(entry)
+    return report
+
+
+# ---------------------------------------------------------------------------
+# TR-EPISODE-01: corrected, episode-based provider scoring.
+#
+# Replaces the closing-fill replay above as the source of truth for
+# provider promotion/cancellation/scouting decisions. See this module's
+# docstring for the exact bias this closes: a stop/target/time_exit
+# episode-closing fill is now included (`app/trade_episode.py`'s replay
+# reads them from the same `orders` table `app/lifecycle/manager.py`'s
+# TR-EPISODE-01 fix now populates for them), and a multi-fill reduction of
+# one position counts once, as one episode, never once per fill.
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class ProviderEpisodeValue:
+    """One (source, analyst, asset_class) group's scorecard, computed from
+    `TradeEpisode`s rather than raw closing fills -- see this module's
+    docstring for why this replaces `ProviderValue` above."""
+
+    source: str
+    analyst: str | None
+    asset_class: str
+    #: Every DISTINCT position episode attributed to this group (open or
+    #: closed) -- one entry per `TradeEpisode`, never per execution.
+    total_episodes: int = 0
+    closed_episodes: int = 0
+    open_episodes: int = 0
+    #: A closed episode whose `outcome` is `"unknown"` (at least one leg's
+    #: price was never known -- see `TradeEpisode.outcome`) -- excluded
+    #: from `win_rate`/`profit_factor`'s denominators, counted here so a
+    #: caller can see how much of the picture is genuinely missing rather
+    #: than silently folded into "loss" or "win".
+    unknown_outcome_episodes: int = 0
+    winning_episodes: int = 0
+    losing_episodes: int = 0
+    breakeven_episodes: int = 0
+    #: Sum of `realized_pnl` across every CLOSED episode with a KNOWN
+    #: outcome -- an unknown-outcome episode contributes nothing here
+    #: (never treated as a $0 result) and is separately disclosed via
+    #: `unknown_outcome_episodes` instead.
+    realized_pnl: float = 0.0
+    gross_profit: float = 0.0
+    gross_loss: float = 0.0  # stored as a positive number
+    last_activity_at: str | None = None
+
+    @property
+    def win_rate(self) -> float | None:
+        """Fraction of episodes with a KNOWN, non-breakeven, closed
+        outcome that were winners -- breakeven episodes are excluded from
+        both numerator and denominator here (same "don't fold breakeven
+        into either winners or losers" rule as app/economics.py's
+        `completed_lifecycle_win_rate`), and an unknown-outcome episode is
+        excluded entirely (never treated as a loss)."""
+        decided = self.winning_episodes + self.losing_episodes
+        if decided == 0:
+            return None
+        return self.winning_episodes / decided
+
+    @property
+    def profit_factor(self) -> float | None:
+        if self.gross_loss == 0:
+            return None
+        return self.gross_profit / self.gross_loss
+
+    def to_dict(self) -> dict:
+        return {
+            "source": self.source,
+            "analyst": self.analyst,
+            "asset_class": self.asset_class,
+            "total_episodes": self.total_episodes,
+            "closed_episodes": self.closed_episodes,
+            "open_episodes": self.open_episodes,
+            "unknown_outcome_episodes": self.unknown_outcome_episodes,
+            "winning_episodes": self.winning_episodes,
+            "losing_episodes": self.losing_episodes,
+            "breakeven_episodes": self.breakeven_episodes,
+            "realized_pnl": self.realized_pnl,
+            "gross_profit": self.gross_profit,
+            "gross_loss": self.gross_loss,
+            "win_rate": self.win_rate,
+            "profit_factor": self.profit_factor,
+            "last_activity_at": self.last_activity_at,
+            "note": (
+                "Episode-based (TR-EPISODE-01): one observation per completed position "
+                "lifecycle, including stop/target/time_exit closes -- never per closing fill. "
+                "unknown_outcome_episodes are excluded from win_rate/profit_factor/realized_pnl "
+                "entirely (never treated as a loss or a $0 result); see TradeEpisode.outcome."
+            ),
+        }
+
+
+ProviderEpisodeKey = tuple[str, str | None, str]  # (source, analyst, asset_class)
+
+
+def compute_provider_value_from_episodes(store: SignalStore) -> dict[ProviderEpisodeKey, ProviderEpisodeValue]:
+    """The corrected replacement for `compute_provider_value` -- see this
+    module's docstring. One `ProviderEpisodeValue` per (source, analyst,
+    asset_class), built from `app/trade_episode.py`'s one-row-per-
+    position-lifecycle replay rather than a per-fill FIFO-lot replay."""
+    episodes, _skipped_no_family_id = compute_trade_episodes(store)
+    results: dict[ProviderEpisodeKey, ProviderEpisodeValue] = {}
+
+    def _value_for(episode: TradeEpisode) -> ProviderEpisodeValue:
+        key = (episode.provider, episode.analyst, episode.asset_class)
+        pv = results.get(key)
+        if pv is None:
+            pv = ProviderEpisodeValue(source=episode.provider, analyst=episode.analyst, asset_class=episode.asset_class)
+            results[key] = pv
+        return pv
+
+    for episode in episodes.values():
+        pv = _value_for(episode)
+        pv.total_episodes += 1
+        last_execution_time = _last_execution_time(episode)
+        if last_execution_time is not None:
+            pv.last_activity_at = max(pv.last_activity_at or "", last_execution_time)
+
+        outcome = episode.outcome
+        if outcome == "open":
+            pv.open_episodes += 1
+            continue
+
+        pv.closed_episodes += 1
+        if outcome == "unknown":
+            pv.unknown_outcome_episodes += 1
+            continue
+
+        assert episode.realized_pnl is not None  # every non-"unknown" outcome guarantees this
+        pv.realized_pnl += episode.realized_pnl
+        if outcome == "win":
+            pv.winning_episodes += 1
+            pv.gross_profit += episode.realized_pnl
+        elif outcome == "loss":
+            pv.losing_episodes += 1
+            pv.gross_loss += -episode.realized_pnl
+        else:  # "breakeven"
+            pv.breakeven_episodes += 1
+
+    return results
+
+
+def _last_execution_time(episode: TradeEpisode) -> str | None:
+    latest: str | None = None
+    for execs in (
+        episode.entry_executions,
+        episode.add_on_executions,
+        episode.reduction_executions,
+        episode.stop_executions,
+        episode.target_executions,
+        episode.trailing_stop_executions,
+        episode.time_exit_executions,
+        episode.unclassified_executions,
+    ):
+        for e in execs:
+            latest = max(latest or "", e.executed_at)
+    return latest
+
+
+def _episode_verdict(
+    pv_totals: ProviderEpisodeValue,
+    subscription: dict | None,
+    *,
+    min_sample_size: int,
+    win_rate_threshold: float,
+    profit_factor_threshold: float,
+) -> tuple[str, dict]:
+    """Same verdict shape/thresholds as `_verdict` above, sample-gated on
+    DECIDED episodes (`winning_episodes + losing_episodes`) rather than
+    `closing_fills` -- see `ProviderEpisodeValue.win_rate`'s own docstring
+    for why breakeven/unknown episodes aren't part of that denominator."""
+    detail: dict = {}
+    decided = pv_totals.winning_episodes + pv_totals.losing_episodes
+    if decided < min_sample_size:
+        return VERDICT_INSUFFICIENT_DATA, detail
+
+    win_rate = pv_totals.win_rate or 0.0
+    profit_factor = pv_totals.profit_factor
+    underperforming = win_rate < win_rate_threshold and (profit_factor is not None and profit_factor < profit_factor_threshold)
+
+    cost_amount = (subscription or {}).get("cost_amount") or 0.0
+    if subscription is not None and cost_amount > 0:
+        cycles = _cycles_elapsed(subscription["subscribed_since"], subscription["billing_cycle"])
+        cost_to_date = cost_amount * cycles
+        net_value = pv_totals.realized_pnl - cost_to_date
+        detail = {"cost_to_date": cost_to_date, "billing_cycles_elapsed": cycles, "net_value": net_value}
+        if underperforming and net_value < 0:
+            return VERDICT_CANCEL_CANDIDATE, detail
+        return VERDICT_KEEP, detail
+
+    if underperforming:
+        return VERDICT_UNDERPERFORMING_FREE, detail
+    return VERDICT_KEEP, detail
+
+
+def compute_provider_value_report_from_episodes(
+    store: SignalStore,
+    *,
+    source: str | None = None,
+    analyst: str | None = None,
+    asset_class: str | None = None,
+) -> list[dict]:
+    """Episode-based counterpart to `compute_provider_value_report` -- see
+    this module's docstring. This is the report a provider promotion/
+    cancellation/capital-weighting/portfolio-selection decision should
+    read from going forward, never the closing-fill-based one above."""
+    values = compute_provider_value_from_episodes(store)
+    subscriptions = {row["provider_id"]: row for row in store.list_provider_subscriptions()}
+
+    totals_by_source: dict[str, ProviderEpisodeValue] = {}
+    for pv in values.values():
+        totals = totals_by_source.setdefault(pv.source, ProviderEpisodeValue(source=pv.source, analyst=None, asset_class=""))
+        totals.total_episodes += pv.total_episodes
+        totals.closed_episodes += pv.closed_episodes
+        totals.open_episodes += pv.open_episodes
+        totals.unknown_outcome_episodes += pv.unknown_outcome_episodes
+        totals.winning_episodes += pv.winning_episodes
+        totals.losing_episodes += pv.losing_episodes
+        totals.breakeven_episodes += pv.breakeven_episodes
+        totals.realized_pnl += pv.realized_pnl
+        totals.gross_profit += pv.gross_profit
+        totals.gross_loss += pv.gross_loss
+        totals.last_activity_at = max(totals.last_activity_at or "", pv.last_activity_at or "")
+
+    verdicts: dict[str, tuple[str, dict]] = {
+        src: _episode_verdict(
             totals,
             subscriptions.get(src),
             min_sample_size=config.PROVIDER_VALUE_MIN_SAMPLE_SIZE,

@@ -73,7 +73,7 @@ from app.pricing import PriceMonitor
 from app.qualification import QUALIFICATION_STATE_ORDER, QualificationError
 from app.providers import SettingsOverride, load_provider_registry_from_store
 from app.provider_scout import ProviderScout
-from app.provider_value import compute_provider_value_report
+from app.provider_value import compute_provider_value_report, compute_provider_value_report_from_episodes
 from app.rate_limit import CATALOG_FIT_SIM_RATE_LIMIT, INGRESS_RATE_LIMIT, limiter
 from app.reconciliation import OrderReconciler
 from app.relay_scheduler import RelayScheduler
@@ -2770,6 +2770,30 @@ async def get_provider_value(
     query params; `analyst=` (empty string) means "no analyst on the
     signal," matching signals that never carried one."""
     return {"providers": compute_provider_value_report(store, source=source, analyst=analyst, asset_class=asset_class)}
+
+
+@app.get("/providers/value/episodes")
+async def get_provider_value_episodes(
+    source: str | None = None,
+    analyst: str | None = None,
+    asset_class: str | None = None,
+    _owner: dict = Depends(require_owner_read),
+) -> dict:
+    """TR-EPISODE-01: the corrected, episode-based counterpart to
+    `GET /providers/value` above -- see app/provider_value.py's module
+    docstring for exactly why this replaces it as the source of truth for
+    any promotion/cancellation/capital-weighting/portfolio-selection
+    decision (a stop/target/time_exit exit is a first-class, episode-
+    closing execution here, and a multi-fill reduction of one position
+    counts once). Added alongside the existing endpoint rather than
+    replacing it in place, since `GET /providers/value`'s response shape
+    is a documented, already-depended-on contract this pass doesn't
+    change."""
+    return {
+        "providers": compute_provider_value_report_from_episodes(
+            store, source=source, analyst=analyst, asset_class=asset_class
+        )
+    }
 
 
 @app.get("/providers/candidates")

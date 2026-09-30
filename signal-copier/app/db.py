@@ -116,18 +116,24 @@ CREATE TABLE IF NOT EXISTS orders (
     -- side/status, which can't distinguish e.g. an entry from a close on
     -- the same symbol/side) -- see app/engine.py's own call sites into
     -- SignalStore.save_order_result. One of a small, real set: 'entry' (a
-    -- fresh position-opening order, from a BUY/SELL signal) or 'close' (a
+    -- fresh position-opening order, from a BUY/SELL signal), 'close' (a
     -- position-reducing order, from a CLOSE signal or a manual
-    -- flatten/exit). 'protective_stop'/'stop_revision'/'target' are
-    -- reserved names for the same concept applied to a managed-lifecycle
-    -- position's stop/target orders -- but those are tracked in
-    -- `stop_target_events` (see that table's own comment), never as a row
-    -- in THIS table on this branch, so no call site populates them today;
-    -- adding a row here for them, instead of just reserving the name,
-    -- would be new order-persistence behavior this pass deliberately
-    -- doesn't take on. NULL for any order row saved before this column
-    -- existed (a real, pre-existing deployment's history) -- never
-    -- backfilled with a guess.
+    -- flatten/exit), or -- TR-EPISODE-01 -- 'stop_exit'/'target_exit'/
+    -- 'time_exit' for a managed-lifecycle position's protective-stop
+    -- (including a trailing-stop ratchet -- see `signals.raw.reason`,
+    -- `"trailing_stop"` vs `"stop"`, for which), logical-target, or
+    -- automatic time-exit fill, respectively -- see
+    -- app/lifecycle/manager.py's `PositionLifecycleManager._apply_exit_fill`/
+    -- `_persist_self_initiated_exit`, the single place that persists these
+    -- (closing the accounting-ledger review's "managed lifecycle exits ...
+    -- are not necessarily represented the same way [as an ordinary closing
+    -- fill]" gap). A 'provider_exit'/'manual_exit' managed-lifecycle close
+    -- is still persisted as 'close' by app/engine.py itself (its own
+    -- existing call site), never duplicated here -- see
+    -- `_apply_exit_fill`'s own `_SELF_PERSISTED_EXIT_KINDS` docstring for
+    -- why only stop/target/time_exit are persisted at that call site.
+    -- NULL for any order row saved before this column existed (a real,
+    -- pre-existing deployment's history) -- never backfilled with a guess.
     purpose TEXT,
     -- DB-0X: an id shared by every order belonging to the SAME position
     -- episode, so a caller (or a later report) can group an entry with its
@@ -871,6 +877,24 @@ class SignalStore:
             conn.commit()
         finally:
             conn.close()
+
+    def get_signal_raw(self, signal_id: str) -> dict:
+        """TR-EPISODE-01: the parsed `raw` JSON for one signal, or `{}` if
+        the id doesn't resolve to a stored signal -- used by
+        app/trade_episode.py to tell a plain stop exit from a trailing-
+        stop exit (both share `orders.purpose == 'stop_exit'`; only the
+        originating signal's `raw.reason` disambiguates them -- see
+        `PositionLifecycleManager._apply_exit_fill`'s `was_trailing`
+        check). Never raises for an unresolved id -- an honestly empty
+        dict, not a fabricated guess."""
+        with self._connect() as conn:
+            row = conn.execute("SELECT raw FROM signals WHERE id = ?", (signal_id,)).fetchone()
+        if row is None or row[0] is None:
+            return {}
+        try:
+            return json.loads(row[0])
+        except (TypeError, ValueError):
+            return {}
 
     def save_signal(self, signal: Signal) -> None:
         with self._connect() as conn:
@@ -2600,12 +2624,17 @@ class SignalStore:
         provider-attribution equivalent of `list_filled_orders_chronological`
         (which is scoped to one account and doesn't need signal identity at
         all). See app/provider_value.py for what this does and doesn't
-        cover (in particular: a managed-lifecycle stop/target/trailing exit
-        never reaches this table at all -- see that module's docstring)."""
+        cover. TR-EPISODE-01: as of `PositionLifecycleManager._apply_exit_
+        fill`'s own change, a managed-lifecycle stop/target/time_exit fill
+        DOES now reach this table (`purpose` = 'stop_exit'/'target_exit'/
+        'time_exit', `filled_price` NULL when genuinely unknown -- see that
+        method's docstring) -- also includes `purpose`/`family_id` (NULL
+        for any pre-existing row) so app/trade_episode.py can group every
+        order belonging to the same position episode together."""
         with self._connect() as conn:
             rows = conn.execute(
-                """SELECT o.account_id, o.symbol, o.side, o.filled_quantity, o.filled_price, o.executed_at,
-                          s.source, s.analyst, s.asset_class
+                """SELECT o.id, o.account_id, o.symbol, o.side, o.filled_quantity, o.filled_price, o.executed_at,
+                          s.source, s.analyst, s.asset_class, o.purpose, o.family_id, o.signal_id
                    FROM orders o
                    JOIN signals s ON s.id = o.signal_id
                    WHERE o.status = 'filled'
@@ -2613,15 +2642,19 @@ class SignalStore:
             ).fetchall()
         return [
             {
-                "account_id": r[0],
-                "symbol": r[1],
-                "side": r[2],
-                "filled_quantity": r[3],
-                "filled_price": r[4],
-                "executed_at": r[5],
-                "source": r[6],
-                "analyst": r[7],
-                "asset_class": r[8],
+                "order_id": r[0],
+                "account_id": r[1],
+                "symbol": r[2],
+                "side": r[3],
+                "filled_quantity": r[4],
+                "filled_price": r[5],
+                "executed_at": r[6],
+                "source": r[7],
+                "analyst": r[8],
+                "asset_class": r[9],
+                "purpose": r[10],
+                "family_id": r[11],
+                "signal_id": r[12],
             }
             for r in rows
         ]
