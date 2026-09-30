@@ -27,6 +27,13 @@ from app.models import (
     UncertaintyState,
 )
 from app.connections import validate_connection_registration
+from app.parser_tooling import (
+    ParserProfileStatus,
+    ParserToolingError,
+    validate_profile_registration,
+    validate_profile_transition,
+    validate_supported_message_types,
+)
 from app.provider_catalog import validate_provider_registration, validate_source_registration
 from app.unified_collectors import CollectorKind, UnifiedCollectorError, now_utc
 from app.writer_lease import LeaseStillValidError, WriterLeaseHeldByAnotherSiteError, WriterLeaseRecord
@@ -1399,6 +1406,82 @@ CREATE TABLE IF NOT EXISTS connections (
 );
 
 CREATE INDEX IF NOT EXISTS idx_connections_connection_type ON connections (connection_type);
+
+-- Track 15: sample-driven parser tooling -- see app/parser_tooling.py's
+-- module docstring for the full rationale. Additive on top of Track 14's
+-- providers/sources/connections tables above, never modifying them
+-- (`sources.parser_profile` already reserved that column; this track
+-- gives it something real to point at, without wiring it into the live
+-- signal-handling path -- see app/parser_tooling.py's own docstring).
+--
+-- `parser_samples`: one row per historical raw message a provider's
+-- "learn from samples" workflow was shown, plus its automatic
+-- classification/extraction (`app.parser_tooling.classify_message_type`/
+-- `extract_fields`) and, once an owner corrects any field, the
+-- owner-supplied ground truth for that same message. `is_corrected`
+-- distinguishes a still-automatic sample from one an owner has reviewed
+-- and confirmed/fixed -- only corrected samples are usable as ground
+-- truth for a future accuracy computation (see
+-- `SignalStore.correct_parser_sample`'s own docstring).
+CREATE TABLE IF NOT EXISTS parser_samples (
+    id TEXT PRIMARY KEY,
+    source_id TEXT NOT NULL,
+    provider_id TEXT,
+    raw_text TEXT NOT NULL,
+    message_type TEXT,
+    extracted_fields TEXT NOT NULL DEFAULT '{}',
+    disposition_outcome TEXT,
+    is_corrected INTEGER NOT NULL DEFAULT 0,
+    corrected_message_type TEXT,
+    corrected_fields TEXT,
+    correction_note TEXT,
+    corrected_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_parser_samples_source_id ON parser_samples (source_id);
+CREATE INDEX IF NOT EXISTS idx_parser_samples_provider_id ON parser_samples (provider_id);
+CREATE INDEX IF NOT EXISTS idx_parser_samples_is_corrected ON parser_samples (is_corrected);
+
+-- `parser_profiles`: one row per versioned parser configuration for one
+-- provider (`app.parser_tooling.ParserProfileStatus` -- DRAFT/TESTED/
+-- SHADOW/CERTIFIED/ACTIVE/RETIRED, application-enforced by
+-- `app.parser_tooling.validate_profile_transition`, the same one-step-
+-- at-a-time convention as `app/phone_escalation.py`'s `CapabilityState`).
+-- At most one ACTIVE row per `provider_id` at a time -- enforced
+-- atomically by `SignalStore.promote_parser_profile` (demotes the
+-- previous ACTIVE row to RETIRED in the same transaction). A RETIRED
+-- row's data is never deleted or overwritten -- its `accuracy_metrics`/
+-- `sample_count`/`test_count` stay exactly as recorded, so its past
+-- behavior stays fully inspectable. `fallback_model` is an honest
+-- placeholder (`'none'` unless a real one is wired) -- no LLM fallback
+-- call is implemented by this track (see app/parser_tooling.py's
+-- docstring, same scoping as Track 13's `SignalExtractor` stub).
+CREATE TABLE IF NOT EXISTS parser_profiles (
+    id TEXT PRIMARY KEY,
+    provider_id TEXT NOT NULL,
+    version TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'draft',
+    sample_count INTEGER NOT NULL DEFAULT 0,
+    test_count INTEGER NOT NULL DEFAULT 0,
+    accuracy_metrics TEXT NOT NULL DEFAULT '{}',
+    supported_message_types TEXT NOT NULL DEFAULT '[]',
+    fallback_model TEXT NOT NULL DEFAULT 'none',
+    prompt_version TEXT,
+    schema_version TEXT,
+    notes TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    activated_at TEXT,
+    retired_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_parser_profiles_provider_id ON parser_profiles (provider_id);
+CREATE INDEX IF NOT EXISTS idx_parser_profiles_status ON parser_profiles (status);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_parser_profiles_provider_active
+    ON parser_profiles (provider_id)
+    WHERE status = 'active';
 
 CREATE INDEX IF NOT EXISTS idx_orders_executed_at ON orders (executed_at);
 CREATE INDEX IF NOT EXISTS idx_orders_account_id ON orders (account_id);
@@ -4717,6 +4800,351 @@ class SignalStore:
                     connection_id,
                 ),
             )
+
+    # -- Track 15: sample-driven parser tooling (app/parser_tooling.py) --
+    # `parser_samples` / `parser_profiles` CRUD. See that module's own
+    # docstring for the full data model and lifecycle; this is minimal
+    # persistence for it, same "no full UI, REST/store CRUD only" build-
+    # order decision Track 14 made for its own catalog tables.
+
+    _PARSER_SAMPLE_COLUMNS = (
+        "id, source_id, provider_id, raw_text, message_type, extracted_fields, disposition_outcome, "
+        "is_corrected, corrected_message_type, corrected_fields, correction_note, corrected_at, "
+        "created_at, updated_at"
+    )
+
+    def _parser_sample_row_to_dict(self, row: tuple) -> dict:
+        return {
+            "id": row[0],
+            "source_id": row[1],
+            "provider_id": row[2],
+            "raw_text": row[3],
+            "message_type": row[4],
+            "extracted_fields": json.loads(row[5]) if row[5] else {},
+            "disposition_outcome": row[6],
+            "is_corrected": bool(row[7]),
+            "corrected_message_type": row[8],
+            "corrected_fields": json.loads(row[9]) if row[9] else None,
+            "correction_note": row[10],
+            "corrected_at": row[11],
+            "created_at": row[12],
+            "updated_at": row[13],
+        }
+
+    def save_parser_sample(
+        self,
+        *,
+        sample_id: str,
+        source_id: str,
+        provider_id: str | None,
+        raw_text: str,
+        message_type: str | None,
+        extracted_fields: dict,
+        disposition_outcome: str | None,
+    ) -> dict:
+        """Insert (or idempotently re-describe) one `parser_samples` row
+        -- the persisted record of one historical message's automatic
+        classification/extraction. Re-saving the same `sample_id`
+        replaces the automatic classification fields but NEVER touches
+        an existing correction (`is_corrected`/`corrected_*`) -- once an
+        owner has corrected a sample, re-running batch-classify over the
+        same source must not silently discard that ground truth."""
+        now = now_utc().isoformat()
+        with self._connect() as conn:
+            existing = conn.execute(
+                "SELECT created_at FROM parser_samples WHERE id = ?", (sample_id,)
+            ).fetchone()
+            created_at = existing[0] if existing else now
+            conn.execute(
+                """INSERT INTO parser_samples
+                       (id, source_id, provider_id, raw_text, message_type, extracted_fields,
+                        disposition_outcome, is_corrected, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+                   ON CONFLICT(id) DO UPDATE SET
+                       source_id = excluded.source_id,
+                       provider_id = excluded.provider_id,
+                       raw_text = excluded.raw_text,
+                       message_type = excluded.message_type,
+                       extracted_fields = excluded.extracted_fields,
+                       disposition_outcome = excluded.disposition_outcome,
+                       updated_at = excluded.updated_at""",
+                (
+                    sample_id,
+                    source_id,
+                    provider_id,
+                    raw_text,
+                    message_type,
+                    json.dumps(extracted_fields),
+                    disposition_outcome,
+                    created_at,
+                    now,
+                ),
+            )
+        return self.get_parser_sample(sample_id)  # type: ignore[return-value]
+
+    def get_parser_sample(self, sample_id: str) -> dict | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                f"SELECT {self._PARSER_SAMPLE_COLUMNS} FROM parser_samples WHERE id = ?", (sample_id,)
+            ).fetchone()
+        return self._parser_sample_row_to_dict(row) if row else None
+
+    def list_parser_samples(self, *, source_id: str | None = None, is_corrected: bool | None = None) -> list[dict]:
+        clauses = []
+        params: list[Any] = []
+        if source_id is not None:
+            clauses.append("source_id = ?")
+            params.append(source_id)
+        if is_corrected is not None:
+            clauses.append("is_corrected = ?")
+            params.append(1 if is_corrected else 0)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"SELECT {self._PARSER_SAMPLE_COLUMNS} FROM parser_samples {where} ORDER BY created_at", params
+            ).fetchall()
+        return [self._parser_sample_row_to_dict(r) for r in rows]
+
+    def correct_parser_sample(
+        self,
+        sample_id: str,
+        *,
+        corrected_message_type: str | None,
+        corrected_fields: dict,
+        correction_note: str | None = None,
+    ) -> dict:
+        """Records an owner correction for one sample -- per the user's
+        own spec, this correction becomes a TEST CASE for that provider's
+        parser (a corrected `parser_samples` row IS the test case; a
+        future accuracy computation reads every `is_corrected=1` row for
+        a provider's sources as its ground-truth set), not merely an edit
+        of the one message. The ORIGINAL automatic classification/
+        extraction (`message_type`/`extracted_fields`) is left untouched
+        so the two can always be compared -- what the parser guessed vs.
+        what the owner confirmed was actually true."""
+        existing = self.get_parser_sample(sample_id)
+        if existing is None:
+            raise KeyError(f"no parser sample registered with id={sample_id!r}")
+        now = now_utc().isoformat()
+        with self._connect() as conn:
+            conn.execute(
+                """UPDATE parser_samples
+                   SET is_corrected = 1,
+                       corrected_message_type = ?,
+                       corrected_fields = ?,
+                       correction_note = ?,
+                       corrected_at = ?,
+                       updated_at = ?
+                   WHERE id = ?""",
+                (
+                    corrected_message_type,
+                    json.dumps(corrected_fields),
+                    correction_note,
+                    now,
+                    now,
+                    sample_id,
+                ),
+            )
+        return self.get_parser_sample(sample_id)  # type: ignore[return-value]
+
+    _PARSER_PROFILE_COLUMNS = (
+        "id, provider_id, version, status, sample_count, test_count, accuracy_metrics, "
+        "supported_message_types, fallback_model, prompt_version, schema_version, notes, "
+        "created_at, updated_at, activated_at, retired_at"
+    )
+
+    def _parser_profile_row_to_dict(self, row: tuple) -> dict:
+        return {
+            "id": row[0],
+            "provider_id": row[1],
+            "version": row[2],
+            "status": row[3],
+            "sample_count": row[4],
+            "test_count": row[5],
+            "accuracy_metrics": json.loads(row[6]) if row[6] else {},
+            "supported_message_types": json.loads(row[7]) if row[7] else [],
+            "fallback_model": row[8],
+            "prompt_version": row[9],
+            "schema_version": row[10],
+            "notes": row[11],
+            "created_at": row[12],
+            "updated_at": row[13],
+            "activated_at": row[14],
+            "retired_at": row[15],
+        }
+
+    def register_parser_profile(
+        self,
+        *,
+        parser_id: str,
+        provider_id: str,
+        version: str,
+        supported_message_types: list[str] | None = None,
+        fallback_model: str = "none",
+        prompt_version: str | None = None,
+        schema_version: str | None = None,
+        notes: str | None = None,
+    ) -> dict:
+        """Registers a brand-new parser profile, ALWAYS starting at
+        `ParserProfileStatus.DRAFT` -- never left to the caller to
+        choose a starting status (see app.parser_tooling.Parser
+        ProfileStatus's own docstring). `provider_id` must already be a
+        registered `providers` row (application-enforced, same
+        convention as `register_source`)."""
+        validate_profile_registration(parser_id=parser_id, provider_id=provider_id, version=version)
+        message_types = validate_supported_message_types(supported_message_types)
+        now = now_utc().isoformat()
+        with self._connect() as conn:
+            if conn.execute("SELECT 1 FROM providers WHERE id = ?", (provider_id,)).fetchone() is None:
+                raise KeyError(f"no provider registered with id={provider_id!r}")
+            if conn.execute("SELECT 1 FROM parser_profiles WHERE id = ?", (parser_id,)).fetchone() is not None:
+                raise ParserToolingError(f"a parser profile already exists with id={parser_id!r}")
+            conn.execute(
+                """INSERT INTO parser_profiles
+                       (id, provider_id, version, status, sample_count, test_count, accuracy_metrics,
+                        supported_message_types, fallback_model, prompt_version, schema_version, notes,
+                        created_at, updated_at)
+                   VALUES (?, ?, ?, 'draft', 0, 0, '{}', ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    parser_id,
+                    provider_id,
+                    version,
+                    json.dumps(message_types),
+                    fallback_model,
+                    prompt_version,
+                    schema_version,
+                    notes,
+                    now,
+                    now,
+                ),
+            )
+        return self.get_parser_profile(parser_id)  # type: ignore[return-value]
+
+    def get_parser_profile(self, parser_id: str) -> dict | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                f"SELECT {self._PARSER_PROFILE_COLUMNS} FROM parser_profiles WHERE id = ?", (parser_id,)
+            ).fetchone()
+        return self._parser_profile_row_to_dict(row) if row else None
+
+    def list_parser_profiles(self, *, provider_id: str | None = None, status: str | None = None) -> list[dict]:
+        clauses = []
+        params: list[Any] = []
+        if provider_id is not None:
+            clauses.append("provider_id = ?")
+            params.append(provider_id)
+        if status is not None:
+            clauses.append("status = ?")
+            params.append(status)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"SELECT {self._PARSER_PROFILE_COLUMNS} FROM parser_profiles {where} "
+                "ORDER BY provider_id, created_at",
+                params,
+            ).fetchall()
+        return [self._parser_profile_row_to_dict(r) for r in rows]
+
+    def get_active_parser_profile_for_source(self, source_id: str) -> dict | None:
+        """Resolves `sources.parser_profile` (Track 14's column) to its
+        `parser_profiles` row, when set and that profile is genuinely
+        ACTIVE -- `None` for a source with no assignment, an assignment
+        pointing at a profile that isn't (or is no longer) ACTIVE, or a
+        source that doesn't exist. NOT consulted by the live signal-
+        handling path -- see app/parser_tooling.py's own docstring for
+        why that wiring is deliberately left as follow-up work."""
+        source = self.get_source(source_id)
+        if source is None or not source.get("parser_profile"):
+            return None
+        profile = self.get_parser_profile(source["parser_profile"])
+        if profile is None or profile["status"] != ParserProfileStatus.ACTIVE.value:
+            return None
+        return profile
+
+    def update_parser_profile_metrics(
+        self,
+        parser_id: str,
+        *,
+        sample_count: int | None = None,
+        test_count: int | None = None,
+        accuracy_metrics: dict | None = None,
+    ) -> dict:
+        """Updates only the metrics fields given -- called after a batch
+        of samples is persisted/corrected for this profile's provider,
+        never guessed or fabricated (see app/parser_tooling.py's own
+        docstring's hard rule on accuracy numbers)."""
+        existing = self.get_parser_profile(parser_id)
+        if existing is None:
+            raise KeyError(f"no parser profile registered with id={parser_id!r}")
+        now = now_utc().isoformat()
+        with self._connect() as conn:
+            conn.execute(
+                """UPDATE parser_profiles
+                   SET sample_count = COALESCE(?, sample_count),
+                       test_count = COALESCE(?, test_count),
+                       accuracy_metrics = COALESCE(?, accuracy_metrics),
+                       updated_at = ?
+                   WHERE id = ?""",
+                (
+                    sample_count,
+                    test_count,
+                    json.dumps(accuracy_metrics) if accuracy_metrics is not None else None,
+                    now,
+                    parser_id,
+                ),
+            )
+        return self.get_parser_profile(parser_id)  # type: ignore[return-value]
+
+    def promote_parser_profile(self, parser_id: str, target_status: str) -> dict:
+        """The ONE place a `parser_profiles` row's `status` changes --
+        always an explicit, owner-gated call (`app/main.py`'s `POST
+        /parser-tooling/parser-profiles/{parser_id}/promote`, behind
+        `Depends(require_owner)`), never automatic. Validates the
+        transition with `app.parser_tooling.validate_profile_transition`
+        (raises `ParserToolingError` for a skipped state) BEFORE touching
+        the database. Promoting to ACTIVE atomically demotes this
+        provider's previous ACTIVE profile (if any, and if it isn't this
+        same row) to RETIRED in the SAME transaction -- at most one
+        ACTIVE profile per provider at a time, enforced here AND by the
+        partial-unique index on `parser_profiles(provider_id) WHERE
+        status = 'active'` as defense in depth. The previous ACTIVE
+        profile's `sample_count`/`test_count`/`accuracy_metrics` are left
+        exactly as they were -- only `status`/`retired_at` change -- so
+        its past behavior stays fully inspectable (see app/parser_
+        tooling.py's own docstring)."""
+        existing = self.get_parser_profile(parser_id)
+        if existing is None:
+            raise KeyError(f"no parser profile registered with id={parser_id!r}")
+        current = ParserProfileStatus(existing["status"])
+        target = ParserProfileStatus(target_status)
+        validate_profile_transition(current, target)
+        now = now_utc().isoformat()
+        with self._connect() as conn:
+            if target is ParserProfileStatus.ACTIVE:
+                previous_active = conn.execute(
+                    "SELECT id FROM parser_profiles WHERE provider_id = ? AND status = 'active' AND id != ?",
+                    (existing["provider_id"], parser_id),
+                ).fetchall()
+                for (previous_id,) in previous_active:
+                    conn.execute(
+                        "UPDATE parser_profiles SET status = 'retired', retired_at = ?, updated_at = ? WHERE id = ?",
+                        (now, now, previous_id),
+                    )
+                conn.execute(
+                    "UPDATE parser_profiles SET status = ?, activated_at = ?, updated_at = ? WHERE id = ?",
+                    (target.value, now, now, parser_id),
+                )
+            elif target is ParserProfileStatus.RETIRED:
+                conn.execute(
+                    "UPDATE parser_profiles SET status = ?, retired_at = ?, updated_at = ? WHERE id = ?",
+                    (target.value, now, now, parser_id),
+                )
+            else:
+                conn.execute(
+                    "UPDATE parser_profiles SET status = ?, updated_at = ? WHERE id = ?",
+                    (target.value, now, parser_id),
+                )
+        return self.get_parser_profile(parser_id)  # type: ignore[return-value]
 
     # -- Track 5: Telegram collector registry (app/telegram_collectors.py) --
 
