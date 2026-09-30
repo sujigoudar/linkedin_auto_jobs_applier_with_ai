@@ -428,6 +428,28 @@ class SignalCopierEngine:
         # stop acting as writer" condition, not an ordinary per-signal
         # rejection a caller should retry.
         self.lease_guard.require_active()
+        # Track 5, point 6 (cross-collector/cross-transport redelivery
+        # dedup): canonicalize this signal's id onto whatever earlier
+        # signal already shares its real provider identity
+        # (channel_id/message_id/revision_id) -- e.g. a bot collector and
+        # a user-account collector both configured against the same
+        # Telegram channel each parsing the SAME message into their own
+        # fresh Signal.id, or one collector redelivering on reconnect.
+        # Reassigning `signal.id` here (BEFORE the SIG-01 lookup right
+        # below) means that existing, unchanged per-signal-id replay
+        # mechanism now also catches this cross-collector case for free:
+        # `save_signal`'s `INSERT OR REPLACE` on the now-shared id is
+        # idempotent (no duplicate `signals` row), and a second delivery
+        # sharing the id finds `list_orders_for_signal` non-empty and
+        # replays instead of submitting a second live order. A `None`
+        # channel_id/message_id (every adapter this task didn't touch) is
+        # a no-op here -- see `find_signal_id_by_provider_identity`'s own
+        # docstring.
+        existing_signal_id = self.store.find_signal_id_by_provider_identity(
+            channel_id=signal.channel_id, message_id=signal.message_id, revision_id=signal.revision_id
+        )
+        if existing_signal_id is not None:
+            signal.id = existing_signal_id
         # SIG-01: this exact signal id may already have been processed --
         # e.g. a caller that retries handle_signal itself after a timeout
         # without knowing whether the first attempt's orders actually went
