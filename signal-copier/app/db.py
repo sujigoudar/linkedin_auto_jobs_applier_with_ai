@@ -885,6 +885,54 @@ CREATE TABLE IF NOT EXISTS pull_collectors (
     updated_at TEXT NOT NULL
 );
 
+-- Track 7: the persistent email collector registry -- see
+-- app/email_collectors.py's module docstring for the full contract and
+-- each enum's own docstring for the real, closed set of values
+-- connection_mode/health_state take. One row per mailbox/folder this
+-- deployment polls via app/sources/email_source.py's EmailSource.
+--
+-- `credential_env_var` is a REFERENCE ONLY -- the name of an environment
+-- variable this collector's real credential (an IMAP app password) is
+-- read from at process startup. Never a secret value itself -- see
+-- docs/security/SECRETS.md and docs/security/EMAIL_COLLECTOR.md.
+--
+-- `sender_allowlist` is a JSON array of sender addresses this collector
+-- admits (point 4: never parses every message in the inbox
+-- indiscriminately) and `subject_patterns` an optional JSON array of
+-- additional substrings a subject must contain at least one of.
+--
+-- `allowed_uses` is a JSON array of app/email_collectors.py's
+-- `AllowedUse` values, defaulting to `["private_trading"]` only -- same
+-- isolation guarantee as the telegram_collectors table above.
+--
+-- `checkpoint_uid` is the per-collector restart-recovery checkpoint
+-- (point 5): the last IMAP UID this collector has admitted to LIVE
+-- routing. NULL for a collector that has never processed a live message.
+-- A historical import never advances this column -- see
+-- app/sources/email_source.py's `import_history`.
+CREATE TABLE IF NOT EXISTS email_collectors (
+    id TEXT PRIMARY KEY,
+    connection_mode TEXT NOT NULL,
+    identity_ref TEXT NOT NULL,
+    credential_env_var TEXT NOT NULL,
+    imap_host TEXT NOT NULL,
+    imap_port INTEGER NOT NULL DEFAULT 993,
+    imap_folder TEXT NOT NULL,
+    sender_allowlist TEXT NOT NULL DEFAULT '[]',
+    subject_patterns TEXT NOT NULL DEFAULT '[]',
+    provider_name TEXT NOT NULL,
+    allowed_uses TEXT NOT NULL DEFAULT '["private_trading"]',
+    poll_interval_seconds INTEGER NOT NULL DEFAULT 60,
+    last_qualified_at TEXT,
+    qualification_evidence TEXT NOT NULL DEFAULT '{}',
+    checkpoint_uid INTEGER,
+    checkpoint_updated_at TEXT,
+    health_state TEXT NOT NULL DEFAULT 'no_messages_observed',
+    health_detail TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
 -- Track 9: the persistent website/article collector registry -- see
 -- app/website_collectors.py's module docstring for the full contract.
 -- Mirrors telegram_collectors's shape: one row per site/section this
@@ -955,6 +1003,8 @@ CREATE TABLE IF NOT EXISTS website_article_candidates (
 );
 
 CREATE INDEX IF NOT EXISTS idx_website_article_candidates_channel ON website_article_candidates (channel_id);
+CREATE INDEX IF NOT EXISTS idx_email_collectors_provider ON email_collectors (provider_name);
+CREATE INDEX IF NOT EXISTS idx_email_collectors_mailbox ON email_collectors (imap_host, imap_folder);
 
 CREATE INDEX IF NOT EXISTS idx_orders_executed_at ON orders (executed_at);
 CREATE INDEX IF NOT EXISTS idx_orders_account_id ON orders (account_id);
@@ -4035,6 +4085,214 @@ class SignalStore:
                 ),
             )
         return self.find_website_candidate_by_url(channel_id=channel_id, message_id=message_id)  # type: ignore[return-value]
+
+    # -- Track 7: Email collector registry (app/email_collectors.py) ------
+
+    def register_email_collector(
+        self,
+        *,
+        collector_id: str,
+        connection_mode: str,
+        identity_ref: str,
+        credential_env_var: str,
+        imap_host: str,
+        imap_folder: str,
+        sender_allowlist: list[str],
+        provider_name: str,
+        imap_port: int = 993,
+        subject_patterns: list[str] | None = None,
+        allowed_uses: list[str] | None = None,
+        poll_interval_seconds: int = 60,
+    ) -> dict:
+        """Insert (or, idempotently, re-describe) one email collector row
+        -- mirrors `register_telegram_collector`'s own contract exactly,
+        including preserving qualification evidence/checkpoint/health
+        state across a re-registration of the same `collector_id`."""
+        from app.email_collectors import validate_registration
+
+        mode, uses = validate_registration(
+            collector_id=collector_id,
+            connection_mode=connection_mode,
+            identity_ref=identity_ref,
+            credential_env_var=credential_env_var,
+            imap_host=imap_host,
+            imap_folder=imap_folder,
+            sender_allowlist=sender_allowlist,
+            provider_name=provider_name,
+            allowed_uses=allowed_uses,
+        )
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            existing = conn.execute(
+                "SELECT created_at FROM email_collectors WHERE id = ?", (collector_id,)
+            ).fetchone()
+            created_at = existing[0] if existing else now
+            conn.execute(
+                """INSERT INTO email_collectors
+                       (id, connection_mode, identity_ref, credential_env_var, imap_host, imap_port,
+                        imap_folder, sender_allowlist, subject_patterns, provider_name, allowed_uses,
+                        poll_interval_seconds, qualification_evidence, health_state, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '{}', 'no_messages_observed', ?, ?)
+                   ON CONFLICT(id) DO UPDATE SET
+                       connection_mode = excluded.connection_mode,
+                       identity_ref = excluded.identity_ref,
+                       credential_env_var = excluded.credential_env_var,
+                       imap_host = excluded.imap_host,
+                       imap_port = excluded.imap_port,
+                       imap_folder = excluded.imap_folder,
+                       sender_allowlist = excluded.sender_allowlist,
+                       subject_patterns = excluded.subject_patterns,
+                       provider_name = excluded.provider_name,
+                       allowed_uses = excluded.allowed_uses,
+                       poll_interval_seconds = excluded.poll_interval_seconds,
+                       updated_at = excluded.updated_at""",
+                (
+                    collector_id,
+                    mode.value,
+                    identity_ref,
+                    credential_env_var,
+                    imap_host,
+                    imap_port,
+                    imap_folder,
+                    json.dumps(list(sender_allowlist)),
+                    json.dumps(list(subject_patterns or [])),
+                    provider_name,
+                    json.dumps(uses),
+                    poll_interval_seconds,
+                    created_at,
+                    now,
+                ),
+            )
+        return self.get_email_collector(collector_id)  # type: ignore[return-value]
+
+    def _email_collector_row_to_dict(self, row: tuple) -> dict:
+        return {
+            "id": row[0],
+            "connection_mode": row[1],
+            "identity_ref": row[2],
+            "credential_env_var": row[3],
+            "imap_host": row[4],
+            "imap_port": row[5],
+            "imap_folder": row[6],
+            "sender_allowlist": json.loads(row[7]) if row[7] else [],
+            "subject_patterns": json.loads(row[8]) if row[8] else [],
+            "provider_name": row[9],
+            "allowed_uses": json.loads(row[10]) if row[10] else [],
+            "poll_interval_seconds": row[11],
+            "last_qualified_at": row[12],
+            "qualification_evidence": json.loads(row[13]) if row[13] else {},
+            "checkpoint_uid": row[14],
+            "checkpoint_updated_at": row[15],
+            "health_state": row[16],
+            "health_detail": row[17],
+            "created_at": row[18],
+            "updated_at": row[19],
+        }
+
+    _EMAIL_COLLECTOR_COLUMNS = (
+        "id, connection_mode, identity_ref, credential_env_var, imap_host, imap_port, imap_folder, "
+        "sender_allowlist, subject_patterns, provider_name, allowed_uses, poll_interval_seconds, "
+        "last_qualified_at, qualification_evidence, checkpoint_uid, checkpoint_updated_at, "
+        "health_state, health_detail, created_at, updated_at"
+    )
+
+    def get_email_collector(self, collector_id: str) -> dict | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                f"SELECT {self._EMAIL_COLLECTOR_COLUMNS} FROM email_collectors WHERE id = ?",
+                (collector_id,),
+            ).fetchone()
+        return self._email_collector_row_to_dict(row) if row else None
+
+    def list_email_collectors(self) -> list[dict]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"SELECT {self._EMAIL_COLLECTOR_COLUMNS} FROM email_collectors ORDER BY id"
+            ).fetchall()
+        return [self._email_collector_row_to_dict(r) for r in rows]
+
+    def update_email_collector_health(
+        self, collector_id: str, health_state: str, *, detail: str | None = None
+    ) -> None:
+        """Point 6: the ONE place an email collector's incident/health
+        state is written. Validated against `app.email_collectors.
+        CollectorHealth` so a caller can never persist a state string
+        this registry doesn't recognize."""
+        from app.email_collectors import CollectorHealth
+
+        state = CollectorHealth(health_state)  # raises ValueError for an unrecognized state
+        with self._connect() as conn:
+            cur = conn.execute(
+                "UPDATE email_collectors SET health_state = ?, health_detail = ?, updated_at = ? WHERE id = ?",
+                (state.value, detail, datetime.now(timezone.utc).isoformat(), collector_id),
+            )
+            if cur.rowcount == 0:
+                raise KeyError(f"no email collector registered with id={collector_id!r}")
+
+    def record_email_collector_qualification_evidence(
+        self,
+        collector_id: str,
+        *,
+        evidence: dict,
+        qualified_at: datetime | None = None,
+    ) -> None:
+        """Real evidence that authorized real-message receipt was
+        confirmed for this collector -- mirrors
+        `record_telegram_collector_qualification_evidence`'s own
+        contract. Always advances `health_state` to `healthy_qualified`
+        (no `noforwards`-equivalent restricted state exists for email)."""
+        from app.email_collectors import CollectorHealth
+
+        when = (qualified_at or datetime.now(timezone.utc)).isoformat()
+        with self._connect() as conn:
+            cur = conn.execute(
+                """UPDATE email_collectors
+                   SET qualification_evidence = ?, last_qualified_at = ?,
+                       health_state = ?, health_detail = NULL, updated_at = ?
+                   WHERE id = ?""",
+                (
+                    json.dumps(evidence),
+                    when,
+                    CollectorHealth.HEALTHY_QUALIFIED.value,
+                    when,
+                    collector_id,
+                ),
+            )
+            if cur.rowcount == 0:
+                raise KeyError(f"no email collector registered with id={collector_id!r}")
+
+    # -- Track 7: email collector checkpoint (app/sources/email_source.py) --
+
+    def get_email_collector_checkpoint(self, collector_id: str) -> int | None:
+        """Point 5: the last IMAP UID this collector has admitted to LIVE
+        routing -- `None` for a collector that has never processed a live
+        message (including one that has only ever gone through a
+        historical import, which never touches this column -- see
+        `advance_email_collector_checkpoint`)."""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT checkpoint_uid FROM email_collectors WHERE id = ?", (collector_id,)
+            ).fetchone()
+        if row is None:
+            raise KeyError(f"no email collector registered with id={collector_id!r}")
+        return row[0]
+
+    def advance_email_collector_checkpoint(self, collector_id: str, uid: int) -> None:
+        """Point 5: called ONLY after a message has been genuinely
+        admitted to live routing. Monotonic -- never moves the checkpoint
+        backward, mirrors `advance_telegram_collector_checkpoint`'s own
+        `MAX(...)` guard exactly."""
+        with self._connect() as conn:
+            now = datetime.now(timezone.utc).isoformat()
+            cur = conn.execute(
+                """UPDATE email_collectors
+                   SET checkpoint_uid = MAX(COALESCE(checkpoint_uid, ?), ?),
+                       checkpoint_updated_at = ?, updated_at = ?
+                   WHERE id = ?""",
+                (uid, uid, now, now, collector_id),
+            )
+            if cur.rowcount == 0:
+                raise KeyError(f"no email collector registered with id={collector_id!r}")
 
     def list_orders_for_signal(self, signal_id: str) -> list[dict]:
         """Every order already recorded against this exact signal id — what
