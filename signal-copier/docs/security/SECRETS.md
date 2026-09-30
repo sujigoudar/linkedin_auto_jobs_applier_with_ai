@@ -87,6 +87,30 @@ the NAME of the environment variable above that holds it, so the registry
 itself stays safe to read/export/back up like any other non-secret
 config.
 
+### Slack/Twitter USER-CONTEXT collectors (Track 6: `app/sources/slack_user.py`,
+`app/sources/twitter_user.py`, `app/collector_registry.py`)
+
+For a Slack workspace you cannot invite a bot into, or a protected/
+private-and-approved-follower-only X account — see
+`docs/security/SLACK_USER_TOKEN.md` / `docs/security/TWITTER_USER_CONTEXT.md`
+for the full, mandatory authorization procedures. **Neither credential is
+ever obtained by an AI agent or inside an AI-visible session** — the
+Slack token comes from the owner's own browser-based OAuth install on
+`api.slack.com`; the Twitter/X token comes from the owner running
+`scripts/twitter_user_oauth.py` themselves, locally, which walks through
+X's own browser-based OAuth 2.0 consent flow.
+
+| Field | Purpose |
+|---|---|
+| `SLACK_USER_APP_TOKEN` | The Socket Mode app-level token (`xapp-...`) for the (separate, user-scoped) Slack app used by every `SlackUserSource` collector this deployment runs — global. |
+| `SLACK_USER_<COLLECTOR_ID>_TOKEN` | Per-collector: the OAuth **user** token (`xoxp-...`, NOT a bot token) from that collector's own Slack app install. |
+| `TWITTER_USER_<COLLECTOR_ID>_ACCESS_TOKEN` | Per-collector: the OAuth 2.0 user-context access token from `scripts/twitter_user_oauth.py`'s output. |
+
+The `pull_collectors` registry table (`app/collector_registry.py`,
+`app/db.py`) never stores a credential VALUE — only `credential_env_var`,
+the NAME of the environment variable above that holds it, exactly the
+same convention as `telegram_collectors`.
+
 ## Export relay to the commercial platform
 
 | Field | Purpose | Rotation |

@@ -850,6 +850,44 @@ CREATE TABLE IF NOT EXISTS telegram_collectors (
 CREATE INDEX IF NOT EXISTS idx_telegram_collectors_provider ON telegram_collectors (provider_name);
 CREATE INDEX IF NOT EXISTS idx_telegram_collectors_chat ON telegram_collectors (chat_id);
 
+-- Track 6: the persistent Slack/Twitter USER-CONTEXT collector registry --
+-- see app/collector_registry.py's module docstring for the full contract.
+-- One shared table for both providers (a `provider` column distinguishes
+-- rows) -- unlike telegram_collectors this has no `topic_id`/`noforwards`
+-- (Telegram-specific concepts with no verified Slack/Twitter equivalent).
+--
+-- `credential_env_var` is a REFERENCE ONLY, never a secret value -- see
+-- docs/security/SECRETS.md, docs/security/SLACK_USER_TOKEN.md,
+-- docs/security/TWITTER_USER_CONTEXT.md.
+--
+-- `checkpoint` is TEXT (not INTEGER, unlike telegram_collectors'
+-- `checkpoint_message_id`) -- Slack's own message id (`ts`) is not an
+-- integer. Ordering/monotonicity is enforced by each adapter itself
+-- (app/sources/slack_user.py, app/sources/twitter_user.py) before calling
+-- advance_pull_collector_checkpoint, not by this table.
+CREATE TABLE IF NOT EXISTS pull_collectors (
+    id TEXT PRIMARY KEY,
+    provider TEXT NOT NULL,
+    auth_mode TEXT NOT NULL,
+    identity_ref TEXT NOT NULL,
+    credential_env_var TEXT NOT NULL,
+    target_id TEXT NOT NULL,
+    target_label TEXT,
+    provider_name TEXT NOT NULL,
+    allowed_uses TEXT NOT NULL DEFAULT '["private_trading"]',
+    last_qualified_at TEXT,
+    qualification_evidence TEXT NOT NULL DEFAULT '{}',
+    checkpoint TEXT,
+    checkpoint_updated_at TEXT,
+    health_state TEXT NOT NULL DEFAULT 'unqualified',
+    health_detail TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_pull_collectors_provider ON pull_collectors (provider);
+CREATE INDEX IF NOT EXISTS idx_pull_collectors_target ON pull_collectors (target_id);
+
 CREATE INDEX IF NOT EXISTS idx_orders_executed_at ON orders (executed_at);
 CREATE INDEX IF NOT EXISTS idx_orders_account_id ON orders (account_id);
 CREATE INDEX IF NOT EXISTS idx_orders_signal_id ON orders (signal_id);
@@ -3431,6 +3469,215 @@ class SignalStore:
             )
             if cur.rowcount == 0:
                 raise KeyError(f"no telegram collector registered with id={collector_id!r}")
+
+    # -- Track 6: Slack/Twitter user-context collector registry -----------
+    # (app/collector_registry.py) -- one shared `pull_collectors` table;
+    # see that module's own docstring for why it's one table, not two.
+
+    def register_pull_collector(
+        self,
+        *,
+        collector_id: str,
+        provider: str,
+        auth_mode: str,
+        identity_ref: str,
+        credential_env_var: str,
+        target_id: str,
+        provider_name: str,
+        target_label: str | None = None,
+        allowed_uses: list[str] | None = None,
+    ) -> dict:
+        """Insert (or, idempotently, re-describe) one collector row.
+        Mirrors `register_telegram_collector`'s own contract exactly:
+        validation happens BEFORE anything is written
+        (`app.collector_registry.validate_registration`), and
+        re-registering the SAME `collector_id` replaces identity/
+        connection fields but preserves qualification evidence, checkpoint,
+        and health state."""
+        from app.collector_registry import validate_registration
+
+        provider_enum, uses = validate_registration(
+            collector_id=collector_id,
+            provider=provider,
+            auth_mode=auth_mode,
+            identity_ref=identity_ref,
+            credential_env_var=credential_env_var,
+            target_id=target_id,
+            provider_name=provider_name,
+            allowed_uses=allowed_uses,
+        )
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            existing = conn.execute(
+                "SELECT created_at FROM pull_collectors WHERE id = ?", (collector_id,)
+            ).fetchone()
+            created_at = existing[0] if existing else now
+            conn.execute(
+                """INSERT INTO pull_collectors
+                       (id, provider, auth_mode, identity_ref, credential_env_var, target_id, target_label,
+                        provider_name, allowed_uses, qualification_evidence, health_state, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '{}', 'unqualified', ?, ?)
+                   ON CONFLICT(id) DO UPDATE SET
+                       provider = excluded.provider,
+                       auth_mode = excluded.auth_mode,
+                       identity_ref = excluded.identity_ref,
+                       credential_env_var = excluded.credential_env_var,
+                       target_id = excluded.target_id,
+                       target_label = excluded.target_label,
+                       provider_name = excluded.provider_name,
+                       allowed_uses = excluded.allowed_uses,
+                       updated_at = excluded.updated_at""",
+                (
+                    collector_id,
+                    provider_enum.value,
+                    auth_mode,
+                    identity_ref,
+                    credential_env_var,
+                    str(target_id),
+                    target_label,
+                    provider_name,
+                    json.dumps(uses),
+                    created_at,
+                    now,
+                ),
+            )
+        return self.get_pull_collector(collector_id)  # type: ignore[return-value]
+
+    def _pull_collector_row_to_dict(self, row: tuple) -> dict:
+        return {
+            "id": row[0],
+            "provider": row[1],
+            "auth_mode": row[2],
+            "identity_ref": row[3],
+            "credential_env_var": row[4],
+            "target_id": row[5],
+            "target_label": row[6],
+            "provider_name": row[7],
+            "allowed_uses": json.loads(row[8]) if row[8] else [],
+            "last_qualified_at": row[9],
+            "qualification_evidence": json.loads(row[10]) if row[10] else {},
+            "checkpoint": row[11],
+            "checkpoint_updated_at": row[12],
+            "health_state": row[13],
+            "health_detail": row[14],
+            "created_at": row[15],
+            "updated_at": row[16],
+        }
+
+    _PULL_COLLECTOR_COLUMNS = (
+        "id, provider, auth_mode, identity_ref, credential_env_var, target_id, target_label, provider_name, "
+        "allowed_uses, last_qualified_at, qualification_evidence, checkpoint, checkpoint_updated_at, "
+        "health_state, health_detail, created_at, updated_at"
+    )
+
+    def get_pull_collector(self, collector_id: str) -> dict | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                f"SELECT {self._PULL_COLLECTOR_COLUMNS} FROM pull_collectors WHERE id = ?",
+                (collector_id,),
+            ).fetchone()
+        return self._pull_collector_row_to_dict(row) if row else None
+
+    def list_pull_collectors(self, provider: str | None = None) -> list[dict]:
+        with self._connect() as conn:
+            if provider is not None:
+                rows = conn.execute(
+                    f"SELECT {self._PULL_COLLECTOR_COLUMNS} FROM pull_collectors WHERE provider = ? ORDER BY id",
+                    (provider,),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    f"SELECT {self._PULL_COLLECTOR_COLUMNS} FROM pull_collectors ORDER BY id"
+                ).fetchall()
+        return [self._pull_collector_row_to_dict(r) for r in rows]
+
+    def update_pull_collector_health(
+        self, collector_id: str, health_state: str, *, detail: str | None = None
+    ) -> None:
+        """The ONE place a Slack/Twitter collector's incident/health
+        state is written. Validated against
+        `app.collector_registry.CollectorHealth` so a caller can never
+        persist a state string this registry doesn't recognize."""
+        from app.collector_registry import CollectorHealth
+
+        state = CollectorHealth(health_state)  # raises ValueError for an unrecognized state
+        with self._connect() as conn:
+            cur = conn.execute(
+                "UPDATE pull_collectors SET health_state = ?, health_detail = ?, updated_at = ? WHERE id = ?",
+                (state.value, detail, datetime.now(timezone.utc).isoformat(), collector_id),
+            )
+            if cur.rowcount == 0:
+                raise KeyError(f"no pull collector registered with id={collector_id!r}")
+
+    def record_pull_collector_qualification_evidence(
+        self,
+        collector_id: str,
+        *,
+        evidence: dict,
+        qualified_at: datetime | None = None,
+    ) -> None:
+        """Real evidence that authorized real-message receipt was
+        confirmed for this collector. Always advances `health_state` to
+        `healthy_qualified` (the only state a dashboard may render as
+        green) -- unlike Telegram's equivalent, there is no verified
+        Slack/Twitter `noforwards`-style downstream-restriction flag to
+        branch on (see `app/collector_registry.py`'s module docstring)."""
+        from app.collector_registry import CollectorHealth
+
+        when = (qualified_at or datetime.now(timezone.utc)).isoformat()
+        with self._connect() as conn:
+            cur = conn.execute(
+                """UPDATE pull_collectors
+                   SET qualification_evidence = ?, last_qualified_at = ?,
+                       health_state = ?, health_detail = NULL, updated_at = ?
+                   WHERE id = ?""",
+                (
+                    json.dumps(evidence),
+                    when,
+                    CollectorHealth.HEALTHY_QUALIFIED.value,
+                    when,
+                    collector_id,
+                ),
+            )
+            if cur.rowcount == 0:
+                raise KeyError(f"no pull collector registered with id={collector_id!r}")
+
+    def get_pull_collector_checkpoint(self, collector_id: str) -> str | None:
+        """The last message/tweet id this collector has admitted to LIVE
+        routing -- `None` for a collector that has never processed one
+        (including one that has only gone through a historical import,
+        which never touches this column)."""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT checkpoint FROM pull_collectors WHERE id = ?", (collector_id,)
+            ).fetchone()
+        if row is None:
+            raise KeyError(f"no pull collector registered with id={collector_id!r}")
+        return row[0]
+
+    def advance_pull_collector_checkpoint(self, collector_id: str, checkpoint: str) -> None:
+        """Called ONLY after a message/tweet has genuinely been admitted
+        to live routing. Unlike `advance_telegram_collector_checkpoint`,
+        this does not enforce monotonicity at the SQL level (`checkpoint`
+        is an opaque TEXT value here -- see `app/collector_registry.py`'s
+        module docstring) -- each adapter's own `_admits_live`-style check
+        is the actual source of truth for "is this genuinely newer,"
+        exactly like the value it's about to pass in was already
+        compared before this is called."""
+        with self._connect() as conn:
+            cur = conn.execute(
+                """UPDATE pull_collectors
+                   SET checkpoint = ?, checkpoint_updated_at = ?, updated_at = ?
+                   WHERE id = ?""",
+                (
+                    str(checkpoint),
+                    datetime.now(timezone.utc).isoformat(),
+                    datetime.now(timezone.utc).isoformat(),
+                    collector_id,
+                ),
+            )
+            if cur.rowcount == 0:
+                raise KeyError(f"no pull collector registered with id={collector_id!r}")
 
     def list_orders_for_signal(self, signal_id: str) -> list[dict]:
         """Every order already recorded against this exact signal id — what

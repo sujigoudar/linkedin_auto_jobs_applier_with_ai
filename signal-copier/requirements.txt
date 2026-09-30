@@ -23,7 +23,10 @@ pwdlib[argon2]>=0.2      # C05: optional OWNER_PASSWORD_HASH (argon2id) alternat
                                 # itself always happens via the standalone
                                 # scripts/telegram_user_login.py, never inside this service.
 # discord.py>=2.4              # Discord source
-# slack-bolt>=1.19             # Slack source
+# slack-bolt>=1.19             # Slack source -- both the bot-based SlackSource and the
+                                # OAuth user-token SlackUserSource (Track 6) use this same
+                                # package (slack_sdk is its own transitive dependency); see
+                                # docs/security/SLACK_USER_TOKEN.md for SlackUserSource's setup.
 # MetaTrader5>=5.0.45          # MT5Broker, same-host Windows only
 # metaapi-cloud-sdk>=27.0      # MetaApiSource / MetaApiBroker, MT4/MT5 via metaapi.cloud (github.com/metaapi/metaapi-python-sdk)
 # NinjaTraderBroker needs no extra Python package (plain httpx), but does need
@@ -39,7 +42,9 @@ pwdlib[argon2]>=0.2      # C05: optional OWNER_PASSWORD_HASH (argon2id) alternat
 # or Twitter/X ingress) still needs its own real credentials/license --
 # that's a runtime config concern, not an install-time one.
 twilio>=9.0                  # SMS source (request signature validation); see tests/test_sms_twilio_sender_authorization.py
-tweepy>=4.14                 # Twitter/X source; see tests/test_sig05_bridge_collector_lifecycle_handling.py
+tweepy>=4.14                 # Twitter/X source; see tests/test_sig05_bridge_collector_lifecycle_handling.py --
+                              # also used by the OAuth 2.0 user-context TwitterUserSource (Track 6) and
+                              # scripts/twitter_user_oauth.py; see docs/security/TWITTER_USER_CONTEXT.md
 ib_async>=2.0                # IBKR broker (ib-api-reloaded/ib_async -- ib_insync's maintained community fork; ib_insync itself is archived upstream); see tests/test_ibkr_broker.py
 async_rithmic>=1.2           # RithmicSource / RithmicBroker (github.com/rundef/async_rithmic) -- live trading also needs licensed Rithmic credentials; see tests/test_broker_capability_gate.py
 
