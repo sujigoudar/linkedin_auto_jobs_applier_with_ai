@@ -904,7 +904,36 @@ class PositionLifecycleManager:
                 if remaining_protected <= 0:
                     lifecycle.stop.status = ProtectionStatus.UNPROTECTED
                     lifecycle.stop.broker_order_id = None
-        self._apply_exit_fill(lifecycle, account, symbol, filled_quantity)
+        # TR-EPISODE-01: this is a real, episode-closing (or -reducing) exit
+        # exactly like a target/manual/time-exit fill -- see
+        # `_apply_exit_fill`'s own docstring for why this is the one place
+        # that now also persists a real `orders`/`signals` row for it,
+        # closing the gap the accounting-ledger review flagged ("managed
+        # lifecycle exits, including stops ... are not necessarily
+        # represented the same way [as ordinary order-history closes]").
+        # `filled_price`, if the caller (app/reconciliation.py) has a real
+        # broker-reported one, is used as-is; otherwise this falls back to
+        # the position's own last REAL observed price
+        # (`PositionLifecycle.last_observed_price`, PU-A3) -- a genuine,
+        # already-known value, never an invented one -- and, failing that,
+        # to the stop order's own last broker-confirmed resting price
+        # (also real, just possibly a few ticks from the true fill). `None`
+        # (never a fabricated number) if neither exists yet.
+        exit_price = filled_price
+        if exit_price is None:
+            exit_price = lifecycle.last_observed_price
+        if exit_price is None:
+            exit_price = lifecycle.stop.broker_confirmed_price
+        was_trailing = bool(lifecycle.plan.trailing and lifecycle.plan.trailing.active)
+        self._apply_exit_fill(
+            lifecycle,
+            account,
+            symbol,
+            filled_quantity,
+            exit_kind="stop",
+            exit_price=exit_price,
+            reason="trailing_stop" if was_trailing else "stop",
+        )
 
     async def on_price_update(self, account: DestinationAccount, symbol: str, price: float) -> list[OrderResult]:
         """Evaluate logical targets and trailing against a new price. Call this
@@ -1148,7 +1177,15 @@ class PositionLifecycleManager:
             elif had_stop and lifecycle.stop.desired_price is not None:
                 await self._restore_stop_coverage(lifecycle, account, broker, remaining, amended_stop, source=source)
 
-            self._apply_exit_fill(lifecycle, account, symbol, actual_filled)
+            self._apply_exit_fill(
+                lifecycle,
+                account,
+                symbol,
+                actual_filled,
+                exit_kind=source,
+                exit_price=exit_result.filled_price,
+                reason=reason or source,
+            )
             return exit_result
 
     async def resolve_pending_exit(
@@ -1194,7 +1231,12 @@ class PositionLifecycleManager:
                     lifecycle.confirmed_owned_quantity = tx.owned
                 pending.confirmed_filled_quantity = confirmed_filled_quantity
                 if delta > 0:
-                    self._apply_exit_fill(lifecycle, account, symbol, delta)
+                    # No real fill price is available at this reconciliation
+                    # layer (see this method's own docstring) -- `exit_price`
+                    # stays honestly None rather than guessed.
+                    self._apply_exit_fill(
+                        lifecycle, account, symbol, delta, exit_kind=pending.source, reason=pending.reason
+                    )
                 else:
                     self._persist(lifecycle)
                 return
@@ -1229,17 +1271,42 @@ class PositionLifecycleManager:
                 )
 
         if delta > 0:
-            self._apply_exit_fill(lifecycle, account, symbol, delta)
+            self._apply_exit_fill(
+                lifecycle, account, symbol, delta, exit_kind=pending.source, reason=pending.reason
+            )
         else:
             self._persist(lifecycle)
 
+    #: TR-EPISODE-01: exit kinds this method persists a real `orders`/
+    #: `signals` row for -- exactly the managed-lifecycle exit kinds the
+    #: accounting-ledger review found invisible to the ordinary order
+    #: history (stop/target/time_exit fires triggered from *inside* this
+    #: module, with no external caller that already persists a row for
+    #: them). "provider_exit" and "manual_exit" are deliberately EXCLUDED:
+    #: those are always externally initiated through app/engine.py
+    #: (`_handle_signal`'s managed-lifecycle branch, or `close_position`),
+    #: and that caller already persists its own order row for the same
+    #: fill (see engine.py's own `save_order_result` calls) -- persisting
+    #: here too would double-count the exact same execution in every
+    #: consumer of the `orders` table (app/economics.py,
+    #: app/provider_value.py, app/trade_episode.py).
+    _SELF_PERSISTED_EXIT_KINDS = frozenset({"stop", "target", "time_exit"})
+
     def _apply_exit_fill(
-        self, lifecycle: PositionLifecycle, account: DestinationAccount, symbol: str, filled_quantity: float
+        self,
+        lifecycle: PositionLifecycle,
+        account: DestinationAccount,
+        symbol: str,
+        filled_quantity: float,
+        *,
+        exit_kind: str = "",
+        exit_price: float | None = None,
+        reason: str = "",
     ) -> None:
         """Single execution-application owner for a confirmed exit fill —
         called once from `request_exit`'s synchronous branch, once from
-        `resolve_pending_exit`'s terminal branch, and once from
-        `on_stop_filled`. Applies the confirmed delta to
+        `resolve_pending_exit`'s partial and terminal branches, and once
+        from `on_stop_filled`. Applies the confirmed delta to
         `SignalStore.positions` atomically alongside the lifecycle
         checkpoint that already reflects it (or just persists the lifecycle
         if there's nothing to apply / no store wired in).
@@ -1249,7 +1316,17 @@ class PositionLifecycleManager:
         position's MAE/MFE into `SignalStore.position_excursions` —
         `lifecycle_state` (the in-progress record) is deleted once closed
         (see below), so without this, a closed position's excursion data
-        would vanish rather than remain queryable for later analytics."""
+        would vanish rather than remain queryable for later analytics.
+
+        TR-EPISODE-01: ALSO the one place that persists a real `orders`
+        row (plus its originating synthetic `signals` row) for a stop/
+        target/time_exit fill triggered from inside this module -- see
+        `_SELF_PERSISTED_EXIT_KINDS` above for exactly which `exit_kind`s
+        and why. `exit_price` is whatever real price the caller has for
+        this specific fill (or None, honestly, when none is available at
+        all yet -- see `on_stop_filled`'s own fallback chain and
+        `resolve_pending_exit`'s docstring for the one case where no real
+        price is available at this layer); it is NEVER guessed here."""
         if lifecycle.closed:
             self._persist_closed_excursion(lifecycle, account, symbol)
         if self.store is not None and filled_quantity > 0:
@@ -1259,8 +1336,53 @@ class PositionLifecycleManager:
             self.store.record_fill(account.account_id, symbol, lifecycle.exit_side, filled_quantity, lifecycle_state=state)
             if lifecycle.closed:
                 self.store.delete_lifecycle_state(account.account_id, symbol)
+            if exit_kind in self._SELF_PERSISTED_EXIT_KINDS:
+                self._persist_self_initiated_exit(
+                    lifecycle, account, symbol, filled_quantity, exit_kind=exit_kind, exit_price=exit_price, reason=reason
+                )
         else:
             self._persist(lifecycle)
+
+    def _persist_self_initiated_exit(
+        self,
+        lifecycle: PositionLifecycle,
+        account: DestinationAccount,
+        symbol: str,
+        filled_quantity: float,
+        *,
+        exit_kind: str,
+        exit_price: float | None,
+        reason: str,
+    ) -> None:
+        """Persist one real `orders` row (plus its originating `signals`
+        row) for a stop/target/time_exit fill this module itself
+        triggered -- see `_apply_exit_fill`'s docstring. `self.store` is
+        guaranteed non-None by the only caller."""
+        assert self.store is not None
+        exit_signal = Signal(
+            source="lifecycle_manager",
+            symbol=symbol,
+            side=lifecycle.exit_side,
+            asset_class=lifecycle.plan.asset_class,
+            raw={"reason": reason or exit_kind, "exit_kind": exit_kind},
+        )
+        self.store.save_signal(exit_signal)
+        result = OrderResult(
+            account_id=account.account_id,
+            status=OrderStatus.FILLED,
+            signal_id=exit_signal.id,
+            filled_quantity=filled_quantity,
+            filled_price=exit_price,
+        )
+        self.store.save_order_result(
+            result,
+            broker=account.broker,
+            symbol=symbol,
+            side=lifecycle.exit_side,
+            applied_quantity=filled_quantity,
+            purpose=exit_kind if exit_kind.endswith("_exit") else f"{exit_kind}_exit",
+            family_id=lifecycle.plan.entry_signal_id or None,
+        )
 
     # --- internals ---
 

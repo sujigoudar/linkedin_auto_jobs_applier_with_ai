@@ -17,14 +17,20 @@ verdict logic uses, minus the cost/subscription half of it (there's no
 subscription yet to weigh against):
 
 - `insufficient_data` -- fewer than `PROVIDER_VALUE_MIN_SAMPLE_SIZE`
-  closing fills so far. Not "bad," just not evaluated yet.
+  DECIDED episodes so far (see `ProviderEpisodeValue.win_rate`'s own
+  docstring for exactly what "decided" excludes). Not "bad," just not
+  evaluated yet.
 - `promote` -- win rate and profit factor both clear their configured
   thresholds.
 - `not_promising` -- enough data, but the numbers don't clear the bar.
 
-See app/provider_value.py's own module docstring for what this
-calculation does and doesn't cover (in particular: a managed-lifecycle
-stop/target/trailing exit isn't visible to it at all).
+TR-EPISODE-01: this scan reads `app/provider_value.py`'s EPISODE-based
+scoring (`compute_provider_value_from_episodes`), not the deprecated
+closing-fill replay -- see that module's own docstring for the exact bias
+this closes (a stop/target/time_exit exit is now a first-class,
+episode-closing execution, not invisible to this scan; a position reduced
+across several partial-exit fills is one episode observation, not
+several).
 """
 from __future__ import annotations
 
@@ -33,7 +39,7 @@ import logging
 from datetime import datetime, timezone
 
 from app.db import SignalStore
-from app.provider_value import compute_provider_value
+from app.provider_value import compute_provider_value_from_episodes
 
 logger = logging.getLogger(__name__)
 
@@ -89,14 +95,15 @@ class ProviderScout:
         once. Returns how many were newly recommended for promotion this
         pass (not the total number of candidates recorded)."""
         subscribed_sources = {row["provider_id"] for row in self.store.list_provider_subscriptions()}
-        values = compute_provider_value(self.store)
+        values = compute_provider_value_from_episodes(self.store)
 
         promoted = 0
         for pv in values.values():
             if pv.source in subscribed_sources:
                 continue  # already a tracked provider -- not a "candidate" to scout
 
-            if pv.closing_fills < self.min_sample_size:
+            decided_episodes = pv.winning_episodes + pv.losing_episodes
+            if decided_episodes < self.min_sample_size:
                 recommendation = "insufficient_data"
             elif (pv.win_rate or 0.0) >= self.win_rate_threshold and (
                 pv.profit_factor is None or pv.profit_factor >= self.profit_factor_threshold
@@ -105,12 +112,19 @@ class ProviderScout:
             else:
                 recommendation = "not_promising"
 
+            # TR-EPISODE-01: `closing_fills`/`winning_closing_fills` are
+            # this store method's pre-existing column names (see
+            # app/db.py's `provider_candidates` schema) -- reusing them
+            # for episode COUNTS (not fill counts) is an honest relabeling
+            # at the call site, not a schema change; a future pass may
+            # rename the columns themselves, but that's a migration this
+            # slice doesn't need to make to close the scoring bias.
             self.store.upsert_provider_candidate(
                 source=pv.source,
                 analyst=pv.analyst,
                 asset_class=pv.asset_class,
-                closing_fills=pv.closing_fills,
-                winning_closing_fills=pv.winning_closing_fills,
+                closing_fills=decided_episodes + pv.breakeven_episodes,
+                winning_closing_fills=pv.winning_episodes,
                 realized_pnl=pv.realized_pnl,
                 win_rate=pv.win_rate,
                 profit_factor=pv.profit_factor,

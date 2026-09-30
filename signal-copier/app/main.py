@@ -58,6 +58,7 @@ from app.context import fx as fx_context
 from app.context import sec_edgar
 from app.db import SignalStore, alembic_code_head
 from app.capital_allocator import confirmed_open_notional
+from app.account_economics_v2 import compute_extended_account_economics
 from app.economics import compute_account_economics
 from app.equity_history import EquitySnapshotter
 from app.execution_quality import compute_execution_quality
@@ -73,7 +74,7 @@ from app.pricing import PriceMonitor
 from app.qualification import QUALIFICATION_STATE_ORDER, QualificationError
 from app.providers import SettingsOverride, load_provider_registry_from_store
 from app.provider_scout import ProviderScout
-from app.provider_value import compute_provider_value_report
+from app.provider_value import compute_provider_value_report, compute_provider_value_report_from_episodes
 from app.rate_limit import CATALOG_FIT_SIM_RATE_LIMIT, INGRESS_RATE_LIMIT, limiter
 from app.reconciliation import OrderReconciler
 from app.relay_scheduler import RelayScheduler
@@ -1400,6 +1401,31 @@ async def get_account_economics(account_id: str, _owner: dict = Depends(require_
     if account_id not in routing_config.accounts:
         raise HTTPException(status_code=404, detail=f"no account '{account_id}'")
     return compute_account_economics(store, account_id).to_dict()
+
+
+@app.get("/accounts/{account_id}/economics/extended")
+async def get_account_economics_extended(account_id: str, _owner: dict = Depends(require_owner_read)) -> dict:
+    """TR-EPISODE-01 (P&L completeness): the extended economic-account
+    view a release review asked for alongside `GET /accounts/{id}/
+    economics` above -- NAV/equity (from a fresh, real broker balance
+    read, when the broker supports one), unrealized P&L (reusing
+    app/equity_history.py's own real last-observed-price mechanism),
+    explicit unknown-fee/unavailable-mark/unavailable-TWR states (never a
+    fabricated 0), and slippage/implementation-shortfall (from every fill
+    whose signal carried a real reference price). See
+    app/account_economics_v2.py's module docstring for exactly which
+    fields are real and which are honestly disclosed as not yet
+    computable in this schema. Added alongside the existing endpoint,
+    never replacing it -- that endpoint's response shape is an
+    already-depended-on contract this pass doesn't change."""
+    account = routing_config.accounts.get(account_id)
+    if account is None:
+        raise HTTPException(status_code=404, detail=f"no account '{account_id}'")
+    broker = brokers.get(account.broker)
+    broker_balance = await broker.get_account_balance(account) if broker is not None else None
+    return compute_extended_account_economics(
+        store, account_id, lifecycle_manager=lifecycle_manager, broker_balance=broker_balance
+    ).to_dict()
 
 
 @app.get("/accounts/{account_id}/balance")
@@ -2770,6 +2796,30 @@ async def get_provider_value(
     query params; `analyst=` (empty string) means "no analyst on the
     signal," matching signals that never carried one."""
     return {"providers": compute_provider_value_report(store, source=source, analyst=analyst, asset_class=asset_class)}
+
+
+@app.get("/providers/value/episodes")
+async def get_provider_value_episodes(
+    source: str | None = None,
+    analyst: str | None = None,
+    asset_class: str | None = None,
+    _owner: dict = Depends(require_owner_read),
+) -> dict:
+    """TR-EPISODE-01: the corrected, episode-based counterpart to
+    `GET /providers/value` above -- see app/provider_value.py's module
+    docstring for exactly why this replaces it as the source of truth for
+    any promotion/cancellation/capital-weighting/portfolio-selection
+    decision (a stop/target/time_exit exit is a first-class, episode-
+    closing execution here, and a multi-fill reduction of one position
+    counts once). Added alongside the existing endpoint rather than
+    replacing it in place, since `GET /providers/value`'s response shape
+    is a documented, already-depended-on contract this pass doesn't
+    change."""
+    return {
+        "providers": compute_provider_value_report_from_episodes(
+            store, source=source, analyst=analyst, asset_class=asset_class
+        )
+    }
 
 
 @app.get("/providers/candidates")

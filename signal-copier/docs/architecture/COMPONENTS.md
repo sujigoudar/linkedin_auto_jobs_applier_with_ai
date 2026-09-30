@@ -98,11 +98,13 @@ docs/architecture/DATA_FLOWS.md for how these interact end to end.
 | `app/metrics.py` | Prometheus metrics rendering for `GET /metrics` |
 | `app/errors.py` | `SignalValidationError` |
 | `app/economics.py` | Confirmed-fill replay -> per-symbol/account P&L (`AccountEconomics`) |
+| `app/account_economics_v2.py` | TR-EPISODE-01: extended P&L (NAV/unrealized/TWR/slippage), built alongside `economics.py` |
+| `app/trade_episode.py` | TR-EPISODE-01: one authoritative `TradeEpisode` per position lifecycle (entry through stop/target/trailing/manual exit) |
 | `app/execution_quality.py` | Per-stage execution latency computation |
 | `app/equity_history.py` | Periodic equity snapshotting (`EquitySnapshotter`) |
 | `app/statistics.py` | Rolling stats, drawdown, pairwise correlation |
-| `app/provider_value.py` | FIFO-lot P&L attribution per provider/analyst/asset class |
-| `app/provider_scout.py` | Background scan recommending free providers to promote |
+| `app/provider_value.py` | Episode-based P&L attribution per provider/analyst/asset class (FIFO-lot, closing-fill version kept deprecated) |
+| `app/provider_scout.py` | Background scan recommending free providers to promote (reads the episode-based report) |
 | `app/export_events.py` | Builds `signal_platform_contracts` export envelopes |
 | `app/relay_worker.py` / `app/relay_scheduler.py` | Signs and delivers the export outbox to signal-portfolio-commercial |
 | `app/services/catalog_fit_sim_auth.py` | Signed-token auth for the cross-service catalog fit-simulation route |

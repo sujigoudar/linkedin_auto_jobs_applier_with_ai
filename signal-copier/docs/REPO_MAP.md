@@ -23,8 +23,10 @@ signal-copier/
 │   ├── reconciliation.py     # OrderReconciler background loop
 │   ├── pricing.py            # PriceMonitor background loop
 │   ├── provider_scout.py     # ProviderScout background loop
-│   ├── provider_value.py     # FIFO-lot provider P&L attribution
+│   ├── provider_value.py     # provider P&L attribution (episode-based; FIFO-lot kept deprecated)
+│   ├── trade_episode.py      # TR-EPISODE-01: one authoritative episode per position lifecycle
 │   ├── economics.py          # confirmed-fill-replay account economics
+│   ├── account_economics_v2.py # extended P&L view (NAV/unrealized/TWR/slippage), built alongside economics.py
 │   ├── execution_quality.py  # per-stage execution latency
 │   ├── equity_history.py     # periodic equity snapshots
 │   ├── statistics.py         # rolling stats / drawdown / correlation

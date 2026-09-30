@@ -15,21 +15,30 @@ def store(tmp_path):
     return SignalStore(tmp_path / "test.db")
 
 
-def _fill(store, account_id, symbol, side, quantity, price, when, *, source="test"):
+def _fill(store, account_id, symbol, side, quantity, price, when, *, source="test", purpose=None, family_id=None):
     signal = Signal(source=source, symbol=symbol, side=side)
     store.save_signal(signal)
     result = OrderResult(
         account_id=account_id, status=OrderStatus.FILLED, signal_id=signal.id,
         filled_quantity=quantity, filled_price=price, executed_at=when,
     )
-    store.save_order_result(result, broker="paper", symbol=symbol, side=side)
+    store.save_order_result(
+        result, broker="paper", symbol=symbol, side=side, purpose=purpose, family_id=family_id, applied_quantity=quantity
+    )
 
 
 def _round_trips(store, source, n, *, win_price=110.0, buy_price=100.0):
+    """TR-EPISODE-01: app/provider_scout.py now scores from
+    app/trade_episode.py's episode replay, which (like the real
+    app/engine.py contract -- see `orders.family_id`'s own schema
+    comment) requires a real `family_id` linking an entry to its close;
+    each round trip here gets its own distinct family so it's counted as
+    one episode, matching production."""
     t0 = datetime.now(timezone.utc)
     for i in range(n):
-        _fill(store, "acct1", "AAPL", Side.BUY, 10.0, buy_price, t0 + timedelta(minutes=2 * i), source=source)
-        _fill(store, "acct1", "AAPL", Side.SELL, 10.0, win_price, t0 + timedelta(minutes=2 * i + 1), source=source)
+        family_id = f"{source}-fam-{i}"
+        _fill(store, "acct1", "AAPL", Side.BUY, 10.0, buy_price, t0 + timedelta(minutes=2 * i), source=source, purpose="entry", family_id=family_id)
+        _fill(store, "acct1", "AAPL", Side.SELL, 10.0, win_price, t0 + timedelta(minutes=2 * i + 1), source=source, purpose="close", family_id=family_id)
 
 
 @pytest.fixture
