@@ -87,7 +87,7 @@ from app.services.catalog_fit_sim_auth import (
 )
 from app.risk import size_for_account, symbol_for_account
 from app.routing import RoutingConfig, RoutingRule, load_routing_config_from_store
-from app.sources.text_parser import classify_batch
+from app.sources.text_parser import classify_batch, parse_text_signal
 from app.sources.discord import DiscordSource
 from app.sources.mt4_mt5 import MetaApiSource
 from app.sources.ninjatrader import NinjaTraderSource
@@ -103,6 +103,15 @@ from app.sources.telegram_user import TelegramUserSource
 from app.telegram_collectors import ConnectionMode, TelegramCollectorError
 from app.sources.email_source import EmailSource
 from app.email_collectors import EmailCollectorError
+from app.notification_bridge import (
+    ContentCompleteness,
+    NotificationBridgeError,
+    content_fingerprint,
+    generate_pairing_token,
+    hash_pairing_token,
+    validate_content_completeness,
+    verify_pairing_token,
+)
 from app.sources.twitter import TwitterSource
 from app.sources.webhook import WebhookSource
 from app.sources.whatsapp import WhatsAppSource
@@ -3478,6 +3487,373 @@ async def record_email_collector_qualification_evidence(
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return store.get_email_collector(collector_id)  # type: ignore[return-value]
+# -- Track 10: notification-bridge device registry (app/notification_bridge.py) --
+
+
+class RegisterNotificationBridgeDeviceRequest(BaseModel):
+    """Owner-gated device pairing -- see
+    app/notification_bridge.py's module docstring. `provider_mapping`
+    (app_package -> {"provider_name": ..., "analyst": ...}) is optional;
+    a package with no entry falls back to using its bare package name as
+    Signal.source."""
+
+    device_id: str
+    app_packages: list[str]
+    provider_mapping: dict[str, dict[str, str]] | None = None
+
+
+@app.post("/notification-bridge/devices")
+async def register_notification_bridge_device(
+    request: RegisterNotificationBridgeDeviceRequest, _owner: dict = Depends(require_owner)
+) -> dict:
+    """Owner-gated: register (or re-pair) one Android notification-bridge
+    device. Generates a fresh pairing token, returns it ONCE in this
+    response body (never stored in plain text -- only its argon2id hash
+    is persisted), for the owner to type into the Android app's settings
+    screen themselves. This mirrors register_telegram_collector's own
+    idempotent re-registration semantics."""
+    try:
+        token = generate_pairing_token()
+        device = store.register_notification_bridge_device(
+            device_id=request.device_id,
+            pairing_token_hash=hash_pairing_token(token),
+            app_packages=request.app_packages,
+            provider_mapping=request.provider_mapping,
+        )
+    except NotificationBridgeError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    response = dict(device)
+    response.pop("pairing_token_hash", None)
+    response["pairing_token"] = token
+    return response
+
+
+@app.get("/notification-bridge/devices")
+async def list_notification_bridge_devices(_owner: dict = Depends(require_owner_read)) -> dict:
+    """Every registered device, including its current (read-time-computed,
+    never stale-green) `health_state` -- point 8, same convention as
+    `GET /telegram-collectors`."""
+    devices = [
+        {k: v for k, v in d.items() if k != "pairing_token_hash"} for d in store.list_notification_bridge_devices()
+    ]
+    return {"devices": devices}
+
+
+@app.get("/notification-bridge/devices/{device_id}")
+async def get_notification_bridge_device(device_id: str, _owner: dict = Depends(require_owner_read)) -> dict:
+    device = store.get_notification_bridge_device(device_id)
+    if device is None:
+        raise HTTPException(status_code=404, detail=f"no notification-bridge device registered with device_id={device_id!r}")
+    device = dict(device)
+    device.pop("pairing_token_hash", None)
+    return device
+
+
+@app.get("/notification-bridge/devices/{device_id}/events")
+async def list_notification_bridge_device_events(device_id: str, _owner: dict = Depends(require_owner_read)) -> dict:
+    """Audit read: every notification event this device has ever
+    submitted, whatever its outcome -- used to verify the real,
+    on-device capture/upload flow is working (the user must pair a real
+    device and report back; nothing here can be verified from this
+    session alone -- see mobile/notification-bridge/README.md)."""
+    if store.get_notification_bridge_device(device_id) is None:
+        raise HTTPException(status_code=404, detail=f"no notification-bridge device registered with device_id={device_id!r}")
+    return {"device_id": device_id, "events": store.list_notification_bridge_events(device_id)}
+
+
+def _extract_bearer_token(authorization: str | None) -> str | None:
+    if not authorization:
+        return None
+    scheme, _, value = authorization.partition(" ")
+    if scheme.lower() != "bearer" or not value:
+        return None
+    return value
+
+
+class NotificationBridgeEventPayload(BaseModel):
+    """One captured Android notification, exactly as the companion app's
+    `NotificationListenerService` observed it -- see
+    mobile/notification-bridge/README.md's extraction table for which
+    `Notification`/`StatusBarNotification` field each maps to."""
+
+    app_package: str
+    notification_key: str
+    posted_at: datetime
+    title: str | None = None
+    text: str | None = None
+    expanded_text: str | None = None
+    is_group_conversation: bool = False
+    conversation_participants: list[str] | None = None
+    content_completeness: str
+    #: Device-reported receipt time -- audit-only (see
+    #: _process_notification_bridge_event's docstring for why the stale-
+    #: backlog decision uses this SERVER's own clock, not this field).
+    received_at: datetime | None = None
+
+
+class NotificationBridgeIngestRequest(BaseModel):
+    events: list[NotificationBridgeEventPayload]
+
+
+async def _process_notification_bridge_event(device: dict, event: NotificationBridgeEventPayload) -> dict:
+    """Classify and (when eligible) route ONE captured notification.
+    Never raises for an individual event's own content problems -- a
+    malformed event in a batch is reported back under its own result
+    entry, never allowed to fail the whole upload (same "one bad item
+    doesn't sink the batch" convention as `classify_batch`/
+    `import_signals`).
+
+    Point 4 (stale-backlog policy): staleness is judged against THIS
+    SERVER's own current clock, not the device-reported `received_at` --
+    a device that was offline and is now uploading a backlog cannot make
+    its own delayed notifications look fresh by also lying about when it
+    received them. `posted_at` (when the notification actually appeared,
+    per the device) vs this server's own `now` is the one honest
+    comparison.
+
+    Point 5 (content-completeness policy): a notification whose
+    `content_completeness` is not exactly "complete" is NEVER parsed and
+    routed as if it were the full alert -- it is recorded under the
+    explicit `needs_review_incomplete_content` classification and, if it
+    happens to parse anyway, tagged and stored via the same
+    import-only path stale backlog uses (never `engine.handle_signal`)."""
+    device_id = device["device_id"]
+    server_received_at = datetime.now(timezone.utc)
+
+    if event.app_package not in device["app_packages"]:
+        store.update_notification_bridge_device_health(
+            device_id,
+            "unauthorized_app_package",
+            detail=f"notification from unauthorized app_package={event.app_package!r}",
+        )
+        return {
+            "notification_key": event.notification_key,
+            "app_package": event.app_package,
+            "classification": "rejected_unauthorized_app_package",
+        }
+
+    try:
+        completeness = validate_content_completeness(event.content_completeness)
+    except NotificationBridgeError as exc:
+        return {
+            "notification_key": event.notification_key,
+            "app_package": event.app_package,
+            "classification": "rejected_invalid_content_completeness",
+            "detail": str(exc),
+        }
+
+    new_hash = content_fingerprint(event.title, event.text, event.expanded_text)
+    existing = store.find_notification_bridge_event(device_id, event.notification_key)
+
+    if existing is not None and existing["content_hash"] == new_hash:
+        # Exact retry of an already-recorded notification -- idempotent,
+        # never reprocessed (no new evidence, no double order attempt).
+        return {
+            "notification_key": event.notification_key,
+            "app_package": event.app_package,
+            "classification": "duplicate_retry",
+            "signal_id": existing["signal_id"],
+        }
+
+    is_edit = existing is not None
+    revision_seq = (existing["revision_seq"] + 1) if existing else 1
+
+    mapping = device["provider_mapping"].get(event.app_package, {})
+    provider_name = mapping.get("provider_name") or event.app_package
+    analyst = mapping.get("analyst")
+
+    best_text = (event.expanded_text or event.text or event.title or "").strip()
+
+    posted_at = event.posted_at
+    if posted_at.tzinfo is None:
+        posted_at = posted_at.replace(tzinfo=timezone.utc)
+    age_seconds = (server_received_at - posted_at).total_seconds()
+    is_stale = age_seconds > config.NOTIFICATION_BRIDGE_STALE_THRESHOLD_SECONDS
+
+    channel_id = f"{device_id}:{event.app_package}"
+    signal_id: str | None = None
+    classification: str
+    routed_live = False
+
+    parsed_signal: Signal | None = None
+    parse_detail: str | None = None
+    if best_text:
+        try:
+            parsed_signal = parse_text_signal(best_text, source=provider_name, asset_class=AssetClass.CRYPTO, analyst=analyst)
+        except SignalValidationError as exc:
+            parse_detail = str(exc)
+    else:
+        parse_detail = "no title/text/expanded_text content at all"
+
+    if completeness is not ContentCompleteness.COMPLETE:
+        classification = "needs_review_incomplete_content"
+        if parsed_signal is not None:
+            parsed_signal.channel_id = channel_id
+            parsed_signal.message_id = event.notification_key
+            parsed_signal.revision_id = new_hash if is_edit else None
+            parsed_signal.original_message_id = event.notification_key if is_edit else None
+            parsed_signal.parser_version = "notification-bridge-text-parser-v1"
+            parsed_signal.import_batch = f"notification_bridge:needs_review:{device_id}"
+            parsed_signal.raw = {
+                "app_package": event.app_package,
+                "content_completeness": completeness.value,
+                "title": event.title,
+                "text": event.text,
+                "expanded_text": event.expanded_text,
+                "is_group_conversation": event.is_group_conversation,
+                "conversation_participants": event.conversation_participants,
+            }
+            store.save_signal(parsed_signal)
+            signal_id = parsed_signal.id
+    elif is_stale:
+        classification = "stale_backlog_import_only"
+        if parsed_signal is not None:
+            parsed_signal.channel_id = channel_id
+            parsed_signal.message_id = event.notification_key
+            parsed_signal.revision_id = new_hash if is_edit else None
+            parsed_signal.original_message_id = event.notification_key if is_edit else None
+            parsed_signal.parser_version = "notification-bridge-text-parser-v1"
+            parsed_signal.import_batch = f"notification_bridge:stale_backlog:{device_id}"
+            parsed_signal.raw = {
+                "app_package": event.app_package,
+                "content_completeness": completeness.value,
+                "title": event.title,
+                "text": event.text,
+                "expanded_text": event.expanded_text,
+                "posted_at": event.posted_at.isoformat(),
+                "age_seconds": age_seconds,
+            }
+            store.save_signal(parsed_signal)
+            signal_id = parsed_signal.id
+    elif parsed_signal is None:
+        classification = "no_match"
+    else:
+        parsed_signal.channel_id = channel_id
+        parsed_signal.message_id = event.notification_key
+        parsed_signal.revision_id = new_hash if is_edit else None
+        parsed_signal.original_message_id = event.notification_key if is_edit else None
+        parsed_signal.parser_version = "notification-bridge-text-parser-v1"
+        parsed_signal.raw = {
+            "app_package": event.app_package,
+            "content_completeness": completeness.value,
+            "title": event.title,
+            "text": event.text,
+            "expanded_text": event.expanded_text,
+            "is_group_conversation": event.is_group_conversation,
+            "conversation_participants": event.conversation_participants,
+        }
+        classification = "live"
+        routed_live = True
+        # Point 6 (dedup/edit, Track 5's own established pattern): setting
+        # channel_id/message_id/revision_id BEFORE calling
+        # engine.handle_signal means the engine's own
+        # find_signal_id_by_provider_identity canonicalization (a real
+        # content edit resends the SAME notification_key with a NEW
+        # revision_id) and SIG-01 per-signal-id replay guard both apply
+        # here for free -- this route never needs its own duplicate
+        # order-submission protection on top of that.
+        await engine.handle_signal(parsed_signal)
+        signal_id = parsed_signal.id
+        await engine.export_source_event(
+            SourceEvent(
+                source=provider_name,
+                kind=SourceEventKind.EDIT if is_edit else SourceEventKind.ORIGINAL,
+                channel_id=channel_id,
+                message_id=event.notification_key,
+                revision_id=new_hash if is_edit else None,
+                original_message_id=event.notification_key if is_edit else None,
+                provider_timestamp=posted_at,
+                local_receipt_timestamp=server_received_at,
+                signal=parsed_signal,
+                raw_source_event={
+                    "app_package": event.app_package,
+                    "title": event.title,
+                    "text": event.text,
+                    "expanded_text": event.expanded_text,
+                },
+            )
+        )
+
+    store.save_notification_bridge_event(
+        device_id=device_id,
+        app_package=event.app_package,
+        notification_key=event.notification_key,
+        content_hash=new_hash,
+        revision_seq=revision_seq,
+        content_completeness=completeness.value,
+        posted_at=posted_at,
+        received_at=server_received_at,
+        classification=classification,
+        signal_id=signal_id,
+    )
+
+    degraded = store.record_notification_bridge_completeness(
+        device_id, complete=(completeness is ContentCompleteness.COMPLETE)
+    )
+    if degraded:
+        store.update_notification_bridge_device_health(
+            device_id,
+            "content_completeness_degraded",
+            detail=f"recent notifications from app_package={event.app_package!r} are systematically "
+            "truncated/title_only",
+        )
+    elif routed_live:
+        store.update_notification_bridge_device_health(device_id, "healthy_qualified")
+
+    result = {
+        "notification_key": event.notification_key,
+        "app_package": event.app_package,
+        "classification": classification,
+        "revision_seq": revision_seq,
+        "is_edit": is_edit,
+        "signal_id": signal_id,
+    }
+    if parse_detail and parsed_signal is None:
+        result["detail"] = parse_detail
+    return result
+
+
+@app.post("/ingest/notification-bridge/{device_id}")
+@limiter.limit(INGRESS_RATE_LIMIT)
+async def ingest_notification_bridge(
+    device_id: str,
+    request: Request,
+    body: NotificationBridgeIngestRequest,
+    authorization: str | None = Header(default=None),
+) -> dict:
+    """The Android companion app's own ingress route -- mirrors
+    `POST /webhook/{source_name}`'s auth shape exactly (a shared-secret-
+    style header check before any body is trusted), but per-DEVICE
+    (`app.notification_bridge.verify_pairing_token` against this
+    device's own argon2id-hashed pairing token) rather than one global
+    `WEBHOOK_SHARED_SECRET` -- see app/notification_bridge.py's module
+    docstring for why a per-device credential, not a single shared one,
+    is the right shape here (one compromised phone must not authorize
+    forwarding on every other device's behalf).
+
+    Any successfully authenticated contact with this route counts as a
+    heartbeat (point 8: `no_heartbeat_recently` detection) -- whether or
+    not `events` is empty (the Android app's own dedicated periodic
+    heartbeat, see mobile/notification-bridge/README.md, posts an empty
+    batch here for exactly this reason, alongside real notification
+    uploads)."""
+    device = store.get_notification_bridge_device(device_id)
+    if device is None:
+        raise HTTPException(status_code=404, detail=f"no notification-bridge device registered with device_id={device_id!r}")
+
+    token = _extract_bearer_token(authorization)
+    if token is None or not verify_pairing_token(token, device["pairing_token_hash"]):
+        # C06: constant-time compare (verify_pairing_token uses pwdlib's
+        # own argon2id verify), same discipline as app/auth.py's
+        # verify_password and the webhook route's hmac.compare_digest.
+        raise HTTPException(status_code=401, detail="invalid device pairing token")
+
+    store.record_notification_bridge_heartbeat(device_id)
+    device = store.get_notification_bridge_device(device_id)  # refreshed after heartbeat
+    assert device is not None  # just heartbeated the same row within this request
+
+    results = [await _process_notification_bridge_event(device, event) for event in body.events]
+    return {"device_id": device_id, "results": results}
 
 
 class BacktestRequest(BaseModel):

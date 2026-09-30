@@ -409,6 +409,17 @@ class _Settings(BaseSettings):
     # is unchanged unless this is explicitly set.
     MAX_OWNER_NOTIONAL_EXPOSURE: float | None = None
 
+    # Track 10: notification-bridge (Android NotificationListenerService
+    # fallback capture path, app/notification_bridge.py). How stale a
+    # device-reported `posted_at` may be, relative to this server's own
+    # receipt time, before an otherwise-live-eligible notification is
+    # instead treated as historical-only backlog (point 4: never let a
+    # device reconnecting after being offline turn a queued/delayed
+    # notification into a fresh live order). Default: 5 minutes -- see
+    # app/notification_bridge.py's DEFAULT_STALE_THRESHOLD_SECONDS for
+    # the same reasoning documented once, not duplicated here.
+    NOTIFICATION_BRIDGE_STALE_THRESHOLD_SECONDS: float = 300.0
+
 
 _settings = _Settings()
 
@@ -505,3 +516,5 @@ CATALOG_FIT_SIM_SIGNING_SECRET = _settings.CATALOG_FIT_SIM_SIGNING_SECRET
 CATALOG_FIT_SIM_SIGNING_SECRET_PREVIOUS = _settings.CATALOG_FIT_SIM_SIGNING_SECRET_PREVIOUS
 
 EXPORT_OUTBOX_SIZE_CEILING_BYTES = _settings.EXPORT_OUTBOX_SIZE_CEILING_BYTES
+
+NOTIFICATION_BRIDGE_STALE_THRESHOLD_SECONDS = _settings.NOTIFICATION_BRIDGE_STALE_THRESHOLD_SECONDS

@@ -885,6 +885,49 @@ CREATE TABLE IF NOT EXISTS pull_collectors (
     updated_at TEXT NOT NULL
 );
 
+-- Track 10: the persistent notification-bridge device registry -- see
+-- app/notification_bridge.py's module docstring for the full contract.
+-- One row per Android device this deployment accepts notification-bridge
+-- uploads from.
+--
+-- `pairing_token_hash` is an argon2id hash (pwdlib) of the per-device
+-- bearer token the owner types into the Android app once at pairing time
+-- -- the raw token itself is NEVER persisted anywhere (see
+-- app/notification_bridge.py's hash_pairing_token/verify_pairing_token).
+--
+-- `app_packages` is a JSON array of the Android package names this
+-- device is authorized to forward notifications for; `provider_mapping`
+-- is a JSON object app_package -> {"provider_name": ..., "analyst": ...}
+-- used to build an accepted notification's Signal.source/Signal.analyst.
+--
+-- `recent_completeness` is a JSON array (bounded to
+-- app.notification_bridge.COMPLETENESS_WINDOW_SIZE entries, oldest
+-- first) of this device's most recent AUTHORIZED events' completeness
+-- (true == ContentCompleteness.COMPLETE) -- the real, measurable
+-- evidence app.notification_bridge's CONTENT_COMPLETENESS_DEGRADED
+-- verdict is computed from (see
+-- SignalStore.record_notification_bridge_completeness), never a
+-- fabricated/guessed health flip.
+--
+-- `health_state` is app.notification_bridge.DeviceHealth's own
+-- vocabulary. `no_heartbeat_recently` is deliberately NEVER persisted
+-- here as such -- it's a read-time computation against
+-- `last_heartbeat_at` (see SignalStore.get_notification_bridge_device),
+-- since "is the heartbeat stale RIGHT NOW" changes with no write of its
+-- own.
+CREATE TABLE IF NOT EXISTS notification_bridge_devices (
+    device_id TEXT PRIMARY KEY,
+    pairing_token_hash TEXT NOT NULL,
+    app_packages TEXT NOT NULL DEFAULT '[]',
+    provider_mapping TEXT NOT NULL DEFAULT '{}',
+    last_heartbeat_at TEXT,
+    recent_completeness TEXT NOT NULL DEFAULT '[]',
+    health_state TEXT NOT NULL DEFAULT 'never_paired',
+    health_detail TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
 -- Track 7: the persistent email collector registry -- see
 -- app/email_collectors.py's module docstring for the full contract and
 -- each enum's own docstring for the real, closed set of values
@@ -1005,6 +1048,49 @@ CREATE TABLE IF NOT EXISTS website_article_candidates (
 CREATE INDEX IF NOT EXISTS idx_website_article_candidates_channel ON website_article_candidates (channel_id);
 CREATE INDEX IF NOT EXISTS idx_email_collectors_provider ON email_collectors (provider_name);
 CREATE INDEX IF NOT EXISTS idx_email_collectors_mailbox ON email_collectors (imap_host, imap_folder);
+-- Track 10: one row per notification event this bridge has ever
+-- accepted for auth-checking/processing (ANY outcome -- live-routed,
+-- historical-backlog-import-only, needs-human-review, duplicate/retry,
+-- or rejected as unauthorized) -- the dedup/audit ledger for
+-- (device_id, notification_key), Track 10's own analogue of Track 5's
+-- provider-identity dedup (see SignalStore.
+-- find_signal_id_by_provider_identity's own docstring for the pattern
+-- this mirrors).
+--
+-- `content_hash` is this event's own content fingerprint
+-- (app.notification_bridge.content_fingerprint) -- a redelivery of an
+-- already-seen `notification_key` with the SAME hash is a true
+-- duplicate/retry (Android's own `StatusBarNotification.key` is stable
+-- per notification instance, and a flaky upload may legitimately retry);
+-- a DIFFERENT hash for the same `notification_key` is a real Android
+-- notification UPDATE, recorded as the NEXT `revision_seq` and exported
+-- as a SourceEvent EDIT, never silently treated as a duplicate or a
+-- brand new signal.
+--
+-- `classification` records exactly which of this event's real, honest
+-- outcomes applied: "live" (routed to engine.handle_signal),
+-- "stale_backlog_import_only" (point 4: posted_at too old relative to
+-- this server's own received_at, recorded via the same import_batch-
+-- tagged path Track 5 uses for historical import, never live-routed),
+-- "needs_review_incomplete_content" (point 5: content_completeness was
+-- not "complete" -- recorded, never parsed as if it were the full
+-- alert), "duplicate_retry", or "rejected_unauthorized_app_package".
+CREATE TABLE IF NOT EXISTS notification_bridge_events (
+    id TEXT PRIMARY KEY,
+    device_id TEXT NOT NULL,
+    app_package TEXT NOT NULL,
+    notification_key TEXT NOT NULL,
+    content_hash TEXT NOT NULL,
+    revision_seq INTEGER NOT NULL DEFAULT 1,
+    content_completeness TEXT NOT NULL,
+    posted_at TEXT,
+    received_at TEXT NOT NULL,
+    classification TEXT NOT NULL,
+    signal_id TEXT,
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_notification_bridge_events_key ON notification_bridge_events (device_id, notification_key);
 
 CREATE INDEX IF NOT EXISTS idx_orders_executed_at ON orders (executed_at);
 CREATE INDEX IF NOT EXISTS idx_orders_account_id ON orders (account_id);
@@ -3797,6 +3883,58 @@ class SignalStore:
             if cur.rowcount == 0:
                 raise KeyError(f"no pull collector registered with id={collector_id!r}")
 
+    # -- Track 10: notification-bridge device registry (app/notification_bridge.py) --
+
+    def register_notification_bridge_device(
+        self,
+        *,
+        device_id: str,
+        pairing_token_hash: str,
+        app_packages: list[str],
+        provider_mapping: dict[str, dict] | None = None,
+    ) -> dict:
+        """Insert (or, idempotently, re-describe) one device row.
+        Validation is enforced by `app.notification_bridge.
+        validate_device_registration` BEFORE anything is written.
+
+        Re-registering the SAME `device_id` replaces its identity/
+        authorization fields (app_packages, provider_mapping) AND its
+        `pairing_token_hash` (an operator re-pairing the same device_id
+        after losing the original token, or rotating it deliberately),
+        but preserves `last_heartbeat_at`, `recent_completeness`, and
+        `health_state` -- same "re-describing must not silently reset
+        already-observed evidence" precedent as
+        `register_telegram_collector`."""
+        from app.notification_bridge import validate_device_registration
+
+        validate_device_registration(device_id=device_id, app_packages=app_packages, provider_mapping=provider_mapping)
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            existing = conn.execute(
+                "SELECT created_at FROM notification_bridge_devices WHERE device_id = ?", (device_id,)
+            ).fetchone()
+            created_at = existing[0] if existing else now
+            conn.execute(
+                """INSERT INTO notification_bridge_devices
+                       (device_id, pairing_token_hash, app_packages, provider_mapping,
+                        recent_completeness, health_state, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, '[]', 'never_paired', ?, ?)
+                   ON CONFLICT(device_id) DO UPDATE SET
+                       pairing_token_hash = excluded.pairing_token_hash,
+                       app_packages = excluded.app_packages,
+                       provider_mapping = excluded.provider_mapping,
+                       updated_at = excluded.updated_at""",
+                (
+                    device_id,
+                    pairing_token_hash,
+                    json.dumps(app_packages),
+                    json.dumps(provider_mapping or {}),
+                    created_at,
+                    now,
+                ),
+            )
+        return self.get_notification_bridge_device(device_id)  # type: ignore[return-value]
+
     # -- Track 9: website collector registry (app/website_collectors.py) --
 
     def register_website_collector(
@@ -4293,6 +4431,247 @@ class SignalStore:
             )
             if cur.rowcount == 0:
                 raise KeyError(f"no email collector registered with id={collector_id!r}")
+
+    # -- Track 10: notification-bridge device registry (app/notification_bridge.py) --
+
+    def _notification_bridge_device_row_to_dict(self, row: tuple) -> dict:
+        from app.notification_bridge import DEFAULT_HEARTBEAT_STALE_SECONDS, DeviceHealth
+
+        last_heartbeat_at = row[4]
+        stored_health = row[6]
+        effective_health = stored_health
+        # Point 8: "no_heartbeat_recently" is a READ-TIME override, never
+        # a value this table's own writers persist -- see this table's own
+        # CREATE TABLE comment. A device that was never paired at all
+        # keeps reporting `never_paired` here (that's already an honest,
+        # visible non-green state); every other stored state is
+        # overridden the instant the heartbeat is missing or stale.
+        if stored_health != DeviceHealth.NEVER_PAIRED.value:
+            if last_heartbeat_at is None:
+                effective_health = DeviceHealth.NO_HEARTBEAT_RECENTLY.value
+            else:
+                age = (datetime.now(timezone.utc) - datetime.fromisoformat(last_heartbeat_at)).total_seconds()
+                if age > DEFAULT_HEARTBEAT_STALE_SECONDS:
+                    effective_health = DeviceHealth.NO_HEARTBEAT_RECENTLY.value
+        return {
+            "device_id": row[0],
+            "pairing_token_hash": row[1],
+            "app_packages": json.loads(row[2]) if row[2] else [],
+            "provider_mapping": json.loads(row[3]) if row[3] else {},
+            "last_heartbeat_at": last_heartbeat_at,
+            "recent_completeness": json.loads(row[5]) if row[5] else [],
+            "health_state": effective_health,
+            "stored_health_state": stored_health,
+            "health_detail": row[7],
+            "created_at": row[8],
+            "updated_at": row[9],
+        }
+
+    _NOTIFICATION_BRIDGE_DEVICE_COLUMNS = (
+        "device_id, pairing_token_hash, app_packages, provider_mapping, last_heartbeat_at, "
+        "recent_completeness, health_state, health_detail, created_at, updated_at"
+    )
+
+    def get_notification_bridge_device(self, device_id: str) -> dict | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                f"SELECT {self._NOTIFICATION_BRIDGE_DEVICE_COLUMNS} FROM notification_bridge_devices "
+                "WHERE device_id = ?",
+                (device_id,),
+            ).fetchone()
+        return self._notification_bridge_device_row_to_dict(row) if row else None
+
+    def list_notification_bridge_devices(self) -> list[dict]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"SELECT {self._NOTIFICATION_BRIDGE_DEVICE_COLUMNS} FROM notification_bridge_devices "
+                "ORDER BY device_id"
+            ).fetchall()
+        return [self._notification_bridge_device_row_to_dict(r) for r in rows]
+
+    def update_notification_bridge_device_health(
+        self, device_id: str, health_state: str, *, detail: str | None = None
+    ) -> None:
+        """Point 8: the ONE place a device's stored incident/health state
+        is written (the `no_heartbeat_recently` override happens
+        separately, at read time -- see `_notification_bridge_device_row_to_dict`).
+        Validated against `app.notification_bridge.DeviceHealth` so a
+        caller can never persist a state string this registry doesn't
+        recognize."""
+        from app.notification_bridge import DeviceHealth
+
+        state = DeviceHealth(health_state)  # raises ValueError for an unrecognized state
+        with self._connect() as conn:
+            cur = conn.execute(
+                "UPDATE notification_bridge_devices SET health_state = ?, health_detail = ?, updated_at = ? "
+                "WHERE device_id = ?",
+                (state.value, detail, datetime.now(timezone.utc).isoformat(), device_id),
+            )
+            if cur.rowcount == 0:
+                raise KeyError(f"no notification-bridge device registered with device_id={device_id!r}")
+
+    def record_notification_bridge_heartbeat(self, device_id: str) -> None:
+        """Called on every authenticated contact from the device (both the
+        Android app's dedicated periodic heartbeat AND every notification
+        upload -- any successful auth'd contact is real evidence the
+        device is reachable). Promotes a device that has NEVER received a
+        heartbeat before straight from `NEVER_PAIRED` to
+        `NO_NOTIFICATIONS_OBSERVED` (the app/pairing is confirmed
+        working; no notification content has been recorded yet) -- never
+        touches a health state beyond that (a heartbeat alone is not
+        evidence of real notification receipt, so it must never advance a
+        device to `HEALTHY_QUALIFIED` by itself)."""
+        from app.notification_bridge import DeviceHealth
+
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT health_state FROM notification_bridge_devices WHERE device_id = ?", (device_id,)
+            ).fetchone()
+            if row is None:
+                raise KeyError(f"no notification-bridge device registered with device_id={device_id!r}")
+            now = datetime.now(timezone.utc).isoformat()
+            new_health = row[0]
+            if row[0] == DeviceHealth.NEVER_PAIRED.value:
+                new_health = DeviceHealth.NO_NOTIFICATIONS_OBSERVED.value
+            conn.execute(
+                "UPDATE notification_bridge_devices SET last_heartbeat_at = ?, health_state = ?, updated_at = ? "
+                "WHERE device_id = ?",
+                (now, new_health, now, device_id),
+            )
+
+    def record_notification_bridge_completeness(self, device_id: str, *, complete: bool) -> bool:
+        """Point 8 (`CONTENT_COMPLETENESS_DEGRADED`): append `complete` to
+        this device's rolling `recent_completeness` window (capped to
+        `app.notification_bridge.COMPLETENESS_WINDOW_SIZE`, oldest
+        dropped first), then return whether the window now shows a real
+        degraded pattern -- true only once at least
+        `COMPLETENESS_MIN_SAMPLE` events are in the window AND the
+        incomplete fraction is >= `COMPLETENESS_DEGRADED_RATIO`. A single
+        truncated notification is ordinary provider noise, never itself a
+        degraded verdict -- see this module's own docstring for why a
+        sustained pattern, not one bad sample, is what this state means.
+        Does NOT itself write `health_state` -- the caller (app/main.py)
+        decides what to do with the returned verdict, same separation as
+        every other health-affecting write in this registry."""
+        from app.notification_bridge import COMPLETENESS_DEGRADED_RATIO, COMPLETENESS_MIN_SAMPLE, COMPLETENESS_WINDOW_SIZE
+
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT recent_completeness FROM notification_bridge_devices WHERE device_id = ?", (device_id,)
+            ).fetchone()
+            if row is None:
+                raise KeyError(f"no notification-bridge device registered with device_id={device_id!r}")
+            window: list[bool] = json.loads(row[0]) if row[0] else []
+            window.append(bool(complete))
+            window = window[-COMPLETENESS_WINDOW_SIZE:]
+            conn.execute(
+                "UPDATE notification_bridge_devices SET recent_completeness = ?, updated_at = ? WHERE device_id = ?",
+                (json.dumps(window), datetime.now(timezone.utc).isoformat(), device_id),
+            )
+        if len(window) < COMPLETENESS_MIN_SAMPLE:
+            return False
+        incomplete_fraction = sum(1 for c in window if not c) / len(window)
+        return incomplete_fraction >= COMPLETENESS_DEGRADED_RATIO
+
+    def find_notification_bridge_event(self, device_id: str, notification_key: str) -> dict | None:
+        """The most recent event already recorded for this exact
+        (device_id, notification_key) -- Track 10's own analogue of
+        `find_signal_id_by_provider_identity`, used to tell an exact
+        content-hash duplicate/retry from a genuine Android notification
+        UPDATE (a different hash for the same key -- see
+        `app.notification_bridge.content_fingerprint`'s own docstring)."""
+        with self._connect() as conn:
+            row = conn.execute(
+                """SELECT id, device_id, app_package, notification_key, content_hash, revision_seq,
+                          content_completeness, posted_at, received_at, classification, signal_id, created_at
+                   FROM notification_bridge_events
+                   WHERE device_id = ? AND notification_key = ?
+                   ORDER BY revision_seq DESC LIMIT 1""",
+                (device_id, notification_key),
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "id": row[0],
+            "device_id": row[1],
+            "app_package": row[2],
+            "notification_key": row[3],
+            "content_hash": row[4],
+            "revision_seq": row[5],
+            "content_completeness": row[6],
+            "posted_at": row[7],
+            "received_at": row[8],
+            "classification": row[9],
+            "signal_id": row[10],
+            "created_at": row[11],
+        }
+
+    def save_notification_bridge_event(
+        self,
+        *,
+        device_id: str,
+        app_package: str,
+        notification_key: str,
+        content_hash: str,
+        revision_seq: int,
+        content_completeness: str,
+        posted_at: datetime | None,
+        received_at: datetime,
+        classification: str,
+        signal_id: str | None,
+    ) -> str:
+        event_id = str(uuid.uuid4())
+        with self._connect() as conn:
+            conn.execute(
+                """INSERT INTO notification_bridge_events
+                       (id, device_id, app_package, notification_key, content_hash, revision_seq,
+                        content_completeness, posted_at, received_at, classification, signal_id, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    event_id,
+                    device_id,
+                    app_package,
+                    notification_key,
+                    content_hash,
+                    revision_seq,
+                    content_completeness,
+                    posted_at.isoformat() if posted_at else None,
+                    received_at.isoformat(),
+                    classification,
+                    signal_id,
+                    datetime.now(timezone.utc).isoformat(),
+                ),
+            )
+        return event_id
+
+    def list_notification_bridge_events(self, device_id: str) -> list[dict]:
+        """Every event recorded for one device, most recent first -- a
+        dashboard/audit read, never used for dedup itself (see
+        `find_notification_bridge_event`)."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT id, device_id, app_package, notification_key, content_hash, revision_seq,
+                          content_completeness, posted_at, received_at, classification, signal_id, created_at
+                   FROM notification_bridge_events WHERE device_id = ? ORDER BY created_at DESC""",
+                (device_id,),
+            ).fetchall()
+        return [
+            {
+                "id": r[0],
+                "device_id": r[1],
+                "app_package": r[2],
+                "notification_key": r[3],
+                "content_hash": r[4],
+                "revision_seq": r[5],
+                "content_completeness": r[6],
+                "posted_at": r[7],
+                "received_at": r[8],
+                "classification": r[9],
+                "signal_id": r[10],
+                "created_at": r[11],
+            }
+            for r in rows
+        ]
 
     def list_orders_for_signal(self, signal_id: str) -> list[dict]:
         """Every order already recorded against this exact signal id — what
