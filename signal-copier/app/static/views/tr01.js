@@ -257,24 +257,75 @@
  *     live broker-side position readback via any GET endpoint (store-side
  *     coverage only), so this condition type is omitted rather than
  *     fabricated.
+ *
+ * Phase E (this batch, 2026-09 design review: "the current command center
+ * ... should become an actual trading cockpit ... top row: NAV/Day P&L/
+ * Open risk/Available capital/Capital committed/Unprotected exposure/
+ * Unknown broker operations/Critical incidents. Then: Attention queue
+ * ordered Protection deficit -> unknown order -> broker disconnect ->
+ * stale price -> capital breach -> ordinary warning. Then: Open positions.
+ * Then: Recent signals/executions. Then: Exposure/risk. Then: system
+ * health"), information-architecture only -- no new backend endpoint, no
+ * deleted figure:
+ *   - `panelShell()`'s section ORDER now matches that hierarchy exactly
+ *     (every section id is unchanged; only where it renders moved).
+ *   - The KPI band's first 8 tiles are now exactly that named list, in
+ *     that order (renamed, never recomputed, from the existing Phase C
+ *     tiles -- "Net liquidation"->"NAV", "Day P&L"->"Today's net P&L",
+ *     "Deployed capital"->"Capital committed", "Unknown orders"->"Unknown
+ *     broker operations"), plus one genuinely new real figure, "Available
+ *     capital" (GET /capital-allocation's own `available_notional`, summed
+ *     only across accounts where it is a real, known figure -- see
+ *     `availableCapitalKnown` in `loadGlanceSection`). The 4 tiles that
+ *     don't map onto the review's named 8 (Trading mode, Active accounts,
+ *     Total P&L, Reserved capital) are real and kept, just moved to a
+ *     second row after the primary 8 rather than interleaved among them.
+ *   - `buildAttentionItems` now tags every item with a `category` matching
+ *     the review's exact 6-bucket taxonomy (Components.renderAttentionQueue
+ *     sorts by it directly) and adds 2 new real conditions this build
+ *     already tracks but this queue didn't yet surface: `broker_disconnect`
+ *     (GET /health's real `reconciler_ok` heartbeat) and `capital_breach`
+ *     (GET /capital-allocation's real `available_notional` at/below zero,
+ *     only for an account with an opted-in ceiling) -- see that function's
+ *     own docstring for exactly why each is real, not fabricated.
+ *     `unknown_order` is not new math either -- it is the same
+ *     pending_exit/pending_entry signal M-TR-01-04 already counts, now also
+ *     surfaced per-lifecycle here (previously only an aggregate info row).
+ *   - Internal requirement IDs (M-TR-01-01..04) that used to appear as
+ *     primary label text now live behind a collapsed `evidenceHtml()`
+ *     "Evidence" disclosure (see app/static/dashboard.html) instead of the
+ *     plain-English label -- same real IDs, moved out of the primary
+ *     reading, never deleted.
+ *   - Recent activity's "Executed at" column now shows a real relative age
+ *     ("Xh ago") as its primary reading (Components.renderAttentionQueue's
+ *     own age-badge convention), with the real raw UTC timestamp still one
+ *     hover (title attribute) away -- never a bare raw ISO string as the
+ *     primary reading.
  */
 (function () {
   "use strict";
 
+  // 2026-09 design review ("the page still makes an operator read too much
+  // text to determine whether something needs immediate intervention...
+  // Top row: KPIs. Then: attention queue. Then: open positions. Then:
+  // recent signals/executions. Then: exposure/risk. Then: system health"):
+  // this is now the exact visual (DOM) order of the sections below --
+  // every section id is UNCHANGED from the previous build (tests select by
+  // id, never by position), only the ORDER they appear in the shell moved.
   function panelShell() {
     return `
       <section class="tr-panel" id="tr01-kpi"><h2>At a glance</h2><div class="tr-panel-body"></div></section>
       <section class="tr-panel" id="tr01-attention"><h2>Attention required</h2><div class="tr-panel-body"></div></section>
+      <section class="tr-panel" id="tr01-p07"><h2>Open positions</h2><div class="tr-panel-body"></div></section>
+      <section class="tr-panel" id="tr01-p06"><h2>Recent signals &amp; executions</h2><div class="tr-panel-body"></div></section>
+      <section class="tr-panel" id="tr01-p10"><h2>Exposure by notional / loss at stop</h2><div class="tr-panel-body"></div></section>
+      <section class="tr-panel" id="tr01-p04"><h2>P&amp;L and exposure</h2><div class="tr-panel-body"></div></section>
+      <section class="tr-panel" id="tr01-p08"><h2>Allocation</h2><div class="tr-panel-body"></div></section>
+      <section class="tr-panel" id="tr01-p09"><h2>Risk</h2><div class="tr-panel-body"></div></section>
       <section class="tr-panel" id="tr01-p01"><h2>Identity / environment</h2><div class="tr-panel-body"></div></section>
       <section class="tr-panel" id="tr01-p02"><h2>Safety summary</h2><div class="tr-panel-body"></div></section>
       <section class="tr-panel" id="tr01-p03"><h2>Account risk cards</h2><div class="tr-panel-body"></div></section>
-      <section class="tr-panel" id="tr01-p04"><h2>P&amp;L and exposure</h2><div class="tr-panel-body"></div></section>
       <section class="tr-panel" id="tr01-p05"><h2>Priority incidents</h2><div class="tr-panel-body"></div></section>
-      <section class="tr-panel" id="tr01-p06"><h2>Recent activity</h2><div class="tr-panel-body"></div></section>
-      <section class="tr-panel" id="tr01-p07"><h2>Open positions</h2><div class="tr-panel-body"></div></section>
-      <section class="tr-panel" id="tr01-p08"><h2>Allocation</h2><div class="tr-panel-body"></div></section>
-      <section class="tr-panel" id="tr01-p10"><h2>Exposure by notional / loss at stop</h2><div class="tr-panel-body"></div></section>
-      <section class="tr-panel" id="tr01-p09"><h2>Risk</h2><div class="tr-panel-body"></div></section>
     `;
   }
 
@@ -340,6 +391,25 @@
   // zero fallback anywhere below.
   function statVal(v) {
     return v === null || v === undefined ? pill("n/a", "muted") : fmtNum(v);
+  }
+
+  // Real elapsed time since a real ISO timestamp, primary-display shape
+  // ("Xs/Xm/Xh/Xd ago") -- same convention Components.renderAttentionQueue
+  // and tr03.js's own timeline use, so a raw UTC timestamp never has to be
+  // the primary reading in this panel either (the real ISO value stays one
+  // hover away via the caller's own title attribute -- never deleted).
+  function fmtRelativeAge(iso) {
+    if (!iso) return null;
+    const t = new Date(iso).getTime();
+    if (!Number.isFinite(t)) return null;
+    const seconds = Math.max(0, Math.floor((Date.now() - t) / 1000));
+    if (seconds < 60) return `${seconds}s ago`;
+    const m = Math.floor(seconds / 60);
+    if (m < 60) return `${m}m ago`;
+    const h = Math.floor(m / 60);
+    if (h < 24) return `${h}h ago`;
+    const d = Math.floor(h / 24);
+    return `${d}d ago`;
   }
 
   // Real wall-clock drawdown duration (seconds -> "Xd Yh Zm"), honoring
@@ -680,12 +750,42 @@
   // exactly which GET endpoint backs each severity, and why a broker/
   // internal-ledger discrepancy row is deliberately omitted (no live
   // broker-side readback is exposed by any GET endpoint -- see TR-13).
-  function buildAttentionItems({ lifecycles, providers, signals, orders }) {
+  //
+  // Phase E (this batch, 2026-09 design review: "attention queue ordered
+  // by severity: Protection deficit -> unknown order -> broker disconnect
+  // -> stale price -> capital breach -> ordinary warning"): every item now
+  // carries a `category` matching one of Components.renderAttentionQueue's
+  // 6 recognized names, which governs display order directly -- see that
+  // component's own module docstring. Two categories are NEW in this
+  // batch, both backed by a real, already-exposed signal, never a
+  // fabricated incident type:
+  //   - broker_disconnect: GET /health's real `reconciler_ok` (the
+  //     OrderReconciler's own broker cross-check heartbeat, app/main.py) --
+  //     this is the closest real "is this engine still talking to the
+  //     broker" signal this codebase exposes (see TR-13's own docstring:
+  //     there is no live broker-side position readback via any GET route,
+  //     only this reconciliation-poll heartbeat).
+  //   - capital_breach: GET /capital-allocation's real, per-account
+  //     `available_notional` (already used by the KPI band's "Available
+  //     capital" tile) at or below zero -- only ever computed for an
+  //     account that opted into a real notional ceiling (available_notional
+  //     is `null`, never a fabricated breach, for an account with no
+  //     ceiling configured or an unresolved-exposure read this refresh).
+  //   - unknown_order is not new math -- it is the exact same
+  //     pending_exit/pending_entry signal the KPI band's "Unknown broker
+  //     operations" tile already counts (M-TR-01-04), now ALSO surfaced as
+  //     one row per affected lifecycle here (previously only the aggregate
+  //     "orders awaiting fill" info row existed in this queue).
+  function buildAttentionItems({ lifecycles, providers, signals, orders, health, capitalAccounts }) {
     const items = [];
 
+    // 1. Protection deficit (highest real priority: an active halt, or a
+    // managed position with real uncovered quantity -- no confirmed
+    // working stop over part of what's owned).
     for (const l of lifecycles.filter((x) => x.halted)) {
       items.push({
         severity: "critical",
+        category: "protection_deficit",
         text: `${l.account_id} · ${l.symbol} halted -- ${l.halt_reason || "reason unknown"}`,
         correlationId: `${l.account_id}:${l.symbol}`,
       });
@@ -693,11 +793,59 @@
     for (const l of lifecycles.filter((x) => x.uncovered_quantity > 0)) {
       items.push({
         severity: "critical",
+        category: "protection_deficit",
         text: `${l.account_id} · ${fmtNum(l.uncovered_quantity)} ${l.symbol} shares have no confirmed working stop`,
         correlationId: `${l.account_id}:${l.symbol}`,
       });
     }
 
+    // 2. Unknown order -- a real, unresolved pending_entry/pending_exit
+    // (broker outcome not yet confirmed either way) on a managed lifecycle.
+    for (const l of lifecycles.filter((x) => x.pending_exit || x.pending_entry)) {
+      const kind = l.pending_exit ? "exit" : "entry";
+      items.push({
+        severity: "critical",
+        category: "unknown_order",
+        text: `${l.account_id} · ${l.symbol} has an unresolved pending ${kind} -- broker outcome not yet confirmed`,
+        correlationId: `${l.account_id}:${l.symbol}`,
+      });
+    }
+
+    // 3. Broker disconnect -- the real order-reconciler heartbeat, see
+    // this function's own docstring above.
+    if (health && health.reconciler_ok === false) {
+      items.push({
+        severity: "critical",
+        category: "broker_disconnect",
+        text: "Order reconciler (broker cross-check) heartbeat is stale or failing -- broker-side order state may be out of date",
+      });
+    }
+
+    // 4. Stale price -- the real price-monitor heartbeat (GET /health's
+    // price_monitor_ok), the same real freshness check TR-01's own Safety
+    // summary panel already renders per-subsystem below.
+    if (health && health.price_monitor_ok === false) {
+      items.push({
+        severity: "warning",
+        category: "stale_price",
+        text: "Price monitor heartbeat is stale -- MAE/MFE and other price-derived figures may be out of date",
+      });
+    }
+
+    // 5. Capital breach -- see this function's own docstring above.
+    for (const a of capitalAccounts || []) {
+      if (a.available_notional !== null && a.available_notional !== undefined && a.available_notional <= 0) {
+        items.push({
+          severity: "warning",
+          category: "capital_breach",
+          text: `${a.account_id} · at or over its configured capital ceiling (${fmtNum(a.available_notional)} headroom)`,
+          correlationId: a.account_id,
+        });
+      }
+    }
+
+    // 6. Ordinary warning -- a provider whose real last-received-signal age
+    // exceeds this panel's own judgment-call staleness threshold.
     const lastSeenBySource = new Map();
     for (const s of signals) {
       if (!lastSeenBySource.has(s.source)) lastSeenBySource.set(s.source, s.received_at);
@@ -712,6 +860,7 @@
       if (Number.isFinite(ageSeconds) && ageSeconds > STALE_SOURCE_THRESHOLD_SECONDS) {
         items.push({
           severity: "warning",
+          category: "ordinary_warning",
           text: `${p.provider_id} · source stream stale`,
           ageSeconds,
           correlationId: p.provider_id,
@@ -721,7 +870,7 @@
 
     const pending = orders.filter((o) => o.status === "pending");
     if (pending.length) {
-      items.push({ severity: "info", text: `${pending.length} entry order(s) awaiting fill` });
+      items.push({ severity: "info", category: "ordinary_warning", text: `${pending.length} entry order(s) awaiting fill` });
     }
 
     return items;
@@ -1057,11 +1206,12 @@
     const halted = lifecycles.filter((l) => l.halted);
     const unknownOps = lifecycles.filter((l) => l.pending_exit || l.pending_entry).length;
 
-    const [capitalRes, systemInfoRes, providersRes, signalsRes] = await Promise.all([
+    const [capitalRes, systemInfoRes, providersRes, signalsRes, healthRes] = await Promise.all([
       ctx.fetchJSON("/capital-allocation"),
       ctx.fetchJSON("/system/info"),
       ctx.fetchJSON("/providers"),
       ctx.fetchJSON("/signals?limit=500"),
+      ctx.fetchJSON("/health"),
     ]);
 
     const economics = await Promise.all(
@@ -1072,6 +1222,19 @@
     const deployedTotal = capitalAccounts.reduce((sum, a) => sum + (a.deployed_notional || 0), 0);
     const reservedTotal = capitalAccounts.reduce((sum, a) => sum + (a.reserved_notional || 0), 0);
     const capitalDegraded = !capitalRes.ok;
+
+    // "Available capital" (review's top-row KPI): real GET
+    // /capital-allocation `available_notional`, summed ONLY across accounts
+    // where it is a real, known figure -- `null` for an account with no
+    // configured notional ceiling, or one whose exposure is unresolved this
+    // refresh (see that endpoint's own docstring) -- never treated as 0,
+    // same "never guess a headroom number" rule the endpoint itself
+    // documents.
+    const availableKnownAccounts = capitalAccounts.filter(
+      (a) => a.available_notional !== null && a.available_notional !== undefined
+    );
+    const availableTotal = availableKnownAccounts.reduce((sum, a) => sum + a.available_notional, 0);
+    const availableCapitalKnown = availableKnownAccounts.length > 0;
 
     // Total P&L: real per-account GET /accounts/{id}/economics realized_pnl,
     // summed -- only when EVERY account's read succeeded (a partial sum
@@ -1128,7 +1291,38 @@
     panelEls.exposure.removeAttribute("aria-busy");
 
     // --- KPI band ---
+    // 2026-09 design review's exact top-row order: NAV, Today's net P&L,
+    // Open risk, Available capital, Capital committed, Unprotected
+    // exposure, Unknown broker operations, Critical incidents. Every value
+    // below is the SAME real computation the previous build already did
+    // (renamed to match the review's language where it differed --
+    // "Net liquidation"->"NAV", "Day P&L"->"Today's net P&L", "Deployed
+    // capital"->"Capital committed", plus one genuinely new figure,
+    // "Available capital", see `availableCapitalKnown` above). The 4 tiles
+    // that don't map onto the review's named 8 (Trading mode, Active
+    // accounts, Total P&L, Reserved capital) are real, useful figures this
+    // build already computes -- kept, not deleted, but moved to a second
+    // row AFTER the primary 8 rather than interleaved among them.
     const items = [
+      { label: "NAV", value: "Not summed", tone: "neutral", sublabel: "see note below" },
+      dayPnlAvailable
+        ? { label: "Today's net P&L", value: fmtNum(dayPnlTotal), tone: dayPnlTotal >= 0 ? "ok" : "warn", sublabel: `${dayPnlCoveredCount}/${accounts.length} accounts have ~24h history` }
+        : { label: "Today's net P&L", value: "Not tracked", tone: "neutral", sublabel: "see note below" },
+      openRiskAvailable
+        ? { label: "Open risk", value: fmtNum(openRiskTotal), tone: "neutral", sublabel: `${pricedRiskRows.length} priced position(s)${riskUnknownCount ? `, ${riskUnknownCount} unknown` : ""}` }
+        : { label: "Open risk", value: "Not tracked", tone: "neutral", sublabel: "see note below" },
+      availableCapitalKnown
+        ? { label: "Available capital", value: fmtNum(availableTotal), tone: "neutral", sublabel: `${availableKnownAccounts.length}/${capitalAccounts.length} accounts have a configured ceiling` }
+        : { label: "Available capital", value: "Not tracked", tone: "neutral", sublabel: "see note below" },
+      { label: "Capital committed", value: fmtNum(deployedTotal), tone: "neutral", sublabel: capitalDegraded ? "degraded this refresh" : `${capitalAccounts.length} accounts, deployed notional` },
+      {
+        label: "Unprotected exposure",
+        value: fmtNum(unprotectedCount),
+        tone: unprotectedCount > 0 ? "crit" : "ok",
+        sublabel: unprotectedCount > 0 ? `${fmtNum(unprotectedQty)} shares uncovered` : "0 uncovered managed positions",
+      },
+      { label: "Unknown broker operations", value: fmtNum(unknownOps), tone: unknownOps > 0 ? "warn" : "ok", sublabel: "unresolved pending entry/exit" },
+      { label: "Critical incidents", value: fmtNum(halted.length), tone: halted.length > 0 ? "crit" : "ok", sublabel: "halted managed positions" },
       standbyMode === null
         ? { label: "Trading mode", value: "Unknown", tone: "neutral", sublabel: "Could not read GET /system/info" }
         : standbyMode
@@ -1140,26 +1334,10 @@
         tone: activeAccounts === 0 && accounts.length > 0 ? "warn" : "neutral",
         sublabel: `${accounts.length} configured`,
       },
-      { label: "Net liquidation", value: "Not summed", tone: "neutral", sublabel: "see note below" },
-      dayPnlAvailable
-        ? { label: "Day P&L", value: fmtNum(dayPnlTotal), tone: dayPnlTotal >= 0 ? "ok" : "warn", sublabel: `${dayPnlCoveredCount}/${accounts.length} accounts have ~24h history` }
-        : { label: "Day P&L", value: "Not tracked", tone: "neutral", sublabel: "see note below" },
       economicsOk
-        ? { label: "Total P&L", value: fmtNum(totalPnl), tone: totalPnl >= 0 ? "ok" : "warn", sublabel: "realized, sum of all accounts" }
-        : { label: "Total P&L", value: "Not tracked", tone: "neutral", sublabel: "see note below" },
-      { label: "Deployed capital", value: fmtNum(deployedTotal), tone: "neutral", sublabel: capitalDegraded ? "degraded this refresh" : `${capitalAccounts.length} accounts` },
+        ? { label: "Total P&L (realized)", value: fmtNum(totalPnl), tone: totalPnl >= 0 ? "ok" : "warn", sublabel: "sum of all accounts" }
+        : { label: "Total P&L (realized)", value: "Not tracked", tone: "neutral", sublabel: "see note below" },
       { label: "Reserved capital", value: fmtNum(reservedTotal), tone: "neutral", sublabel: capitalDegraded ? "degraded this refresh" : `${capitalAccounts.length} accounts` },
-      openRiskAvailable
-        ? { label: "Open risk", value: fmtNum(openRiskTotal), tone: "neutral", sublabel: `${pricedRiskRows.length} priced position(s)${riskUnknownCount ? `, ${riskUnknownCount} unknown` : ""}` }
-        : { label: "Open risk", value: "Not tracked", tone: "neutral", sublabel: "see note below" },
-      {
-        label: "Unprotected exposure",
-        value: fmtNum(unprotectedCount),
-        tone: unprotectedCount > 0 ? "crit" : "ok",
-        sublabel: unprotectedCount > 0 ? `${fmtNum(unprotectedQty)} shares uncovered` : "0 uncovered managed positions",
-      },
-      { label: "Unknown orders", value: fmtNum(unknownOps), tone: unknownOps > 0 ? "warn" : "ok", sublabel: "unresolved pending entry/exit" },
-      { label: "Critical incidents", value: fmtNum(halted.length), tone: halted.length > 0 ? "crit" : "ok", sublabel: "halted managed positions" },
     ];
 
     const kpiHost = document.createElement("div");
@@ -1167,20 +1345,20 @@
 
     const caveats = [];
     caveats.push({
-      title: "Net liquidation",
+      title: "NAV",
       status: "not_tracked",
-      reason: "This build has no per-account currency field (see app/models.py's AccountBalance) to prove every configured account's broker-reported equity is in the same currency, so summing them into one figure would be an unverified number, not a real one (same M-TR-01-01 gap this file's Account risk cards panel already discloses per-account below).",
+      reason: "This build has no per-account currency field (see app/models.py's AccountBalance) to prove every configured account's broker-reported equity is in the same currency, so summing them into one figure would be an unverified number, not a real one (same gap this file's Account risk cards panel already discloses per-account below).",
     });
     if (!dayPnlAvailable) {
       caveats.push({
-        title: "Day P&L",
+        title: "Today's net P&L",
         status: "not_tracked",
         reason: "No configured account yet has real, persisted equity-history snapshots (GET /accounts/{id}/equity-history, app/equity_history.py) spanning a full ~24h window -- computing a 'day' change from a shorter real window would silently mislabel it.",
       });
     }
     if (!economicsOk) {
       caveats.push({
-        title: "Total P&L",
+        title: "Total P&L (realized)",
         status: "not_tracked",
         reason: "GET /accounts/{id}/economics could not be read for one or more accounts this refresh -- a partial sum would understate real realized P&L.",
       });
@@ -1190,6 +1368,15 @@
         title: "Open risk",
         status: "not_tracked",
         reason: "No managed-lifecycle position is currently fully covered, stop-confirmed, and has both a known entry price and a known broker-confirmed stop price -- a real '$0' would be indistinguishable from 'unknown,' which this codebase never allows (see app/lifecycle/models.py's ProtectionStatus).",
+      });
+    }
+    if (!availableCapitalKnown) {
+      caveats.push({
+        title: "Available capital",
+        status: "not_tracked",
+        reason: capitalDegraded
+          ? "GET /capital-allocation could not be read this refresh."
+          : "No configured account has opted into a real notional-exposure ceiling (DestinationAccount.max_notional_exposure) -- available_notional is only ever a real figure for an account with one, never a guessed headroom.",
       });
     }
 
@@ -1217,6 +1404,8 @@
       providers: (providersRes.ok && providersRes.data && providersRes.data.providers) || [],
       signals: (signalsRes.ok && signalsRes.data && signalsRes.data.signals) || [],
       orders,
+      health: healthRes.ok ? healthRes.data : null,
+      capitalAccounts,
     });
     Components.renderAttentionQueue(panelEls.attention, { items: attentionItems });
 
@@ -1329,11 +1518,11 @@
         });
         StateMatrix.render(panelEls.risk, {
           state: "ready",
-          html: `<p class="section-note">M-TR-01-01: verified net liquidation (broker-reported equity), not summed across accounts -- different accounts may use different brokers/currencies and this build has no cross-account currency normalization.</p>${table(
+          html: `<p class="section-note">Verified net liquidation (broker-reported equity), shown per account -- not summed across accounts (different accounts may use different brokers/currencies; see the KPI band's NAV note above).</p>${table(
             ["Account", "Broker", "Verified net liquidation", "Enabled"],
             riskRows,
             "No accounts."
-          )}`,
+          )}${evidenceHtml("Evidence -- internal requirement ID", "<code>M-TR-01-01</code> Verified net liquidation.")}`,
         });
 
         const economics = await Promise.all(
@@ -1359,10 +1548,15 @@
           html: `${table(["Account", "Realized P&amp;L"], pnlRows, "No accounts.")}
                  <div class="econ-stats" style="margin-top:10px;">
                    <div><span class="muted">Open positions (all accounts)</span><br><span class="num">${positions.length}</span></div>
-                   <div><span class="muted">M-TR-01-03 Protection deficit (allocations uncovered)</span><br><span class="num">${deficitCount}</span></div>
-                   <div><span class="muted">M-TR-01-04 Unknown operations</span><br><span class="num">${unknownOps}</span></div>
+                   <div><span class="muted">Protection deficit (allocations uncovered)</span><br><span class="num">${deficitCount}</span></div>
+                   <div><span class="muted">Unknown operations</span><br><span class="num">${unknownOps}</span></div>
                  </div>
-                 <div class="tr-unsupported-note">${escapeHtml("M-TR-01-02 Reserved risk: not available -- this build exposes no committed/reserved-risk ledger via any read endpoint.")}</div>`,
+                 <div id="tr01-p04-reserved-risk-cap"></div>
+                 ${evidenceHtml("Evidence -- internal requirement IDs", "<code>M-TR-01-02</code> Reserved risk &middot; <code>M-TR-01-03</code> Protection deficit (allocations uncovered) &middot; <code>M-TR-01-04</code> Unknown operations.")}`,
+        });
+        Components.renderCapabilityState(panelEls.pnl.querySelector("#tr01-p04-reserved-risk-cap"), {
+          status: "not_tracked",
+          reason: "Reserved risk is not available -- this build exposes no committed/reserved-risk ledger via any read endpoint.",
         });
       }
     }
@@ -1403,13 +1597,17 @@
         StateMatrix.render(panelEls.activity, { state: "empty", emptyMessage: "No recent activity." });
       } else {
         const rows = orders.slice(0, 15).map((o) => [
-          o.executed_at || "—",
+          // Primary reading is a relative age (real elapsed time since the
+          // real `executed_at`), never a raw UTC timestamp -- the exact
+          // real ISO value is still one hover (title attribute) away, per
+          // this batch's design review.
+          `<span title="${escapeAttr(o.executed_at || "")}">${escapeHtml(fmtRelativeAge(o.executed_at) || "—")}</span>`,
           `<span class="mono">${escapeHtml(o.account_id)}</span>`,
           `<span class="mono">${escapeHtml(o.symbol || "—")}</span>`,
           escapeHtml(o.side || "—"),
           o.status === "filled" ? pill("filled", "ok") : o.status === "pending" ? pill("pending", "warn") : pill(o.status || "—", "bad"),
         ]);
-        StateMatrix.render(panelEls.activity, { state: "ready", html: table(["Executed at", "Account", "Symbol", "Side", "Status"], rows, "No recent activity.") });
+        StateMatrix.render(panelEls.activity, { state: "ready", html: table(["Executed", "Account", "Symbol", "Side", "Status"], rows, "No recent activity.") });
       }
     }
 
