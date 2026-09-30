@@ -16,8 +16,7 @@ ALL of the following hold for one captured notification event:
   2. The passively-captured notification's
      `app.notification_bridge.ContentCompleteness` means the OS
      notification text alone is not enough to safely parse a signal --
-     today that is anything other than `ContentCompleteness.COMPLETE`
-     (`TRUNCATED`/`TITLE_ONLY`); see `needs_escalation` below.
+     `PARTIAL`/`POINTER_ONLY`/`TRUNCATED`; see `needs_escalation` below.
   3. Active retrieval is explicitly enabled for that specific
      provider/app (`ProviderEscalationConfig.capability_state` is
      `ENABLED`, or `SHADOW` for a non-live dry run) -- `DISABLED` by
@@ -113,12 +112,22 @@ class DeniedAppPackageError(PermissionError):
 #: Which `app.notification_bridge.ContentCompleteness` values mean "the OS
 #: notification text alone is not enough to safely parse a trade signal
 #: from" -- i.e. escalation-eligible per point 2 of this module's own
-#: docstring. Track 12/a future revision of `ContentCompleteness` may
-#: introduce a finer-grained vocabulary (the design brief's own language:
-#: `PARTIAL`/`POINTER_ONLY`/`TRUNCATED`) -- see `needs_escalation`'s own
-#: docstring for exactly how that reconciles with what exists today.
+#: docstring. Reconciled against Track 12's actual five-state per-event
+#: classification (`COMPLETE`/`PARTIAL`/`POINTER_ONLY`/`TRUNCATED`/
+#: `UNKNOWN` -- see that enum's own docstring in app/notification_bridge.py):
+#: `PARTIAL`/`POINTER_ONLY`/`TRUNCATED` are exactly the design brief's own
+#: three escalation-triggering states. `UNKNOWN` (the classifier's honest
+#: "can't tell" fallback) is deliberately excluded here -- escalating on
+#: every unclassifiable event would make active retrieval the default
+#: path for anything this codebase's own parser doesn't yet recognize,
+#: rather than a true last resort; `UNKNOWN` events are still recorded
+#: and visible for an operator to review manually.
 _ESCALATION_ELIGIBLE_COMPLETENESS = frozenset(
-    {ContentCompleteness.TRUNCATED, ContentCompleteness.TITLE_ONLY}
+    {
+        ContentCompleteness.PARTIAL,
+        ContentCompleteness.POINTER_ONLY,
+        ContentCompleteness.TRUNCATED,
+    }
 )
 
 
@@ -128,21 +137,8 @@ def needs_escalation(completeness: ContentCompleteness) -> bool:
     cannot be safely parsed. `ContentCompleteness.COMPLETE` is never
     escalation-eligible -- the whole point of the hybrid design is that a
     complete passive capture needs no active retrieval at all.
-
-    INTERFACE-RECONCILIATION NOTE (Track 12): the design brief this
-    module implements names `PARTIAL`/`POINTER_ONLY`/`TRUNCATED` as the
-    three escalation-triggering states, but
-    `app.notification_bridge.ContentCompleteness` (as it exists on this
-    branch today, unchanged by this task per its own hard rule 3 --
-    public contracts are not modified without updating callers) only has
-    `COMPLETE`/`TRUNCATED`/`TITLE_ONLY`. This function currently treats
-    `TRUNCATED` and `TITLE_ONLY` (the closest existing equivalents of
-    `PARTIAL`/`POINTER_ONLY`) as escalation-eligible. If Track 12 lands a
-    finer-grained enum (splitting `TITLE_ONLY` into `POINTER_ONLY` vs a
-    genuinely-empty case, or adding `PARTIAL` as distinct from
-    `TRUNCATED`), this function's `_ESCALATION_ELIGIBLE_COMPLETENESS` set
-    is the ONLY place that needs to change to reconcile with it -- no
-    other caller in this module hardcodes the enum's members."""
+    `ContentCompleteness.UNKNOWN` is also never escalation-eligible; see
+    `_ESCALATION_ELIGIBLE_COMPLETENESS`'s own comment for why."""
     return completeness in _ESCALATION_ELIGIBLE_COMPLETENESS
 
 

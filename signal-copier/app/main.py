@@ -87,7 +87,7 @@ from app.services.catalog_fit_sim_auth import (
 )
 from app.risk import size_for_account, symbol_for_account
 from app.routing import RoutingConfig, RoutingRule, load_routing_config_from_store
-from app.sources.text_parser import classify_batch, parse_text_signal
+from app.sources.text_parser import DispositionOutcome, classify_batch, classify_text_signal
 from app.sources.discord import DiscordSource
 from app.sources.mt4_mt5 import MetaApiSource
 from app.sources.ninjatrader import NinjaTraderSource
@@ -106,9 +106,11 @@ from app.email_collectors import EmailCollectorError
 from app.notification_bridge import (
     ContentCompleteness,
     NotificationBridgeError,
+    classify_notification_completeness,
     content_fingerprint,
     generate_pairing_token,
     hash_pairing_token,
+    resolve_provider_mapping,
     validate_content_completeness,
     verify_pairing_token,
 )
@@ -3494,13 +3496,18 @@ async def record_email_collector_qualification_evidence(
 class RegisterNotificationBridgeDeviceRequest(BaseModel):
     """Owner-gated device pairing -- see
     app/notification_bridge.py's module docstring. `provider_mapping`
-    (app_package -> {"provider_name": ..., "analyst": ...}) is optional;
-    a package with no entry falls back to using its bare package name as
-    Signal.source."""
+    (app_package -> {"provider_name": ..., "analyst": ..., "rules":
+    [{"title_pattern": ..., "provider_name": ..., "analyst": ...}, ...]})
+    is optional; a package with no entry falls back to using its bare
+    package name as Signal.source. `"rules"` (Track 12, Whop) lets ONE
+    app_package -- e.g. Whop's own `com.whop.whop`, which carries alerts
+    from many distinct signal sellers at once -- resolve to a DIFFERENT
+    provider per notification, matched by title. See
+    app.notification_bridge.resolve_provider_mapping's own docstring."""
 
     device_id: str
     app_packages: list[str]
-    provider_mapping: dict[str, dict[str, str]] | None = None
+    provider_mapping: dict[str, dict[str, Any]] | None = None
 
 
 @app.post("/notification-bridge/devices")
@@ -3821,7 +3828,7 @@ async def _process_notification_bridge_event(device: dict, event: NotificationBr
         }
 
     try:
-        completeness = validate_content_completeness(event.content_completeness)
+        device_reported = validate_content_completeness(event.content_completeness)
     except NotificationBridgeError as exc:
         return {
             "notification_key": event.notification_key,
@@ -3846,9 +3853,15 @@ async def _process_notification_bridge_event(device: dict, event: NotificationBr
     is_edit = existing is not None
     revision_seq = (existing["revision_seq"] + 1) if existing else 1
 
-    mapping = device["provider_mapping"].get(event.app_package, {})
-    provider_name = mapping.get("provider_name") or event.app_package
-    analyst = mapping.get("analyst")
+    # Track 12 (Whop): a single app_package (e.g. com.whop.whop) can
+    # carry alerts from many distinct providers at once -- resolved by
+    # this notification's own title against that package's configured
+    # rules, falling back to the package-level default/bare package name
+    # exactly as before. See app.notification_bridge.
+    # resolve_provider_mapping's own docstring.
+    provider_name, analyst = resolve_provider_mapping(
+        device["provider_mapping"], app_package=event.app_package, title=event.title
+    )
 
     best_text = (event.expanded_text or event.text or event.title or "").strip()
 
@@ -3865,13 +3878,30 @@ async def _process_notification_bridge_event(device: dict, event: NotificationBr
 
     parsed_signal: Signal | None = None
     parse_detail: str | None = None
+    disposition_outcome: DispositionOutcome | None = None
     if best_text:
-        try:
-            parsed_signal = parse_text_signal(best_text, source=provider_name, asset_class=AssetClass.CRYPTO, analyst=analyst)
-        except SignalValidationError as exc:
-            parse_detail = str(exc)
+        disposition = classify_text_signal(best_text, source=provider_name, asset_class=AssetClass.CRYPTO, analyst=analyst)
+        disposition_outcome = disposition.outcome
+        if disposition.outcome is DispositionOutcome.PARSED:
+            parsed_signal = disposition.signal
+        else:
+            parse_detail = disposition.detail
     else:
         parse_detail = "no title/text/expanded_text content at all"
+
+    # Track 12: the explicit, per-event five-state classification (see
+    # app.notification_bridge.ContentCompleteness's own docstring) --
+    # combines the device's own report with what this server actually
+    # saw/parsed, since a provider (Whop chief among them) can report
+    # "nothing elided" while having put nothing but a bare pointer
+    # phrase in the OS notification. Only COMPLETE is eligible for live
+    # routing below; every other state is recorded and flagged for
+    # Track 13's escalation layer (see needs_escalation below).
+    completeness = classify_notification_completeness(
+        device_reported=device_reported,
+        best_text=best_text,
+        disposition_outcome=disposition_outcome.value if disposition_outcome is not None else None,
+    )
 
     if completeness is not ContentCompleteness.COMPLETE:
         classification = "needs_review_incomplete_content"
@@ -3987,6 +4017,11 @@ async def _process_notification_bridge_event(device: dict, event: NotificationBr
         received_at=server_received_at,
         classification=classification,
         signal_id=signal_id,
+        # Track 13's escalation layer interface: flag every non-COMPLETE
+        # classification for later phone-retrieval follow-up -- see
+        # SignalStore.list_notification_bridge_events_needing_escalation's
+        # own docstring.
+        needs_escalation=completeness is not ContentCompleteness.COMPLETE,
     )
 
     degraded = store.record_notification_bridge_completeness(

@@ -450,6 +450,19 @@ class SignalCopierEngine:
         )
         if existing_signal_id is not None:
             signal.id = existing_signal_id
+        elif config.SIGNAL_CORRELATION_ENABLED:
+            # Track 12: exact WITHIN-transport identity found nothing new
+            # (either this is genuinely new, or it's the same alert
+            # arriving via a DIFFERENT transport) -- try cross-transport
+            # fingerprint correlation. See `_correlate_cross_transport`'s
+            # own docstring for the full guard (only signals that already
+            # carry real provider identity ever reach this at all) and
+            # `app/signal_correlation.py`'s own module docstring for why
+            # this composes with, and never weakens, the exact-identity
+            # dedup just above.
+            conflict_result = await self._correlate_cross_transport(signal)
+            if conflict_result is not None:
+                return conflict_result
         # SIG-01: this exact signal id may already have been processed --
         # e.g. a caller that retries handle_signal itself after a timeout
         # without knowing whether the first attempt's orders actually went
@@ -924,6 +937,136 @@ class SignalCopierEngine:
             )
 
         return results
+
+    #: Sentinel `OrderResult.account_id` for a signal held out of live
+    #: routing entirely by Track 12's cross-transport correlation
+    #: (`_correlate_cross_transport`, CONFLICTING_SOURCE_DATA) -- there is
+    #: no real destination account this rejection is "for" (it's rejected
+    #: BEFORE `routing.destinations_for` is ever consulted), so this is a
+    #: deliberately unmistakable, never-a-real-account-id marker, same
+    #: "honest placeholder, not a fabricated real value" spirit as this
+    #: engine's other sentinels.
+    _CROSS_TRANSPORT_CONFLICT_ACCOUNT_ID = "__cross_transport_conflict__"
+
+    async def _correlate_cross_transport(self, signal: Signal) -> list[OrderResult] | None:
+        """Track 12: cross-transport signal correlation/dedup -- see
+        `app/signal_correlation.py`'s own module docstring for the full
+        design. Called from `_handle_signal` ONLY after the existing
+        exact-identity dedup (`find_signal_id_by_provider_identity`)
+        found nothing for this signal.
+
+        Returns `None` when there is nothing to do here (no real
+        provider identity to correlate from, no fingerprint-matching
+        candidate within the window, or a matching candidate that
+        corroborates -- in the corroborating case, `signal.id` has
+        already been canonicalized onto the earlier signal's id as a
+        side effect, exactly like the exact-identity dedup path does, so
+        the caller's own subsequent SIG-01 replay-lookup catches it for
+        free) -- the caller should keep processing `signal` normally.
+
+        Returns a REAL final `list[OrderResult]` (a single REJECTED
+        result tagged `CONFLICTING_SOURCE_DATA`) when a candidate shares
+        this signal's fingerprint key but disagrees materially on
+        price/side -- the caller must return this immediately and never
+        proceed to route/submit the conflicting signal. The conflicting
+        signal itself is still persisted (via `save_signal`, tagged
+        `import_batch="cross_transport_conflict:{canonical_id}"` -- the
+        same "recorded, audited, never live-routed" convention Track 10
+        uses for `needs_review_incomplete_content`/`stale_backlog_
+        import_only`), and a `signal_correlation_evidence` row is
+        recorded either way (see `app/db.py`'s own table comment) so
+        `SignalStore.list_conflicting_signal_correlations` can surface
+        it for human review -- this codebase's existing "recorded but
+        held out of the live pipeline for a human to look at" pattern is
+        what this reuses; there is no separate, generic incident/review-
+        queue table elsewhere in this codebase to extend instead (see
+        this task's own final report for that design note)."""
+        # Only a signal with REAL provider identity ever participates --
+        # see this module's own docstring for why (keeps every existing
+        # adapter/test fixture with channel_id=None completely
+        # unaffected, and keeps this scoped to genuine transports, not
+        # ad hoc Signal objects built in-process).
+        if signal.channel_id is None or signal.message_id is None:
+            return None
+
+        from app.signal_correlation import CorrelationOutcome, classify_candidate, fingerprint_key
+
+        key = fingerprint_key(signal)
+        window = config.SIGNAL_CORRELATION_TIMESTAMP_WINDOW_SECONDS
+        received_at = signal.received_at if signal.received_at.tzinfo else signal.received_at.replace(tzinfo=timezone.utc)
+        since = datetime.fromtimestamp(received_at.timestamp() - window, tz=timezone.utc)
+        until = datetime.fromtimestamp(received_at.timestamp() + window, tz=timezone.utc)
+        candidates = self.store.find_correlation_candidates(
+            fingerprint_key=key, exclude_channel_id=signal.channel_id, since=since, until=until
+        )
+
+        for candidate in candidates:
+            candidate_price = candidate["price"]
+            candidate_received_at = datetime.fromisoformat(candidate["received_at"])
+            outcome = classify_candidate(
+                new_price=signal.price,
+                new_side=signal.side.value,
+                new_received_at=received_at,
+                candidate_price=candidate_price,
+                candidate_side=candidate["side"],
+                candidate_received_at=candidate_received_at,
+                price_tolerance_pct=config.SIGNAL_CORRELATION_PRICE_TOLERANCE_PCT,
+                window_seconds=window,
+            )
+            if outcome is None:
+                continue  # not eligible to compare (missing price on either side) -- never guessed
+            self.store.record_signal_correlation_evidence(
+                canonical_signal_id=candidate["id"],
+                evidence_signal_id=signal.id,
+                fingerprint_key=key,
+                source=signal.source,
+                channel_id=signal.channel_id,
+                message_id=signal.message_id,
+                price=signal.price,
+                side=signal.side.value,
+                received_at=received_at,
+                match_type=outcome.value,
+            )
+            if outcome is CorrelationOutcome.CORROBORATING:
+                logger.info(
+                    "signal id=%s (channel=%s) corroborates already-recorded signal id=%s (channel=%s) -- "
+                    "same fingerprint, price/side agree within tolerance; treating as the same underlying "
+                    "trade, not submitting a second order",
+                    signal.id,
+                    signal.channel_id,
+                    candidate["id"],
+                    candidate["channel_id"],
+                )
+                signal.id = candidate["id"]
+                return None
+            # CONFLICTING: never silently pick one side -- hold this
+            # signal out of live routing entirely and surface it for
+            # human review (see this method's own docstring).
+            logger.warning(
+                "CONFLICTING_SOURCE_DATA: signal id=%s (channel=%s, source=%s) shares fingerprint with "
+                "already-recorded signal id=%s (channel=%s) but disagrees on price/side -- held out of "
+                "live routing, recorded for human review",
+                signal.id,
+                signal.channel_id,
+                signal.source,
+                candidate["id"],
+                candidate["channel_id"],
+            )
+            signal.import_batch = f"cross_transport_conflict:{candidate['id']}"
+            self.store.save_signal(signal)
+            return [
+                OrderResult(
+                    account_id=self._CROSS_TRANSPORT_CONFLICT_ACCOUNT_ID,
+                    status=OrderStatus.REJECTED,
+                    signal_id=signal.id,
+                    message=(
+                        f"CONFLICTING_SOURCE_DATA: shares fingerprint with signal id={candidate['id']!r} "
+                        f"(channel_id={candidate['channel_id']!r}) but disagrees on price/side -- held for "
+                        "human review, never auto-resolved"
+                    ),
+                )
+            ]
+        return None
 
     def _reject(self, account: DestinationAccount, order_signal: Signal, message: str) -> OrderResult:
         return OrderResult(

@@ -51,7 +51,7 @@ def test_complete_content_never_needs_escalation():
     assert needs_escalation(ContentCompleteness.COMPLETE) is False
 
 
-@pytest.mark.parametrize("completeness", [ContentCompleteness.TRUNCATED, ContentCompleteness.TITLE_ONLY])
+@pytest.mark.parametrize("completeness", [ContentCompleteness.TRUNCATED, ContentCompleteness.POINTER_ONLY])
 def test_incomplete_content_needs_escalation(completeness):
     assert needs_escalation(completeness) is True
 
@@ -267,7 +267,7 @@ async def test_covered_by_direct_source_never_attempts_retrieval():
         app_package="com.example.alerts",
         notification_key="k1",
         content_hash="h1",
-        completeness=ContentCompleteness.TITLE_ONLY,
+        completeness=ContentCompleteness.POINTER_ONLY,
         covered_by_direct_source=True,
         config=ProviderEscalationConfig(
             id="cfg1", app_package="com.example.alerts", provider_name="p", capability_state=CapabilityState.ENABLED
@@ -379,7 +379,7 @@ async def test_shadow_mode_result_never_reaches_live_pipeline():
         app_package="com.example.alerts",
         notification_key="k1",
         content_hash="h1",
-        completeness=ContentCompleteness.TITLE_ONLY,
+        completeness=ContentCompleteness.POINTER_ONLY,
         covered_by_direct_source=False,
         config=config,
         adapter=adapter,
@@ -429,7 +429,7 @@ async def test_enabled_mode_with_real_candidate_returns_candidate_for_caller_to_
         app_package="com.example.alerts",
         notification_key="k1",
         content_hash="h1",
-        completeness=ContentCompleteness.TITLE_ONLY,
+        completeness=ContentCompleteness.POINTER_ONLY,
         covered_by_direct_source=False,
         config=config,
         adapter=adapter,
@@ -452,7 +452,7 @@ async def test_enabled_mode_with_unknown_extraction_records_extraction_unknown()
         app_package="com.example.alerts",
         notification_key="k1",
         content_hash="h1",
-        completeness=ContentCompleteness.TITLE_ONLY,
+        completeness=ContentCompleteness.POINTER_ONLY,
         covered_by_direct_source=False,
         config=config,
         adapter=adapter,

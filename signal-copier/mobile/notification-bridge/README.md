@@ -58,6 +58,52 @@ POST /notification-bridge/devices
 endpoint — with your session cookie + `X-CSRF-Token`, e.g. via `curl` or
 the dashboard's own API console if it has one.)
 
+#### Configuring Whop (one app package, many providers)
+
+[Whop](https://whop.com) is a marketplace/community platform many
+trading-signal providers sell subscriptions through — you get Whop's own
+app push notifications on your phone for a seller's new trade alert, the
+same mechanism as any other app's notifications. Unlike
+`com.example.tradingapp` above, Whop's own Android package
+(`com.whop.whop`) carries alerts from EVERY seller/community you're
+subscribed to at once — there's no separate package per provider — so a
+single flat `{"provider_name": ...}` entry can't tell them apart. Use the
+optional `"rules"` list instead, matched by CASE-INSENSITIVE SUBSTRING
+against the notification's own `title` (Whop notification titles are
+normally the community/seller's own name), first match wins:
+
+```
+POST /notification-bridge/devices
+{
+  "device_id": "my-pixel-phone",
+  "app_packages": ["com.whop.whop"],
+  "provider_mapping": {
+    "com.whop.whop": {
+      "rules": [
+        {"title_pattern": "XYZ Options", "provider_name": "xyz_options"},
+        {"title_pattern": "ABC Futures Room", "provider_name": "abc_futures", "analyst": "abc-desk"}
+      ]
+    }
+  }
+}
+```
+
+A Whop notification whose title matches none of your configured rules
+falls back to this package's own top-level `"provider_name"`/`"analyst"`
+(if you set one) or the bare package name `com.whop.whop` — same honest,
+undecorated default this registry has always used for an unmapped
+package. See `app.notification_bridge.resolve_provider_mapping`'s own
+docstring for the exact matching order.
+
+**Whop-specific content-completeness note:** Whop's own OS notification
+is frequently just a bare pointer — "New trade posted", with the actual
+trade content only visible after opening the Whop app — even when
+Android itself sees nothing elided (so the device reports
+`content_completeness: "complete"`). See "What gets extracted..." and
+"Content completeness and escalation" below for how this server tells
+that apart from a genuinely complete alert, and what happens to it (it
+is never silently treated as a routable trade instruction).
+
 The response includes a **`pairing_token`** field. **Copy it down now —
 it is shown exactly once and is never stored anywhere in recoverable
 form** (the server only ever keeps an argon2id hash of it, the same way
@@ -170,8 +216,9 @@ of it has been verified from this session.
 | `MessagingStyle` messages (`NotificationCompat.MessagingStyle`) | `expanded_text` + `conversation_participants` + `is_group_conversation` | Highest preference — the richest available structure |
 | `Notification.EXTRA_TEXT_LINES` (`InboxStyle`) | `expanded_text` (joined) | Used if neither of the above is present |
 
-**`content_completeness`** is set from what was ACTUALLY extractable, not
-guessed:
+**`content_completeness`** (the WIRE field this app sends, validated
+server-side against `app.notification_bridge.DeviceReportedCompleteness`)
+is set from what was ACTUALLY extractable on-device, not guessed:
 
 - `"complete"` — an expanded field (BigText/MessagingStyle/InboxStyle)
   was present, OR the short text alone doesn't look elided (no trailing
@@ -181,6 +228,39 @@ guessed:
 
 A notification with genuinely nothing extractable at all (no title, no
 text) is not queued.
+
+### Content completeness and escalation (server-side, Track 12)
+
+The value this app reports above is only ONE input to what the server
+actually stores and gates live routing on. `GET /notification-bridge/
+devices/{id}/events` shows each event's real `content_completeness`, one
+of five values (`app.notification_bridge.ContentCompleteness`):
+
+| Value | Meaning | Live-routed? |
+|---|---|---|
+| `complete` | A real trade instruction was both fully captured AND resolved (or the text was fully captured and genuinely isn't a trade instruction at all) | Yes |
+| `partial` | Trade-instruction shape was recognized but a required field was missing/ambiguous | No |
+| `pointer_only` | A bare "something happened, open the app" pointer with no extractable trade content — Whop's own common shape (see above), and this app's own `title_only` case | No |
+| `truncated` | This app itself reported the text was cut off mid-content | No |
+| `unknown` | Real text was captured, this app reports nothing elided, it isn't a recognized bare-pointer phrase, but the server's own parser couldn't tell whether it's a trade instruction in an unrecognized format or unrelated content — the honest "can't tell" fallback, never silently `complete` | No |
+
+This is computed server-side (`app.notification_bridge.classify_
+notification_completeness`) BECAUSE this app's own `content_completeness`
+report alone isn't enough — a provider (Whop specifically) can report
+`"complete"` while having put nothing but a bare pointer phrase in the
+notification.
+
+Only `complete` events are eligible for live routing. Every other event
+is recorded (`classification: "needs_review_incomplete_content"` in the
+events list) and flagged `needs_escalation: true` /
+`escalation_status: "pending"` — the interface a separate, actively
+developed escalation layer (Track 13: an AI phone-retrieval system that
+can attempt to recover the missing content, e.g. by calling the provider
+or checking the source app) reads from
+(`SignalStore.list_notification_bridge_events_needing_escalation`) and
+resolves through (`SignalStore.resolve_notification_bridge_event_
+escalation`). This mobile app does not implement that retrieval itself —
+it only captures and reports what Android actually gave it.
 
 ### A specific bug this implementation deliberately avoids
 
