@@ -123,6 +123,7 @@ from app.notification_bridge import (
     verify_pairing_token,
 )
 from app.phone_escalation import PhoneEscalationError, evaluate_escalation
+from app.connection_catalog import get_connection_catalog_entry, list_connection_catalog_types
 from app.certification import CertificationError
 from app.certification_scorecard import compute_scorecard
 from app.sources.twitter import TwitterSource
@@ -3106,6 +3107,128 @@ async def get_catalog_connection(connection_id: str, _owner: dict = Depends(requ
     if entry is None:
         raise HTTPException(status_code=404, detail=f"no connection registered with id={connection_id!r}")
     return entry
+
+
+# --- Track 19: connection catalog / health / checkpoint / cost ---------
+#
+# See app/connection_catalog.py's and app/connections.py's own module
+# docstrings for the full design. Owner-gated exactly like the Track 14
+# `/provider-catalog/...` routes above -- read-only routes use
+# `require_owner_read`, the one write route (manual cost-event recording)
+# uses `require_owner` (CSRF-checked).
+
+
+@app.get("/connections/catalog")
+async def get_connections_catalog(_owner: dict = Depends(require_owner_read)) -> dict:
+    """The static, code-defined AVAILABLE-connection-types catalog (the
+    user's own spec's CONNECTED/AVAILABLE integrations-page list) -- see
+    app/connection_catalog.py's own module docstring for how
+    `status="implemented"` vs `"not_implemented"` was decided (a real
+    adapter file actually checked, never guessed)."""
+    return {"types": list_connection_catalog_types()}
+
+
+@app.get("/connections/catalog/{connection_type}")
+async def get_connections_catalog_entry(connection_type: str, _owner: dict = Depends(require_owner_read)) -> dict:
+    entry = get_connection_catalog_entry(connection_type)
+    if entry is None:
+        raise HTTPException(status_code=404, detail=f"no catalog entry for connection_type={connection_type!r}")
+    return entry
+
+
+@app.get("/connections/health-summary")
+async def get_connections_health_summary(_owner: dict = Depends(require_owner_read)) -> dict:
+    """Dashboard card data: real N Healthy / N Degraded / N Offline (and
+    N Never-Connected / N Insufficient-Data / N Unknown) counts across
+    every registered connection -- see
+    app.connections.compute_connection_health's own docstring for exactly
+    what evidence drives each state (never "no alerts recently" alone)."""
+    return store.get_connection_health_summary()
+
+
+@app.get("/connections/{connection_id}/health")
+async def get_connection_health_route(connection_id: str, _owner: dict = Depends(require_owner_read)) -> dict:
+    health = store.get_connection_health(connection_id)
+    if health is None:
+        raise HTTPException(status_code=404, detail=f"no connection registered with id={connection_id!r}")
+    return health
+
+
+@app.get("/connections/{connection_id}/checkpoint-status")
+async def get_connection_checkpoint_status_route(
+    connection_id: str, _owner: dict = Depends(require_owner_read)
+) -> dict:
+    """Honest, read-only reconciliation/missed-event diagnostics -- see
+    SignalStore.get_connection_checkpoint_status's own docstring for why
+    `expected_checkpoint`/`current_checkpoint`/`gaps`/`recovery_attempts`/
+    `unrecoverable_gaps`/`backlog`/`last_successful_reconciliation` are
+    honestly reported as `"not_tracked"` rather than a fabricated number,
+    and what real per-source freshness data IS surfaced instead."""
+    try:
+        return store.get_connection_checkpoint_status(connection_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.get("/connections/{connection_id}/cost-summary")
+async def get_connection_cost_summary_route(
+    connection_id: str, since: str | None = None, _owner: dict = Depends(require_owner_read)
+) -> dict:
+    """Real totals computed from `connection_cost_events` rows only --
+    `since` (ISO-8601) defaults to the start of the current UTC month.
+    See SignalStore.get_connection_cost_summary's own docstring for the
+    honest `insufficient_data` case."""
+    since_dt = datetime.fromisoformat(since) if since else None
+    try:
+        return store.get_connection_cost_summary(connection_id, since=since_dt)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+class RecordConnectionCostEventRequest(BaseModel):
+    """Owner-gated manual cost recording -- for a connection type this
+    codebase has no automated live-provider-billing wiring for yet (every
+    connection, today -- see app/db.py's own record_connection_cost_event
+    docstring for why that auto-detection is explicitly out of scope for
+    this track). `amount`/`category` are required; the AI/token/browser-
+    minute/mobile-agent-call fields are optional and left unset unless the
+    caller actually has a real number to record."""
+
+    amount: float
+    currency: str = "USD"
+    category: str
+    event_count: int = 1
+    occurred_at: str | None = None
+    ai_calls: int | None = None
+    tokens: int | None = None
+    browser_minutes: float | None = None
+    mobile_agent_calls: int | None = None
+    note: str | None = None
+
+
+@app.post("/connections/{connection_id}/cost-events")
+async def record_connection_cost_event_route(
+    connection_id: str, request: RecordConnectionCostEventRequest, _owner: dict = Depends(require_owner)
+) -> dict:
+    occurred_at = datetime.fromisoformat(request.occurred_at) if request.occurred_at else None
+    try:
+        return store.record_connection_cost_event(
+            connection_id,
+            amount=request.amount,
+            currency=request.currency,
+            category=request.category,
+            event_count=request.event_count,
+            occurred_at=occurred_at,
+            ai_calls=request.ai_calls,
+            tokens=request.tokens,
+            browser_minutes=request.browser_minutes,
+            mobile_agent_calls=request.mobile_agent_calls,
+            note=request.note,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 # --- Track 17: provider certification checklist + shadow mode ---
