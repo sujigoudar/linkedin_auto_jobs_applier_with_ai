@@ -258,15 +258,22 @@ tightening and target evaluation in production. Only ccxt, Alpaca, and
 IBKR have a real `get_last_price` implementation as of this writing — REST
 polling, not a websocket/tick stream.
 
-### Capability scouting & value analysis — `app/provider_value.py`,
-`app/provider_scout.py`
+### Trade episodes & capability scouting — `app/trade_episode.py`,
+`app/provider_value.py`, `app/provider_scout.py`
 
-Separate from settings inheritance (`app/providers.py`): FIFO-lot P&L
-attribution per (provider, analyst, asset_class), a "still worth paying
-for" verdict against configurable thresholds, and a scheduled background
-scan (`ProviderScout`) recommending free providers worth promoting to a
-tracked subscription. Explicitly does not see managed-lifecycle
-stop/target/trailing exits (same disclosed gap as `app/economics.py`).
+TR-EPISODE-01: `app/trade_episode.py` replays every filled order, grouped
+by `orders.family_id`, into one `TradeEpisode` per position lifecycle
+(entry/add-on/reduction/stop/target/trailing-stop/time_exit executions) --
+the authoritative source for provider scoring. `app/provider_value.py`'s
+`compute_provider_value_from_episodes`/`compute_provider_value_report_
+from_episodes` (built on it) are the current, correct "still worth paying
+for" scoring: a stop-out loss counts like a manual close, and a
+multi-fill reduction of one position is one episode, not several. The
+original FIFO-lot, closing-fill-based `compute_provider_value`/
+`compute_provider_value_report` are kept as a deprecated fallback (see
+that module's own docstring for why) -- new code should read the
+episode-based report. `ProviderScout`'s scheduled background scan already
+reads the episode-based report.
 
 ### The FastAPI app & dashboard — `app/main.py`
 
