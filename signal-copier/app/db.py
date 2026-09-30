@@ -11,7 +11,7 @@ import uuid
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Iterator
+from typing import Any, Iterator
 
 from alembic import command  # type: ignore[attr-defined]  # real, working import; alembic's __init__.py doesn't re-export it in a way mypy can see
 from alembic.config import Config as AlembicConfig
@@ -26,6 +26,7 @@ from app.models import (
     Signal,
     UncertaintyState,
 )
+from app.unified_collectors import CollectorKind, UnifiedCollectorError, now_utc
 from app.writer_lease import LeaseStillValidError, WriterLeaseHeldByAnotherSiteError, WriterLeaseRecord
 from signal_platform_contracts import EventEnvelope
 
@@ -827,6 +828,70 @@ CREATE INDEX IF NOT EXISTS idx_command_ledger_unresolved ON command_ledger (reso
 -- means "this ingests real messages," never "this route may submit a
 -- live order" (that's still gated entirely by
 -- SignalStore.is_route_release_approved, untouched by this table).
+-- Track 8: the UNIFIED collector registry -- see app/unified_collectors.py's
+-- module docstring for the full design rationale. One row per collector
+-- across every provider kind that shares this common registration/
+-- qualification/checkpoint/health shape (telegram, pull [slack/twitter],
+-- email, website) -- see that module for exactly which of the five
+-- pre-existing Track 5/6/7/9 registries were migrated onto this table and
+-- which (notification-bridge devices) were deliberately left on their own
+-- dedicated table because their shape is genuinely NOT the same (no
+-- allowed_uses/qualification_evidence concept, a hashed pairing token
+-- rather than a credential_env_var reference, and read-time health-state
+-- overrides tied to heartbeat staleness that don't apply to any of the
+-- other four).
+--
+-- `kind` is the top-level registry this row belongs to ('telegram' |
+-- 'pull' | 'email' | 'website'); `provider` is that registry's own
+-- existing discriminator column, reused verbatim (telegram's
+-- connection_mode, pull's provider, email's connection_mode, website's
+-- site_format) so migrating existing data is a lossless, mechanical
+-- rename, not a re-interpretation.
+--
+-- `credential_env_var` is a REFERENCE ONLY, never a secret value -- same
+-- guarantee as every pre-existing registry's own column of the same name
+-- (see docs/security/SECRETS.md).
+--
+-- `checkpoint` is a JSON-encoded scalar (an int for telegram/email, a
+-- string for pull/website's single most-recent-admitted URL) -- each
+-- kind's own adapter is still the sole source of truth for what counts
+-- as "genuinely newer" before calling advance_collector_checkpoint,
+-- exactly like the pre-existing per-table columns it replaces.
+--
+-- `provider_config` is a JSON object holding whatever fields are
+-- genuinely kind-specific and were never common across all five
+-- registries to begin with (telegram's chat_id/topic_id/noforwards;
+-- pull's auth_mode/target_id/target_label; email's imap_host/imap_port/
+-- imap_folder/sender_allowlist/subject_patterns/poll_interval_seconds;
+-- website's site_id/feed_url/article_list_url/analyst/
+-- auth_state_env_var/checkpoint_seen_urls). These were deliberately NOT
+-- promoted to dedicated columns because none of them is queried/filtered/
+-- indexed on across kinds -- only `kind`/`provider`/`id` ever are (see
+-- the two indexes below) -- so a shared JSON slice loses no real
+-- capability while avoiding a table with a different set of NULL columns
+-- per kind.
+CREATE TABLE IF NOT EXISTS collectors (
+    id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    identity_ref TEXT,
+    credential_env_var TEXT,
+    provider_name TEXT,
+    allowed_uses TEXT NOT NULL DEFAULT '["private_trading"]',
+    last_qualified_at TEXT,
+    qualification_evidence TEXT NOT NULL DEFAULT '{}',
+    checkpoint TEXT,
+    checkpoint_updated_at TEXT,
+    health_state TEXT NOT NULL DEFAULT 'unqualified',
+    health_detail TEXT,
+    provider_config TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_collectors_kind ON collectors (kind);
+CREATE INDEX IF NOT EXISTS idx_collectors_kind_provider ON collectors (kind, provider);
+
 CREATE TABLE IF NOT EXISTS telegram_collectors (
     id TEXT PRIMARY KEY,
     connection_mode TEXT NOT NULL,
@@ -3458,6 +3523,226 @@ class SignalStore:
             )
         return QualificationState.RELEASE_APPROVED in achieved
 
+    # -- Track 8: the UNIFIED collector registry (app/unified_collectors.py) --
+    # Generic CRUD shared by the telegram/pull/email/website registries
+    # below -- see app/unified_collectors.py's module docstring for the
+    # full design rationale, including why notification-bridge devices
+    # are NOT on this table.
+
+    def _collector_row_to_dict(self, row: tuple) -> dict:
+        return {
+            "id": row[0],
+            "kind": row[1],
+            "provider": row[2],
+            "identity_ref": row[3],
+            "credential_env_var": row[4],
+            "provider_name": row[5],
+            "allowed_uses": json.loads(row[6]) if row[6] else [],
+            "last_qualified_at": row[7],
+            "qualification_evidence": json.loads(row[8]) if row[8] else {},
+            "checkpoint": json.loads(row[9]) if row[9] is not None else None,
+            "checkpoint_updated_at": row[10],
+            "health_state": row[11],
+            "health_detail": row[12],
+            "provider_config": json.loads(row[13]) if row[13] else {},
+            "created_at": row[14],
+            "updated_at": row[15],
+        }
+
+    _COLLECTOR_COLUMNS = (
+        "id, kind, provider, identity_ref, credential_env_var, provider_name, allowed_uses, "
+        "last_qualified_at, qualification_evidence, checkpoint, checkpoint_updated_at, health_state, "
+        "health_detail, provider_config, created_at, updated_at"
+    )
+
+    def register_collector(
+        self,
+        *,
+        collector_id: str,
+        kind: str,
+        provider: str,
+        identity_ref: str | None,
+        credential_env_var: str | None,
+        provider_name: str | None,
+        allowed_uses: list[str],
+        provider_config: dict,
+        default_health_state: str = "unqualified",
+    ) -> dict:
+        """Insert (or, idempotently, re-describe) one `collectors` row.
+        Mirrors every pre-existing per-registry `register_*` method's own
+        contract exactly: the CALLER (each kind's own `SignalStore.
+        register_*` wrapper) is responsible for running that provider's
+        own `validate_registration` BEFORE calling this -- this method
+        itself only validates `kind` (an unrecognized kind is a
+        programming error in this codebase, never a user input, so it
+        raises rather than silently accepting an unknown registry).
+
+        Re-registering the SAME `collector_id` replaces its identity/
+        connection fields (`provider`, `identity_ref`,
+        `credential_env_var`, `provider_name`, `allowed_uses`,
+        `provider_config`) but preserves `qualification_evidence`,
+        `last_qualified_at`, `checkpoint`, `checkpoint_updated_at`,
+        `health_state`, `health_detail`, and `created_at` -- same
+        "re-describing must not silently reset already-observed
+        evidence" precedent every pre-existing registry's own
+        `register_*` method already enforced. A caller that wants to
+        preserve a `provider_config` sub-field across re-registration
+        (e.g. Telegram's `noforwards`, website's `checkpoint_seen_urls`)
+        must read the existing row first and merge that field into the
+        new `provider_config` itself -- this method always replaces
+        `provider_config` as a whole with what it's given."""
+        try:
+            CollectorKind(kind)
+        except ValueError as exc:
+            raise UnifiedCollectorError(
+                f"kind must be one of {[k.value for k in CollectorKind]}, got {kind!r}"
+            ) from exc
+        now = now_utc().isoformat()
+        with self._connect() as conn:
+            existing = conn.execute("SELECT created_at FROM collectors WHERE id = ?", (collector_id,)).fetchone()
+            created_at = existing[0] if existing else now
+            conn.execute(
+                """INSERT INTO collectors
+                       (id, kind, provider, identity_ref, credential_env_var, provider_name, allowed_uses,
+                        qualification_evidence, health_state, provider_config, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, '{}', ?, ?, ?, ?)
+                   ON CONFLICT(id) DO UPDATE SET
+                       kind = excluded.kind,
+                       provider = excluded.provider,
+                       identity_ref = excluded.identity_ref,
+                       credential_env_var = excluded.credential_env_var,
+                       provider_name = excluded.provider_name,
+                       allowed_uses = excluded.allowed_uses,
+                       provider_config = excluded.provider_config,
+                       updated_at = excluded.updated_at""",
+                (
+                    collector_id,
+                    kind,
+                    provider,
+                    identity_ref,
+                    credential_env_var,
+                    provider_name,
+                    json.dumps(list(allowed_uses)),
+                    default_health_state,
+                    json.dumps(provider_config),
+                    created_at,
+                    now,
+                ),
+            )
+        return self.get_collector(collector_id)  # type: ignore[return-value]
+
+    def get_collector(self, collector_id: str) -> dict | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                f"SELECT {self._COLLECTOR_COLUMNS} FROM collectors WHERE id = ?", (collector_id,)
+            ).fetchone()
+        return self._collector_row_to_dict(row) if row else None
+
+    def list_collectors(self, *, kind: str | None = None, provider: str | None = None) -> list[dict]:
+        with self._connect() as conn:
+            if kind is not None and provider is not None:
+                rows = conn.execute(
+                    f"SELECT {self._COLLECTOR_COLUMNS} FROM collectors WHERE kind = ? AND provider = ? ORDER BY id",
+                    (kind, provider),
+                ).fetchall()
+            elif kind is not None:
+                rows = conn.execute(
+                    f"SELECT {self._COLLECTOR_COLUMNS} FROM collectors WHERE kind = ? ORDER BY id", (kind,)
+                ).fetchall()
+            else:
+                rows = conn.execute(f"SELECT {self._COLLECTOR_COLUMNS} FROM collectors ORDER BY id").fetchall()
+        return [self._collector_row_to_dict(r) for r in rows]
+
+    def update_collector_health(self, collector_id: str, health_state: str, *, detail: str | None = None) -> None:
+        """The ONE place any unified-table collector's incident/health
+        state is written -- the caller (each kind's own `SignalStore.
+        update_*_health` wrapper) is responsible for validating
+        `health_state` against that kind's own `CollectorHealth` enum
+        BEFORE calling this, exactly like `register_collector` delegates
+        field validation to its caller."""
+        with self._connect() as conn:
+            cur = conn.execute(
+                "UPDATE collectors SET health_state = ?, health_detail = ?, updated_at = ? WHERE id = ?",
+                (health_state, detail, now_utc().isoformat(), collector_id),
+            )
+            if cur.rowcount == 0:
+                raise KeyError(f"no collector registered with id={collector_id!r}")
+
+    def record_collector_qualification_evidence(
+        self,
+        collector_id: str,
+        *,
+        evidence: dict,
+        health_state: str,
+        qualified_at: datetime | None = None,
+    ) -> None:
+        """Real evidence that authorized real-message receipt was
+        confirmed for this collector. The caller supplies the resulting
+        `health_state` (usually `healthy_qualified`, but e.g. Telegram's
+        wrapper passes `protected_content_restricted` instead when
+        `noforwards` is set -- see `SignalStore.
+        record_telegram_collector_qualification_evidence`) since which
+        states are even valid, and which one evidence implies, is a
+        per-kind decision this generic method never makes itself."""
+        when = (qualified_at or now_utc()).isoformat()
+        with self._connect() as conn:
+            cur = conn.execute(
+                """UPDATE collectors
+                   SET qualification_evidence = ?, last_qualified_at = ?,
+                       health_state = ?, health_detail = NULL, updated_at = ?
+                   WHERE id = ?""",
+                (json.dumps(evidence), when, health_state, when, collector_id),
+            )
+            if cur.rowcount == 0:
+                raise KeyError(f"no collector registered with id={collector_id!r}")
+
+    def get_collector_checkpoint(self, collector_id: str) -> Any:
+        """The last live-admitted checkpoint value for this collector
+        (JSON-decoded -- an int, a string, or `None`) -- `None` for a
+        collector that has never processed a live message (including one
+        that has only ever gone through a historical import, which never
+        touches this column)."""
+        with self._connect() as conn:
+            row = conn.execute("SELECT checkpoint FROM collectors WHERE id = ?", (collector_id,)).fetchone()
+        if row is None:
+            raise KeyError(f"no collector registered with id={collector_id!r}")
+        return json.loads(row[0]) if row[0] is not None else None
+
+    def advance_collector_checkpoint(self, collector_id: str, checkpoint: Any) -> None:
+        """Called ONLY after a message/article has genuinely been
+        admitted to live routing. This generic method does not itself
+        enforce monotonicity (an opaque JSON scalar can't be compared
+        generically across every kind) -- a kind whose checkpoint must be
+        monotonic (telegram/email's integer message id/UID) enforces that
+        in its own `SignalStore.advance_*_collector_checkpoint` wrapper
+        BEFORE calling this, exactly like the pre-existing per-table
+        `MAX(...)` SQL guard it replaces."""
+        now = now_utc().isoformat()
+        with self._connect() as conn:
+            cur = conn.execute(
+                "UPDATE collectors SET checkpoint = ?, checkpoint_updated_at = ?, updated_at = ? WHERE id = ?",
+                (json.dumps(checkpoint), now, now, collector_id),
+            )
+            if cur.rowcount == 0:
+                raise KeyError(f"no collector registered with id={collector_id!r}")
+
+    def merge_collector_provider_config(self, collector_id: str, patch: dict) -> dict:
+        """Shallow-merge `patch` into this row's existing `provider_config`
+        (used for a provider-specific field a generic method has no
+        vocabulary for -- e.g. Telegram's `noforwards`, website's
+        `checkpoint_seen_urls` -- that still needs updating outside of a
+        full `register_collector` re-describe). Returns the updated row."""
+        existing = self.get_collector(collector_id)
+        if existing is None:
+            raise KeyError(f"no collector registered with id={collector_id!r}")
+        merged = {**existing["provider_config"], **patch}
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE collectors SET provider_config = ?, updated_at = ? WHERE id = ?",
+                (json.dumps(merged), now_utc().isoformat(), collector_id),
+            )
+        return self.get_collector(collector_id)  # type: ignore[return-value]
+
     # -- Track 5: Telegram collector registry (app/telegram_collectors.py) --
 
     def register_telegram_collector(
@@ -3472,20 +3757,23 @@ class SignalStore:
         topic_id: str | None = None,
         allowed_uses: list[str] | None = None,
     ) -> dict:
-        """Insert (or, idempotently, re-describe) one collector row.
-        Validation (bad `connection_mode`/`allowed_uses`, a
+        """Insert (or, idempotently, re-describe) one collector row --
+        now a thin wrapper over the unified `collectors` table's generic
+        `register_collector` (see `app/unified_collectors.py`). Field
+        validation (bad `connection_mode`/`allowed_uses`, a
         `credential_env_var` that looks like a secret value rather than a
-        name) is enforced by `app.telegram_collectors.validate_registration`
-        BEFORE anything is written -- this method never stores a row this
-        registry's own vocabulary doesn't recognize.
+        name) is still enforced by
+        `app.telegram_collectors.validate_registration` BEFORE anything
+        is written -- unchanged.
 
         Re-registering the SAME `collector_id` replaces its identity/
         connection fields but preserves its qualification evidence,
-        checkpoint, and health state (an operator re-describing which env
-        var/chat a collector reads from -- e.g. after rotating a session
-        file's path -- must not silently reset "this collector was
-        already confirmed receiving real messages" or "here's how far
-        we've already caught up live")."""
+        checkpoint, health state, AND `noforwards` (a provider_config
+        sub-field, explicitly re-merged in below since
+        `register_collector` always replaces `provider_config` as a
+        whole) -- an operator re-describing which env var/chat a
+        collector reads from must not silently reset "this collector was
+        already confirmed receiving real messages"."""
         from app.telegram_collectors import validate_registration
 
         mode, uses = validate_registration(
@@ -3497,82 +3785,55 @@ class SignalStore:
             provider_name=provider_name,
             allowed_uses=allowed_uses,
         )
-        now = datetime.now(timezone.utc).isoformat()
-        with self._connect() as conn:
-            existing = conn.execute(
-                "SELECT created_at FROM telegram_collectors WHERE id = ?", (collector_id,)
-            ).fetchone()
-            created_at = existing[0] if existing else now
-            conn.execute(
-                """INSERT INTO telegram_collectors
-                       (id, connection_mode, identity_ref, credential_env_var, chat_id, topic_id,
-                        provider_name, allowed_uses, qualification_evidence, health_state, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, '{}', 'unqualified', ?, ?)
-                   ON CONFLICT(id) DO UPDATE SET
-                       connection_mode = excluded.connection_mode,
-                       identity_ref = excluded.identity_ref,
-                       credential_env_var = excluded.credential_env_var,
-                       chat_id = excluded.chat_id,
-                       topic_id = excluded.topic_id,
-                       provider_name = excluded.provider_name,
-                       allowed_uses = excluded.allowed_uses,
-                       updated_at = excluded.updated_at""",
-                (
-                    collector_id,
-                    mode.value,
-                    identity_ref,
-                    credential_env_var,
-                    str(chat_id),
-                    str(topic_id) if topic_id is not None else None,
-                    provider_name,
-                    json.dumps(uses),
-                    created_at,
-                    now,
-                ),
-            )
+        existing = self.get_collector(collector_id)
+        preserved_noforwards = (existing or {}).get("provider_config", {}).get("noforwards")
+        self.register_collector(
+            collector_id=collector_id,
+            kind="telegram",
+            provider=mode.value,
+            identity_ref=identity_ref,
+            credential_env_var=credential_env_var,
+            provider_name=provider_name,
+            allowed_uses=uses,
+            provider_config={
+                "chat_id": str(chat_id),
+                "topic_id": str(topic_id) if topic_id is not None else None,
+                "noforwards": preserved_noforwards,
+            },
+        )
         return self.get_telegram_collector(collector_id)  # type: ignore[return-value]
 
-    def _telegram_collector_row_to_dict(self, row: tuple) -> dict:
+    def _telegram_collector_row_to_dict(self, row: dict) -> dict:
+        cfg = row["provider_config"]
+        noforwards = cfg.get("noforwards")
         return {
-            "id": row[0],
-            "connection_mode": row[1],
-            "identity_ref": row[2],
-            "credential_env_var": row[3],
-            "chat_id": row[4],
-            "topic_id": row[5],
-            "provider_name": row[6],
-            "allowed_uses": json.loads(row[7]) if row[7] else [],
-            "noforwards": bool(row[8]) if row[8] is not None else None,
-            "last_qualified_at": row[9],
-            "qualification_evidence": json.loads(row[10]) if row[10] else {},
-            "checkpoint_message_id": row[11],
-            "checkpoint_updated_at": row[12],
-            "health_state": row[13],
-            "health_detail": row[14],
-            "created_at": row[15],
-            "updated_at": row[16],
+            "id": row["id"],
+            "connection_mode": row["provider"],
+            "identity_ref": row["identity_ref"],
+            "credential_env_var": row["credential_env_var"],
+            "chat_id": cfg.get("chat_id"),
+            "topic_id": cfg.get("topic_id"),
+            "provider_name": row["provider_name"],
+            "allowed_uses": row["allowed_uses"],
+            "noforwards": bool(noforwards) if noforwards is not None else None,
+            "last_qualified_at": row["last_qualified_at"],
+            "qualification_evidence": row["qualification_evidence"],
+            "checkpoint_message_id": row["checkpoint"],
+            "checkpoint_updated_at": row["checkpoint_updated_at"],
+            "health_state": row["health_state"],
+            "health_detail": row["health_detail"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
         }
 
-    _TELEGRAM_COLLECTOR_COLUMNS = (
-        "id, connection_mode, identity_ref, credential_env_var, chat_id, topic_id, provider_name, "
-        "allowed_uses, noforwards, last_qualified_at, qualification_evidence, checkpoint_message_id, "
-        "checkpoint_updated_at, health_state, health_detail, created_at, updated_at"
-    )
-
     def get_telegram_collector(self, collector_id: str) -> dict | None:
-        with self._connect() as conn:
-            row = conn.execute(
-                f"SELECT {self._TELEGRAM_COLLECTOR_COLUMNS} FROM telegram_collectors WHERE id = ?",
-                (collector_id,),
-            ).fetchone()
-        return self._telegram_collector_row_to_dict(row) if row else None
+        row = self.get_collector(collector_id)
+        if row is None or row["kind"] != "telegram":
+            return None
+        return self._telegram_collector_row_to_dict(row)
 
     def list_telegram_collectors(self) -> list[dict]:
-        with self._connect() as conn:
-            rows = conn.execute(
-                f"SELECT {self._TELEGRAM_COLLECTOR_COLUMNS} FROM telegram_collectors ORDER BY id"
-            ).fetchall()
-        return [self._telegram_collector_row_to_dict(r) for r in rows]
+        return [self._telegram_collector_row_to_dict(r) for r in self.list_collectors(kind="telegram")]
 
     def update_telegram_collector_health(
         self, collector_id: str, health_state: str, *, detail: str | None = None
@@ -3585,13 +3846,10 @@ class SignalStore:
         from app.telegram_collectors import CollectorHealth
 
         state = CollectorHealth(health_state)  # raises ValueError for an unrecognized state
-        with self._connect() as conn:
-            cur = conn.execute(
-                "UPDATE telegram_collectors SET health_state = ?, health_detail = ?, updated_at = ? WHERE id = ?",
-                (state.value, detail, datetime.now(timezone.utc).isoformat(), collector_id),
-            )
-            if cur.rowcount == 0:
-                raise KeyError(f"no telegram collector registered with id={collector_id!r}")
+        try:
+            self.update_collector_health(collector_id, state.value, detail=detail)
+        except KeyError:
+            raise KeyError(f"no telegram collector registered with id={collector_id!r}") from None
 
     def record_telegram_collector_qualification_evidence(
         self,
@@ -3616,25 +3874,15 @@ class SignalStore:
         no forwarding restriction at all."""
         from app.telegram_collectors import CollectorHealth
 
-        when = (qualified_at or datetime.now(timezone.utc)).isoformat()
         health = CollectorHealth.PROTECTED_CONTENT_RESTRICTED if noforwards else CollectorHealth.HEALTHY_QUALIFIED
-        with self._connect() as conn:
-            cur = conn.execute(
-                """UPDATE telegram_collectors
-                   SET qualification_evidence = ?, last_qualified_at = ?, noforwards = ?,
-                       health_state = ?, health_detail = NULL, updated_at = ?
-                   WHERE id = ?""",
-                (
-                    json.dumps(evidence),
-                    when,
-                    None if noforwards is None else int(bool(noforwards)),
-                    health.value,
-                    when,
-                    collector_id,
-                ),
+        if noforwards is not None:
+            self.merge_collector_provider_config(collector_id, {"noforwards": bool(noforwards)})
+        try:
+            self.record_collector_qualification_evidence(
+                collector_id, evidence=evidence, health_state=health.value, qualified_at=qualified_at
             )
-            if cur.rowcount == 0:
-                raise KeyError(f"no telegram collector registered with id={collector_id!r}")
+        except KeyError:
+            raise KeyError(f"no telegram collector registered with id={collector_id!r}") from None
 
     def get_telegram_collector_checkpoint(self, collector_id: str) -> int | None:
         """Point 7: the last message id this collector has admitted to
@@ -3642,13 +3890,10 @@ class SignalStore:
         live message (including one that has only ever gone through a
         historical import, which never touches this column -- see
         `advance_telegram_collector_checkpoint`)."""
-        with self._connect() as conn:
-            row = conn.execute(
-                "SELECT checkpoint_message_id FROM telegram_collectors WHERE id = ?", (collector_id,)
-            ).fetchone()
-        if row is None:
-            raise KeyError(f"no telegram collector registered with id={collector_id!r}")
-        return row[0]
+        try:
+            return self.get_collector_checkpoint(collector_id)  # type: ignore[return-value]
+        except KeyError:
+            raise KeyError(f"no telegram collector registered with id={collector_id!r}") from None
 
     def advance_telegram_collector_checkpoint(self, collector_id: str, message_id: int) -> None:
         """Point 7: called ONLY after a message has been genuinely
@@ -3656,23 +3901,15 @@ class SignalStore:
         never for a message this collector is merely re-observing at or
         below its current checkpoint). Monotonic -- never moves the
         checkpoint backward, so an out-of-order redelivery can't un-admit
-        messages that were already caught up to."""
-        with self._connect() as conn:
-            cur = conn.execute(
-                """UPDATE telegram_collectors
-                   SET checkpoint_message_id = MAX(COALESCE(checkpoint_message_id, ?), ?),
-                       checkpoint_updated_at = ?, updated_at = ?
-                   WHERE id = ?""",
-                (
-                    message_id,
-                    message_id,
-                    datetime.now(timezone.utc).isoformat(),
-                    datetime.now(timezone.utc).isoformat(),
-                    collector_id,
-                ),
-            )
-            if cur.rowcount == 0:
-                raise KeyError(f"no telegram collector registered with id={collector_id!r}")
+        messages that were already caught up to (enforced here, in Python,
+        since the unified table's checkpoint is an opaque JSON scalar --
+        see `SignalStore.advance_collector_checkpoint`'s own docstring)."""
+        try:
+            current = self.get_collector_checkpoint(collector_id)
+        except KeyError:
+            raise KeyError(f"no telegram collector registered with id={collector_id!r}") from None
+        new_value = max(current, message_id) if current is not None else message_id
+        self.advance_collector_checkpoint(collector_id, new_value)
 
     # -- Track 6: Slack/Twitter user-context collector registry -----------
     # (app/collector_registry.py) -- one shared `pull_collectors` table;
@@ -3691,9 +3928,10 @@ class SignalStore:
         target_label: str | None = None,
         allowed_uses: list[str] | None = None,
     ) -> dict:
-        """Insert (or, idempotently, re-describe) one collector row.
-        Mirrors `register_telegram_collector`'s own contract exactly:
-        validation happens BEFORE anything is written
+        """Insert (or, idempotently, re-describe) one collector row --
+        now a thin wrapper over the unified `collectors` table. Mirrors
+        `register_telegram_collector`'s own contract exactly: validation
+        happens BEFORE anything is written
         (`app.collector_registry.validate_registration`), and
         re-registering the SAME `collector_id` replaces identity/
         connection fields but preserves qualification evidence, checkpoint,
@@ -3710,89 +3948,52 @@ class SignalStore:
             provider_name=provider_name,
             allowed_uses=allowed_uses,
         )
-        now = datetime.now(timezone.utc).isoformat()
-        with self._connect() as conn:
-            existing = conn.execute(
-                "SELECT created_at FROM pull_collectors WHERE id = ?", (collector_id,)
-            ).fetchone()
-            created_at = existing[0] if existing else now
-            conn.execute(
-                """INSERT INTO pull_collectors
-                       (id, provider, auth_mode, identity_ref, credential_env_var, target_id, target_label,
-                        provider_name, allowed_uses, qualification_evidence, health_state, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '{}', 'unqualified', ?, ?)
-                   ON CONFLICT(id) DO UPDATE SET
-                       provider = excluded.provider,
-                       auth_mode = excluded.auth_mode,
-                       identity_ref = excluded.identity_ref,
-                       credential_env_var = excluded.credential_env_var,
-                       target_id = excluded.target_id,
-                       target_label = excluded.target_label,
-                       provider_name = excluded.provider_name,
-                       allowed_uses = excluded.allowed_uses,
-                       updated_at = excluded.updated_at""",
-                (
-                    collector_id,
-                    provider_enum.value,
-                    auth_mode,
-                    identity_ref,
-                    credential_env_var,
-                    str(target_id),
-                    target_label,
-                    provider_name,
-                    json.dumps(uses),
-                    created_at,
-                    now,
-                ),
-            )
+        self.register_collector(
+            collector_id=collector_id,
+            kind="pull",
+            provider=provider_enum.value,
+            identity_ref=identity_ref,
+            credential_env_var=credential_env_var,
+            provider_name=provider_name,
+            allowed_uses=uses,
+            provider_config={
+                "auth_mode": auth_mode,
+                "target_id": str(target_id),
+                "target_label": target_label,
+            },
+        )
         return self.get_pull_collector(collector_id)  # type: ignore[return-value]
 
-    def _pull_collector_row_to_dict(self, row: tuple) -> dict:
+    def _pull_collector_row_to_dict(self, row: dict) -> dict:
+        cfg = row["provider_config"]
         return {
-            "id": row[0],
-            "provider": row[1],
-            "auth_mode": row[2],
-            "identity_ref": row[3],
-            "credential_env_var": row[4],
-            "target_id": row[5],
-            "target_label": row[6],
-            "provider_name": row[7],
-            "allowed_uses": json.loads(row[8]) if row[8] else [],
-            "last_qualified_at": row[9],
-            "qualification_evidence": json.loads(row[10]) if row[10] else {},
-            "checkpoint": row[11],
-            "checkpoint_updated_at": row[12],
-            "health_state": row[13],
-            "health_detail": row[14],
-            "created_at": row[15],
-            "updated_at": row[16],
+            "id": row["id"],
+            "provider": row["provider"],
+            "auth_mode": cfg.get("auth_mode"),
+            "identity_ref": row["identity_ref"],
+            "credential_env_var": row["credential_env_var"],
+            "target_id": cfg.get("target_id"),
+            "target_label": cfg.get("target_label"),
+            "provider_name": row["provider_name"],
+            "allowed_uses": row["allowed_uses"],
+            "last_qualified_at": row["last_qualified_at"],
+            "qualification_evidence": row["qualification_evidence"],
+            "checkpoint": row["checkpoint"],
+            "checkpoint_updated_at": row["checkpoint_updated_at"],
+            "health_state": row["health_state"],
+            "health_detail": row["health_detail"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
         }
 
-    _PULL_COLLECTOR_COLUMNS = (
-        "id, provider, auth_mode, identity_ref, credential_env_var, target_id, target_label, provider_name, "
-        "allowed_uses, last_qualified_at, qualification_evidence, checkpoint, checkpoint_updated_at, "
-        "health_state, health_detail, created_at, updated_at"
-    )
-
     def get_pull_collector(self, collector_id: str) -> dict | None:
-        with self._connect() as conn:
-            row = conn.execute(
-                f"SELECT {self._PULL_COLLECTOR_COLUMNS} FROM pull_collectors WHERE id = ?",
-                (collector_id,),
-            ).fetchone()
-        return self._pull_collector_row_to_dict(row) if row else None
+        row = self.get_collector(collector_id)
+        if row is None or row["kind"] != "pull":
+            return None
+        return self._pull_collector_row_to_dict(row)
 
     def list_pull_collectors(self, provider: str | None = None) -> list[dict]:
-        with self._connect() as conn:
-            if provider is not None:
-                rows = conn.execute(
-                    f"SELECT {self._PULL_COLLECTOR_COLUMNS} FROM pull_collectors WHERE provider = ? ORDER BY id",
-                    (provider,),
-                ).fetchall()
-            else:
-                rows = conn.execute(
-                    f"SELECT {self._PULL_COLLECTOR_COLUMNS} FROM pull_collectors ORDER BY id"
-                ).fetchall()
+        rows = self.list_collectors(kind="pull", provider=provider)
         return [self._pull_collector_row_to_dict(r) for r in rows]
 
     def update_pull_collector_health(
@@ -3805,13 +4006,10 @@ class SignalStore:
         from app.collector_registry import CollectorHealth
 
         state = CollectorHealth(health_state)  # raises ValueError for an unrecognized state
-        with self._connect() as conn:
-            cur = conn.execute(
-                "UPDATE pull_collectors SET health_state = ?, health_detail = ?, updated_at = ? WHERE id = ?",
-                (state.value, detail, datetime.now(timezone.utc).isoformat(), collector_id),
-            )
-            if cur.rowcount == 0:
-                raise KeyError(f"no pull collector registered with id={collector_id!r}")
+        try:
+            self.update_collector_health(collector_id, state.value, detail=detail)
+        except KeyError:
+            raise KeyError(f"no pull collector registered with id={collector_id!r}") from None
 
     def record_pull_collector_qualification_evidence(
         self,
@@ -3828,60 +4026,39 @@ class SignalStore:
         branch on (see `app/collector_registry.py`'s module docstring)."""
         from app.collector_registry import CollectorHealth
 
-        when = (qualified_at or datetime.now(timezone.utc)).isoformat()
-        with self._connect() as conn:
-            cur = conn.execute(
-                """UPDATE pull_collectors
-                   SET qualification_evidence = ?, last_qualified_at = ?,
-                       health_state = ?, health_detail = NULL, updated_at = ?
-                   WHERE id = ?""",
-                (
-                    json.dumps(evidence),
-                    when,
-                    CollectorHealth.HEALTHY_QUALIFIED.value,
-                    when,
-                    collector_id,
-                ),
+        try:
+            self.record_collector_qualification_evidence(
+                collector_id,
+                evidence=evidence,
+                health_state=CollectorHealth.HEALTHY_QUALIFIED.value,
+                qualified_at=qualified_at,
             )
-            if cur.rowcount == 0:
-                raise KeyError(f"no pull collector registered with id={collector_id!r}")
+        except KeyError:
+            raise KeyError(f"no pull collector registered with id={collector_id!r}") from None
 
     def get_pull_collector_checkpoint(self, collector_id: str) -> str | None:
         """The last message/tweet id this collector has admitted to LIVE
         routing -- `None` for a collector that has never processed one
         (including one that has only gone through a historical import,
         which never touches this column)."""
-        with self._connect() as conn:
-            row = conn.execute(
-                "SELECT checkpoint FROM pull_collectors WHERE id = ?", (collector_id,)
-            ).fetchone()
-        if row is None:
-            raise KeyError(f"no pull collector registered with id={collector_id!r}")
-        return row[0]
+        try:
+            return self.get_collector_checkpoint(collector_id)  # type: ignore[return-value]
+        except KeyError:
+            raise KeyError(f"no pull collector registered with id={collector_id!r}") from None
 
     def advance_pull_collector_checkpoint(self, collector_id: str, checkpoint: str) -> None:
         """Called ONLY after a message/tweet has genuinely been admitted
         to live routing. Unlike `advance_telegram_collector_checkpoint`,
-        this does not enforce monotonicity at the SQL level (`checkpoint`
-        is an opaque TEXT value here -- see `app/collector_registry.py`'s
+        this does not enforce monotonicity itself (`checkpoint` is an
+        opaque string value here -- see `app/collector_registry.py`'s
         module docstring) -- each adapter's own `_admits_live`-style check
         is the actual source of truth for "is this genuinely newer,"
         exactly like the value it's about to pass in was already
         compared before this is called."""
-        with self._connect() as conn:
-            cur = conn.execute(
-                """UPDATE pull_collectors
-                   SET checkpoint = ?, checkpoint_updated_at = ?, updated_at = ?
-                   WHERE id = ?""",
-                (
-                    str(checkpoint),
-                    datetime.now(timezone.utc).isoformat(),
-                    datetime.now(timezone.utc).isoformat(),
-                    collector_id,
-                ),
-            )
-            if cur.rowcount == 0:
-                raise KeyError(f"no pull collector registered with id={collector_id!r}")
+        try:
+            self.advance_collector_checkpoint(collector_id, str(checkpoint))
+        except KeyError:
+            raise KeyError(f"no pull collector registered with id={collector_id!r}") from None
 
     # -- Track 10: notification-bridge device registry (app/notification_bridge.py) --
 
@@ -3951,10 +4128,12 @@ class SignalStore:
         allowed_uses: list[str] | None = None,
     ) -> dict:
         """Insert (or, idempotently, re-describe) one website collector
-        row -- same reasoning as `register_telegram_collector`: validated
+        row -- now a thin wrapper over the unified `collectors` table.
+        Same reasoning as `register_telegram_collector`: validated
         BEFORE anything is written, and re-registering the SAME
-        `collector_id` preserves qualification evidence, checkpoints, and
-        health state."""
+        `collector_id` preserves qualification evidence, checkpoints
+        (including the seen-URL set, a provider_config sub-field
+        explicitly re-merged in below), and health state."""
         from app.website_collectors import validate_registration
 
         fmt, uses = validate_registration(
@@ -3966,87 +4145,58 @@ class SignalStore:
             article_list_url=article_list_url,
             allowed_uses=allowed_uses,
         )
-        now = datetime.now(timezone.utc).isoformat()
-        with self._connect() as conn:
-            existing = conn.execute(
-                "SELECT created_at FROM website_collectors WHERE id = ?", (collector_id,)
-            ).fetchone()
-            created_at = existing[0] if existing else now
-            conn.execute(
-                """INSERT INTO website_collectors
-                       (id, site_format, site_id, provider_name, feed_url, article_list_url, analyst,
-                        auth_state_env_var, allowed_uses, qualification_evidence, health_state,
-                        created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '{}', 'unqualified', ?, ?)
-                   ON CONFLICT(id) DO UPDATE SET
-                       site_format = excluded.site_format,
-                       site_id = excluded.site_id,
-                       provider_name = excluded.provider_name,
-                       feed_url = excluded.feed_url,
-                       article_list_url = excluded.article_list_url,
-                       analyst = excluded.analyst,
-                       auth_state_env_var = excluded.auth_state_env_var,
-                       allowed_uses = excluded.allowed_uses,
-                       updated_at = excluded.updated_at""",
-                (
-                    collector_id,
-                    fmt.value,
-                    site_id,
-                    provider_name,
-                    feed_url,
-                    article_list_url,
-                    analyst,
-                    auth_state_env_var,
-                    json.dumps(uses),
-                    created_at,
-                    now,
-                ),
-            )
+        existing = self.get_collector(collector_id)
+        preserved_seen_urls = (existing or {}).get("provider_config", {}).get("checkpoint_seen_urls", [])
+        self.register_collector(
+            collector_id=collector_id,
+            kind="website",
+            provider=fmt.value,
+            identity_ref=None,
+            credential_env_var=None,
+            provider_name=provider_name,
+            allowed_uses=uses,
+            provider_config={
+                "site_id": site_id,
+                "feed_url": feed_url,
+                "article_list_url": article_list_url,
+                "analyst": analyst,
+                "auth_state_env_var": auth_state_env_var,
+                "checkpoint_seen_urls": preserved_seen_urls,
+            },
+        )
         return self.get_website_collector(collector_id)  # type: ignore[return-value]
 
-    def _website_collector_row_to_dict(self, row: tuple) -> dict:
+    def _website_collector_row_to_dict(self, row: dict) -> dict:
+        cfg = row["provider_config"]
         return {
-            "id": row[0],
-            "site_format": row[1],
-            "site_id": row[2],
-            "provider_name": row[3],
-            "feed_url": row[4],
-            "article_list_url": row[5],
-            "analyst": row[6],
-            "auth_state_env_var": row[7],
-            "allowed_uses": json.loads(row[8]) if row[8] else [],
-            "last_qualified_at": row[9],
-            "qualification_evidence": json.loads(row[10]) if row[10] else {},
-            "checkpoint_article_url": row[11],
-            "checkpoint_seen_urls": json.loads(row[12]) if row[12] else [],
-            "checkpoint_updated_at": row[13],
-            "health_state": row[14],
-            "health_detail": row[15],
-            "created_at": row[16],
-            "updated_at": row[17],
+            "id": row["id"],
+            "site_format": row["provider"],
+            "site_id": cfg.get("site_id"),
+            "provider_name": row["provider_name"],
+            "feed_url": cfg.get("feed_url"),
+            "article_list_url": cfg.get("article_list_url"),
+            "analyst": cfg.get("analyst"),
+            "auth_state_env_var": cfg.get("auth_state_env_var"),
+            "allowed_uses": row["allowed_uses"],
+            "last_qualified_at": row["last_qualified_at"],
+            "qualification_evidence": row["qualification_evidence"],
+            "checkpoint_article_url": row["checkpoint"],
+            "checkpoint_seen_urls": cfg.get("checkpoint_seen_urls", []),
+            "checkpoint_updated_at": row["checkpoint_updated_at"],
+            "health_state": row["health_state"],
+            "health_detail": row["health_detail"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
         }
 
-    _WEBSITE_COLLECTOR_COLUMNS = (
-        "id, site_format, site_id, provider_name, feed_url, article_list_url, analyst, "
-        "auth_state_env_var, allowed_uses, last_qualified_at, qualification_evidence, "
-        "checkpoint_article_url, checkpoint_seen_urls, checkpoint_updated_at, health_state, "
-        "health_detail, created_at, updated_at"
-    )
-
     def get_website_collector(self, collector_id: str) -> dict | None:
-        with self._connect() as conn:
-            row = conn.execute(
-                f"SELECT {self._WEBSITE_COLLECTOR_COLUMNS} FROM website_collectors WHERE id = ?",
-                (collector_id,),
-            ).fetchone()
-        return self._website_collector_row_to_dict(row) if row else None
+        row = self.get_collector(collector_id)
+        if row is None or row["kind"] != "website":
+            return None
+        return self._website_collector_row_to_dict(row)
 
     def list_website_collectors(self) -> list[dict]:
-        with self._connect() as conn:
-            rows = conn.execute(
-                f"SELECT {self._WEBSITE_COLLECTOR_COLUMNS} FROM website_collectors ORDER BY id"
-            ).fetchall()
-        return [self._website_collector_row_to_dict(r) for r in rows]
+        return [self._website_collector_row_to_dict(r) for r in self.list_collectors(kind="website")]
 
     def update_website_collector_health(
         self, collector_id: str, health_state: str, *, detail: str | None = None
@@ -4057,13 +4207,10 @@ class SignalStore:
         from app.website_collectors import CollectorHealth
 
         state = CollectorHealth(health_state)  # raises ValueError for an unrecognized state
-        with self._connect() as conn:
-            cur = conn.execute(
-                "UPDATE website_collectors SET health_state = ?, health_detail = ?, updated_at = ? WHERE id = ?",
-                (state.value, detail, datetime.now(timezone.utc).isoformat(), collector_id),
-            )
-            if cur.rowcount == 0:
-                raise KeyError(f"no website collector registered with id={collector_id!r}")
+        try:
+            self.update_collector_health(collector_id, state.value, detail=detail)
+        except KeyError:
+            raise KeyError(f"no website collector registered with id={collector_id!r}") from None
 
     def record_website_collector_qualification_evidence(
         self, collector_id: str, *, evidence: dict, qualified_at: datetime | None = None
@@ -4074,50 +4221,34 @@ class SignalStore:
         green)."""
         from app.website_collectors import CollectorHealth
 
-        when = (qualified_at or datetime.now(timezone.utc)).isoformat()
-        with self._connect() as conn:
-            cur = conn.execute(
-                """UPDATE website_collectors
-                   SET qualification_evidence = ?, last_qualified_at = ?,
-                       health_state = ?, health_detail = NULL, updated_at = ?
-                   WHERE id = ?""",
-                (json.dumps(evidence), when, CollectorHealth.HEALTHY_QUALIFIED.value, when, collector_id),
+        try:
+            self.record_collector_qualification_evidence(
+                collector_id,
+                evidence=evidence,
+                health_state=CollectorHealth.HEALTHY_QUALIFIED.value,
+                qualified_at=qualified_at,
             )
-            if cur.rowcount == 0:
-                raise KeyError(f"no website collector registered with id={collector_id!r}")
+        except KeyError:
+            raise KeyError(f"no website collector registered with id={collector_id!r}") from None
 
     def get_website_collector_seen_urls(self, collector_id: str) -> set[str]:
-        with self._connect() as conn:
-            row = conn.execute(
-                "SELECT checkpoint_seen_urls FROM website_collectors WHERE id = ?", (collector_id,)
-            ).fetchone()
+        row = self.get_collector(collector_id)
         if row is None:
             raise KeyError(f"no website collector registered with id={collector_id!r}")
-        return set(json.loads(row[0]) if row[0] else [])
+        return set(row["provider_config"].get("checkpoint_seen_urls", []))
 
     def advance_website_collector_checkpoint(self, collector_id: str, *, article_url: str) -> None:
         """Called ONLY after an article has been genuinely admitted to
         live processing. Appends to the seen-URL set (ARTICLE_LIST mode's
-        checkpoint) AND advances `checkpoint_article_url` to the latest
-        one seen (FEED mode's checkpoint) -- a collector may switch
+        checkpoint, stored in `provider_config`) AND advances the
+        unified table's generic `checkpoint` column to the latest one
+        seen (FEED mode's checkpoint) -- a collector may switch
         `site_format` later, so both are kept current regardless of which
         mode is currently configured."""
-        with self._connect() as conn:
-            row = conn.execute(
-                "SELECT checkpoint_seen_urls FROM website_collectors WHERE id = ?", (collector_id,)
-            ).fetchone()
-            if row is None:
-                raise KeyError(f"no website collector registered with id={collector_id!r}")
-            seen = set(json.loads(row[0]) if row[0] else [])
-            seen.add(article_url)
-            now = datetime.now(timezone.utc).isoformat()
-            conn.execute(
-                """UPDATE website_collectors
-                   SET checkpoint_seen_urls = ?, checkpoint_article_url = ?,
-                       checkpoint_updated_at = ?, updated_at = ?
-                   WHERE id = ?""",
-                (json.dumps(sorted(seen)), article_url, now, now, collector_id),
-            )
+        seen = self.get_website_collector_seen_urls(collector_id)
+        seen.add(article_url)
+        self.merge_collector_provider_config(collector_id, {"checkpoint_seen_urls": sorted(seen)})
+        self.advance_collector_checkpoint(collector_id, article_url)
 
     # -- Track 9: website article trade candidates ------------------------
 
@@ -4243,9 +4374,14 @@ class SignalStore:
         poll_interval_seconds: int = 60,
     ) -> dict:
         """Insert (or, idempotently, re-describe) one email collector row
-        -- mirrors `register_telegram_collector`'s own contract exactly,
+        -- now a thin wrapper over the unified `collectors` table.
+        Mirrors `register_telegram_collector`'s own contract exactly,
         including preserving qualification evidence/checkpoint/health
-        state across a re-registration of the same `collector_id`."""
+        state across a re-registration of the same `collector_id`. A
+        freshly registered email collector defaults to
+        `no_messages_observed` (not `unqualified`, unlike the other
+        three unified kinds) -- same historical default this registry
+        has always used."""
         from app.email_collectors import validate_registration
 
         mode, uses = validate_registration(
@@ -4259,95 +4395,59 @@ class SignalStore:
             provider_name=provider_name,
             allowed_uses=allowed_uses,
         )
-        now = datetime.now(timezone.utc).isoformat()
-        with self._connect() as conn:
-            existing = conn.execute(
-                "SELECT created_at FROM email_collectors WHERE id = ?", (collector_id,)
-            ).fetchone()
-            created_at = existing[0] if existing else now
-            conn.execute(
-                """INSERT INTO email_collectors
-                       (id, connection_mode, identity_ref, credential_env_var, imap_host, imap_port,
-                        imap_folder, sender_allowlist, subject_patterns, provider_name, allowed_uses,
-                        poll_interval_seconds, qualification_evidence, health_state, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '{}', 'no_messages_observed', ?, ?)
-                   ON CONFLICT(id) DO UPDATE SET
-                       connection_mode = excluded.connection_mode,
-                       identity_ref = excluded.identity_ref,
-                       credential_env_var = excluded.credential_env_var,
-                       imap_host = excluded.imap_host,
-                       imap_port = excluded.imap_port,
-                       imap_folder = excluded.imap_folder,
-                       sender_allowlist = excluded.sender_allowlist,
-                       subject_patterns = excluded.subject_patterns,
-                       provider_name = excluded.provider_name,
-                       allowed_uses = excluded.allowed_uses,
-                       poll_interval_seconds = excluded.poll_interval_seconds,
-                       updated_at = excluded.updated_at""",
-                (
-                    collector_id,
-                    mode.value,
-                    identity_ref,
-                    credential_env_var,
-                    imap_host,
-                    imap_port,
-                    imap_folder,
-                    json.dumps(list(sender_allowlist)),
-                    json.dumps(list(subject_patterns or [])),
-                    provider_name,
-                    json.dumps(uses),
-                    poll_interval_seconds,
-                    created_at,
-                    now,
-                ),
-            )
+        self.register_collector(
+            collector_id=collector_id,
+            kind="email",
+            provider=mode.value,
+            identity_ref=identity_ref,
+            credential_env_var=credential_env_var,
+            provider_name=provider_name,
+            allowed_uses=uses,
+            provider_config={
+                "imap_host": imap_host,
+                "imap_port": imap_port,
+                "imap_folder": imap_folder,
+                "sender_allowlist": list(sender_allowlist),
+                "subject_patterns": list(subject_patterns or []),
+                "poll_interval_seconds": poll_interval_seconds,
+            },
+            default_health_state="no_messages_observed",
+        )
         return self.get_email_collector(collector_id)  # type: ignore[return-value]
 
-    def _email_collector_row_to_dict(self, row: tuple) -> dict:
+    def _email_collector_row_to_dict(self, row: dict) -> dict:
+        cfg = row["provider_config"]
         return {
-            "id": row[0],
-            "connection_mode": row[1],
-            "identity_ref": row[2],
-            "credential_env_var": row[3],
-            "imap_host": row[4],
-            "imap_port": row[5],
-            "imap_folder": row[6],
-            "sender_allowlist": json.loads(row[7]) if row[7] else [],
-            "subject_patterns": json.loads(row[8]) if row[8] else [],
-            "provider_name": row[9],
-            "allowed_uses": json.loads(row[10]) if row[10] else [],
-            "poll_interval_seconds": row[11],
-            "last_qualified_at": row[12],
-            "qualification_evidence": json.loads(row[13]) if row[13] else {},
-            "checkpoint_uid": row[14],
-            "checkpoint_updated_at": row[15],
-            "health_state": row[16],
-            "health_detail": row[17],
-            "created_at": row[18],
-            "updated_at": row[19],
+            "id": row["id"],
+            "connection_mode": row["provider"],
+            "identity_ref": row["identity_ref"],
+            "credential_env_var": row["credential_env_var"],
+            "imap_host": cfg.get("imap_host"),
+            "imap_port": cfg.get("imap_port"),
+            "imap_folder": cfg.get("imap_folder"),
+            "sender_allowlist": cfg.get("sender_allowlist", []),
+            "subject_patterns": cfg.get("subject_patterns", []),
+            "provider_name": row["provider_name"],
+            "allowed_uses": row["allowed_uses"],
+            "poll_interval_seconds": cfg.get("poll_interval_seconds"),
+            "last_qualified_at": row["last_qualified_at"],
+            "qualification_evidence": row["qualification_evidence"],
+            "checkpoint_uid": row["checkpoint"],
+            "checkpoint_updated_at": row["checkpoint_updated_at"],
+            "health_state": row["health_state"],
+            "health_detail": row["health_detail"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
         }
 
-    _EMAIL_COLLECTOR_COLUMNS = (
-        "id, connection_mode, identity_ref, credential_env_var, imap_host, imap_port, imap_folder, "
-        "sender_allowlist, subject_patterns, provider_name, allowed_uses, poll_interval_seconds, "
-        "last_qualified_at, qualification_evidence, checkpoint_uid, checkpoint_updated_at, "
-        "health_state, health_detail, created_at, updated_at"
-    )
-
     def get_email_collector(self, collector_id: str) -> dict | None:
-        with self._connect() as conn:
-            row = conn.execute(
-                f"SELECT {self._EMAIL_COLLECTOR_COLUMNS} FROM email_collectors WHERE id = ?",
-                (collector_id,),
-            ).fetchone()
-        return self._email_collector_row_to_dict(row) if row else None
+        row = self.get_collector(collector_id)
+        if row is None or row["kind"] != "email":
+            return None
+        return self._email_collector_row_to_dict(row)
 
     def list_email_collectors(self) -> list[dict]:
-        with self._connect() as conn:
-            rows = conn.execute(
-                f"SELECT {self._EMAIL_COLLECTOR_COLUMNS} FROM email_collectors ORDER BY id"
-            ).fetchall()
-        return [self._email_collector_row_to_dict(r) for r in rows]
+        return [self._email_collector_row_to_dict(r) for r in self.list_collectors(kind="email")]
 
     def update_email_collector_health(
         self, collector_id: str, health_state: str, *, detail: str | None = None
@@ -4359,13 +4459,10 @@ class SignalStore:
         from app.email_collectors import CollectorHealth
 
         state = CollectorHealth(health_state)  # raises ValueError for an unrecognized state
-        with self._connect() as conn:
-            cur = conn.execute(
-                "UPDATE email_collectors SET health_state = ?, health_detail = ?, updated_at = ? WHERE id = ?",
-                (state.value, detail, datetime.now(timezone.utc).isoformat(), collector_id),
-            )
-            if cur.rowcount == 0:
-                raise KeyError(f"no email collector registered with id={collector_id!r}")
+        try:
+            self.update_collector_health(collector_id, state.value, detail=detail)
+        except KeyError:
+            raise KeyError(f"no email collector registered with id={collector_id!r}") from None
 
     def record_email_collector_qualification_evidence(
         self,
@@ -4381,23 +4478,15 @@ class SignalStore:
         (no `noforwards`-equivalent restricted state exists for email)."""
         from app.email_collectors import CollectorHealth
 
-        when = (qualified_at or datetime.now(timezone.utc)).isoformat()
-        with self._connect() as conn:
-            cur = conn.execute(
-                """UPDATE email_collectors
-                   SET qualification_evidence = ?, last_qualified_at = ?,
-                       health_state = ?, health_detail = NULL, updated_at = ?
-                   WHERE id = ?""",
-                (
-                    json.dumps(evidence),
-                    when,
-                    CollectorHealth.HEALTHY_QUALIFIED.value,
-                    when,
-                    collector_id,
-                ),
+        try:
+            self.record_collector_qualification_evidence(
+                collector_id,
+                evidence=evidence,
+                health_state=CollectorHealth.HEALTHY_QUALIFIED.value,
+                qualified_at=qualified_at,
             )
-            if cur.rowcount == 0:
-                raise KeyError(f"no email collector registered with id={collector_id!r}")
+        except KeyError:
+            raise KeyError(f"no email collector registered with id={collector_id!r}") from None
 
     # -- Track 7: email collector checkpoint (app/sources/email_source.py) --
 
@@ -4407,30 +4496,23 @@ class SignalStore:
         message (including one that has only ever gone through a
         historical import, which never touches this column -- see
         `advance_email_collector_checkpoint`)."""
-        with self._connect() as conn:
-            row = conn.execute(
-                "SELECT checkpoint_uid FROM email_collectors WHERE id = ?", (collector_id,)
-            ).fetchone()
-        if row is None:
-            raise KeyError(f"no email collector registered with id={collector_id!r}")
-        return row[0]
+        try:
+            return self.get_collector_checkpoint(collector_id)  # type: ignore[return-value]
+        except KeyError:
+            raise KeyError(f"no email collector registered with id={collector_id!r}") from None
 
     def advance_email_collector_checkpoint(self, collector_id: str, uid: int) -> None:
         """Point 5: called ONLY after a message has been genuinely
         admitted to live routing. Monotonic -- never moves the checkpoint
         backward, mirrors `advance_telegram_collector_checkpoint`'s own
-        `MAX(...)` guard exactly."""
-        with self._connect() as conn:
-            now = datetime.now(timezone.utc).isoformat()
-            cur = conn.execute(
-                """UPDATE email_collectors
-                   SET checkpoint_uid = MAX(COALESCE(checkpoint_uid, ?), ?),
-                       checkpoint_updated_at = ?, updated_at = ?
-                   WHERE id = ?""",
-                (uid, uid, now, now, collector_id),
-            )
-            if cur.rowcount == 0:
-                raise KeyError(f"no email collector registered with id={collector_id!r}")
+        `MAX(...)` guard exactly (enforced here, in Python -- see
+        `SignalStore.advance_collector_checkpoint`'s own docstring)."""
+        try:
+            current = self.get_collector_checkpoint(collector_id)
+        except KeyError:
+            raise KeyError(f"no email collector registered with id={collector_id!r}") from None
+        new_value = max(current, uid) if current is not None else uid
+        self.advance_collector_checkpoint(collector_id, new_value)
 
     # -- Track 10: notification-bridge device registry (app/notification_bridge.py) --
 
