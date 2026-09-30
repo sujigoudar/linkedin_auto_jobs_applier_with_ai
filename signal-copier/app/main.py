@@ -115,6 +115,8 @@ from app.notification_bridge import (
     verify_pairing_token,
 )
 from app.phone_escalation import PhoneEscalationError, evaluate_escalation
+from app.certification import CertificationError
+from app.certification_scorecard import compute_scorecard
 from app.sources.twitter import TwitterSource
 from app.sources.webhook import WebhookSource
 from app.sources.whatsapp import WhatsAppSource
@@ -3096,6 +3098,130 @@ async def get_catalog_connection(connection_id: str, _owner: dict = Depends(requ
     if entry is None:
         raise HTTPException(status_code=404, detail=f"no connection registered with id={connection_id!r}")
     return entry
+
+
+# --- Track 17: provider certification checklist + shadow mode ---
+#
+# See app/certification.py's and app/shadow_mode.py's own module
+# docstrings for the full design. Owner-gated exactly like every other
+# mutating admin route in this codebase (`Depends(require_owner)` for
+# writes, `Depends(require_owner_read)` for reads).
+
+
+@app.get("/provider-certification/providers/{provider_id}/checks")
+async def list_certification_checks(
+    provider_id: str,
+    source_id: str | None = None,
+    asset_class: str | None = None,
+    account_route: str | None = None,
+    _owner: dict = Depends(require_owner_read),
+) -> dict:
+    """Lists the current certification_checks rows for this provider,
+    optionally narrowed to one exact (source_id, asset_class,
+    account_route) scope -- when all three are given and no rows exist
+    yet, the 14-check scope is lazily bootstrapped (all NOT_RUN) rather
+    than returning an empty list, so a fresh scope is immediately
+    visible/actionable. Every AUTOMATED check (see app.certification.
+    CHECK_KIND) is recomputed fresh from real evidence before being
+    returned -- never a stale cached value."""
+    if store.get_provider_catalog_entry(provider_id) is None:
+        raise HTTPException(status_code=404, detail=f"no provider registered with id={provider_id!r}")
+    if source_id is not None and asset_class is not None and account_route is not None:
+        checks = store.ensure_certification_checks(
+            provider_id=provider_id, source_id=source_id, asset_class=asset_class, account_route=account_route
+        )
+    else:
+        checks = store.list_certification_checks(
+            provider_id=provider_id, source_id=source_id, asset_class=asset_class, account_route=account_route
+        )
+    return {"provider_id": provider_id, "checks": checks}
+
+
+class RecordCertificationCheckRequest(BaseModel):
+    """Owner-gated manual attestation for an ATTESTATION_ONLY check (see
+    app.certification.CHECK_KIND) -- `SignalStore.record_certification_check`
+    refuses this for an AUTOMATED check name. `evidence` and `checked_by`
+    are both required for a PASS/FAIL (never a bare boolean with no
+    backing, never an anonymous record) -- see app.certification.
+    validate_check_record."""
+
+    provider_id: str
+    source_id: str
+    asset_class: str
+    account_route: str
+    status: str
+    evidence: dict | None = None
+    checked_by: str
+
+
+@app.post("/provider-certification/checks/{check_name}/record")
+async def record_certification_check(
+    check_name: str, request: RecordCertificationCheckRequest, _owner: dict = Depends(require_owner)
+) -> dict:
+    try:
+        return store.record_certification_check(
+            provider_id=request.provider_id,
+            source_id=request.source_id,
+            asset_class=request.asset_class,
+            account_route=request.account_route,
+            check_name=check_name,
+            status=request.status,
+            evidence=request.evidence,
+            checked_by=request.checked_by,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except CertificationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.get("/provider-certification/providers/{provider_id}/live-eligible")
+async def get_live_eligible(
+    provider_id: str,
+    source_id: str,
+    asset_class: str,
+    account_route: str,
+    _owner: dict = Depends(require_owner_read),
+) -> dict:
+    """The derived LIVE_ELIGIBLE computation for one exact scope -- see
+    app.certification.is_live_eligible's own docstring for why this is
+    ALWAYS recomputed from the current checks, never read from a stored
+    flag. This is a DIFFERENT, ADDITIONAL gate from app/qualification.py's
+    per-route release_approved ladder -- see app/certification.py's own
+    "Composition with route qualification" section; nothing here reads,
+    calls, or is read by that gate."""
+    if store.get_provider_catalog_entry(provider_id) is None:
+        raise HTTPException(status_code=404, detail=f"no provider registered with id={provider_id!r}")
+    return store.is_scope_live_eligible(
+        provider_id=provider_id, source_id=source_id, asset_class=asset_class, account_route=account_route
+    )
+
+
+@app.get("/provider-certification/providers/{provider_id}/shadow-results")
+async def list_shadow_results(
+    provider_id: str, signal_id: str | None = None, _owner: dict = Depends(require_owner_read)
+) -> dict:
+    """SHADOW MODE's own audit trail -- every hypothetical order shadow
+    mode has computed for this provider ("what would the live system
+    have done"), never anything that was actually submitted. See
+    app/shadow_mode.py's own module docstring for the structural
+    guarantee that these rows never came from a real order."""
+    if store.get_provider_catalog_entry(provider_id) is None:
+        raise HTTPException(status_code=404, detail=f"no provider registered with id={provider_id!r}")
+    return {"provider_id": provider_id, "results": store.list_shadow_mode_results(provider_id=provider_id, signal_id=signal_id)}
+
+
+@app.get("/provider-certification/providers/{provider_id}/scorecard")
+async def get_scorecard(provider_id: str, _owner: dict = Depends(require_owner_read)) -> dict:
+    """The onboarding scorecard -- operational readiness, NOT a trading-
+    quality score. See app/certification_scorecard.py's own module
+    docstring: every percentage is freshly computed from real
+    certification_checks/shadow_mode_results rows at read time, never a
+    stored/fabricated number, and `insufficient_data` is the honest
+    answer whenever there is nothing real to compute from yet."""
+    if store.get_provider_catalog_entry(provider_id) is None:
+        raise HTTPException(status_code=404, detail=f"no provider registered with id={provider_id!r}")
+    return compute_scorecard(store, provider_id)
 
 
 def _managed_lifecycle_snapshot() -> list[dict]:
