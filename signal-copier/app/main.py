@@ -58,6 +58,7 @@ from app.context import fx as fx_context
 from app.context import sec_edgar
 from app.db import SignalStore, alembic_code_head
 from app.capital_allocator import confirmed_open_notional
+from app.account_economics_v2 import compute_extended_account_economics
 from app.economics import compute_account_economics
 from app.equity_history import EquitySnapshotter
 from app.execution_quality import compute_execution_quality
@@ -1400,6 +1401,31 @@ async def get_account_economics(account_id: str, _owner: dict = Depends(require_
     if account_id not in routing_config.accounts:
         raise HTTPException(status_code=404, detail=f"no account '{account_id}'")
     return compute_account_economics(store, account_id).to_dict()
+
+
+@app.get("/accounts/{account_id}/economics/extended")
+async def get_account_economics_extended(account_id: str, _owner: dict = Depends(require_owner_read)) -> dict:
+    """TR-EPISODE-01 (P&L completeness): the extended economic-account
+    view a release review asked for alongside `GET /accounts/{id}/
+    economics` above -- NAV/equity (from a fresh, real broker balance
+    read, when the broker supports one), unrealized P&L (reusing
+    app/equity_history.py's own real last-observed-price mechanism),
+    explicit unknown-fee/unavailable-mark/unavailable-TWR states (never a
+    fabricated 0), and slippage/implementation-shortfall (from every fill
+    whose signal carried a real reference price). See
+    app/account_economics_v2.py's module docstring for exactly which
+    fields are real and which are honestly disclosed as not yet
+    computable in this schema. Added alongside the existing endpoint,
+    never replacing it -- that endpoint's response shape is an
+    already-depended-on contract this pass doesn't change."""
+    account = routing_config.accounts.get(account_id)
+    if account is None:
+        raise HTTPException(status_code=404, detail=f"no account '{account_id}'")
+    broker = brokers.get(account.broker)
+    broker_balance = await broker.get_account_balance(account) if broker is not None else None
+    return compute_extended_account_economics(
+        store, account_id, lifecycle_manager=lifecycle_manager, broker_balance=broker_balance
+    ).to_dict()
 
 
 @app.get("/accounts/{account_id}/balance")

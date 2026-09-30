@@ -3120,6 +3120,33 @@ class SignalStore:
             for r in rows
         ]
 
+    def list_filled_orders_with_signal_reference_price(self, account_id: str) -> list[dict]:
+        """TR-EPISODE-01 (P&L completeness): every FILLED order for this
+        account joined to its originating signal's own `price` field --
+        the provider's reference/intended price, when the signal carried
+        one -- the real basis app/account_economics_v2.py uses to compute
+        slippage/implementation shortfall. `signal_price` is `None` for a
+        signal that never carried a price (most alert-only signals) --
+        that order is honestly excluded from the slippage sample rather
+        than compared against a fabricated reference."""
+        query = """SELECT o.symbol, o.side, o.filled_quantity, o.filled_price, o.executed_at, s.price
+                   FROM orders o JOIN signals s ON o.signal_id = s.id
+                   WHERE o.account_id = ? AND o.status = 'filled'
+                   ORDER BY o.executed_at ASC, o.id ASC"""
+        with self._connect() as conn:
+            rows = conn.execute(query, (account_id,)).fetchall()
+        return [
+            {
+                "symbol": r[0],
+                "side": r[1],
+                "filled_quantity": r[2],
+                "filled_price": r[3],
+                "executed_at": r[4],
+                "signal_price": r[5],
+            }
+            for r in rows
+        ]
+
     def list_recent_orders(self, limit: int = 50, account_id: str | None = None) -> list[dict]:
         query = """SELECT id, account_id, broker, symbol, side, requested_quantity, signal_id,
                           status, broker_order_id, filled_quantity, filled_price, message, executed_at,
