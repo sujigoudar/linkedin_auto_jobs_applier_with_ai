@@ -1,8 +1,8 @@
 """Add email_collectors table (Track 7: persistent email collector
 registry -- see app/email_collectors.py's module docstring)
 
-Revision ID: 0021
-Revises: 0020
+Revision ID: 0023
+Revises: 0022
 Create Date: 2026-09-30
 
 See app/db.py's own email_collectors table comment for exactly what each
@@ -20,8 +20,8 @@ from __future__ import annotations
 import sqlalchemy as sa
 from alembic import op
 
-revision = "0021"
-down_revision = "0020"
+revision = "0023"
+down_revision = "0022"
 branch_labels = None
 depends_on = None
 
