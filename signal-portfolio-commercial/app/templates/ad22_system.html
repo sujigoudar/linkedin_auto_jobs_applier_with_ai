@@ -21,6 +21,40 @@
 <div class="panel">
   <h2>Workers and queues</h2>
   <p><span class="badge badge-unknown">UNSUPPORTED</span> -- no worker/queue tracking model exists in this build (the same gap AD-05's own "no job queue" finding already documented).</p>
+
+  <h3>Service uptime and latency (trailing 24h)</h3>
+  <p><small>Computed only from real, recorded <code>GET /health</code> samples (app/services/service_health.py) --
+  a background sampler polls this process's own <code>/health</code> and, when configured, signal-copier's own
+  <code>/health</code> over HTTP. Reports "insufficient sample history" rather than a fabricated percentage
+  when too few samples exist yet.</small></p>
+  <table>
+    <thead><tr><th>Service</th><th>Samples (24h)</th><th>Uptime</th><th>p50 latency</th><th>p95 latency</th><th>Last sample</th></tr></thead>
+    <tbody>
+      {% for result in uptime_latency %}
+      <tr>
+        <th>{{ result.service_name }}</th>
+        <td class="num">{{ result.sample_count }}</td>
+        {% if result.insufficient_history %}
+        <td colspan="3"><span class="badge badge-unknown">insufficient sample history ({{ result.sample_count }} sample(s), need at least 5)</span></td>
+        {% else %}
+        <td class="num">{{ result.uptime_pct }}%</td>
+        <td class="num">{{ "%.0f"|format(result.p50_latency_ms) if result.p50_latency_ms is not none else "-" }} ms</td>
+        <td class="num">{{ "%.0f"|format(result.p95_latency_ms) if result.p95_latency_ms is not none else "-" }} ms</td>
+        {% endif %}
+        <td>
+          {% if result.last_sample_at %}
+          {{ result.last_sample_at }}
+          <span class="badge badge-{{ 'ok' if result.last_sample_success else 'unknown' }}">
+            {{ 'ok' if result.last_sample_success else 'failed' }}
+          </span>
+          {% else %}
+          never
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
 </div>
 
 <div class="panel">

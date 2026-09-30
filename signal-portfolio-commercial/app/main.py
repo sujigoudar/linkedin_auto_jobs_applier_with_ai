@@ -23,14 +23,19 @@ without a real release decision.
 """
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
+import time
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, HTTPException, Request
+import httpx
+from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.staticfiles import StaticFiles
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app import config
@@ -38,8 +43,11 @@ from app.api.dashboard_routes import router as dashboard_router
 from app.api.dependencies import get_current_scope, get_db_session
 from app.api.relay_routes import router as relay_router
 from app.db import make_engine, make_session_factory, set_tenant_scope
+from app.metrics import render_metrics
 from app.rate_limit import limiter
 from app.services.auth import TenantScope
+from app.services.permissions import PermissionDenied, require_permission
+from app.services.service_health import record_health_sample
 from app.services.stripe_webhook import (
     InvalidSignatureHeaderError,
     SignatureMismatchError,
@@ -83,6 +91,52 @@ def create_app(database_url: str | None = None, relay_database_url: str | None =
     def healthz() -> dict:
         return {"status": "ok"}
 
+    @app.get("/health")
+    def health(session: Session = Depends(get_db_session)) -> dict:
+        """Track 11 -- public, minimal, truthful liveness/readiness,
+        matching signal-copier's own GET /health pattern (app/main.py
+        there): `status` is never hardcoded "ok" independent of the
+        flags next to it, and a check that could not run reports False
+        rather than being silently omitted. This process has no
+        background trading workers to report on (that shape is
+        signal-copier's own, not this one's) -- the one real readiness
+        signal this process has is whether its own database connection
+        actually works, so that is exactly, and only, what `database_ok`
+        reports; nothing here is invented to look like a busier health
+        response than this process's real components justify. Uses the
+        request-scoped `get_db_session` dependency (not
+        `app.state.session_factory` directly) so this route is
+        exercised the same way every other route in this app is --
+        including under tests/conftest.py's `get_db_session` override."""
+        try:
+            session.execute(text("SELECT 1"))
+            database_ok = True
+        except Exception:  # noqa: BLE001 - health check must never raise
+            database_ok = False
+
+        return {
+            "status": "ok" if database_ok else "degraded",
+            "database_ok": database_ok,
+        }
+
+    @app.get("/metrics")
+    def metrics(
+        scope: TenantScope = Depends(get_current_scope),
+        session: Session = Depends(get_db_session),
+    ) -> Response:
+        """Track 11 -- private aggregate operational metrics (Prometheus
+        text format), owner/publisher_operator-session protected, unlike
+        `/health` -- same reasoning signal-copier's own GET /metrics
+        docstring gives: these numbers are operational detail an
+        anonymous caller has no business reading. See app/metrics.py."""
+        try:
+            require_permission(scope.role, "view_deployment_status")
+        except PermissionDenied as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
+        set_tenant_scope(session, scope.tenant_id)
+        body = render_metrics(session, tenant_id=scope.tenant_id)
+        return Response(content=body, media_type="text/plain; version=0.0.4; charset=utf-8")
+
     @app.get("/api/v1/me")
     def me(
         scope: TenantScope = Depends(get_current_scope),
@@ -113,7 +167,112 @@ def create_app(database_url: str | None = None, relay_database_url: str | None =
         session.commit()
         return {"received": True, "processed": is_new}
 
+    if config.HEALTH_SAMPLER_ENABLED:
+
+        @app.on_event("startup")
+        async def _start_health_sampler() -> None:
+            app.state.health_sampler_task = asyncio.create_task(_health_sampler_loop(app))
+
+        @app.on_event("shutdown")
+        async def _stop_health_sampler() -> None:
+            task = getattr(app.state, "health_sampler_task", None)
+            if task is not None:
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+
     return app
+
+
+async def _sample_commercial_self(app: FastAPI) -> None:
+    """Samples THIS process's own `/health` in-process (no self-HTTP
+    loopback -- this process doesn't reliably know its own bound port),
+    reusing `app.state.session_factory` directly rather than duplicating
+    the `GET /health` route's own database probe."""
+    start = time.monotonic()
+    try:
+        probe_session = app.state.session_factory()
+        try:
+            probe_session.execute(text("SELECT 1"))
+            success = True
+            failure_reason = None
+        finally:
+            probe_session.close()
+    except Exception as exc:  # noqa: BLE001 - a sampler pass must never crash the loop
+        success = False
+        failure_reason = f"{type(exc).__name__}: {exc}"
+    latency_ms = (time.monotonic() - start) * 1000.0
+
+    record_session = app.state.session_factory()
+    try:
+        record_health_sample(
+            record_session,
+            service_name="commercial",
+            success=success,
+            latency_ms=latency_ms if success else None,
+            failure_reason=failure_reason,
+        )
+        record_session.commit()
+    finally:
+        record_session.close()
+
+
+async def _sample_signal_copier(app: FastAPI) -> None:
+    """Samples signal-copier's own separate `/health` over real HTTP --
+    the one cross-service check this deployment can genuinely make
+    without new credentials, per this track's own scope. A no-op (not a
+    fabricated failure sample) when `SIGNAL_COPIER_BASE_URL` is unset:
+    an unconfigured deployment has no real target to report a failure
+    against."""
+    if not config.SIGNAL_COPIER_BASE_URL:
+        return
+
+    start = time.monotonic()
+    success = False
+    failure_reason: str | None = None
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(f"{config.SIGNAL_COPIER_BASE_URL.rstrip('/')}/health")
+        if response.status_code == 200 and response.json().get("status") == "ok":
+            success = True
+        else:
+            failure_reason = f"HTTP {response.status_code}, body status={response.json().get('status') if response.headers.get('content-type', '').startswith('application/json') else '<non-json>'}"
+    except Exception as exc:  # noqa: BLE001 - a sampler pass must never crash the loop
+        failure_reason = f"{type(exc).__name__}: {exc}"
+    latency_ms = (time.monotonic() - start) * 1000.0
+
+    record_session = app.state.session_factory()
+    try:
+        record_health_sample(
+            record_session,
+            service_name="signal_copier",
+            success=success,
+            latency_ms=latency_ms if success else None,
+            failure_reason=failure_reason,
+        )
+        record_session.commit()
+    finally:
+        record_session.close()
+
+
+async def _health_sampler_loop(app: FastAPI) -> None:
+    """Track 11's periodic background task: samples this process's own
+    `/health` and (when configured) signal-copier's, every
+    `config.HEALTH_SAMPLER_INTERVAL_SECONDS`, recording a real
+    `ServiceHealthSample` row each pass. One failed pass never stops the
+    loop -- each sampler function already swallows its own exceptions
+    into a failure sample, and this loop additionally guards the pass as
+    a whole so a truly unexpected error still doesn't kill the
+    background task outright."""
+    while True:
+        try:
+            await _sample_commercial_self(app)
+            await _sample_signal_copier(app)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - the sampler loop must never die from one bad pass
+            pass
+        await asyncio.sleep(config.HEALTH_SAMPLER_INTERVAL_SECONDS)
 
 
 #: A real, importable module-level instance for a production ASGI server
