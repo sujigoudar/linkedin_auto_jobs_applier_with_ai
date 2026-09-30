@@ -98,6 +98,8 @@ from app.sources.sms_twilio import TwilioSMSSource
 from app.sources.telegram import TelegramSource
 from app.sources.telegram_user import TelegramUserSource
 from app.telegram_collectors import ConnectionMode, TelegramCollectorError
+from app.sources.email_source import EmailSource
+from app.email_collectors import EmailCollectorError
 from app.sources.twitter import TwitterSource
 from app.sources.webhook import WebhookSource
 from app.sources.whatsapp import WhatsAppSource
@@ -304,6 +306,51 @@ if config.TELEGRAM_API_ID and config.TELEGRAM_API_HASH:
                 save_historical_signal=store.save_signal,
             )
         )
+# Track 7: every registered email collector in the persistent registry
+# (app/email_collectors.py) -- same data-driven pattern as the Telegram
+# user-account collectors above: one row per mailbox/folder, not a single
+# fixed env-var pair. A collector missing either its app-password or
+# username env var is simply never started, with health surfaced as
+# `missing_credentials` rather than silently skipped.
+for _email_collector in store.list_email_collectors():
+    _email_password = os.environ.get(_email_collector["credential_env_var"])
+    _email_username_env = f"EMAIL_{_email_collector['id'].upper()}_USERNAME"
+    _email_username = os.environ.get(_email_username_env)
+    if not _email_password or not _email_username:
+        store.update_email_collector_health(
+            _email_collector["id"], "missing_credentials",
+            detail=(
+                f"env var {_email_collector['credential_env_var']!r} and/or {_email_username_env!r} "
+                "is not set in this process's environment"
+            ),
+        )
+        continue
+    try:
+        _background_sources.append(
+            EmailSource(
+                engine.handle_signal,
+                collector_id=_email_collector["id"],
+                imap_host=_email_collector["imap_host"],
+                imap_port=_email_collector["imap_port"],
+                imap_folder=_email_collector["imap_folder"],
+                sender_allowlist=_email_collector["sender_allowlist"],
+                subject_patterns=_email_collector["subject_patterns"],
+                connection_mode=_email_collector["connection_mode"],
+                username=_email_username,
+                password=_email_password,
+                poll_interval_seconds=_email_collector["poll_interval_seconds"],
+                on_source_event=engine.export_source_event,
+                registry=store,
+                save_historical_signal=store.save_signal,
+            )
+        )
+    except NotImplementedError as exc:
+        # See app.email_collectors.ConnectionMode.GMAIL_API's own
+        # docstring -- a collector registered for a mode this codebase
+        # doesn't implement yet is surfaced as missing_credentials
+        # (nothing about it is actually connectable), never a crash of
+        # the whole process at startup.
+        store.update_email_collector_health(_email_collector["id"], "missing_credentials", detail=str(exc))
 if config.SLACK_BOT_TOKEN and config.SLACK_APP_TOKEN and config.SLACK_CHANNEL_ID:
     _background_sources.append(
         SlackSource(engine.handle_signal, config.SLACK_BOT_TOKEN, config.SLACK_APP_TOKEN, config.SLACK_CHANNEL_ID)
@@ -3207,6 +3254,93 @@ async def record_telegram_collector_qualification_evidence(
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return store.get_telegram_collector(collector_id)  # type: ignore[return-value]
+
+
+# -- Track 7: Email collector registry (app/email_collectors.py) -----------
+
+
+class RegisterEmailCollectorRequest(BaseModel):
+    """See app/email_collectors.py's module docstring and
+    docs/security/EMAIL_COLLECTOR.md for the full registration procedure.
+    `credential_env_var` is a REFERENCE (the name of an env var), never a
+    credential value -- `validate_registration` rejects anything that
+    doesn't look like a bare env-var name."""
+
+    id: str
+    connection_mode: str
+    identity_ref: str
+    credential_env_var: str
+    imap_host: str
+    imap_folder: str
+    sender_allowlist: list[str]
+    provider_name: str
+    imap_port: int = 993
+    subject_patterns: list[str] | None = None
+    allowed_uses: list[str] | None = None
+    poll_interval_seconds: int = 60
+
+
+@app.post("/email-collectors")
+async def register_email_collector(
+    request: RegisterEmailCollectorRequest, _owner: dict = Depends(require_owner)
+) -> dict:
+    """Owner-gated: register (or re-describe) one email collector. Never
+    accepts or stores a credential value -- see
+    `RegisterEmailCollectorRequest`'s own docstring."""
+    try:
+        return store.register_email_collector(
+            collector_id=request.id,
+            connection_mode=request.connection_mode,
+            identity_ref=request.identity_ref,
+            credential_env_var=request.credential_env_var,
+            imap_host=request.imap_host,
+            imap_folder=request.imap_folder,
+            sender_allowlist=request.sender_allowlist,
+            provider_name=request.provider_name,
+            imap_port=request.imap_port,
+            subject_patterns=request.subject_patterns,
+            allowed_uses=request.allowed_uses,
+            poll_interval_seconds=request.poll_interval_seconds,
+        )
+    except EmailCollectorError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.get("/email-collectors")
+async def list_email_collectors(_owner: dict = Depends(require_owner_read)) -> dict:
+    """Every registered collector, including its current `health_state`
+    (point 6) -- a dashboard reads this, never a hardcoded green."""
+    return {"collectors": store.list_email_collectors()}
+
+
+@app.get("/email-collectors/{collector_id}")
+async def get_email_collector(collector_id: str, _owner: dict = Depends(require_owner_read)) -> dict:
+    collector = store.get_email_collector(collector_id)
+    if collector is None:
+        raise HTTPException(status_code=404, detail=f"no email collector registered with id={collector_id!r}")
+    return collector
+
+
+class RecordEmailCollectorQualificationRequest(BaseModel):
+    """Real evidence of authorized message receipt -- never a claim this
+    endpoint verifies itself; the CALLER is asserting they have real
+    evidence (mirrors app/qualification.py's own `POST /qualifications`
+    and `RecordTelegramCollectorQualificationRequest`)."""
+
+    evidence: dict
+
+
+@app.post("/email-collectors/{collector_id}/qualification-evidence")
+async def record_email_collector_qualification_evidence(
+    collector_id: str,
+    request: RecordEmailCollectorQualificationRequest,
+    _owner: dict = Depends(require_owner),
+) -> dict:
+    try:
+        store.record_email_collector_qualification_evidence(collector_id, evidence=request.evidence)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return store.get_email_collector(collector_id)  # type: ignore[return-value]
 
 
 class BacktestRequest(BaseModel):

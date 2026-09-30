@@ -87,6 +87,27 @@ the NAME of the environment variable above that holds it, so the registry
 itself stays safe to read/export/back up like any other non-secret
 config.
 
+### Email collectors (`app/sources/email_source.py`)
+
+Track 7: IMAP-based ingestion of trading-alert email (a provider's
+newsletter/alert emails, or a dedicated signal-forwarding mailbox) — see
+`docs/security/EMAIL_COLLECTOR.md` for the full setup procedure (how to
+generate an IMAP app password for Gmail/Outlook/other providers). Only
+IMAP with an app-specific password is implemented; a Gmail-API/OAuth mode
+is a documented, unimplemented follow-up (see that doc's own "Gmail API
+(OAuth) — not yet implemented" section).
+
+| Field | Purpose |
+|---|---|
+| `EMAIL_<COLLECTOR_ID>_APP_PASSWORD` | Per-collector (same `<PREFIX>_<ID>_<FIELD>` convention as every other per-collector/per-account env var in this file): the IMAP app password generated at the provider (never the account's real login password). |
+| `EMAIL_<COLLECTOR_ID>_USERNAME` | Per-collector: the mailbox's own IMAP login username, usually the full email address. |
+
+The `email_collectors` registry table (`app/email_collectors.py`,
+`app/db.py`) never stores a credential VALUE — only `credential_env_var`,
+the NAME of the environment variable above that holds it, plus
+non-secret identity (mailbox address, IMAP host/folder, sender
+allowlist, provider mapping).
+
 ## Export relay to the commercial platform
 
 | Field | Purpose | Rotation |
