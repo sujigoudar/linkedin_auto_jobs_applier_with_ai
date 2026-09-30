@@ -155,8 +155,8 @@
 
       resultEl.innerHTML = `
         <p class="section-note">Created provider <span class="mono">${escapeHtml(provider.id)}</span>, connection <span class="mono">${escapeHtml(connection.id)}</span>, source <span class="mono">${escapeHtml(source.id)}</span>.</p>
-        <p class="section-note">This registered the catalog rows only -- <code>execution_eligibility="disabled"</code> on both the provider and source, and <code>certification_state="uncertified"</code> on the provider (no live routing is possible yet). Real transport/credentials still need the env var(s) named above set in your deployment config; live eligibility is a separate, later step (see <a href="#/trade/sources">Signal providers and collectors (TR-09)</a> and the certification checklist).</p>
-        <div class="tr-controls-row"><a href="#/trade/sources">Open Signal providers and collectors (TR-09)</a></div>
+        <p class="section-note">This registered the catalog rows only -- <code>execution_eligibility="disabled"</code> on both the provider and source, and <code>certification_state="uncertified"</code> on the provider (no live routing is possible yet). Real transport/credentials still need the env var(s) named above set in your deployment config; live eligibility is a separate, later step.</p>
+        <p class="section-note"><strong>Note:</strong> this screen writes to the newer provider/source/connection catalog (<span class="mono">GET /provider-catalog/providers</span>). <a href="#/trade/sources">Signal providers and collectors (TR-09)</a> reads an older, separate <span class="mono">ProviderConfig</span> model and will NOT show what you just created -- that is not a failure, the two are simply different data models today. Confirm this row exists via <span class="mono">GET /provider-catalog/providers/${escapeHtml(provider.id)}</span> if needed.</p>
       `;
     } catch (err) {
       // Disclose exactly how far the 3-call sequence got, since a retry
