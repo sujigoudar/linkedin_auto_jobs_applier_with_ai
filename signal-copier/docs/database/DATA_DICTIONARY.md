@@ -48,6 +48,23 @@ exact per-column contract.
 **not** called for it. Passing a non-`None` `applied_quantity` implies
 `record_fill` really ran with that exact amount.
 
+**Managed-lifecycle orders** (TRK-22): `app/engine.py`'s
+`_handle_managed_entry`/`_handle_managed_close` now populate these same
+four columns too, via a `_ManagedOrderOutcome` bundle their shared
+callers (`_handle_signal`'s managed branch, `close_position`) pass
+straight through to `save_order_result` — before this, every
+managed-lifecycle order left `applied_execution_delta` permanently
+`NULL`, which meant Track 16's `/positions/{symbol}/provider-
+allocations` and Track 18's `get_provider_position_ownership` (both
+built on it) never saw managed-lifecycle activity at all, only
+plain-account fills. The values are computed from the exact same
+FILLED/PENDING classification `_submit_order` uses for the plain-account
+path, adapted to each method's own pre-existing fill-application call
+(`on_entry_fill`, `resolve_pending_entry`, `request_exit`/
+`_apply_exit_fill`) rather than a second, duplicate `record_fill` call —
+see `_ManagedOrderOutcome`'s own docstring in `app/engine.py` for the
+full per-branch contract.
+
 ## `positions.net_quantity`: the exact update contract
 
 `net_quantity` **is** `actual_remaining_ownership` by contract (AUD-01
