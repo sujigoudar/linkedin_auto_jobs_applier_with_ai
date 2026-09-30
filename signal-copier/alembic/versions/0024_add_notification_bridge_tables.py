@@ -2,8 +2,8 @@
 (Track 10: Android NotificationListenerService fallback capture path --
 see app/notification_bridge.py's module docstring)
 
-Revision ID: 0021
-Revises: 0020
+Revision ID: 0024
+Revises: 0023
 Create Date: 2026-09-30
 
 See app/db.py's own notification_bridge_devices/notification_bridge_events
@@ -24,8 +24,8 @@ from __future__ import annotations
 import sqlalchemy as sa
 from alembic import op
 
-revision = "0021"
-down_revision = "0020"
+revision = "0024"
+down_revision = "0023"
 branch_labels = None
 depends_on = None
 
