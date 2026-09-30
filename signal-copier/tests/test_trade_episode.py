@@ -80,7 +80,7 @@ def test_stop_exit_loss_is_counted_against_the_provider(store):
     """The exact gap the review flagged: a stop-out loss must count
     against the provider's scorecard, not vanish."""
     t0 = datetime.now(timezone.utc)
-    entry_id = _save(store, "acct1", "AAPL", Side.BUY, 10.0, 100.0, t0, source="bob_signals", family_id="fam-1")
+    _save(store, "acct1", "AAPL", Side.BUY, 10.0, 100.0, t0, source="bob_signals", family_id="fam-1")
     _save(
         store,
         "acct1",

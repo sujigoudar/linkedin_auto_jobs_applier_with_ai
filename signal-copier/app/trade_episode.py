@@ -69,7 +69,6 @@ net economic result, not three independent "trades."
 """
 from __future__ import annotations
 
-import json
 import math
 from dataclasses import dataclass, field
 
@@ -380,7 +379,7 @@ def _finalize_episode(episode: TradeEpisode) -> None:
     unknown_price_seen = False
     reducing_count = 0
 
-    for kind, execution in all_executions:
+    for _kind, execution in all_executions:
         is_same_side = execution.side == entry_side
         signed_qty = execution.quantity if is_same_side else -execution.quantity
 
