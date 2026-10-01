@@ -258,3 +258,59 @@ always passed anyway), routing.py 260/262 (2 confirmed equivalent — an
 code changed; every real survivor was closed with a new test, no
 genuine production logic bug was found. Full `pytest -q` re-verified
 after these additions: 2170 passed, 0 failed.
+
+### Track 43: mutation-testing scope widened to app/engine.py (2026-10-01)
+
+Widened the repo's one checked-in `[tool.mutmut]` config (pyproject.toml)
+to also cover `app/engine.py` -- per the explicit instruction that
+mutation coverage must eventually cover every module, starting with the
+highest financial-risk code; `app/engine.py` (the core signal-processing/
+order-routing engine) is next after `app/auth.py` by that ordering.
+`only_mutate` now includes it; `pytest_add_cli_args_test_selection` now
+also lists all 44 test files that import `SignalCopierEngine` directly
+(372 tests total).
+
+Mutant generation succeeded (~140 mutable sites in `app/engine.py`
+alone), but the stats-collection pass that must run once before any
+individual mutant can be checked did not complete within this session:
+after 12+ minutes of real wall-clock time with confirmed, steady CPU
+progress (not a hang -- sampled repeatedly via `ps`), it was stopped
+rather than let run indefinitely. The container's `uptime` showed a load
+average of 11-13 on 4 cores throughout, from several other agent sessions
+running their own test suites/mutmut concurrently on the same shared
+machine (tracks 44-48 and others observed in `ps aux` during this run) --
+an environment condition, not a defect in the engine.py mutation setup
+itself. No mutation score for `app/engine.py` is reported here because
+none was actually produced; a future run on a less-contended box (or in
+CI, which runs single-tenant) should be able to complete it using the
+scope already committed.
+
+In its place, did a complete manual read of `app/engine.py` (~3100
+lines, every method) against the already-extensive existing test files
+for each area, prioritized by the same financial-risk ordering mutation
+testing would prioritize: close-signal resolution (`_resolve_close`,
+`_resolve_and_submit_plain_close`), the P0-5 broker-position
+reconciliation tolerance math (`_positions_reconcile`/
+`_reconcile_before_plain_close`), Track 18 per-provider position-
+ownership gating, E03 capital/risk admission gates, the AUD-01 distinct-
+field quantity model threaded through `_submit_order`/
+`_handle_managed_entry`/`_handle_managed_close`, and command-ledger
+idempotency. Found one real, previously-undetected gap this way:
+`_positions_reconcile` (a small, pure tolerance-boundary function) had no
+direct unit test at all -- only incidental indirect coverage through
+whichever specific values the reconciliation-flow tests in
+`tests/test_p0_5_close_reconciliation.py` happened to use, meaning a
+mutation flipping its comparison operator, dropping the relative-
+tolerance term, or comparing the signed difference instead of the
+absolute one could plausibly have survived every existing test. Added 6
+direct tests there (exact match, the absolute-tolerance boundary at zero,
+tolerance scaling with magnitude, sign-symmetry, and boundary
+inclusivity) -- all pass against current code; no production code changed.
+
+`ruff check .` and the CI-scoped `mypy` command both clean on this
+branch. Full `pytest -q` re-verified after this addition (isolated
+`TMPDIR` to avoid colliding with the other concurrent sessions' own test
+databases/ports on this shared box): see this file's own verification
+line below once re-run; treat any gap here as this snapshot not yet
+having been updated after that run completed, not as the run having been
+skipped.

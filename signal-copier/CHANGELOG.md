@@ -7,6 +7,55 @@ does not yet cut versioned releases (see `docs/process/RELEASE.md`), so
 entries are grouped by theme and rough chronological wave instead of by
 version number. Newest wave first.
 
+## [Unreleased] — Track 43: mutation-testing scope widened to app/engine.py
+
+Per the explicit instruction that mutation coverage must eventually cover
+every module, widened `pyproject.toml`'s `[tool.mutmut]` scope (Track 39's
+own comment already named this as the obvious next step) to `app/engine.py`
+-- the core signal-processing/order-routing engine, financially the
+highest-risk module in the service after owner auth. `only_mutate` now
+also lists `app/engine.py`; `pytest_add_cli_args_test_selection` now also
+lists every test file that imports `SignalCopierEngine` directly (44
+files, 372 tests total), identified via `grep -rl "from app.engine"
+tests/`.
+
+### Added
+- `tests/test_p0_5_close_reconciliation.py`: direct unit tests for
+  `_positions_reconcile` -- the pure tolerance-comparison function
+  `_reconcile_before_plain_close` uses to decide whether a fresh broker
+  position readback "matches" this service's locally tracked quantity
+  before a plain-account close is allowed to proceed. Previously only
+  exercised indirectly, through whichever specific values the
+  reconciliation-flow tests happened to use -- no test asserted the
+  boundary itself. New tests cover: exact match, the pure-absolute-
+  tolerance boundary at zero, the tolerance correctly SCALING with
+  magnitude (a difference that fails at small positions must pass at
+  large ones, and vice versa), sign-symmetry (a broker position below
+  local by some delta must be rejected identically to one above by the
+  same delta -- catches a mutation that compares the signed difference
+  instead of its absolute value), and that the boundary is inclusive
+  (`<=`, not `<`). All 6 pass against current code.
+
+### Known limitation (environment, not scope)
+A full `mutmut run` against this widened scope did not complete within
+this session: the stats-collection pass (one coverage-instrumented run of
+all 372 selected tests, needed before any individual mutant can be
+checked) did not finish after 12+ minutes of real wall-clock time, with
+the shared container's load average measured at 11-13 on 4 cores (several
+other agent sessions running their own test suites/mutmut concurrently on
+the same machine) -- confirmed via repeated process/CPU-time sampling
+that the run was genuinely progressing, just starved for CPU, not hung.
+Rather than report a fabricated or guessed mutation score, the run was
+stopped and this track instead did a complete manual read of
+`app/engine.py` (all ~3100 lines) prioritized by financial risk (close-
+signal resolution, the P0-5 reconciliation tolerance math above, Track 18
+provider-ownership gating, E03 capital/risk admission gates, the AUD-01
+distinct-field quantity model, command-ledger idempotency) against the
+already-extensive existing test files for each. The widened
+`[tool.mutmut]` scope is left in place (not reverted) so a future run --
+on an unloaded box, or in CI -- can pick up from here and produce the
+real mutation score; see `docs/state/PROGRESS.md` for the full note.
+
 ## [Unreleased] — Track 42: honest handling of a relay `"parked"` status
 
 signal-portfolio-commercial's `POST /internal/relay/ingest-batch` used

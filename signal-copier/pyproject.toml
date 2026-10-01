@@ -37,9 +37,45 @@
 # app.main` etc. still resolves); only_mutate is what actually narrows
 # the mutation scope to app/auth.py -- every other file under app/ is
 # copied unmutated.
-source_paths = ["app"]
-only_mutate = ["app/auth.py"]
-pytest_add_cli_args_test_selection = ["tests/test_owner_auth.py", "tests/test_sms_twilio_sender_authorization.py"]
+# Track 43 (2026-10-01): widened to app/engine.py, the core signal-
+# processing/order-routing engine (close-signal resolution, position-
+# tracking's distinct-field quantity model, provider/analyst overrides --
+# see the module's own docstring). This is financially the highest-risk
+# code in the service after owner auth: a silently-wrong comparison or
+# dropped guard here can misroute an order, double-count a fill, or close
+# the wrong quantity. only_mutate lists every test file that actually
+# imports `SignalCopierEngine` (`grep -rl "from app.engine" tests/`) so
+# mutmut's per-mutant run only pulls in the tests mutmut's own coverage
+# pass maps to the touched function, not a blind full-suite rerun --
+# see docs/state/PROGRESS.md for the baseline score and what was fixed
+# vs. left as a documented equivalent-mutant/defensive-branch survivor.
+source_paths = ["app", "alembic"]
+only_mutate = ["app/auth.py", "app/engine.py"]
+pytest_add_cli_args_test_selection = [
+    "tests/test_owner_auth.py", "tests/test_sms_twilio_sender_authorization.py",
+    "tests/test_5e91e78_lifecycle_composition.py", "tests/test_asset_class_gate.py",
+    "tests/test_aud01_distinct_quantity_model.py", "tests/test_broker_capability_gate.py",
+    "tests/test_c22_structured_logging.py", "tests/test_c29_hypothesis_quantity_conservation.py",
+    "tests/test_c36_broker_submission_fault_injection.py", "tests/test_db01_foreign_key_enforcement.py",
+    "tests/test_db0x_order_purpose_family.py", "tests/test_e03_capital_exposure_gate.py",
+    "tests/test_e06_close_order_side_recorded.py", "tests/test_edd2b70_review_regressions.py",
+    "tests/test_engine.py", "tests/test_engine_managed_lifecycle.py",
+    "tests/test_engine_provider_overrides.py", "tests/test_exe01_submission_response_lost.py",
+    "tests/test_exe01b_error_result_response_lost.py", "tests/test_exe10_config_change_stranding.py",
+    "tests/test_export_events_wiring.py", "tests/test_managed_entry_immediate_partial_fill.py",
+    "tests/test_manual_exit.py", "tests/test_monitoring.py", "tests/test_p0_2_command_ledger.py",
+    "tests/test_p0_5_close_reconciliation.py", "tests/test_pending_fill_reconciliation_integration.py",
+    "tests/test_plain_close_race.py", "tests/test_plain_pending_zero_fill.py",
+    "tests/test_position_tracking.py", "tests/test_pu_a2_execution_stage_timestamps.py",
+    "tests/test_risk03_managed_entry_signal_reconstruction.py",
+    "tests/test_sig01_duplicate_submission_protection.py", "tests/test_t17_certification.py",
+    "tests/test_telegram_cross_collector_dedup.py", "tests/test_track12_signal_correlation.py",
+    "tests/test_track16_correlation_lifecycle.py", "tests/test_track18_position_ownership.py",
+    "tests/test_track1b_live_gates.py", "tests/test_track22_managed_fill_quantities.py",
+    "tests/test_trk23_managed_lifecycle_export.py", "tests/test_trk27_managed_exit_duplicate_episode.py",
+    "tests/test_trk38_quantity_conservation_and_idempotency.py", "tests/test_trkq1_quantity_breakdown.py",
+    "tests/test_writer_lease_fencing.py",
+]
 
 # C38 (bounded): static analysis -- ruff (lint) + mypy (type checking).
 # Neither existed at all before this; both close a genuine gap, not busywork
