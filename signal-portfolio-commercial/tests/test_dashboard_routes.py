@@ -2376,7 +2376,9 @@ def test_create_then_cancel_portfolio_selection_over_real_http(db_session):
     assert create_response.status_code == 303
 
     list_response = client.get("/app/portfolios", headers=headers)
-    assert product.product_id in list_response.text
+    # The real product name, not the raw UUID, in the "My selections"
+    # table -- see app/templates/cu02_portfolios.html's own fix for this.
+    assert product.product_name in list_response.text
     assert "active" in list_response.text
 
     import re

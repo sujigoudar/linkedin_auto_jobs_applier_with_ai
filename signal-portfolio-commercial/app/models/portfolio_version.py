@@ -31,7 +31,7 @@ import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
 
-from sqlalchemy import DateTime, ForeignKey, Integer, Numeric, String
+from sqlalchemy import DateTime, ForeignKey, Integer, Numeric, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db import Base
@@ -47,6 +47,19 @@ def _now() -> datetime:
 
 class PortfolioVersion(Base):
     __tablename__ = "portfolio_versions"
+    #: Enforced at the database level (see
+    #: alembic/versions/a2c7e4f91b35_portfolio_versions_version_number_unique.py)
+    #: so two concurrent draft-creation calls for the same
+    #: (tenant_id, portfolio_id) can never both insert the same
+    #: version_number -- "Historical membership is never overwritten"
+    #: (this module's own docstring above) is a real DB guarantee, not
+    #: just an application-level max()+1 convention.
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id", "portfolio_id", "version_number",
+            name="uq_portfolio_versions_tenant_portfolio_version_number",
+        ),
+    )
 
     portfolio_version_id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
     tenant_id: Mapped[str] = mapped_column(String, nullable=False, index=True)

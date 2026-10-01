@@ -132,6 +132,45 @@ class _Settings(BaseSettings):
 
 _settings = _Settings()
 
+#: The exact repo-committed placeholder default for every secret this
+#: build ships with a fixed, public value for. Compared by EXACT value
+#: (never a substring/marker heuristic, which would be fragile against
+#: a real secret that happens to contain a similar-looking word) against
+#: the value actually loaded at startup -- see `placeholder_secrets_in_use`
+#: below. Keep this mapping's values in lockstep with the `_Settings`
+#: field defaults above; a mismatch here would make the COMMERCIAL_LIVE
+#: startup guard either miss a real placeholder or false-positive on a
+#: deliberately-chosen real secret that happens to equal an old default.
+_PLACEHOLDER_SECRET_DEFAULTS: dict[str, str] = {
+    "LOCAL_JWT_SECRET": "LOCAL_SIM-not-a-real-secret-change-if-ever-deployed",
+    "RELAY_SIGNING_SECRET": "LOCAL_SIM-not-a-real-relay-secret-change-if-ever-deployed",
+    "CATALOG_FIT_SIM_SIGNING_SECRET": "LOCAL_SIM-not-a-real-catalog-fit-sim-secret-change-if-ever-deployed",
+    "STRIPE_WEBHOOK_SECRET": "whsec_LOCAL_SIM_not_a_real_stripe_secret",
+}
+
+#: The literal value of `ENVIRONMENT` that means "this process is
+#: handling real customer money/data" -- see spec/docs/02's
+#: "Environments" section and this module's own `ENVIRONMENT` docstring.
+COMMERCIAL_LIVE_ENVIRONMENT = "COMMERCIAL_LIVE"
+
+
+def placeholder_secrets_in_use() -> list[str]:
+    """Names (in `_PLACEHOLDER_SECRET_DEFAULTS`'s own key order) of every
+    secret setting still equal to its repo-committed placeholder default,
+    as actually loaded into this process's environment/settings -- not a
+    hardcoded assumption about what `app.config` exports. Used by
+    app/main.py's startup guard to refuse to boot a COMMERCIAL_LIVE
+    process with any of these still unrotated; also usable directly by
+    tests/an operator without needing to boot the app at all."""
+    current = {
+        "LOCAL_JWT_SECRET": _settings.LOCAL_JWT_SECRET,
+        "RELAY_SIGNING_SECRET": _settings.RELAY_SIGNING_SECRET,
+        "CATALOG_FIT_SIM_SIGNING_SECRET": _settings.CATALOG_FIT_SIM_SIGNING_SECRET,
+        "STRIPE_WEBHOOK_SECRET": _settings.STRIPE_WEBHOOK_SECRET,
+    }
+    return [name for name, placeholder in _PLACEHOLDER_SECRET_DEFAULTS.items() if current[name] == placeholder]
+
+
 COMMERCIAL_DATABASE_URL = _settings.COMMERCIAL_DATABASE_URL
 ENVIRONMENT = _settings.ENVIRONMENT
 LOCAL_JWT_SECRET = _settings.LOCAL_JWT_SECRET

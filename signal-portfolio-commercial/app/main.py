@@ -167,6 +167,30 @@ def create_app(database_url: str | None = None, relay_database_url: str | None =
         session.commit()
         return {"received": True, "processed": is_new}
 
+    @app.on_event("startup")
+    async def _refuse_to_boot_commercial_live_with_placeholder_secrets() -> None:
+        """A real deployment with `ENVIRONMENT=COMMERCIAL_LIVE` must never
+        boot with any of this build's repo-committed, publicly-known
+        placeholder secrets (app/config.py's own `LOCAL_JWT_SECRET`,
+        `RELAY_SIGNING_SECRET`, `CATALOG_FIT_SIM_SIGNING_SECRET`,
+        `STRIPE_WEBHOOK_SECRET` defaults) still in effect -- booting
+        anyway would mean every JWT/relay/catalog-fit-sim signature and
+        every Stripe webhook signature check is trivially forgeable by
+        anyone who has read this repo. Every other environment value
+        (LOCAL_SIM, INTEGRATION_ISOLATED, PLATFORM_DEMO, PRIVATE_SHADOW)
+        is unaffected -- this check is a hard gate on COMMERCIAL_LIVE
+        only, never a general secret-strength policy."""
+        if config.ENVIRONMENT != config.COMMERCIAL_LIVE_ENVIRONMENT:
+            return
+        still_default = config.placeholder_secrets_in_use()
+        if still_default:
+            raise RuntimeError(
+                "Refusing to start with ENVIRONMENT=COMMERCIAL_LIVE while still carrying the "
+                "repo-committed placeholder default for: "
+                f"{', '.join(still_default)}. Set a real, rotated value for each of these via a "
+                "secrets manager before deploying to COMMERCIAL_LIVE."
+            )
+
     if config.HEALTH_SAMPLER_ENABLED:
 
         @app.on_event("startup")
