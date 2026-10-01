@@ -9,6 +9,39 @@ detailed per-phase notes (now historical; much has been built since).
 
 ## What's real and tested, most recent first
 
+- **Track 53: mutation-testing pass, permissions/staff_access
+  (2026-10-01).** Widens Track 39's mutation-testing pass onto the
+  role-based permission-check layer and staff/operator elevated-access
+  gating: `app/services/permissions.py` (CP-013's explicit per-action
+  allow-list every role check goes through) and `app/services/
+  staff_access.py` (AD-16's real membership-grant/revoke service and
+  first real `AuditEvent` writer), per the user's instruction that
+  mutation coverage needs to reach every module, prioritizing survivors
+  that would silently WIDEN access over ones that only narrow. Found
+  that only 9 of `permissions.py`'s 47 named actions were exercised by
+  any existing test, so a mutant renaming any of the other 38 actions'
+  dict key (silently denying every role, including OWNER, for that
+  action) survived completely invisibly -- first run 5/51 killed
+  (9.8%). Closed with a hardcoded, independently-transcribed expected-
+  role-set table and a parametrized test covering all 47 actions x all
+  8 roles, which would equally catch a future widen; final score 50/51
+  (98%, remaining survivor a cosmetic exception-message string, same
+  category Track 39 established). `staff_access.py`: six survivors
+  were exception-message strings on its five error types (same
+  diagnosability gap Track 48 found elsewhere), closed by asserting
+  exact message text; the real finding was four survivors on the
+  audit-log side -- `invite_staff_member`/`revoke_staff_member`'s own
+  `append_audit_event` calls had their `object_type`/`action`
+  arguments asserted nowhere, so a mutant corrupting either (recording
+  the wrong object type, or an action string dropping which role was
+  granted) survived invisibly in this module's own first real writer
+  into AD-18's append-only audit store. Closed with two new tests
+  asserting the full real `AuditEvent` row for both invite and revoke.
+  No production code changed in either module -- every survivor was a
+  test gap, closed with a new test, none weakened or deleted. Final
+  score: 21/21 killed (100%), no equivalent mutants. Full suite: `1099
+  passed, 0 failed`; `ruff`/`mypy` both clean.
+
 - **Track 51: mutation-testing pass, copy_mandate/real_account_route
   (2026-10-01).** Widens Track 39's mutation-testing pass onto the
   real-money copy-trading authorization and routing boundary:

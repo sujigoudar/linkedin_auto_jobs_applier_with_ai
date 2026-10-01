@@ -12,6 +12,80 @@ Everything in this file. This is pre-1.0, development-branch software;
 nothing here has shipped to a live production deployment
 (`docs/process/RELEASE.md`).
 
+### 2026-10-01 — Track 53: mutation-testing pass (permissions, staff_access)
+
+Widens Track 39's mutation-testing pass onto the role-based permission-
+check layer and staff/operator elevated-access gating: `app/services/
+permissions.py` (CP-013 "Role separation" -- the explicit per-action
+allow-list every role check in this system goes through) and
+`app/services/staff_access.py` (AD-16 "Staff roles and access reviews"
+-- the real membership-grant/revoke service, with its two named
+revoke-safety guards and its first real `AuditEvent` writer). Per the
+user's instruction that mutation coverage needs to cover every module,
+highest financial/authorization-risk first, and prioritizing any
+survivor that would silently WIDEN access over one that only narrows
+(false-rejects). Same ad hoc approach as Track 39: `mutmut run
+--paths-to-mutate=<module>` scoped to each module's own dedicated test
+file, no persisted `setup.cfg`/`pyproject.toml` config.
+
+#### Added
+- `tests/test_permissions.py`: `permissions.py`'s 47-action
+  `_ALLOWED` allow-list had only 9 of its 47 actions exercised by any
+  existing test (the handful docs/02's own three named examples plus
+  the broker-credentials/no-entry-at-all fail-closed defaults already
+  covered). Mutation testing found that mutating any of the other 38
+  actions' dict *key* string (silently denying every role, including
+  OWNER, for that action once `_ALLOWED.get(action, frozenset())`
+  falls through to the empty default) survived completely invisibly
+  -- first run: 5/51 killed (9.8%). This is the false-reject
+  (narrowing) direction rather than a widen-access leak, since
+  `is_allowed`/`require_permission` are themselves generic
+  set-membership checks with no per-action branching for a mutant to
+  widen through -- but it is still a real, total gap: every one of
+  those 38 actions' entire access list was unverified, with no test
+  that would notice a future edit silently narrowing OR widening any
+  of them. Closed with one hardcoded, independent expected-role-set
+  table (`_EXPECTED_ALLOWED`, transcribed from the module's own
+  comments/docs citations, never imported from `_ALLOWED` itself --
+  importing the module's own dict and comparing it to itself could
+  never fail no matter how it were mutated) and a parametrized test
+  asserting, for all 47 actions x all 8 roles, that `is_allowed`
+  returns exactly the documented true/false value -- which would catch
+  a widen just as surely as the narrow this run actually found. A
+  second guard test keeps that table itself from drifting out of sync
+  with a real new/renamed action. Final score: 50/51 killed (98%); the
+  one remaining survivor is `require_permission`'s own diagnostic
+  exception-message string literal, the same cosmetic category Track
+  39 already established as non-load-bearing.
+- `tests/test_staff_access.py`: ten survivors on first run (11/21,
+  52.4%). Six were exception-message string literals on the module's
+  five named error types (`InvalidStaffGrantError` /
+  `UnknownUserIdentityError` / `AlreadyAMemberError` /
+  `MembershipNotFoundError` / `CannotRevokeOwnerError` /
+  `CannotRevokeSelfError`) -- existing tests asserted only the
+  exception *type*, same diagnosability gap Track 48 found in
+  `publication_admission.py`; closed by asserting the full exact
+  message text in each of those six existing tests (a substring check
+  can still pass a prefix/suffix-padding mutation). The other four were
+  a real gap on the audit-log side: `invite_staff_member`'s and
+  `revoke_staff_member`'s own `append_audit_event` calls had their
+  `object_type`/`action` arguments asserted nowhere -- a mutant
+  corrupting either (e.g. recording the wrong object type, or an
+  action string that drops which role was actually granted) survived
+  invisibly. This module's own docstring is explicit that it is "the
+  first real writer into AD-18's append-only audit store" -- a
+  silently-wrong audit record is as real a gap as no record at all for
+  an ops/compliance reviewer relying on it later. Closed with two new
+  tests asserting the full real `AuditEvent` row (`object_type`,
+  `action`, `actor_user_id`, `object_id`) for both invite and revoke.
+  No production code changed in either module -- every survivor was a
+  test gap, closed with a new test, none weakened or deleted. Final
+  score: 21/21 killed (100%); no equivalent mutants, no remaining
+  survivors.
+
+Full suite: `1099 passed, 0 failed`; `ruff check .` and `mypy app
+--ignore-missing-imports` both clean.
+
 ### 2026-10-01 — Track 51: mutation-testing pass (copy_mandate, real_account_route)
 
 Widens Track 39's mutation-testing pass onto the real-money copy-
