@@ -12,6 +12,69 @@ Everything in this file. This is pre-1.0, development-branch software;
 nothing here has shipped to a live production deployment
 (`docs/process/RELEASE.md`).
 
+### 2026-10-01 — Track 41: ledger correctness (SOURCE_RECEIPT edit supersession; TARGET_UPDATE/STOP_UPDATE representation)
+
+Closes two real gaps Tracks 35/40 flagged in `docs/KNOWN_ISSUES.md`.
+
+#### Fixed
+- **SOURCE_RECEIPT edit double-booking**: an analyst's edited
+  instruction used to book a SECOND, independent `Book.SOURCE` ledger
+  entry instead of superseding the original, because signal-copier
+  dedupes an edited message by exact `(channel_id, message_id,
+  revision_id)` rather than reusing the original `Signal.id`.
+  `app/services/integration_inbox.py`'s `SOURCE_RECEIPT` branch now
+  sets `InboxEvent.source_event_native_key` on every receipt (not only
+  `SOURCE_EVENT` rows) and, when a receipt's own `source.
+  original_source_event_id` resolves to an earlier, already-booked
+  receipt via that exact tenant-scoped native-key mechanism (Track
+  35's), books a correction with the revised quantity/price/
+  instrument/side instead of a new entry. Unresolvable revisions park
+  as `edit_without_resolvable_target:<key>`, never guessed.
+
+#### Added
+- `app/services/ledger.py::append_correction` gained optional
+  `instrument`/`side`/`currency`/`multiplier` overrides (default
+  `None` = inherit the original, unchanged — `EventType.FEE`'s own
+  call site is unaffected).
+- `app/services/platform_performance.py::EffectiveFill`/
+  `effective_fill` — the one place every ledger-history reader now
+  resolves a root entry's real (possibly corrected) economic fields;
+  `compute_book_performance`, `app/services/analyst_attribution.py::
+  compute_analyst_attribution` (now replays `load_ordered_root_entries`
+  directly instead of its own separate query), and
+  `app/services/customer_performance_report.py::
+  compute_customer_equity_series` all use it.
+- **TARGET_UPDATE/STOP_UPDATE real representation** (ADR-0011): a new,
+  dedicated, append-only, tenant-scoped table,
+  `source_stop_target_revisions`
+  (`app/models/source_stop_target_revision.py`,
+  `app/services/source_stop_target_revisions.py`, Alembic revision
+  `b1f4d8a2c6e3`) — never new `LedgerEntry` columns (a stop/target
+  revision carries no quantity/price economic fact of its own). Wired
+  into `_apply_projection`'s `SOURCE_EVENT` branch: both kinds now
+  apply and advance their stream instead of parking forever as
+  `source_event_kind_not_ledger_representable:<kind>` (retired —
+  no code path produces it any more). Best-effort correlation to the
+  `Book.SOURCE` entry a revision concerns, via `source.
+  parent_event_id`, is never required to apply (no money is at stake).
+  `relay_role` gets `INSERT` on the new table too (Alembic revision
+  `c7e2f91a4d05`, exercised end-to-end in
+  `tests/test_relay_role_access.py`).
+- `tests/test_ledger.py`, `tests/test_integration_inbox.py`,
+  `tests/test_platform_performance.py`,
+  `tests/test_analyst_attribution.py`: real coverage for both fixes,
+  including a concrete ORIGINAL-then-EDIT-changing-quantity scenario
+  proving only one net economic fact reaches `compute_book_
+  performance`/`compute_analyst_attribution`, with the correction
+  trail intact and inspectable; and real apply-and-read-back coverage
+  for `TARGET_UPDATE`/`STOP_UPDATE`.
+
+#### Docs
+- `docs/adr/0011-source-stop-target-revision-history.md` (new).
+- `docs/KNOWN_ISSUES.md`, `docs/design/LEDGER_MODEL.md`,
+  `docs/database/SCHEMA.md`, `docs/database/DATA_DICTIONARY.md`
+  updated to reflect both closed gaps.
+
 ### 2026-10-01 — Track 39: mutation-testing pass
 
 Ran `mutmut` against `app/services/trading_authority.py` and

@@ -164,7 +164,7 @@ class InboxEvent(Base):
     #: non-`SOURCE_RECEIPT` row.
     routing_outcome: Mapped[str | None] = mapped_column(String, nullable=True)
 
-    #: Track 35: set ONLY on a `SOURCE_EVENT` row, to
+    #: Track 35: set on a `SOURCE_EVENT` row, to
     #: f"{tenant_id}|{source_provider_id}|{source_channel_id}|
     #: {source_event_id}" from that event's own `SourceEventPayload.
     #: source` (app/services/integration_inbox.py's own
@@ -175,8 +175,19 @@ class InboxEvent(Base):
     #: off re-parsed message text"). Lets a LATER `SourceEventKind.EDIT`
     #: naming this same native message (via its own `source.
     #: original_source_event_id`) resolve back to it without ever
-    #: guessing from re-parsed text or arrival order. NULL for every
-    #: non-`SOURCE_EVENT` row.
+    #: guessing from re-parsed text or arrival order.
+    #:
+    #: Track 41: ALSO set, the identical way, on a `SOURCE_RECEIPT`
+    #: row -- signal-copier's own `_handle_signal` dedupes an edited
+    #: message by exact `(channel_id, message_id, revision_id)`, so an
+    #: edited instruction's `SOURCE_RECEIPT` arrives as its own,
+    #: independent row rather than a mutation of the original's. A
+    #: LATER receipt whose own `source.original_source_event_id` names
+    #: an earlier receipt resolves back to it through this same column,
+    #: letting `_apply_projection` book a correction (superseding the
+    #: earlier `Book.SOURCE` entry) instead of a second, independent
+    #: one for the same economic fact. NULL for every row that is
+    #: neither a `SOURCE_EVENT` nor a `SOURCE_RECEIPT`.
     source_event_native_key: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
 
     __table_args__ = (

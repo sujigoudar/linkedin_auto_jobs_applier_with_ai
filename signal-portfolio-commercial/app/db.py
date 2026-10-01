@@ -40,7 +40,7 @@ _TENANT_SCOPED_TABLES: tuple[str, ...] = (
     "customer_display_preferences", "platform_connections", "copy_mandates",
     "export_stream_registrations", "inbox_events", "incidents",
     "publication_intents", "portfolio_version_sleeves", "onboarding_progress",
-    "operating_costs",
+    "operating_costs", "source_stop_target_revisions",
 )
 
 #: Tables that must never be UPDATEd or DELETEd from, only appended to (see
@@ -49,8 +49,12 @@ _TENANT_SCOPED_TABLES: tuple[str, ...] = (
 #: portfolio_version_sleeves are append-only for the same reason
 #: (app/models/portfolio_version.py): "Historical membership is never
 #: overwritten" -- a weight change is a new version's rows, never an edit.
+#: source_stop_target_revisions (Track 41, ADR-0011) is append-only for
+#: the same reason: a later stop/target revision for the same position
+#: is always a NEW row, never an edit of an earlier one's.
 _APPEND_ONLY_TABLES: tuple[str, ...] = (
     "ledger_entries", "portfolio_versions", "portfolio_version_sleeves", "audit_events",
+    "source_stop_target_revisions",
 )
 
 
@@ -224,7 +228,16 @@ def _apply_relay_role_access(conn) -> None:
     ordinary `tenant_isolation` policy, exercised for real only after
     `set_tenant_scope` is called with the tenant the lookup found --
     resolving the gap `app/services/integration_inbox.py` explicitly
-    deferred when this table was first added."""
+    deferred when this table was first added.
+
+    Deliberately NEVER edited in place to add a grant on a table added
+    by a LATER migration (see `c7e2f91a4d05`'s own docstring for why:
+    this exact function is called, as live code, by the single, early
+    migration `3f7a19c02b8e` -- adding a statement here that
+    references a table that migration predates would break replaying
+    this function's own history against a fresh database). A later
+    grant for a later table is added as its own, separate, explicit
+    `GRANT` in that later migration instead."""
     conn.execute(
         text(
             "DO $$ BEGIN "
@@ -257,6 +270,27 @@ def enable_relay_role_access(engine) -> None:
     an Alembic migration), this wrapper otherwise."""
     with engine.begin() as conn:
         _apply_relay_role_access(conn)
+
+
+def _apply_relay_role_source_stop_target_revisions_access(conn) -> None:
+    """Track 41 (ADR-0011): `ingest_export_event`'s own `SOURCE_EVENT`
+    branch now writes a `SourceStopTargetRevision` row for
+    `TARGET_UPDATE`/`STOP_UPDATE`, through the SAME restricted relay
+    path that already needed `INSERT` on `ledger_entries`
+    (`_apply_relay_role_access`). A SEPARATE function, deliberately
+    never folded into `_apply_relay_role_access` itself: that function
+    is called, as live code, by the single, early migration
+    `3f7a19c02b8e` -- adding a statement there that references a table
+    this later migration (`b1f4d8a2c6e3`) creates would break replaying
+    `3f7a19c02b8e`'s own history against a fresh database. Idempotent,
+    same as every other grant in this module (a plain `GRANT`)."""
+    conn.execute(text("GRANT INSERT ON source_stop_target_revisions TO relay_role"))
+
+
+def enable_relay_role_source_stop_target_revisions_access(engine) -> None:
+    """Same connection-vs-engine split as `enable_relay_role_access`."""
+    with engine.begin() as conn:
+        _apply_relay_role_source_stop_target_revisions_access(conn)
 
 
 def _apply_membership_self_lookup_policy(conn) -> None:

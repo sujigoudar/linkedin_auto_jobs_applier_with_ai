@@ -76,12 +76,68 @@ diverging implementation of the same logic.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
 from decimal import Decimal
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.ledger import Book, LedgerEntry, Side
+
+
+@dataclass(frozen=True)
+class EffectiveFill:
+    """The REAL economic fields one root entry's replay should use --
+    Track 41: a correction is no longer only ever a `fee` revision
+    (`EventType.FEE`'s own original, still most common, use); it can now
+    also be a genuine `SOURCE_RECEIPT` revision/EDIT (`app/services/
+    integration_inbox.py`'s own `EventType.SOURCE_RECEIPT` handling)
+    that revises `instrument`/`side`/`quantity`/`price`/`multiplier` too.
+    `effective_fill` below is the one place that decides, for any one
+    root entry, which values (its own, or its latest correction's) the
+    replay actually uses -- every reader of `LedgerEntry` history
+    (`compute_book_performance`, `compute_analyst_attribution`,
+    `customer_performance_report.compute_customer_equity_series`) calls
+    it instead of reading `entry.instrument`/`.side`/`.quantity`/
+    `.price`/`.multiplier`/`.fee` directly, so none of them can silently
+    diverge on which one wins.
+
+    `event_time` is always the ROOT's own, never the correction's --
+    a correction never moves WHEN, in the replay's chronological
+    order, this fact is recognized (that would reorder it relative to
+    every OTHER entry already replayed), only WHAT its true values
+    are."""
+
+    instrument: str
+    side: Side
+    quantity: Decimal
+    price: Decimal
+    multiplier: Decimal
+    fee: Decimal | None
+    event_time: datetime
+
+
+def effective_fill(entry: LedgerEntry, correction: LedgerEntry | None) -> EffectiveFill:
+    """`correction` is `latest_correction_by_original.get(entry.entry_id)`
+    (see `load_ordered_root_entries`) -- `None` means this root entry has
+    never been corrected, in which case its own fields are the real,
+    effective ones. When a correction exists, EVERY one of `instrument`/
+    `side`/`quantity`/`price`/`multiplier`/`fee` comes from the
+    correction, not the root -- `append_correction`'s own contract
+    (`app/services/ledger.py`) is that a correction row IS the fully
+    resolved new state of every one of these fields (inheriting the
+    root's own value for any field its caller didn't explicitly
+    override), never a partial patch a reader has to merge field-by-
+    field itself."""
+    if correction is None:
+        return EffectiveFill(
+            instrument=entry.instrument, side=entry.side, quantity=entry.quantity, price=entry.price,
+            multiplier=entry.multiplier, fee=entry.fee, event_time=entry.event_time,
+        )
+    return EffectiveFill(
+        instrument=correction.instrument, side=correction.side, quantity=correction.quantity,
+        price=correction.price, multiplier=correction.multiplier, fee=correction.fee, event_time=entry.event_time,
+    )
 
 
 @dataclass
@@ -194,26 +250,30 @@ def load_ordered_root_entries(
     return entries, latest_correction_by_original
 
 
-def apply_entry(ip: InstrumentPerformance, entry: LedgerEntry) -> Decimal:
+def apply_entry(ip: InstrumentPerformance, fill: EffectiveFill) -> Decimal:
     """The real volume-weighted-average-cost position math for exactly
-    ONE entry against ONE instrument's own running `InstrumentPerformance`
-    state -- this module's single, real replay step, called by
-    `compute_book_performance` below and by any other caller (e.g. a
-    chronological equity-series builder) that needs the same real
-    position math applied entry-by-entry rather than reimplemented.
-    Returns the realized P&L delta THIS entry contributed (`Decimal(0)`
-    for an opening/adding entry that realizes nothing yet). Mutates `ip`
-    in place; does not touch fee bookkeeping or `report.realized_pnl`
-    -- a caller does that itself, same as `compute_book_performance`
-    does below."""
-    signed_qty = entry.quantity if entry.side == Side.BUY else -entry.quantity
+    ONE entry's effective fill against ONE instrument's own running
+    `InstrumentPerformance` state -- this module's single, real replay
+    step, called by `compute_book_performance` below and by any other
+    caller (e.g. a chronological equity-series builder) that needs the
+    same real position math applied entry-by-entry rather than
+    reimplemented. Takes an `EffectiveFill` (Track 41: not a raw
+    `LedgerEntry` -- see that type's own docstring for why: a caller
+    must resolve which values, root or correction, are REAL first) so
+    this function itself never has to re-decide that. Returns the
+    realized P&L delta THIS fill contributed (`Decimal(0)` for an
+    opening/adding entry that realizes nothing yet). Mutates `ip` in
+    place; does not touch fee bookkeeping or `report.realized_pnl` --
+    a caller does that itself, same as `compute_book_performance` does
+    below."""
+    signed_qty = fill.quantity if fill.side == Side.BUY else -fill.quantity
 
     if ip.open_quantity == 0 or (ip.open_quantity > 0) == (signed_qty > 0):
         # Opening or adding to a position on the same side: only the
         # volume-weighted average cost moves, nothing is realized yet.
         new_quantity = ip.open_quantity + signed_qty
         existing_cost = (ip.average_cost or Decimal(0)) * abs(ip.open_quantity)
-        ip.average_cost = (existing_cost + entry.price * abs(signed_qty)) / abs(new_quantity)
+        ip.average_cost = (existing_cost + fill.price * abs(signed_qty)) / abs(new_quantity)
         ip.open_quantity = new_quantity
         return Decimal(0)
 
@@ -224,7 +284,7 @@ def apply_entry(ip: InstrumentPerformance, entry: LedgerEntry) -> Decimal:
     assert ip.average_cost is not None  # guaranteed: open_quantity != 0 always implies a set average_cost
     closing_quantity = min(abs(signed_qty), abs(ip.open_quantity))
     direction = Decimal(1) if ip.open_quantity > 0 else Decimal(-1)
-    realized = (entry.price - ip.average_cost) * direction * closing_quantity * entry.multiplier
+    realized = (fill.price - ip.average_cost) * direction * closing_quantity * fill.multiplier
     ip.realized_pnl += realized
     ip.closing_fills += 1
 
@@ -233,7 +293,7 @@ def apply_entry(ip: InstrumentPerformance, entry: LedgerEntry) -> Decimal:
     if remainder > 0:
         # Flipped through flat: what's left opens a FRESH position in
         # the new direction, priced at this same entry.
-        ip.average_cost = entry.price
+        ip.average_cost = fill.price
         ip.open_quantity = remainder if signed_qty > 0 else -remainder
     elif ip.open_quantity == 0:
         ip.average_cost = None
@@ -258,19 +318,21 @@ def compute_book_performance(
     per_instrument = report.per_instrument
 
     for entry in entries:
-        effective_fee = entry.fee
         correction = latest_correction_by_original.get(entry.entry_id)
-        if correction is not None:
-            effective_fee = correction.fee
+        fill = effective_fill(entry, correction)
 
-        ip = per_instrument.setdefault(entry.instrument, InstrumentPerformance(instrument=entry.instrument))
-        if effective_fee is None:
+        # Grouped by the FILL's own (possibly corrected) instrument --
+        # Track 41: a revision that renames the instrument must be
+        # replayed under its real, latest instrument, never the root's
+        # stale one.
+        ip = per_instrument.setdefault(fill.instrument, InstrumentPerformance(instrument=fill.instrument))
+        if fill.fee is None:
             ip.unknown_fee_entry_count += 1
         else:
-            ip.total_fees += effective_fee
-        ip.last_fill_price = entry.price
+            ip.total_fees += fill.fee
+        ip.last_fill_price = fill.price
 
-        report.realized_pnl += apply_entry(ip, entry)
+        report.realized_pnl += apply_entry(ip, fill)
 
     for ip in per_instrument.values():
         if ip.unknown_fee_entry_count == 0:

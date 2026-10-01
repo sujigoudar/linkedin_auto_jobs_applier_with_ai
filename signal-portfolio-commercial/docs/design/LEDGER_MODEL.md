@@ -69,21 +69,48 @@ are enforced in one place.
    `execution_correlation_key` (`{broker}|{broker_order_id}`) is cached for a later
    `FEE` event to correlate against.
 
-2. **`SOURCE_RECEIPT`** (same function): validated `SourceReceiptPayload`. Only if
-   `quantity` **and** `price` are both present: resolves a `Sleeve` via
-   `resolve_sleeve_for_source(tenant_id, source_provider_id, analyst_id,
-   parser_version)`, then `append_entry(book=SOURCE, ..., sleeve_id=sleeve.sleeve_id
-   if resolved else None)`. A receipt with neither quantity nor price still marks
-   the `InboxEvent` applied — it just produces no ledger row (an honest partial-
-   coverage outcome, not a parked/incomplete one).
+2. **`SOURCE_RECEIPT`** (same function): validated `SourceReceiptPayload`.
+   `inbox_event.source_event_native_key` is always set first (Track 41, the
+   same formula Track 35 built for `SOURCE_EVENT`), so a LATER revision can
+   resolve back to this exact row. Then, only if `quantity` **and** `price` are
+   both present:
+   - If `source.original_source_event_id` is **unset** (a brand-new economic
+     fact, never a revision): resolves a `Sleeve` via
+     `resolve_sleeve_for_source(tenant_id, source_provider_id, analyst_id,
+     parser_version)`, then `append_entry(book=SOURCE, ..., sleeve_id=
+     sleeve.sleeve_id if resolved else None)` — exactly as before.
+   - If it **is** set (Track 41: signal-copier dedupes an edited message by
+     exact `(channel_id, message_id, revision_id)`, so an edit always arrives
+     as its OWN, independent `SOURCE_RECEIPT` — never a mutation of the
+     original's): resolves it, via the identical tenant-scoped native-key
+     mechanism `SourceEventKind.EDIT` uses, to an earlier, already-applied
+     `SOURCE_RECEIPT` row that booked a real ledger entry. If resolved, books
+     `append_correction(original_entry_id=original.entry_id, quantity=
+     source_payload.quantity, price=source_payload.price, instrument=...,
+     side=..., currency=..., multiplier=..., event_time=envelope.event_time,
+     source_authority=...)` — the REVISED values, so the SAME economic fact is
+     superseded, never double-booked as a second independent `SOURCE` entry.
+     If unresolved, parks as `edit_without_resolvable_target:<key>` — never
+     guessed.
+
+   A receipt with neither quantity nor price still marks the `InboxEvent`
+   applied — it just produces no ledger row (an honest partial-coverage
+   outcome, not a parked/incomplete one).
 
 3. **`FEE`**: correlates by `{broker}|{broker_order_id}` against an already-applied
    `EXECUTION_APPLIED` row's `ledger_entry_id`. If found, `append_correction(
    original_entry_id=original.entry_id, quantity=original.quantity,
    price=original.price, event_time=envelope.event_time, source_authority=...,
    fee=payload.fee)` — a new row, `correction_of` pointing at the original, carrying
-   the now-known fee. If no matching execution has applied yet, parks as
+   the now-known fee (`instrument`/`side`/`currency`/`multiplier` are left at
+   their `append_correction` default of `None`, i.e. inherited unchanged — `FEE`
+   never revises any of those). If no matching execution has applied yet, parks as
    `fee_target_not_found:<key>` rather than being coerced onto some other entry.
+
+6. **`SOURCE_EVENT`, kind `TARGET_UPDATE`/`STOP_UPDATE`** (ADR-0011): writes a
+   `SourceStopTargetRevision` row (`app/services/source_stop_target_revisions.py
+   ::append_stop_target_revision`) — never a `LedgerEntry` (no quantity/price
+   economic fact). See `DATA_DICTIONARY.md`'s own entry for the table.
 
 4. **`POSITION_SNAPSHOT`** (bootstrap activation, `_activate_snapshot_and_reconcile`,
    see `INGEST_PIPELINE.md` §5): one `append_entry(book=PLATFORM, ...,
@@ -107,3 +134,14 @@ are enforced in one place.
 - `app/services/source_coverage.py::compute_source_coverage` — cross-references
   every `SOURCE_RECEIPT` `InboxEvent`'s disposition (whether it produced a ledger
   row) against its routing outcome; see `DATA_DICTIONARY.md`.
+
+**Track 41**: every reader above (plus `customer_performance_report.py::
+compute_customer_equity_series`) replays `platform_performance.
+load_ordered_root_entries`'s own real query, then resolves each root entry's
+REAL, effective fields through the shared `platform_performance.
+effective_fill(entry, correction)` helper — a correction may now revise
+`instrument`/`side`/`quantity`/`price`/`multiplier`/`fee`, not only `fee` (the
+only thing it could ever revise before this track), so no reader may read
+`entry.instrument`/`.side`/`.quantity`/`.price`/`.multiplier`/`.fee` directly
+any more without first checking for a correction — `effective_fill` is the one
+place that decision is made, so every reader agrees.

@@ -178,6 +178,7 @@ categories:
       - docs/adr/0008-append-only-triggers-on-ledger-tables.md
       - docs/adr/0009-membership-self-lookup-rls-policy.md
       - docs/adr/0010-release-taxonomy-and-trading-authority-qualification-gate.md
+      - docs/adr/0011-source-stop-target-revision-history.md
     read_when:
       - "Before reversing or significantly altering a past architectural decision"
       - "After making a significant architectural decision, to record it"

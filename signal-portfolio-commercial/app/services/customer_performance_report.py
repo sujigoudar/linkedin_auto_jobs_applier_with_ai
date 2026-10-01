@@ -88,6 +88,7 @@ from app.services.platform_performance import (
     PlatformPerformanceReport,
     apply_entry,
     compute_book_performance,
+    effective_fill,
     load_ordered_root_entries,
 )
 
@@ -137,11 +138,13 @@ def compute_customer_equity_series(
     series = [EquityPoint(at=entries[0].event_time, cumulative_pnl=Decimal(0))]
 
     for entry in entries:
-        ip = per_instrument.setdefault(entry.instrument, InstrumentPerformance(instrument=entry.instrument))
-        delta = apply_entry(ip, entry)
+        correction = latest_correction_by_original.get(entry.entry_id)
+        fill = effective_fill(entry, correction)
+        ip = per_instrument.setdefault(fill.instrument, InstrumentPerformance(instrument=fill.instrument))
+        delta = apply_entry(ip, fill)
         if delta != 0:
             running_total += delta
-            series.append(EquityPoint(at=entry.event_time, cumulative_pnl=running_total))
+            series.append(EquityPoint(at=fill.event_time, cumulative_pnl=running_total))
 
     return series
 

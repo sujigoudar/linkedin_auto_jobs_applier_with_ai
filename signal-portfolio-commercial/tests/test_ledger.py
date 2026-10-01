@@ -339,3 +339,85 @@ def test_a_correction_with_no_fee_argument_inherits_the_originals_real_fee(db_se
     )
 
     assert correction.fee == Decimal("2.25")
+
+
+def test_a_correction_with_no_overrides_still_inherits_instrument_side_currency_multiplier(db_session):
+    """Track 41: `append_correction` gained `instrument`/`side`/
+    `currency`/`multiplier` override parameters -- when a caller (like
+    `EventType.FEE`'s own call site) omits all of them, the correction
+    must inherit the original's values UNCHANGED, exactly as before
+    this change."""
+    original = append_entry(
+        db_session,
+        tenant_id="tenant-a",
+        book=Book.SOURCE,
+        instrument="AAPL",
+        side=Side.BUY,
+        quantity=Decimal("10"),
+        price=Decimal("100"),
+        currency="USD",
+        multiplier=Decimal("1"),
+        event_time=datetime.now(timezone.utc),
+        source_authority="test",
+        evidence_class=EvidenceClass.SYNTHETIC_FIXTURE,
+    )
+    db_session.commit()
+
+    correction = append_correction(
+        db_session,
+        original_entry_id=original.entry_id,
+        quantity=Decimal("10"),
+        price=Decimal("100"),
+        event_time=datetime.now(timezone.utc),
+        source_authority="fee-event",
+    )
+
+    assert correction.instrument == "AAPL"
+    assert correction.side == Side.BUY
+    assert correction.currency == "USD"
+    assert correction.multiplier == Decimal("1")
+
+
+def test_a_correction_with_explicit_instrument_and_side_overrides_uses_them(db_session):
+    """Track 41: a genuine revision/EDIT may rename the instrument or
+    flip the side, not only revise quantity/price -- `append_correction`
+    must use the explicitly-passed new value, never silently keep the
+    original's stale one."""
+    original = append_entry(
+        db_session,
+        tenant_id="tenant-a",
+        book=Book.SOURCE,
+        instrument="AAPL",
+        side=Side.BUY,
+        quantity=Decimal("10"),
+        price=Decimal("100"),
+        currency="USD",
+        event_time=datetime.now(timezone.utc),
+        source_authority="test",
+        evidence_class=EvidenceClass.SYNTHETIC_FIXTURE,
+    )
+    db_session.commit()
+
+    correction = append_correction(
+        db_session,
+        original_entry_id=original.entry_id,
+        quantity=Decimal("12"),
+        price=Decimal("101"),
+        instrument="MSFT",
+        side=Side.SELL,
+        currency="EUR",
+        multiplier=Decimal("2"),
+        event_time=datetime.now(timezone.utc),
+        source_authority="edit-revision",
+    )
+
+    assert correction.instrument == "MSFT"
+    assert correction.side == Side.SELL
+    assert correction.currency == "EUR"
+    assert correction.multiplier == Decimal("2")
+    assert correction.quantity == Decimal("12")
+    assert correction.price == Decimal("101")
+
+    reloaded_original = db_session.get(LedgerEntry, original.entry_id)
+    assert reloaded_original.instrument == "AAPL"  # unchanged
+    assert reloaded_original.side == Side.BUY  # unchanged
