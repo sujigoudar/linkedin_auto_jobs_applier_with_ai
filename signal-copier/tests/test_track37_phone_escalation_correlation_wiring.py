@@ -10,7 +10,7 @@ Covers `app.main._resolve_direct_source_coverage`'s real tri-state
 computation directly (`True`/`False`/`None` -- see its own docstring)
 and the end-to-end wiring through `_evaluate_phone_escalation_for_event`.
 """
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 import pytest
 
