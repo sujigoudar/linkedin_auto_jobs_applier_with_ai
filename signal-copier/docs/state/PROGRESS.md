@@ -194,3 +194,26 @@ Last independently re-verified state: this exact HEAD (`4a24d07`), full
 `alembic heads`. Any commit after this HEAD should be treated as
 unverified by this snapshot until its own merge commit documents a fresh
 run of the same checks.
+
+### Track 39: mutation-testing pass (2026-10-01)
+
+Ran `mutmut` (scoped per-module, via a temporary `[tool.mutmut]`
+override never committed -- the repo's one checked-in config stays
+scoped to `app/auth.py`, see pyproject.toml's own comment) against
+`app/risk.py`, `app/capital_allocator.py`, `app/quantity.py`,
+`app/routing.py`, plus targeted manual mutation checks against the
+AUD-01 fields in `app/db.py`'s `get_outstanding_possible_fill`. Added
+`tests/test_risk_sizing.py` and `tests/test_routing_evaluate.py` (both
+previously had no dedicated direct unit test file at all), plus
+targeted additions to `tests/test_capital_allocator.py`,
+`tests/test_trkq1_quantity_breakdown.py`, and
+`tests/test_aud01_distinct_quantity_model.py` — see CHANGELOG.md for
+the per-file summary. Final mutation scores: risk.py 11/11,
+capital_allocator.py 86/87 (1 confirmed equivalent — a reservation row's
+synthetic id, never actually used for matching), quantity.py 62/64 (2
+confirmed equivalent — a dropped kwarg whose default equals what was
+always passed anyway), routing.py 260/262 (2 confirmed equivalent — an
+`or {}` fallback makes the `.get()` default irrelevant). No production
+code changed; every real survivor was closed with a new test, no
+genuine production logic bug was found. Full `pytest -q` re-verified
+after these additions: 2170 passed, 0 failed.

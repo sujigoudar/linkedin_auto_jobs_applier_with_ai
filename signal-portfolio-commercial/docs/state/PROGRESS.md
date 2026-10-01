@@ -19,6 +19,33 @@ detailed per-phase notes (now historical; much has been built since).
   `LedgerEntry` and `InboxEvent`, the two financially load-bearing
   models that had no such proof yet). No real bug found; full suite
   remains 983 passed, 0 failed.
+- **Track 39: mutation-testing pass (2026-10-01)** — ran `mutmut`
+  against `app/services/trading_authority.py` and
+  `app/services/ledger.py` (scoped to each module's own dedicated test
+  file(s)) to measure whether the existing tests actually catch a real
+  injected bug, not just whether they happen to pass.
+  `app/services/release_taxonomy.py` was also scoped but has zero
+  mutable mutation points (a pure, total dict-lookup table) — already
+  fully covered. Found and closed real survivors: `trading_authority`'s
+  `applicable`/per-check diagnostic fields were asserted only at the
+  first couple of its six early-return gates, and — the most
+  significant finding — a REJECTED review, a different product's
+  APPROVED review, and a stale prior revision's APPROVED review could
+  each have been mistaken for "this product's current approved
+  release review" if the query's own filter were ever regressed; now
+  explicitly tested against all three. `ledger`'s `append_correction`
+  had its explicit-new-fee override path (the real FEE-event call
+  path from `app/services/integration_inbox.py`) completely untested —
+  only the "inherit from original" branch was ever exercised. No
+  production code changed; every real survivor was a test gap, closed
+  with a new test. Final scores: trading_authority.py 180/188 (95.7%,
+  remaining 8 either cosmetic multi-item string-join formatting or
+  incident-query filter drops that only widen which incidents block —
+  the fail-safe direction this gate's design already favors);
+  ledger.py 82/82 (two `reconciliation_state=None` mutants are
+  confirmed equivalent — the column itself is `nullable=False,
+  default=UNRECONCILED`, so the database backstops an explicit `None`
+  regardless).
 - **Release taxonomy + trading-authority qualification gate
   (`GET /system/readiness`)** -- see ADR-0010
   (`docs/adr/0010-release-taxonomy-and-trading-authority-qualification-gate.md`).

@@ -155,6 +155,9 @@ def test_unpublished_copying_product_is_not_qualified(db_session, tenant_session
         assert assessment.applicable is True
         assert assessment.qualified is False
         assert assessment.reason == "not_qualified:product_not_published"
+        # Mutation-testing follow-up (track39): kills the `checks=None`/
+        # dropped-kwarg mutants at this exact early return.
+        assert assessment.checks == {"product_published": "FAIL"}
     finally:
         session.rollback()
         session.close()
@@ -181,6 +184,15 @@ def test_published_product_with_outstanding_blockers_is_not_qualified(db_session
         assert assessment.qualified is False
         assert assessment.reason.startswith("not_qualified:publication_blockers:")
         assert "NO_PORTFOLIO_VERSION_SELECTED" in assessment.reason
+        # Mutation-testing follow-up (track39): the per-check diagnostic
+        # dict must report the REAL outcome of the one check that
+        # actually passed here too, not just the ones that failed --
+        # kills a mutant that forces `checks["product_published"]` to
+        # always report "PASS" regardless of the real value.
+        assert assessment.checks["product_published"] == "PASS"
+        # Kills the matching mutant for `no_publication_blockers` (forced
+        # to always report "PASS" even though blockers are present here).
+        assert assessment.checks["no_publication_blockers"].startswith("FAIL:")
     finally:
         session.rollback()
         session.close()
@@ -195,6 +207,129 @@ def test_published_product_with_no_approved_review_is_not_qualified(db_session, 
             session, tenant_id="tenant-a", slug="published-no-review", service_modes=["copying"],
             grant_automated_publication=True,
         )
+        product.lifecycle_state = ProductLifecycleState.PUBLISHED
+        session.flush()
+
+        assessment = assess_trading_authority(session, product)
+        # Mutation-testing follow-up (track39): kills the `applicable=None`/
+        # `applicable=False` mutants at this exact early return. This
+        # product unambiguously HAS an order-routing service mode -- the
+        # question is answerable, so `applicable` must stay True even
+        # though the answer (`qualified`) is False.
+        assert assessment.applicable is True
+        assert assessment.qualified is False
+        assert assessment.reason == "not_qualified:no_approved_release_review_for_current_revision"
+        # Kills the `checks["has_current_approved_release_review"]`
+        # "or True" mutant (always reports "PASS") and the `checks=None`/
+        # dropped-kwarg mutants (checks would be missing/empty here).
+        assert assessment.checks["product_published"] == "PASS"
+        assert assessment.checks["no_publication_blockers"] == "PASS"
+        assert assessment.checks["has_current_approved_release_review"] == "FAIL"
+    finally:
+        session.rollback()
+        session.close()
+
+
+def test_a_rejected_review_for_the_current_revision_does_not_count_as_approved(db_session, tenant_session_factory):
+    """Kills the `ReleaseReview.state == ReleaseReviewState.APPROVED`
+    filter-drop mutant: a REJECTED review for this product's exact
+    current revision (and no APPROVED one at all) must NOT satisfy
+    `has_current_approved_release_review` -- dropping this filter would
+    let any review state, not just APPROVED, wrongly grant trading
+    authority."""
+    _seed_tenant(db_session)
+    session = tenant_session_factory()
+    try:
+        set_tenant_scope(session, "tenant-a")
+        product = _ready_product(
+            session, tenant_id="tenant-a", slug="rejected-review", service_modes=["copying"],
+            grant_automated_publication=True,
+        )
+        review = ReleaseReview(
+            tenant_id="tenant-a",
+            product_id=product.product_id,
+            object_revision_reviewed=product.revision,
+            proposer_user_id="user-proposer",
+            evidence_manifest_id="evidence-1",
+            audience_policy_id="audience-1",
+            state=ReleaseReviewState.REJECTED,
+            reviewer_user_id="user-reviewer",
+            reason="rejected for test",
+            decided_at=_NOW,
+        )
+        session.add(review)
+        product.lifecycle_state = ProductLifecycleState.PUBLISHED
+        session.flush()
+
+        assessment = assess_trading_authority(session, product)
+        assert assessment.qualified is False
+        assert assessment.reason == "not_qualified:no_approved_release_review_for_current_revision"
+    finally:
+        session.rollback()
+        session.close()
+
+
+def test_another_products_approved_review_does_not_count_for_this_product(db_session, tenant_session_factory):
+    """Kills the `ReleaseReview.product_id == product.product_id`
+    filter-drop mutant: a genuinely APPROVED review for a DIFFERENT
+    product (even at the same revision number) must never satisfy THIS
+    product's `has_current_approved_release_review` check -- dropping
+    this filter would let one product's approval silently grant trading
+    authority to an unrelated product."""
+    _seed_tenant(db_session)
+    session = tenant_session_factory()
+    try:
+        set_tenant_scope(session, "tenant-a")
+        other_product = _ready_product(
+            session, tenant_id="tenant-a", slug="other-approved", service_modes=["copying"],
+            grant_automated_publication=True,
+        )
+        _approve(session, other_product, tenant_id="tenant-a", slug="other-approved")
+        other_product.lifecycle_state = ProductLifecycleState.PUBLISHED
+
+        product = _ready_product(
+            session, tenant_id="tenant-a", slug="needs-own-review", service_modes=["copying"],
+            grant_automated_publication=True,
+        )
+        product.lifecycle_state = ProductLifecycleState.PUBLISHED
+        session.flush()
+        assert product.revision == other_product.revision  # same revision number, different product
+
+        assessment = assess_trading_authority(session, product)
+        assert assessment.qualified is False
+        assert assessment.reason == "not_qualified:no_approved_release_review_for_current_revision"
+    finally:
+        session.rollback()
+        session.close()
+
+
+def test_an_approved_review_for_a_stale_prior_revision_does_not_count(db_session, tenant_session_factory):
+    """Kills the `ReleaseReview.object_revision_reviewed == product.revision`
+    filter-drop mutant: an APPROVED review that is genuinely stale (the
+    product was edited again afterward, bumping its revision) must not
+    satisfy `has_current_approved_release_review` -- dropping this
+    filter would let an approval of an EARLIER draft silently authorize
+    trading on a LATER, never-independently-reviewed revision."""
+    _seed_tenant(db_session)
+    session = tenant_session_factory()
+    try:
+        set_tenant_scope(session, "tenant-a")
+        product = _ready_product(
+            session, tenant_id="tenant-a", slug="stale-revision", service_modes=["copying"],
+            grant_automated_publication=True,
+        )
+        _approve(session, product, tenant_id="tenant-a", slug="stale-revision")
+        approved_revision = product.revision
+
+        # The product is edited again after approval -- a real, later
+        # revision with no independent review of its own yet.
+        update_product_draft(
+            session,
+            product,
+            expected_revision=product.revision,
+            research_report_id="report-2",
+        )
+        assert product.revision == approved_revision + 1
         product.lifecycle_state = ProductLifecycleState.PUBLISHED
         session.flush()
 
@@ -220,8 +355,13 @@ def test_published_product_without_execution_rights_is_not_qualified(db_session,
         session.flush()
 
         assessment = assess_trading_authority(session, product)
+        # Mutation-testing follow-up (track39): kills the `applicable=None`
+        # mutant at this exact early return.
+        assert assessment.applicable is True
         assert assessment.qualified is False
         assert assessment.reason.startswith("not_qualified:order_routing_rights_not_granted")
+        assert assessment.checks["has_current_approved_release_review"] == "PASS"
+        assert assessment.checks["order_routing_rights_granted"].startswith("FAIL:")
     finally:
         session.rollback()
         session.close()
@@ -253,8 +393,15 @@ def test_blocking_incident_is_not_qualified(db_session, tenant_session_factory):
         session.flush()
 
         assessment = assess_trading_authority(session, product)
+        assert assessment.applicable is True
         assert assessment.qualified is False
         assert assessment.reason == f"not_qualified:open_incident:{incident.incident_id}"
+        # Mutation-testing follow-up (track39): kills the `checks[...]
+        # ="or True"` mutant (order_routing_rights_granted check would
+        # always report "PASS" regardless of the real value) and the
+        # `checks=None`/dropped-kwarg mutants at this early return.
+        assert assessment.checks["order_routing_rights_granted"] == "PASS"
+        assert assessment.checks["no_blocking_open_incident"].startswith("FAIL:")
     finally:
         session.rollback()
         session.close()

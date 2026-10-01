@@ -65,6 +65,25 @@ def test_quantity_still_executable_is_zero_once_terminal():
     assert quantity_still_executable_for(result, requested_quantity=100.0, confirmed_cumulative_fill=100.0) == 0.0
 
 
+def test_quantity_still_executable_treats_no_confirmed_fill_as_zero_confirmed():
+    """Mutation-testing follow-up (track39): kills the `confirmed_cumulative_fill
+    or 1.0` mutant. A still-PENDING order with NOTHING confirmed yet
+    (`confirmed_cumulative_fill=None`) must report the FULL requested
+    quantity as still executable, not one unit less -- `None` means
+    "nothing confirmed", i.e. 0.0 confirmed, never a fabricated 1.0."""
+    result = OrderResult(account_id="a1", status=OrderStatus.PENDING, signal_id="s1", broker_order_id="order-1")
+    assert quantity_still_executable_for(result, requested_quantity=100.0, confirmed_cumulative_fill=None) == 100.0
+
+
+def test_quantity_still_executable_floors_at_zero_not_one_when_fully_confirmed_but_pending():
+    """Mutation-testing follow-up (track39): kills the `max(1.0, ...)`
+    mutant. A PENDING order whose confirmed fill already equals (or
+    exceeds) the requested quantity must report exactly 0.0 still
+    executable, never a fabricated floor of 1.0 unit."""
+    result = OrderResult(account_id="a1", status=OrderStatus.PENDING, signal_id="s1", broker_order_id="order-1")
+    assert quantity_still_executable_for(result, requested_quantity=100.0, confirmed_cumulative_fill=100.0) == 0.0
+
+
 def test_all_seven_fields_diverge_for_one_partial_fill_event():
     """The scenario the review's principle names: an order for 100 units,
     partially filled for 30, with capital reserved for the full 100, an
@@ -175,6 +194,22 @@ def test_lifecycle_breakdown_reserved_quantity_none_with_no_pending_entry():
     breakdown = quantity_breakdown_for_lifecycle(lifecycle)
     assert breakdown.reserved_quantity is None
     assert breakdown.quantity_still_executable == 0.0
+
+
+def test_lifecycle_breakdown_requested_quantity_is_the_plans_planned_quantity():
+    """Mutation-testing follow-up (track39): kills the
+    `requested_quantity=None` mutant in `quantity_breakdown_for_lifecycle`
+    -- no existing test in this file asserted this field at all. A
+    lifecycle's breakdown must report the plan's real
+    `planned_quantity`, never a fabricated/omitted `None` (which would
+    also be indistinguishable from "this event never reached the
+    broker", a different and much more significant fact elsewhere in
+    this model)."""
+    lifecycle = _lifecycle(
+        planned_quantity=137.0, confirmed_owned_quantity=50.0, protected_quantity=0.0, protection_confirmed=False
+    )
+    breakdown = quantity_breakdown_for_lifecycle(lifecycle)
+    assert breakdown.requested_quantity == 137.0
 
 
 # --- PendingEntry.reserved_quantity round-trips through persistence ---
