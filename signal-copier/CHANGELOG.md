@@ -12,6 +12,22 @@ version number. Newest wave first.
 Fixes responding to an external release-readiness audit of the trading
 engine's data integrity and operational-safety guarantees.
 
+### Fixed
+- Track 36: `docs/state/PROGRESS.md`'s long-standing "`signal_platform_
+  contracts` is stale relative to Track 14 and Track 22/23" note was
+  re-investigated and found itself stale — it had been carried forward
+  unverified across Tracks 24–35, past the point (Track 29) where it
+  stopped being accurate. Track 14's one contract-boundary-relevant
+  field (`SourceIdentity.source_catalog_id`) was already added and wired
+  end-to-end; the rest of Track 14's vocabulary is operator-UI state
+  signal-portfolio-commercial never consumes. Track 22/23's AUD-01
+  quantity fields are internal `orders`-table bookkeeping, not fields of
+  the cross-service `EXECUTION_APPLIED` event, whose one real
+  cross-boundary fact (`filled_quantity`/`filled_price`) was already a
+  required, typed field, built and consumed through typed models (never
+  a loose dict) on both sides. No contract or application code changed;
+  see `docs/state/PROGRESS.md` for the full investigation.
+
 ### Added
 - Track 33: `GET /export-events` and `GET /export-events/{event_id}` --
   the first live, read-only HTTP surface over the `export_events` outbox

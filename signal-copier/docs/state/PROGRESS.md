@@ -99,8 +99,57 @@ See the audit-findings document referenced in this session's history for
 the full list; highlights carried forward here since they're not yet
 closed:
 
-- `signal_platform_contracts` is stale relative to Track 14 and Track
-  22/23 — no contract-side follow-up has landed for either.
+- ~~`signal_platform_contracts` is stale relative to Track 14 and Track
+  22/23~~ — **re-investigated (Track 36) and found NOT true; this line was
+  itself stale.** Concretely checked both:
+  - **Track 14** (Provider/Source/Connection model): the one piece of
+    Track 14 vocabulary that actually crosses the contract boundary —
+    which specific transport/`sources.id` a signal arrived through — was
+    already added to `SourceIdentity.source_catalog_id` by Track 29, and
+    is genuinely wired end-to-end on the producer side
+    (`app/export_events.py`'s `build_source_receipt_envelope`/
+    `build_source_event_envelope` both set it from
+    `signal.source_catalog_id`; see `tests/test_export_events.py`'s own
+    "Track 29: source_catalog_id" section). The REST of Track 14's
+    vocabulary — `ProviderStatus`/`SourceHealth`/`CertificationState`/
+    `ExecutionEligibility`/shadow-mode state (Track 17) — is operator-UI
+    state local to this service (`app/provider_catalog.py`,
+    `app/certification.py`, `app/shadow_mode.py`) that
+    signal-portfolio-commercial never reads or needs (confirmed by
+    grepping that repo for every one of those names — zero references
+    outside its own unrelated uses of the word "certification").
+    Formalizing those as shared contract types would be exactly the
+    "invent fields nobody produces/consumes" this package's own
+    discipline forbids.
+  - **Track 22/23** (AUD-01 distinct-quantity model + EXECUTION_APPLIED
+    export): the five AUD-01 fields (`requested_quantity`/
+    `confirmed_cumulative_fill`/`applied_execution_delta`/
+    `outstanding_possible_fill`/`actual_remaining_ownership`, see
+    `tests/test_aud01_distinct_quantity_model.py`) are internal
+    `orders`-table bookkeeping for this service's own position-ownership
+    computation (Track 16/18) — not fields of the cross-service event.
+    The ONE fact that genuinely crosses the boundary (one broker-
+    confirmed fill's quantity/price) was already a required, typed
+    `Money` field on `ExecutionAppliedPayload.filled_quantity`/
+    `filled_price` before AUD-01 and remains so after — `app/export_events.
+    py`'s `build_execution_applied_envelope` never constructs the envelope
+    payload as a loose dict (every one of its four `EventEnvelope(...)`
+    call sites in that module builds from a typed, `extra="forbid"`
+    payload model first), and signal-portfolio-commercial's
+    `app/services/integration_inbox.py` consumes it via
+    `ExecutionAppliedPayload.model_validate(envelope.payload)` and typed
+    attribute access (`payload.filled_quantity`, `payload.filled_price`,
+    ...), never a raw dict lookup. Both sides' existing tests
+    (`tests/test_export_events.py` here,
+    `signal-portfolio-commercial/tests/test_integration_inbox.py` there)
+    already round-trip these exact fields.
+
+  No contract or application code changed as a result of this
+  re-investigation — only this note, which had been carried forward
+  unverified since it was written, long past the point (Track 29) where
+  it stopped being accurate. If a REAL Track 14/22/23-shaped contract gap
+  is found later, it should cite the specific missing field and the
+  specific producer/consumer code path, not just a track number.
 - `trading_authority`/`release_status` in `/system/readiness` remain
   honest, pre-existing placeholders (P0-6/P0-7 qualification/release-
   taxonomy work, never built) — out of scope for the Provider/Source/
