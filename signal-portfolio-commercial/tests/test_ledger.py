@@ -37,6 +37,42 @@ def test_append_entry_persists_the_given_fields(db_session):
     assert fetched.evidence_class == EvidenceClass.OBSERVED_FOLLOWER_LIVE
 
 
+def test_append_entry_persists_every_optional_identity_field(db_session):
+    """Mutation-testing follow-up (track39): the test above never sets
+    `multiplier`/`follower_connection_id`/`originating_analyst_id`/
+    `sleeve_id`/`external_observation_id` to a real, distinguishing
+    value, so a mutant that silently drops any one of them to `None`
+    (or, for `multiplier`, to the same default it would have had
+    anyway) went undetected. A real futures/options contract has a
+    multiplier != 1 -- silently losing it would make downstream
+    notional math wrong, not just a missing audit field."""
+    entry = append_entry(
+        db_session,
+        tenant_id="tenant-a",
+        book=Book.FOLLOWER,
+        instrument="ESZ5",
+        side=Side.BUY,
+        quantity=Decimal("2"),
+        price=Decimal("5000"),
+        currency="USD",
+        multiplier=Decimal("50"),
+        event_time=datetime.now(timezone.utc),
+        source_authority="broker-fill-confirmation",
+        evidence_class=EvidenceClass.OBSERVED_FOLLOWER_LIVE,
+        follower_connection_id="conn-123",
+        originating_analyst_id="analyst-7",
+        sleeve_id="sleeve-9",
+        external_observation_id="obs-42",
+    )
+
+    fetched = db_session.get(LedgerEntry, entry.entry_id)
+    assert fetched.multiplier == Decimal("50")
+    assert fetched.follower_connection_id == "conn-123"
+    assert fetched.originating_analyst_id == "analyst-7"
+    assert fetched.sleeve_id == "sleeve-9"
+    assert fetched.external_observation_id == "obs-42"
+
+
 def test_append_entry_leaves_fee_unset_by_default(db_session):
     """Signal Platform Integration Correction Pack's own INTEGRATION_DECISION.md
     S7: "Importing a zero default is not proof of a verified zero fee." --
@@ -166,9 +202,14 @@ def test_a_correction_inherits_identity_fields_from_the_original(db_session):
         quantity=Decimal("5"),
         price=Decimal("50"),
         currency="USD",
+        multiplier=Decimal("50"),
         event_time=datetime.now(timezone.utc),
         source_authority="test",
         evidence_class=EvidenceClass.OBSERVED_OWNER_LIVE,
+        follower_connection_id="conn-456",
+        originating_analyst_id="analyst-3",
+        sleeve_id="sleeve-4",
+        external_observation_id="obs-77",
     )
     correction = append_correction(
         db_session,
@@ -185,6 +226,35 @@ def test_a_correction_inherits_identity_fields_from_the_original(db_session):
     assert correction.side == original.side
     assert correction.currency == original.currency
     assert correction.evidence_class == EvidenceClass.OBSERVED_OWNER_LIVE
+    # Mutation-testing follow-up (track39): the rest of the identity
+    # fields `append_correction` is documented to inherit verbatim --
+    # previously none of these were asserted, so silently dropping any
+    # of them to `None` went undetected.
+    assert correction.multiplier == Decimal("50")
+    assert correction.follower_connection_id == "conn-456"
+    assert correction.originating_analyst_id == "analyst-3"
+    assert correction.sleeve_id == "sleeve-4"
+    assert correction.external_observation_id == "obs-77"
+    # A correction is always freshly UNRECONCILED, regardless of the
+    # original's own reconciliation state -- it is a NEW economic fact
+    # that hasn't been reconciled yet.
+    assert correction.reconciliation_state == ReconciliationState.UNRECONCILED
+
+
+def test_correcting_an_unknown_entry_includes_the_real_entry_id_in_the_error(db_session):
+    """Mutation-testing follow-up (track39): kills the
+    `UnknownLedgerEntryError(None)` mutant -- the raised error's message
+    must actually name the unresolvable id, not be blank/`None`, so an
+    operator reading logs can tell which id was wrong."""
+    with pytest.raises(UnknownLedgerEntryError, match="does-not-exist-xyz"):
+        append_correction(
+            db_session,
+            original_entry_id="does-not-exist-xyz",
+            quantity=Decimal("1"),
+            price=Decimal("1"),
+            event_time=datetime.now(timezone.utc),
+            source_authority="test",
+        )
 
 
 def test_correcting_an_unknown_entry_raises(db_session):
@@ -197,3 +267,75 @@ def test_correcting_an_unknown_entry_raises(db_session):
             event_time=datetime.now(timezone.utc),
             source_authority="test",
         )
+
+
+def test_a_correction_with_an_explicit_new_fee_uses_it_not_the_originals(db_session):
+    """Mutation-testing follow-up (track39): `append_correction`'s
+    `fee=original.fee if fee is None else fee` ternary was untested on
+    its "caller passed an explicit new fee" branch -- every existing
+    correction test omits `fee` entirely, exercising only the
+    "inherit from original" branch. This is exactly
+    `app/services/integration_inbox.py`'s real FEE-event call path
+    (`append_correction(..., fee=payload.fee)`): a real, newly-reported
+    fee must land on the correction, never be silently discarded in
+    favor of the original entry's own (here, unset) fee."""
+    original = append_entry(
+        db_session,
+        tenant_id="tenant-a",
+        book=Book.PLATFORM,
+        instrument="AAPL",
+        side=Side.BUY,
+        quantity=Decimal("10"),
+        price=Decimal("100"),
+        currency="USD",
+        event_time=datetime.now(timezone.utc),
+        source_authority="test",
+        evidence_class=EvidenceClass.SYNTHETIC_FIXTURE,
+        # fee intentionally omitted -- original.fee is None
+    )
+    db_session.commit()
+
+    correction = append_correction(
+        db_session,
+        original_entry_id=original.entry_id,
+        quantity=Decimal("10"),
+        price=Decimal("100"),
+        event_time=datetime.now(timezone.utc),
+        source_authority="fee-event",
+        fee=Decimal("1.50"),
+    )
+
+    assert correction.fee == Decimal("1.50")
+
+
+def test_a_correction_with_no_fee_argument_inherits_the_originals_real_fee(db_session):
+    """The other half of the same ternary: a correction that does NOT
+    pass `fee` at all must inherit the original's real, non-None fee
+    (not silently drop to `None`) -- e.g. a price correction for an
+    entry that already had a known commission."""
+    original = append_entry(
+        db_session,
+        tenant_id="tenant-a",
+        book=Book.PLATFORM,
+        instrument="AAPL",
+        side=Side.BUY,
+        quantity=Decimal("10"),
+        price=Decimal("100"),
+        currency="USD",
+        event_time=datetime.now(timezone.utc),
+        source_authority="test",
+        evidence_class=EvidenceClass.SYNTHETIC_FIXTURE,
+        fee=Decimal("2.25"),
+    )
+    db_session.commit()
+
+    correction = append_correction(
+        db_session,
+        original_entry_id=original.entry_id,
+        quantity=Decimal("10"),
+        price=Decimal("105"),
+        event_time=datetime.now(timezone.utc),
+        source_authority="price-correction",
+    )
+
+    assert correction.fee == Decimal("2.25")

@@ -155,3 +155,51 @@ async def test_rapid_double_reconciliation_pass_does_not_double_count(store):
     assert second == 0
     assert store.get_position("acct1", "AAPL") == 10.0  # not 20.0
     assert store.get_outstanding_possible_fill("acct1") == {}
+
+
+# -- Mutation-testing follow-ups (track39) -----------------------------------
+#
+# These two exercise `SignalStore.get_outstanding_possible_fill` directly
+# (bypassing the engine) for two scenarios every other test in this file
+# happens to never construct: a PENDING SELL order (every scenario above
+# only ever uses BUY), and a PENDING order whose remainder is exactly
+# zero. Both are real, reachable states this method's own docstring
+# describes, and both were genuine mutation-testing survivors before
+# these were added.
+
+
+def test_outstanding_possible_fill_signs_a_pending_sell_negative(store):
+    """A pending SELL's outstanding exposure must be NEGATIVE (it would
+    reduce net exposure if it lands) -- the opposite sign from a pending
+    BUY's. No other test in this suite ever exercises the SELL branch of
+    `get_outstanding_possible_fill`'s `side == Side.BUY.value` check."""
+    signal = Signal(source="tv", symbol="AAPL", side=Side.SELL)
+    store.save_signal(signal)
+    store.save_order_result(
+        OrderResult(account_id="acct1", status=OrderStatus.PENDING, signal_id=signal.id, broker_order_id="order-1"),
+        broker="paper",
+        symbol="AAPL",
+        side=Side.SELL,
+        requested_quantity=10.0,
+        confirmed_cumulative_fill=4.0,
+    )
+    assert store.get_outstanding_possible_fill("acct1") == {"AAPL": -6.0}
+
+
+def test_outstanding_possible_fill_excludes_a_symbol_with_zero_remainder(store):
+    """A still-PENDING order whose confirmed fill already equals its full
+    requested quantity has a remainder of exactly 0.0 -- it must be
+    excluded entirely (never contribute a spurious 0.0 entry, and the
+    `remainder <= 0` boundary must include the equal-to-zero case, not
+    just strictly negative)."""
+    signal = Signal(source="tv", symbol="AAPL", side=Side.BUY)
+    store.save_signal(signal)
+    store.save_order_result(
+        OrderResult(account_id="acct1", status=OrderStatus.PENDING, signal_id=signal.id, broker_order_id="order-1"),
+        broker="paper",
+        symbol="AAPL",
+        side=Side.BUY,
+        requested_quantity=10.0,
+        confirmed_cumulative_fill=10.0,  # fully confirmed already, still technically PENDING
+    )
+    assert store.get_outstanding_possible_fill("acct1") == {}
