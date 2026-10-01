@@ -161,6 +161,32 @@ change happens — never backfilled or reconstructed after the fact.
 See `docs/database/SCHEMA.md`'s `stop_target_events` section for the
 full column semantics.
 
+## Duplicate-exit idempotency (TRK-27, ADR-0010)
+
+`CloseArbiter`'s own `pending_exit` guard (see `request_exit`'s "a prior
+... order hasn't resolved yet" rejection) only protects against a
+*concurrent* duplicate exit while one is already in flight — it is a
+no-op once the first exit has fully resolved. A genuinely duplicate
+EXIT for the same real-world event, delivered through a different
+`channel_id`/`message_id` (so `app/engine.py`'s SIG-01 replay guard,
+keyed on `signal.id`, doesn't catch it either), arriving AFTER the
+first exit already resolved, is instead caught one level up:
+`PositionLifecycleManager._apply_exit_fill` records a `_ClosedExitRecord`
+(this episode's `entry_signal_id` + `closed_at`) the instant a lifecycle
+becomes `closed`, and `check_duplicate_exit` consults it — from both
+`request_exit`'s own "no active lifecycle" branch and
+`app/engine.py`'s `_handle_managed_close` mirror of that same check —
+within `config.MANAGED_EXIT_DUPLICATE_WINDOW_SECONDS` of the original
+resolution. The result is still `REJECTED` (never a fabricated `FILLED`
+replay, which would double-count the execution in the `orders` table);
+only the message and an INFO-level log record distinguish a recognized
+duplicate from a bare "no open position" rejection.
+
+This is deliberately an in-memory, bounded guard — see ADR-0010 for the
+full design and its explicitly documented scope, in particular that a
+real re-entry's own later exit is never suppressed by it (the guard
+only ever fires while the lifecycle is still `None`/`closed`).
+
 ## Documented gap
 
 Startup reconciliation against the broker's own live position/order

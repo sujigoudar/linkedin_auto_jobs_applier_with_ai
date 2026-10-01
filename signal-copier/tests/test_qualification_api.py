@@ -160,3 +160,37 @@ def test_post_qualifications_signalstack_blocked_at_account_entitled(client):
         listing = client.get("/qualifications", params={"adapter_type": "signalstack"})
         routes = listing.json()["routes"]
         assert routes[0]["current_state"] == "authenticated"
+
+
+def test_post_qualifications_rejects_a_second_product_type_for_the_same_route_key(client):
+    """TRK-27 (Finding 2): the live-routing gate can't distinguish two
+    products sharing one account_id/route_key -- see
+    app/engine.py's `_UNDECLARED_ROUTE_PRODUCT_TYPE` comment and
+    app/db.py's `SignalStore.record_route_qualification` docstring (point
+    4) for the mechanism this exercises end-to-end through the real HTTP
+    write path."""
+    with client:
+        first = client.post(
+            "/qualifications",
+            json={
+                "adapter_type": "paper",
+                "route_key": "paper_main",
+                "asset_class": "crypto",
+                "product_type": "spot",
+                "state": "implemented",
+            },
+        )
+        assert first.status_code == 200, first.text
+
+        second = client.post(
+            "/qualifications",
+            json={
+                "adapter_type": "paper",
+                "route_key": "paper_main",
+                "asset_class": "crypto",
+                "product_type": "perpetual",
+                "state": "implemented",
+            },
+        )
+        assert second.status_code == 400
+        assert "already has qualification history recorded under product_type" in second.json()["detail"]

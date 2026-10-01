@@ -147,6 +147,30 @@ engine's data integrity and operational-safety guarantees.
 - Renumbered the writer_lease Alembic migration from `0014` to `0015`
   after `command_ledger` independently claimed `0014` first on the
   shared branch (`cdfee8b`) — see `docs/process/GIT.md`.
+- TRK-27: managed-lifecycle exit idempotency only ever protected against
+  a *concurrent* duplicate exit (`CloseArbiter.pending_exit`) — a
+  genuinely duplicate EXIT signal for the same real-world event, with a
+  different `channel_id`/`message_id`, arriving AFTER the first exit had
+  already fully resolved, was caught by neither that guard nor SIG-01's
+  signal-id replay guard, and was processed as a brand-new request
+  against whatever remained of the position (safely refused when
+  already flat, but with no durable record distinguishing that refusal
+  from an ordinary error). `PositionLifecycleManager` now records each
+  exit episode's identity the instant it closes and recognizes a
+  same-position, same-window repeat as a duplicate (logged, REJECTED,
+  no new broker order — never a fabricated FILLED replay, which would
+  double-count the execution) — see ADR-0010 for the exact mechanism
+  and its explicitly bounded scope (in-memory only; does not, and is
+  not meant to, suppress a real exit after a real re-entry).
+- TRK-27 (Finding 2): the qualification ladder's route key
+  (`adapter_type`, `route_key`, `asset_class`) can't distinguish two
+  distinct products (e.g. spot vs. perpetual) sharing one
+  `account_id`/`route_key` — nothing previously stopped an operator from
+  recording qualification history for both under the same route_key,
+  which the live-routing gate (always checking one fixed `product_type`)
+  could never correctly honor. `SignalStore.record_route_qualification`
+  now refuses to record a second, different `product_type` for a
+  route_key that already has qualification history under another one.
 
 ## Redesign waves — trading console, screens, and integration hardening
 

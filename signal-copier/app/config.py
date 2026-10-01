@@ -433,6 +433,20 @@ class _Settings(BaseSettings):
     #: Track 12 (within-transport dedup only, unaffected either way).
     SIGNAL_CORRELATION_ENABLED: bool = True
 
+    # TRK-27: how long, after a managed-lifecycle exit fully resolves (the
+    # position reaches `closed`), a SECOND exit request for the exact same
+    # (account_id, symbol) is still recognized as a duplicate of that same
+    # real-world event rather than a bare "no open position to close"
+    # rejection — see app/lifecycle/manager.py's `_ClosedExitRecord`/
+    # `_duplicate_exit_rejection` docstrings for the exact mechanism and
+    # its documented scope (narrower than a full cross-episode guard; a
+    # real re-entry's own later exit is never suppressed by this).
+    # Default mirrors SIGNAL_CORRELATION_TIMESTAMP_WINDOW_SECONDS above —
+    # the same order of magnitude for "two deliveries of the same
+    # real-world event, through different transports/collectors, arriving
+    # within" is a reasonable prior here too, not independently derived.
+    MANAGED_EXIT_DUPLICATE_WINDOW_SECONDS: float = 900.0
+
 
 _settings = _Settings()
 
@@ -535,3 +549,4 @@ NOTIFICATION_BRIDGE_STALE_THRESHOLD_SECONDS = _settings.NOTIFICATION_BRIDGE_STAL
 SIGNAL_CORRELATION_PRICE_TOLERANCE_PCT = _settings.SIGNAL_CORRELATION_PRICE_TOLERANCE_PCT
 SIGNAL_CORRELATION_TIMESTAMP_WINDOW_SECONDS = _settings.SIGNAL_CORRELATION_TIMESTAMP_WINDOW_SECONDS
 SIGNAL_CORRELATION_ENABLED = _settings.SIGNAL_CORRELATION_ENABLED
+MANAGED_EXIT_DUPLICATE_WINDOW_SECONDS = _settings.MANAGED_EXIT_DUPLICATE_WINDOW_SECONDS

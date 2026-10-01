@@ -419,6 +419,17 @@ UNIQUE constraint, not a new logical fact. UNIQUE constraint:
 `(adapter_type, route_key, asset_class, product_type, state)`. Indexes:
 `idx_route_qualifications_route`.
 
+TRK-27 (Finding 2): `SignalStore.record_route_qualification` refuses to
+record a row whose `product_type` differs from every `product_type`
+already recorded for the SAME `(adapter_type, route_key, asset_class)`
+-- the live-routing gate (`app/engine.py`'s `_UNDECLARED_ROUTE_PRODUCT_TYPE`)
+identifies a route by `(adapter_type, route_key, asset_class)` and
+always checks one fixed `product_type`, so two different product_types
+sharing one `route_key` can never be correctly distinguished there.
+This codebase's own supported convention remains a distinct `route_key`
+per product (e.g. `"ccxt_binance_spot"` vs `"ccxt_binance_perp"`), never
+one `route_key` with two `product_type`s.
+
 ## `command_ledger`
 
 P0-2: the pre-effect durable ledger for every real financial command

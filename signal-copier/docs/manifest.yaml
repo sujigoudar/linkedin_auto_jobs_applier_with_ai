@@ -293,6 +293,8 @@ documents:
       - docs/adr/0006-separate-qualification-ladder.md
       - docs/adr/0007-fail-closed-capital-allocator.md
       - docs/adr/0008-plain-vs-managed-lifecycle-products.md
+      - docs/adr/0009-escalation-only-active-phone-control.md
+      - docs/adr/0010-managed-exit-duplicate-episode-guard.md
     read_when:
       - understanding why an existing architectural choice was made
       - about to revisit or reverse a prior significant decision
