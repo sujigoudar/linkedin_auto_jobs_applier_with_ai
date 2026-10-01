@@ -9,34 +9,17 @@
 # percentage cannot -- 100% line coverage says every line ran, not that
 # every line's *behavior* is actually asserted on.
 #
-# Deliberately NOT scoped to the whole app: mutmut re-runs the selected
-# tests once per surviving mutant, so widening this to app/engine.py or
-# app/lifecycle/manager.py (both far larger, with hundreds of mutable
-# branches) against the full ~750-test suite would turn a single mutmut
-# run into a multi-hour job -- unsuitable for a routine local or CI check.
-# This scope is intentionally the first, smallest slice; widening it to
-# another single critical module (e.g. app/reconciliation.py) is a
-# reasonable follow-up, done the same deliberate way rather than all at
-# once.
+# Baseline (app/auth.py, this track's own first commit): 105 mutants, 71
+# killed, 34 survived. Most survivors are either equivalent mutants (e.g.
+# rewording an HTTPException detail string the tests correctly don't
+# assert on) or a defensive branch whose two directions don't actually
+# differ given how RequireOwner is wired today. A handful of genuinely
+# meaningful survivors -- the naive/aware expires_at normalization, and
+# the two "delete the expired/revoked session, not just reject it"
+# cleanup calls -- were confirmed and closed with targeted regression
+# tests in tests/test_owner_auth.py rather than chased to zero here; this
+# is a starting baseline, not a target score.
 #
-# Run locally with: mutmut run
-#
-# Baseline (this commit): 105 mutants, 71 killed, 34 survived. Most
-# survivors are either equivalent mutants (e.g. rewording an HTTPException
-# detail string the tests correctly don't assert on) or a defensive branch
-# whose two directions don't actually differ given how RequireOwner is
-# wired today (see this file's own commit message for the specific
-# example). A handful of genuinely meaningful survivors -- the naive/aware
-# expires_at normalization, and the two "delete the expired/revoked
-# session, not just reject it" cleanup calls -- were confirmed and closed
-# with targeted regression tests in tests/test_owner_auth.py rather than
-# chased to zero here; this is a starting baseline, not a target score.
-#
-# source_paths must cover the whole importable "app" package (mutmut
-# copies it verbatim into mutants/app/ so the test suite's `import
-# app.main` etc. still resolves); only_mutate is what actually narrows
-# the mutation scope to app/auth.py -- every other file under app/ is
-# copied unmutated.
 # Track 43 (2026-10-01): widened to app/engine.py, the core signal-
 # processing/order-routing engine (close-signal resolution, position-
 # tracking's distinct-field quantity model, provider/analyst overrides --
@@ -49,8 +32,48 @@
 # pass maps to the touched function, not a blind full-suite rerun --
 # see docs/state/PROGRESS.md for the baseline score and what was fixed
 # vs. left as a documented equivalent-mutant/defensive-branch survivor.
+#
+# Track 44 (2026-10-01): widened further to the broker-agnostic
+# position-lifecycle state machine (app/lifecycle/manager.py) and its
+# close-arbitration/oversell-prevention ledger
+# (app/lifecycle/close_arbiter.py) -- the next highest-financial-risk
+# slice per the "mutation covering needs to cover every module"
+# instruction, done the same deliberate, one-module-at-a-time way as the
+# auth/engine slices above (not Track 43's app/engine.py, which that
+# track already owns). Both modules' own docstrings describe the
+# invariant this exists to protect: no two independent exit intents can
+# ever both claim the same shares (see CloseArbiter's
+# `reserve`/`_check_invariant`), and a partial-exit stop resize can never
+# leave a moment of zero coverage (see manager.py's "stop-resize
+# transition"). The test selection added below is deliberately NOT every
+# test file that merely imports these modules (grep shows 40+) -- it's
+# the two unit-test files for these modules themselves, plus the
+# targeted regression suites for the specific financially-dangerous
+# behaviors called out above (partial-exit stop amend-vs-cancel,
+# duplicate-exit-episode recognition, time-exit activation).
+# tests/test_trk38_quantity_conservation_and_idempotency.py (a Hypothesis
+# stateful machine covering quantity conservation/idempotency) and the
+# Postgres-fixture-backed integration suites (test_plain_close_race.py,
+# test_p0_5_close_reconciliation.py, both already in Track 43's own
+# selection above) are deliberately left out of a scoped-just-to-these-
+# two-files run to keep it practical -- they still run in the full
+# `pytest -q` suite and are not weakened. See docs/state/PROGRESS.md for
+# the close_arbiter.py/manager.py mutation scores, what was genuinely
+# fixed, and the environment-instability limitation this track hit (the
+# shared container's heavy concurrent load repeatedly corrupted mutmut's
+# own `.mutmut-cache`/`mutants/` state mid-run -- the same class of
+# constraint Track 43 already documented for app/engine.py) that
+# prevented a single clean full-aggregate rerun of the widened scope.
+#
+# source_paths must cover the whole importable "app" package (mutmut
+# copies it verbatim into mutants/app/ so the test suite's `import
+# app.main` etc. still resolves) plus alembic/ (app/db.py stamps
+# migrations at import time, so app/main.py's own import chain needs a
+# real alembic/ directory alongside the mutated app/ package); only_mutate
+# is what actually narrows the mutation scope to the listed files --
+# every other file under app/ is copied unmutated.
 source_paths = ["app", "alembic"]
-only_mutate = ["app/auth.py", "app/engine.py"]
+only_mutate = ["app/auth.py", "app/engine.py", "app/lifecycle/manager.py", "app/lifecycle/close_arbiter.py"]
 pytest_add_cli_args_test_selection = [
     "tests/test_owner_auth.py", "tests/test_sms_twilio_sender_authorization.py",
     "tests/test_5e91e78_lifecycle_composition.py", "tests/test_asset_class_gate.py",
@@ -75,6 +98,10 @@ pytest_add_cli_args_test_selection = [
     "tests/test_trk23_managed_lifecycle_export.py", "tests/test_trk27_managed_exit_duplicate_episode.py",
     "tests/test_trk38_quantity_conservation_and_idempotency.py", "tests/test_trkq1_quantity_breakdown.py",
     "tests/test_writer_lease_fencing.py",
+    "tests/test_lifecycle_manager.py",
+    "tests/test_close_arbiter.py",
+    "tests/test_pro06_stop_amend_on_partial_exit.py",
+    "tests/test_pro02_activation_and_time_exit.py",
 ]
 
 # C38 (bounded): static analysis -- ruff (lint) + mypy (type checking).

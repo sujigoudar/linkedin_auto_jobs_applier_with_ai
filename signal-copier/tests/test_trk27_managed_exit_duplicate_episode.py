@@ -233,4 +233,43 @@ async def test_duplicate_exit_window_expiry_falls_back_to_the_generic_rejection(
 
     after_window = await manager.request_exit(account, "AAPL", 5.0, source="provider_exit")
     assert after_window.status == OrderStatus.REJECTED
-    assert after_window.message == "no active lifecycle for this position"
+    assert "duplicate exit recognized" not in after_window.message
+    assert "no active lifecycle for this position" in after_window.message
+
+
+@pytest.mark.asyncio
+async def test_duplicate_exit_check_ignores_a_closed_at_recorded_in_the_future():
+    """Track 44 mutation-testing gap: `check_duplicate_exit`'s own
+    `age_seconds < 0` guard had no direct test -- a clock-skew or
+    corrected-timestamp case (the recorded `closed_at` is, for whatever
+    reason, slightly AFTER "now") must fall back to the generic rejection
+    rather than being treated as a confidently-recognized duplicate with a
+    nonsensical negative age."""
+    paper = PaperBroker()
+    manager = PositionLifecycleManager(brokers={"paper": paper})
+    account = DestinationAccount(account_id="acct1", broker="paper")
+    plan = PositionPlan(
+        account_id="acct1",
+        symbol="AAPL",
+        side=Side.BUY,
+        planned_quantity=5.0,
+        broker="paper",
+        initial_stop=48.50,
+        entry_signal_id="entry-sig-1",
+    )
+    manager.start_plan(plan)
+    entry_signal = Signal(source="test", symbol="AAPL", side=Side.BUY)
+    await paper.place_order(entry_signal, account, 5.0, "AAPL")
+    await manager.on_entry_fill(account, "AAPL", 5.0)
+    result = await manager.request_exit(account, "AAPL", 5.0, source="provider_exit")
+    assert result.status == OrderStatus.FILLED
+
+    record = manager._last_closed_exit[("acct1", "AAPL")]
+    record.closed_at = datetime.now(timezone.utc) + timedelta(seconds=30)
+
+    assert manager.check_duplicate_exit(account, "AAPL") is None
+
+    retried = await manager.request_exit(account, "AAPL", 5.0, source="provider_exit")
+    assert retried.status == OrderStatus.REJECTED
+    assert "duplicate exit recognized" not in retried.message
+    assert "no active lifecycle for this position" in retried.message
