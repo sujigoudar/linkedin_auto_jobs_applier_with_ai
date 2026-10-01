@@ -130,8 +130,12 @@ def test_fail_closed_a_broken_denylist_check_rejects_rather_than_admits(db_sessi
     # module itself -- patching the source module wouldn't affect it.
     monkeypatch.setattr(auth_module, "is_token_revoked", _boom)
 
-    with pytest.raises(InvalidTokenError):
+    with pytest.raises(InvalidTokenError) as exc_info:
         verify_token(token, db_session)
+    # Exact diagnostic text, not just the exception type -- a cosmetic
+    # string-literal mutation of this specific fail-closed message
+    # can't hide behind the type check above.
+    assert "could not verify token has not been revoked" in str(exc_info.value)
 
 
 def test_fail_closed_regression_a_denylist_check_that_is_bypassed_lets_a_revoked_token_through(db_session):
@@ -163,5 +167,9 @@ def test_fail_closed_regression_a_denylist_check_that_is_bypassed_lets_a_revoked
     )
     db_session.commit()
 
-    with pytest.raises(InvalidTokenError):
+    with pytest.raises(InvalidTokenError) as exc_info:
         verify_token(token, db_session)
+    # Exact text, not just the exception type -- "token has been
+    # revoked" is this module's own, distinct message from the
+    # fail-closed denylist-check-itself-broke message above.
+    assert str(exc_info.value) == "token has been revoked"
