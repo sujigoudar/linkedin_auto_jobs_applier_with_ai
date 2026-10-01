@@ -7,6 +7,100 @@ does not yet cut versioned releases (see `docs/process/RELEASE.md`), so
 entries are grouped by theme and rough chronological wave instead of by
 version number. Newest wave first.
 
+## [Unreleased] — Track 49: widen mutation-testing scope to app/qualification.py, app/export_events.py (2026-10-01)
+
+Per the same explicit instruction ("mutation covering needs to cover
+every module"), widened pyproject.toml's `[tool.mutmut]` scope to
+`app/qualification.py` (the live-routing qualification gate's strict,
+sequential prerequisite ladder plus its feedback-capability floor) and
+`app/export_events.py` (the EventEnvelope/payload builders that turn a
+genuinely FILLED `OrderResult`, a received `Signal`, or a raw
+`SourceEvent` into the export-outbox's actual row). Test selection:
+each file's own dedicated unit-test file
+(`tests/test_route_qualification.py`, `tests/test_export_events.py`).
+Full `mutmut run`: 118 mutants, 110 killed / 8 survived / 0 timeout —
+see pyproject.toml's own comment and docs/state/PROGRESS.md for the
+full breakdown.
+
+### Added
+- `tests/test_export_events.py`: `build_routing_admission_outcome_envelope`
+  had ZERO direct unit tests before this (only exercised indirectly
+  through the engine, via `tests/test_export_events_wiring.py`) — 8 new
+  tests close every branch: the `signal.side == Side.CLOSE` guard (an
+  `==`/`!=` flip there would silently produce NOTHING for every ordinary,
+  non-CLOSE routing outcome — the common case — instead of only for
+  CLOSE signals); `account`/`order_status` honestly `None` vs. a real
+  value, in both directions; the `event_id`'s `unrouted` fallback
+  suffix; `message` carried through verbatim; and the exported
+  `subject` dict's own `source.`/`account.` cluster-name prefixes (a
+  renamed `subject_clusters` key would silently vanish from the real
+  envelope's `subject` without raising, since `build_subject(**kwargs)`
+  accepts any keyword).
+- `tests/test_export_events.py`: `build_source_event_envelope`'s own,
+  SEPARATE `targets=[...]` list comprehension (distinct from
+  `build_source_receipt_envelope`'s already-tested one) had never been
+  exercised with a `Signal` carrying real `targets` — a `quantity`/
+  `fraction` None-check flip there would silently swap which of a
+  target's two fields comes through as a real value vs. `None`,
+  specifically on the SOURCE_EVENT export path.
+- `tests/test_export_events.py`: `SourceEventPayload.provider_timestamp`
+  (a real, required `datetime` field with no field-level serializer of
+  its own, unlike `Money`) had no test asserting it comes back as a
+  JSON-serializable string — a corrupted `model_dump(mode=...)` argument
+  would silently leave a raw, non-JSON-serializable `datetime` object in
+  every exported SOURCE_EVENT payload. Same gap closed for
+  `SourceReceiptPayload.entry_expiration` (never previously set to a
+  real value in any test).
+- `tests/test_export_events.py`: per-asset-class `quantity_convention`
+  assertions (crypto/forex -> "units", equity -> "shares", option/future
+  -> "contracts") — this literal mapping had no direct assertion at all;
+  a wrong value would silently mislabel a fill's real unit of quantity
+  in the exported EXECUTION_APPLIED payload. Also added: the
+  `_UNVERSIONED_PARSER` default-literal assertion, the SOURCE_RECEIPT/
+  SOURCE_EVENT `venue="unspecified"` literal assertions, and
+  `event_id` assertions for `build_execution_applied_envelope` and
+  `build_source_event_envelope` (neither envelope's real `event_id` was
+  previously asserted by this file at all).
+
+Every new test was individually hand-verified to fail against its exact
+target mutant (hand-applying that mutant's diff via `mutmut show`/
+`mutmut apply` and re-running just that test) and pass against real
+code. No existing test was weakened or deleted.
+
+### Known residual (disclosed, not chased to zero — 8 survivors)
+- `app/qualification.py` mutant replacing `QUALIFICATION_STATE_ORDER`
+  with `None`: confirmed, by hand, to be a REAL kill (the module fails
+  to import — `enumerate(None)` raises `TypeError` — so every test in
+  both files errors at collection with pytest exit code 2) that mutmut
+  2.5.1 mis-reports as "survived" because its own `tests_pass` helper
+  only treats exit code `1` as "mutant killed" (`returncode != 1`), not
+  a collection-error exit code of `2`. A tool limitation, not a test
+  gap — see pyproject.toml's own comment for the verification command.
+- `app/qualification.py` mutants 18-20 (`parse_state`'s error-message
+  `", ".join(...)` separator/wrapping): cosmetic — `QualificationError`'s
+  type and its `"not a valid qualification state"` substring are already
+  asserted (`tests/test_route_qualification.py::
+  test_invalid_state_value_rejected`); only the embedded, informational
+  `"valid: ..."` list's exact formatting is unasserted.
+- `app/export_events.py` mutant in `_resolve_currency`
+  (`symbol.split("/")[-1]` -> `[+1]`): equivalent for every real,
+  single-slash forex/crypto pair symbol this codebase's adapters ever
+  produce (`split("/")` yields exactly 2 elements, so index `1` and
+  index `-1` are the same element).
+- `app/export_events.py` mutant in `build_execution_applied_envelope`'s
+  `Side.CLOSE` `ValueError` message text: cosmetic string-literal
+  wrapping; the existing `pytest.raises(..., match="Side.CLOSE")`
+  assertion still matches.
+- `app/export_events.py` mutants in `ExecutionAppliedPayload`'s and
+  `RoutingAdmissionOutcomePayload`'s own `payload.model_dump(mode="json")`
+  calls: equivalent for THESE two payload types specifically — neither
+  has a raw `datetime` field, and their `Money`-typed fields carry a
+  field-level `PlainSerializer(str, ...)` that forces a string
+  regardless of `mode`. (The analogous `mode="json"` calls for
+  `SourceReceiptPayload` and `SourceEventPayload`, which DO have real
+  `datetime` fields, were genuinely closed above — this distinction is
+  why they weren't equivalent there.)
+
 ## [Unreleased] — Track 44: mutation-testing scope widened to the position-lifecycle state machine
 
 Per the same explicit "mutation covering needs to cover every module"

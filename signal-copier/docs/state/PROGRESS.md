@@ -459,3 +459,111 @@ No production code was changed; every fix was a new test. `ruff check
 .` and the CI-scoped `mypy` command both clean. Full `pytest -q`
 (isolated `TMPDIR`) re-verified after these additions: 2185 passed, 8
 skipped, 0 failed.
+
+### Track 49: widen the checked-in mutmut scope to app/qualification.py, app/export_events.py (2026-10-01)
+
+Per the same explicit instruction ("mutation covering needs to cover
+every module"), widened pyproject.toml's `[tool.mutmut]` scope to
+`app/qualification.py` (the live-routing qualification gate's strict,
+sequential prerequisite ladder plus its `FEEDBACK_DEPENDENT_FLOOR` --
+see the module's own docstring on why SignalStack can never honestly
+claim `account_entitled`-or-higher) and `app/export_events.py` (the
+`EventEnvelope`/payload builders that turn a genuinely FILLED
+`OrderResult`, a received `Signal`, or a raw `SourceEvent` into the
+export-outbox's actual row). Test selection: each file's own dedicated
+unit-test file (`tests/test_route_qualification.py`,
+`tests/test_export_events.py`) -- the same narrow-selection style as
+every mutation track above. Run at 3-way session concurrency (not the
+previous wave's 6), per this track's own instruction, after 6-way
+parallelism on this shared container corrupted mutmut's cache mid-run
+in an earlier track; no cache corruption was hit this time.
+
+**Full mutation score obtained and acted on.** `mutmut run`: 118
+mutants, 110 killed / 8 survived / 0 timeout (started at 80/118 killed
+before the fixes below; see pyproject.toml's own comment for the exact
+per-mutant breakdown).
+
+The single highest-severity finding: `app/export_events.py`'s
+`build_routing_admission_outcome_envelope` -- the builder for the
+`ROUTING_ADMISSION_OUTCOME` export event, i.e. the row that tells
+research what actually happened to every routed signal -- had **zero**
+direct unit tests before this (only exercised indirectly through the
+engine, via `tests/test_export_events_wiring.py`). A mutation flipping
+its `signal.side == Side.CLOSE` guard to `!=` would have silently
+produced **no envelope at all for every ordinary, non-CLOSE signal** --
+the common case -- while only the rare CLOSE case would still export.
+Closed with 8 new direct tests in `tests/test_export_events.py`
+covering every branch: the CLOSE guard itself, `account`/`order_status`
+honestly `None` vs. a real value in both directions, the `event_id`'s
+`"unrouted"` fallback suffix, `message` passed through verbatim, and
+the exported `subject` dict's own `source.`/`account.` cluster-name
+prefixes (a renamed `subject_clusters` key would otherwise silently
+vanish from the real envelope's `subject` without raising, since
+`build_subject(**kwargs)` accepts any keyword name).
+
+Four further genuine gaps closed, all exercising code paths this
+file's existing tests happened never to touch:
+- `build_source_event_envelope`'s own, SEPARATE inner `targets=[...]`
+  list comprehension (distinct from `build_source_receipt_envelope`'s
+  already-tested one) had never been exercised with a `Signal` carrying
+  real targets -- a `quantity`/`fraction` None-check flip there would
+  silently swap which of a target's two fields comes through as a real
+  value vs. `None`, specifically on the SOURCE_EVENT export path.
+- `SourceEventPayload.provider_timestamp` (a required `datetime` field
+  with no field-level serializer of its own, unlike `Money`) had no
+  assertion that it actually comes back as a JSON-serializable string
+  -- a corrupted `model_dump(mode=...)` argument would silently leave a
+  raw, non-JSON-serializable `datetime` object in every exported
+  SOURCE_EVENT payload. Same real gap, same fix, for
+  `SourceReceiptPayload.entry_expiration` (never previously set to an
+  actual value in any test).
+- The per-asset-class `quantity_convention` mapping (crypto/forex ->
+  "units", equity -> "shares", option/future -> "contracts") had no
+  direct assertion at all -- a wrong literal would silently mislabel a
+  fill's real unit of quantity in the exported EXECUTION_APPLIED
+  payload.
+- `event_id` was never asserted for either `build_execution_applied_
+  envelope` or `build_source_event_envelope`; added for both, plus the
+  `_UNVERSIONED_PARSER` default-literal and `venue="unspecified"`
+  literal assertions.
+
+Every new test was individually hand-verified (apply the exact mutant
+diff via `mutmut show`/`mutmut apply`, confirm the new test fails
+against it and passes against real code) -- a real kill confirmation.
+No existing test was weakened or deleted.
+
+**8 remaining survivors, all individually triaged, none a real gap:**
+- `app/qualification.py`'s `QUALIFICATION_STATE_ORDER = None` mutant is
+  a **confirmed real kill mis-reported by the tool**: applying it by
+  hand makes the module fail to import (`enumerate(None)` raises
+  `TypeError`), so every test in both files errors at pytest collection
+  with exit code `2` -- but mutmut 2.5.1's own `tests_pass` helper only
+  treats exit code `1` as "mutant killed" (`return returncode != 1` in
+  its `__init__.py`), so a collection-error exit code of `2` reads as
+  "tests passed" to the tool. A `mutmut<3` version-pin limitation, not
+  a test-suite gap.
+- `app/qualification.py`'s 3 survivors in `parse_state`'s error-message
+  formatting (`", ".join(...)` separator/wrapping): cosmetic --
+  `QualificationError`'s type and its `"not a valid qualification
+  state"` substring are already asserted; only the embedded,
+  informational `"valid: ..."` list's exact formatting is unasserted.
+- `app/export_events.py`'s `_resolve_currency` `[-1]` -> `[+1]` mutant:
+  equivalent for every real, single-slash forex/crypto pair symbol this
+  codebase's adapters ever produce (`split("/")` always yields exactly
+  2 elements, so index `1` and index `-1` name the same element).
+- `app/export_events.py`'s `Side.CLOSE` `ValueError` message-text
+  wrapping: cosmetic; the existing `pytest.raises(..., match=
+  "Side.CLOSE")` assertion still matches the wrapped string.
+- `app/export_events.py`'s `ExecutionAppliedPayload`/
+  `RoutingAdmissionOutcomePayload` `model_dump(mode="json")` mutants:
+  equivalent for THESE two payload types specifically -- neither has a
+  raw `datetime` field, and their `Money`-typed fields carry a
+  field-level `PlainSerializer(str, ...)` that forces a string
+  regardless of `mode`. (The analogous `SourceReceiptPayload`/
+  `SourceEventPayload` mutants, which DO have real `datetime` fields,
+  were genuinely closed above.)
+
+No production code was changed; every fix was a new test. `ruff check
+.` and the CI-scoped `mypy` command both clean. Full `pytest -q`
+(isolated `TMPDIR`) re-verified after these additions: 2255 passed, 0
+failed.
