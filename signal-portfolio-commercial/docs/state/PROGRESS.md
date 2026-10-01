@@ -35,6 +35,32 @@ detailed per-phase notes (now historical; much has been built since).
   result once `remaining` reaches 0, since nothing thereafter changes
   it).
 
+- **Track 48: mutation-testing pass -- `publication_admission`,
+  `customer_billing` (2026-10-01).** Widens Track 39's mutation-testing
+  pass to the two highest financial-risk modules outside that
+  original scope: `app/services/publication_admission.py` (the real
+  effect boundary admitting a `PublicationIntent` for live
+  publication) and `app/services/customer_billing.py` (CU-11's
+  tenant-scoped billing read, which had no dedicated test file at all
+  before this track). Same ad hoc `mutmut run
+  --paths-to-mutate=<module>` approach as Track 39, not a persisted
+  config. `publication_admission`: started 8/12 killed; the 4
+  survivors were all cosmetic string-literal mutations inside two
+  raised exceptions' diagnostic messages, closed by asserting the full
+  exact message text (a substring check can still pass a
+  prefix/suffix-padding mutation) -- final 12/12 killed (100%).
+  `customer_billing`: new `tests/test_customer_billing.py` (9 tests);
+  first run 9/10 killed, with one real gap closed (nothing had
+  asserted the dataclass's own `frozen=True` immutability guarantee) --
+  final 10/10 killed (100%). No equivalent mutants in either module.
+  This module's own docstring is explicit it has no charge-amount
+  math, proration, or duplicate-charge logic at all (no `Invoice`
+  model, no real Stripe transport yet), so that part of this track's
+  financial-risk framing doesn't apply to it as it exists today; the
+  real risk covered is a billing-state read silently
+  granting/denying entitlement across tenants or subscription states.
+  Full suite: `1027 passed, 0 failed`; `ruff`/`mypy` both clean.
+
 - **Fix: NUL-byte signin/signup crash (2026-10-01).** Closes the gap
   Track 39's fuzzing found and Track 41 flagged (unfixed, outside its
   own scope) in `docs/KNOWN_ISSUES.md`: a signin/signup form body with
