@@ -19,6 +19,7 @@ already names the screen id and/or service module it covers). Screen ids
 | **Public site** (catalog, home, fit simulator, help/compatibility) | `test_public_site.py` (PU-01/PU-03/PU-08), `test_public_fit_simulation_route.py` (PU-03), `test_fit_simulation_client.py` |  |
 | **Tenancy / row-level-security / permissions (cross-cutting)** | `test_tenancy_models.py`, `test_row_level_security.py` (CP-011), `test_cross_tenant_foreign_key.py` (CP-012), `test_permissions.py` (CP-013) | These are the tests that prove tenant isolation itself, independent of any one feature area -- see `docs/standards/CODING.md` §2 and `docs/testing/E2E.md`. |
 | **API surface (generic HTTP)** | `test_api.py` |  |
+| **Readiness / release taxonomy / trading-authority qualification gate** | `test_release_taxonomy.py`, `test_trading_authority.py`, `test_system_readiness.py` | ADR-0010. `test_system_readiness.py` is the HTTP-level `GET /system/readiness` coverage (owner/publisher_operator-gated, like `test_health_metrics_endpoints.py`'s own `/metrics` tests); the other two are service-level. |
 | **Schema / migrations** | `test_alembic_migrations.py` | Import/shape sanity only -- the real `alembic upgrade head` check is a separate CI step against a live cluster (`docs/standards/TESTING.md` §3). |
 
 ## Reading this matrix

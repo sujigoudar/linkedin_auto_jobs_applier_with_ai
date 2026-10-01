@@ -30,7 +30,7 @@ import time
 from pathlib import Path
 
 import httpx
-from fastapi import Depends, FastAPI, HTTPException, Request, Response
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.staticfiles import StaticFiles
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
@@ -47,6 +47,8 @@ from app.metrics import render_metrics
 from app.rate_limit import limiter
 from app.services.auth import TenantScope
 from app.services.permissions import PermissionDenied, require_permission
+from app.services.product_admin import list_products
+from app.services.release_taxonomy import compute_release_stage
 from app.services.service_health import record_health_sample
 from app.services.stripe_webhook import (
     InvalidSignatureHeaderError,
@@ -55,6 +57,7 @@ from app.services.stripe_webhook import (
     record_event_if_new,
     verify_signature,
 )
+from app.services.trading_authority import assess_trading_authority
 
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
@@ -136,6 +139,92 @@ def create_app(database_url: str | None = None, relay_database_url: str | None =
         set_tenant_scope(session, scope.tenant_id)
         body = render_metrics(session, tenant_id=scope.tenant_id)
         return Response(content=body, media_type="text/plain; version=0.0.4; charset=utf-8")
+
+    @app.get("/system/readiness")
+    def system_readiness(
+        scope: TenantScope = Depends(get_current_scope),
+        session: Session = Depends(get_db_session),
+        product: str | None = Query(None, alias="scope", description="A product_id to scope this read to."),
+    ) -> dict:
+        """Track 34 -- real, computed `release_status`/`trading_authority`
+        per this tenant's own products, replacing the honest-but-inert
+        `None`/`"not_tracked"` placeholders those two fields previously
+        had nowhere to be reported from (this route did not exist before
+        this track). Owner/publisher_operator-gated like `/metrics` --
+        reuses the exact same `view_deployment_status` permission AD-22
+        ("Commercial deployments and recovery", this route's own spec
+        counterpart, `spec/catalog/endpoints.json`'s API-042) already
+        names for this screen class.
+
+        `release_status` -- `app.services.release_taxonomy.compute_
+        release_stage`, a total, honest renaming of this tenant's own
+        real `Product.lifecycle_state`/`ReleaseReview` pipeline onto a
+        RESEARCH_ONLY -> SHADOW -> LIMITED_LIVE -> FULLY_RELEASED ladder.
+
+        `trading_authority` -- `app.services.trading_authority.assess_
+        trading_authority`, a fail-closed, recomputed-every-call gate
+        over this tenant's own real rights/release/incident state; see
+        that module's own docstring for exactly which inputs it checks
+        and why it is structurally unable to return `qualified=True` for
+        an order-routing product in this build today (no execution-
+        activation pipeline exists yet for `CopyMandate`/
+        `ManagedProgram` -- a genuine `missing_input`, never a
+        fabricated pass).
+
+        The `scope` query param names one `product_id` to read a single
+        scoped answer for (`API-042`'s own `request_fields: "scope"`).
+        Omitted, this reports every one of this tenant's own products --
+        AD-22-P05's own panel contract ("Do not collapse payment,
+        connection, rights and trading authority into one active badge")
+        is exactly why the top-level `release_status`/`trading_authority`
+        fields stay honestly `None` in that unscoped case rather than
+        collapsing this tenant's own products into one rolled-up verdict;
+        `products` carries the real, per-product answer either way."""
+        try:
+            require_permission(scope.role, "view_deployment_status")
+        except PermissionDenied as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
+        set_tenant_scope(session, scope.tenant_id)
+
+        try:
+            session.execute(text("SELECT 1"))
+            database_ok = True
+        except Exception:  # noqa: BLE001 - readiness must never raise on its own probe
+            database_ok = False
+
+        tenant_products = list_products(session, tenant_id=scope.tenant_id)
+        if product is not None:
+            tenant_products = [p for p in tenant_products if p.product_id == product]
+            if not tenant_products:
+                raise HTTPException(status_code=404, detail="unknown product for this tenant")
+
+        items = []
+        for p in tenant_products:
+            assessment = assess_trading_authority(session, p)
+            items.append(
+                {
+                    "product_id": p.product_id,
+                    "slug": p.slug,
+                    "product_name": p.product_name,
+                    "release_status": compute_release_stage(p).value,
+                    "trading_authority": {
+                        "applicable": assessment.applicable,
+                        "qualified": assessment.qualified,
+                        "reason": assessment.reason,
+                        "checks": assessment.checks,
+                    },
+                }
+            )
+
+        body = {
+            "status": "ok" if database_ok else "degraded",
+            "database_ok": database_ok,
+            "scope": product,
+            "release_status": items[0]["release_status"] if product is not None else None,
+            "trading_authority": items[0]["trading_authority"] if product is not None else None,
+            "products": items,
+        }
+        return body
 
     @app.get("/api/v1/me")
     def me(

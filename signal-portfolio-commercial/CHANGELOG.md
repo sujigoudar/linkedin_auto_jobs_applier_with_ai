@@ -15,6 +15,25 @@ nothing here has shipped to a live production deployment
 ### 2026-10-01
 
 #### Added
+- **`GET /system/readiness` -- a real release taxonomy and trading-
+  authority qualification gate** (ADR-0010). Two fields this build had
+  never computed for real: `release_status`
+  (`app/services/release_taxonomy.py`'s `ReleaseStage`, a total 1:1
+  rename of the existing `Product.lifecycle_state`/`ReleaseReview`
+  ladder onto `RESEARCH_ONLY -> SHADOW -> LIMITED_LIVE ->
+  FULLY_RELEASED`) and `trading_authority`
+  (`app/services/trading_authority.py`'s `assess_trading_authority`, a
+  fail-closed, recomputed-every-call gate over release/rights/incident
+  state). The gate is structurally unable to return `qualified=True`
+  for an order-routing product today -- `CopyMandateState` and
+  `ManagedProgramState` genuinely have no ACTIVE/enrolled-live state in
+  this build -- and reports exactly that
+  (`missing_input:execution_activation_pipeline`), never a fabricated
+  pass. Gated by the same `view_deployment_status` permission (owner/
+  publisher_operator) as `/metrics`; an optional `?scope=<product_id>`
+  reads one product. 18 new tests across
+  `tests/test_release_taxonomy.py`, `tests/test_trading_authority.py`,
+  and `tests/test_system_readiness.py`.
 - `app/api/dependencies.py`'s `require_tenant_scope`: a FastAPI
   dependency that centralizes `app/db.py`'s `set_tenant_scope()`,
   replacing ~85 individual `set_tenant_scope(session, scope.tenant_id)`

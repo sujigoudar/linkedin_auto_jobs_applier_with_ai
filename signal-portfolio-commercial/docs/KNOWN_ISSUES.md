@@ -24,6 +24,24 @@ what's real versus missing.
   classifies close-only mode strings a caller already read back from
   the API — it never calls CopyFactory itself.
 
+## No real execution-activation pipeline exists for `CopyMandate`/`ManagedProgram`
+
+`app/services/trading_authority.py`'s qualification gate
+(`GET /system/readiness`, ADR-0010) checks every real platform-side
+gate this build has -- publication, release-review approval, order-
+routing-specific rights, open incidents -- and, for an order-routing
+product, structurally cannot report `qualified=True` even when all of
+those pass: `CopyMandateState` (`app/models/copy_mandate.py`) is only
+`draft`/`cancelled` and `ManagedProgramState`
+(`app/models/managed_program.py`) is only `DRAFT`/
+`SUBMITTED_FOR_REVIEW` -- neither has a real ACTIVE/enrolled-live state,
+because "activation needs a real scoped publisher/execution pipeline
+this build does not have" (both models' own docstrings). The gate
+reports this honestly as `missing_input:execution_activation_pipeline`
+rather than fabricating a pass. This was previously an unrecorded gap
+(the question was simply never asked); it is now a named, computed, and
+tested one.
+
 ## PAMM/MAM accounting is simulation-only
 
 `app/services/mam_allocation.py` (largest-remainder integer-unit
