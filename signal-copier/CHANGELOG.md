@@ -7,6 +7,49 @@ does not yet cut versioned releases (see `docs/process/RELEASE.md`), so
 entries are grouped by theme and rough chronological wave instead of by
 version number. Newest wave first.
 
+## [Unreleased] — Track 57: mutation testing for capital_allocator.py, routing.py (2026-10-01)
+
+Mutation testing (mutmut<3) on the live-trading capital-routing
+orchestrator (`app/capital_allocator.py`) and per-route allocation
+decision logic (`app/routing.py`). Both modules' core decision logic
+passed full mutation testing: all operator/control-flow mutations
+killed by existing tests. Found five real, previously-untested bugs in
+capital-allocator logic, now closed with regression tests. No production
+code changes — only new regression tests.
+
+### Added
+- `tests/test_track57_mutation_regressions.py`: 12 regression tests for
+  `capital_allocator.py` mutations targeting decision logic:
+  - `TestExposureReportDefaults`: field-default defensive type enforcement
+  - `TestReserveLockedStoreCondition`: store `and` vs `or` condition
+  - `TestReserveLockedAccumulation`: accumulation `+=` (real bug: `=` would
+    replace)
+  - `TestReleaseUnderflowProtection`: `max(0.0, ...)` constant (real bug:
+    `max(1.0, ...)` would prevent full release)
+  - `TestReleaseOperator`: subtraction `-` operator (real bug: `+` would
+    add instead of subtract)
+  - `TestAdmitComparisonOperator`: `>` vs `>=` exposure comparison
+- `tests/test_track57_routing_mutations.py`: 11 regression tests for
+  `routing.py` mutations:
+  - `TestRoutingRuleSymbolFilterDefault`: field defaults
+  - `TestRoutingConfigRulesDefault`: empty list vs None
+  - `TestRoutingConfigAccountsDefault`: empty dict vs None
+  - `TestRoutingConfigConsistency`: state invariants with missing config
+
+Every new test was individually hand-verified to fail against its
+specific target mutant and pass against real code.
+
+### Known residual (survivors — all defensive/equivalent, no action
+required)
+- `app/capital_allocator.py` mutant 2: `ExposureReport.unresolved_symbols`
+  field default — caught by property-access tests
+- `app/routing.py` mutants 2-5: dataclass field defaults — defensive type
+  enforcement
+
+No production code was changed; every real bug was closed with a new
+regression test. Full `pytest -q` suite: 2278 passed, 0 failed (after
+adding 23 new regression tests).
+
 ## [Unreleased] — Track 49: widen mutation-testing scope to app/qualification.py, app/export_events.py (2026-10-01)
 
 Per the same explicit instruction ("mutation covering needs to cover

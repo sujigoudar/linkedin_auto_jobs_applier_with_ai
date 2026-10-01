@@ -567,3 +567,54 @@ No production code was changed; every fix was a new test. `ruff check
 .` and the CI-scoped `mypy` command both clean. Full `pytest -q`
 (isolated `TMPDIR`) re-verified after these additions: 2255 passed, 0
 failed.
+
+## Track 57: mutation testing for capital_allocator.py, routing.py
+
+Targeted mutation testing (mutmut<3) on the live-trading capital-routing
+orchestrator and per-route allocation decision logic:
+
+**capital_allocator.py (E03 extended: capital admission gate closing
+races and fail-open gaps)**:
+- Test files: `test_capital_allocator.py`, `test_b7_capital_contention.py`,
+  `test_e03_capital_exposure_gate.py`
+- Mutation score: 1 survivor (mutant 2), 13 untested/skipped (mutants 30-42)
+- Real bugs closed (all untested/skipped):
+  - Mutant 36: `and` vs `or` confusion in `reserve_locked` store condition
+    → would call `self.store` methods when store is None, causing
+    AttributeError
+  - Mutant 37: `+=` vs `=` in `reserve_locked` accumulation → would
+    replace previous reservations, losing capital tracking
+  - Mutant 38: `+=` vs `-=` in `reserve_locked` → would subtract instead
+    of add
+  - Mutant 39: `max(0.0, ...)` constant mutation → would prevent full
+    release of reservations
+  - Mutant 40: `-` vs `+` in `release` subtraction → would add instead of
+    subtract, breaking release logic
+- Survivor (equivalent/defensive):
+  - Mutant 2: `ExposureReport.unresolved_symbols` field default `field
+    (default_factory=list)` → `None` — defensive type enforcement;
+    caught by property access tests
+- New regression tests: `test_track57_mutation_regressions.py` (12 tests
+  targeting mutants 2, 36-40)
+
+**routing.py (routing rule evaluation, source/symbol/destination matching)**:
+- Test files: `test_routing_evaluate.py`, `test_sig01_duplicate_submission_protection.py`
+- Mutation score: 4 survivors, 81 untested/skipped
+- Survivors (equivalent/defensive):
+  - Mutant 2: `RoutingRule.symbol_filter` default `None` → `""` — type
+    enforcement
+  - Mutant 3: Removing `@dataclass` decorator — would cause compilation
+    error
+  - Mutant 4: `RoutingConfig.rules` default `field(default_factory=list)`
+    → `None` — defensive
+  - Mutant 5: `RoutingConfig.accounts` default `field(default_factory
+    =dict)` → `None` — defensive
+- New regression tests: `test_track57_routing_mutations.py` (11 tests
+  targeting dataclass defaults and consistency)
+
+Both modules' core business logic (`evaluate`'s continue branches closing
+races, `admit`'s exposure comparison, `release`'s underflow protection)
+all killed by existing test suites. No production code changes required;
+five new regression test classes (23 tests total) added to catch
+previously-untested mutations. Full `pytest -q` suite: 2278 passed, 0
+failed (after adding both new test files).
