@@ -13,6 +13,17 @@ Fixes responding to an external release-readiness audit of the trading
 engine's data integrity and operational-safety guarantees.
 
 ### Added
+- Track 29: `SourceIdentity.source_catalog_id` (`signal_platform_contracts`
+  v1.1.0) -- a new, additive, optional field making Track 14's
+  Provider/Source/Connection catalog's `sources.id` expressible in the
+  shared cross-service event envelope, distinct from the pre-existing
+  `source_provider_id`/`source_channel_id`. `app/models.py`'s `Signal`
+  gained the matching `source_catalog_id` field (also optional,
+  default `None`); `app/export_events.py` carries it through to
+  `SOURCE_RECEIPT`/`SOURCE_EVENT` envelopes whenever it's set.
+  `app/sources/rss_source.py` (Track 24) is, today, the only adapter
+  that actually populates it, from its own known Track 14 `sources.id`
+  -- every other adapter leaves it honestly `None`, not fabricated.
 - `command_ledger` table: a durable, pre-effect record of every broker
   command, with idempotency-key dedup and `unknown_ambiguous`/fingerprint-
   mismatch handling (P0-2, `ae6a016`).

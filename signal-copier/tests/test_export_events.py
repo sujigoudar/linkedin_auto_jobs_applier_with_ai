@@ -215,6 +215,68 @@ def test_a_signal_with_no_new_fields_produces_the_same_shape_as_before():
     assert envelope.payload.get("price_low") is None
     assert envelope.payload.get("entry_order_type") is None
     assert envelope.payload["source"]["source_event_id"] == signal.id  # falls back to signal.id, unchanged
+    assert envelope.payload["source"].get("source_catalog_id") is None
+
+
+# -- Track 29: source_catalog_id (Track 14 provider-catalog `sources.id`) ----
+
+
+def test_a_signal_with_a_known_catalog_source_carries_it_through_to_source_identity():
+    """A Signal whose provenance IS traceable to a Track 14 catalog
+    `sources.id` (e.g. set by `app/sources/rss_source.py`) must carry
+    that id through to the exported SourceIdentity, distinct from
+    source_provider_id/source_channel_id."""
+    signal = Signal(
+        source="momentum_mike", symbol="AAPL", side=Side.BUY, quantity=10.0, price=150.0,
+        channel_id="rss-feed-url", source_catalog_id="catalog-source-42",
+    )
+    envelope = build_source_receipt_envelope(
+        signal, source_stream="signal-copier:source:momentum_mike", export_sequence=0,
+        producer_id="test-producer", evidence_class=EvidenceClass.INTERNAL_PAPER, environment=Environment.LOCAL_SIM,
+    )
+    assert envelope is not None
+    assert envelope.payload["source"]["source_catalog_id"] == "catalog-source-42"
+    assert envelope.payload["source"]["source_provider_id"] == "momentum_mike"
+    assert envelope.payload["source"]["source_channel_id"] == "rss-feed-url"
+
+
+def test_a_signal_with_no_catalog_source_leaves_it_honestly_none_never_fabricated():
+    """Every adapter not wired to the Track 14 catalog (every current
+    adapter except app/sources/rss_source.py) must never have a catalog
+    source id invented for it."""
+    signal = Signal(source="tradingview", symbol="AAPL", side=Side.BUY, quantity=10.0, price=150.0, channel_id="tv-alert-channel")
+    envelope = build_source_receipt_envelope(
+        signal, source_stream="signal-copier:source:tradingview", export_sequence=0,
+        producer_id="test-producer", evidence_class=EvidenceClass.INTERNAL_PAPER, environment=Environment.LOCAL_SIM,
+    )
+    assert envelope is not None
+    assert envelope.payload["source"].get("source_catalog_id") is None
+
+
+def test_source_event_envelope_carries_the_inner_signals_catalog_source_id():
+    signal = Signal(
+        source="telegram", symbol="BTCUSDT", side=Side.BUY, quantity=1.0, price=65000.0,
+        channel_id="chan-1", message_id="msg-1", parser_version="telegram-text-parser-v1",
+        source_catalog_id="catalog-source-7",
+    )
+    event = SourceEvent(
+        source="telegram", kind=SourceEventKind.ORIGINAL, channel_id="chan-1", message_id="msg-1",
+        provider_timestamp=datetime.now(timezone.utc), signal=signal,
+    )
+    envelope = build_source_event_envelope(
+        event, source_stream="signal-copier:source:telegram", export_sequence=0,
+        producer_id="test-producer", evidence_class=EvidenceClass.INTERNAL_PAPER, environment=Environment.LOCAL_SIM,
+    )
+    assert envelope.payload["source"]["source_catalog_id"] == "catalog-source-7"
+
+
+def test_source_event_envelope_with_no_inner_signal_leaves_catalog_source_id_none():
+    event = SourceEvent(source="telegram", kind=SourceEventKind.DELETE, channel_id="chan-1", message_id="msg-1")
+    envelope = build_source_event_envelope(
+        event, source_stream="signal-copier:source:telegram", export_sequence=0,
+        producer_id="test-producer", evidence_class=EvidenceClass.INTERNAL_PAPER, environment=Environment.LOCAL_SIM,
+    )
+    assert envelope.payload["source"].get("source_catalog_id") is None
 
 
 # -- SOURCE_EVENT source ledger ------------------------------------------------

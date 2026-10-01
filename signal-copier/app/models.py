@@ -147,6 +147,15 @@ class Signal:
     #: (see `app/db.py`'s `_COLUMN_MIGRATIONS`), not a second schema.
     import_batch: Optional[str] = None
 
+    #: Track 29: this signal's own Track 14 provider-catalog `sources.id`
+    #: (see `app/provider_catalog.py`'s module docstring) -- the specific
+    #: transport this signal arrived through, when that's known. Bridges
+    #: to `signal_platform_contracts.identity.SourceIdentity.
+    #: source_catalog_id` 1:1 in `app/export_events.py`. `None` (the
+    #: default) for every adapter not wired to the Track 14 catalog --
+    #: never fabricated or derived from `channel_id`.
+    source_catalog_id: Optional[str] = None
+
     # -- Multi-provider representability (release review: the previous
     # shape -- source/analyst/symbol/side/asset class/quantity/price/one
     # stop/one take-profit/received time/raw payload -- was "substantially

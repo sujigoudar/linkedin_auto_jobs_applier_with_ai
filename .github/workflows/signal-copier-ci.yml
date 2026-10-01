@@ -56,6 +56,7 @@ jobs:
                app/certification.py app/certification_evidence.py app/certification_scorecard.py app/shadow_mode.py \
                app/parser_tooling.py app/connection_catalog.py \
                app/sources/adapter_contract.py app/sources/url_safety.py app/sources/rss_source.py \
+               app/export_events.py \
                --follow-imports=silent
 
       - name: Run tests
