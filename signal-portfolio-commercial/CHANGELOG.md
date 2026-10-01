@@ -98,6 +98,24 @@ nothing here has shipped to a live production deployment
 - CU-02 "My portfolios" now shows the real product name instead of the
   raw product UUID in the "My selections" table.
 
+#### Tests
+- Track 33: `tests/test_rollback_recovery_rls.py` -- the ~8 rollback-
+  recovery routes' (e.g. `create_product_draft`) manual post-`rollback()`
+  `set_tenant_scope()` re-call (see this date's own `require_tenant_scope`
+  entry above) was previously exercised only through
+  `tests/test_dashboard_routes.py`'s superuser-backed `_client`, which
+  bypasses RLS entirely and so could not actually prove the re-scope call
+  restores real tenant isolation. New tests drive the same duplicate-slug
+  rollback path over a real, non-superuser `app_role` session (the
+  `tenant_session_factory` fixture `tests/test_require_tenant_scope_
+  dependency.py` already established), including one that issues a
+  deliberately UNFILTERED query (no `tenant_id` where clause at all)
+  immediately after the rollback + re-scope, so nothing but real Postgres
+  RLS could make it pass. Result: the pattern is genuinely RLS-safe --
+  the manual re-scope does correctly restore tenant isolation for the
+  next query in the same request. No code change was needed; this closes
+  a test-coverage gap, not a bug.
+
 ### 2026-09-29
 
 #### Added
