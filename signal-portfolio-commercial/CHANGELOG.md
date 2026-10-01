@@ -12,6 +12,147 @@ Everything in this file. This is pre-1.0, development-branch software;
 nothing here has shipped to a live production deployment
 (`docs/process/RELEASE.md`).
 
+### 2026-10-01 — Track 50: auth/token-revocation/api-key mutation-testing pass
+
+Widens Track 39's mutation-testing pass to the session/token
+authentication and revocable API-key issuance cluster: `app/services/
+auth.py` (the local JWT issuer/decoder and the real, DB-backed
+`verify_token` fail-closed path), `app/services/token_revocation.py`
+(the denylist backing "log out everywhere"/per-staff revoke), and
+`app/services/api_key.py` (CU-16's generate/list/revoke scoped-API-key
+service) — per the user's instruction that mutation coverage needs to
+reach every module, highest financial/security-risk first. Same ad hoc
+`mutmut run --paths-to-mutate=<module>` approach as Track 39, not a
+persisted config, pinned to `mutmut<3` in a dedicated venv (the global
+pip default resolves to a broken 3.x CLI). `auth.py`'s own mutants are
+run against BOTH `tests/test_auth.py` AND `tests/test_token_revocation.py`
+(not `test_auth.py` alone) because `verify_token` — defined in
+`auth.py` — is only ever exercised by the latter file; scoping to
+`test_auth.py` alone left `verify_token` essentially mutation-untested.
+`token_revocation.py` is likewise run against its own file plus
+`test_auth.py`.
+
+#### Added
+- `tests/test_auth.py`: found and closed a real, genuine cross-tenant
+  access-widening bug: `decode_token`'s `if not tenant_id or not
+  user_id: raise InvalidTokenError(...)` survived mutation to `and`,
+  which would admit a token missing ONLY `tenant_id` or ONLY `user_id`
+  (decoding it into a scope with e.g. `tenant_id=None`) instead of
+  rejecting it. The one existing test for a missing claim happened to
+  also omit `jti`, so a downstream guard masked the mutation instead of
+  the intended one catching it. New
+  `test_a_token_missing_tenant_id_but_carrying_a_real_user_id_and_jti_is_still_rejected`
+  and its symmetric `..._missing_user_id_...` counterpart construct a
+  forged token with a real `jti` so only the intended guard can catch
+  it. Also added: `TenantScope`'s own `frozen=True` immutability
+  (`test_tenant_scope_is_genuinely_immutable`, asserting
+  `FrozenInstanceError`) and its `jti=None` default
+  (`test_tenant_scope_jti_defaults_to_none_when_omitted`) were both
+  asserted nowhere; `issue_token`'s `ttl_seconds=3600` default is now
+  pinned exactly (`test_issue_token_defaults_to_exactly_one_hour_ttl`);
+  and three diagnostic messages (`InvalidTokenError`'s missing-role,
+  missing-jti, and missing-tenant_id/user_id text) are now asserted as
+  exact/anchored text rather than just exception type, closing cosmetic
+  string-literal mutants the same way Track 48 did (a bare `in`
+  substring check does not catch mutmut's XX-prefix/suffix-padding
+  mutation, since the original text still appears in the middle of the
+  padded string — anchoring with `==`/`.startswith(...)` is required).
+  Mutation score: 39/40 killed (97.5%); the one remaining survivor
+  (`jti: str | None` mutated to `str & None`) is a confirmed equivalent
+  mutant — `from __future__ import annotations` means the annotation is
+  never evaluated at runtime, so the mutation has no observable effect.
+- `tests/test_token_revocation.py`: `revoke_token` (the single-key
+  revoke path) had NO test anywhere asserting its own `AuditEvent`
+  fields — only `revoke_all_tokens_for_user`'s audit write was ever
+  checked, and even that test never asserted `object_type`. New
+  `test_revoke_token_writes_its_own_audit_event_with_the_right_fields`
+  and an added `object_type` assertion on the existing `revoke_all`
+  audit test close both. Also found a real return-value-correctness
+  gap: every existing test issues only ONE active token per user before
+  calling "log out everywhere", so `revoke_all_tokens_for_user`'s
+  `revoked_count` accumulator (`+= 1`) had three surviving mutants
+  (`= 1`, `-= 1`, `+= 2`) invisible because the loop never runs more
+  than once. New
+  `test_revoke_all_tokens_for_user_returns_the_exact_count_newly_revoked`
+  issues two real tokens and asserts the exact count (2, then 0 on a
+  second call with nothing left to revoke). New
+  `test_revoke_all_tokens_for_user_ignores_an_already_expired_issued_token`
+  closes the module's own documented "currently-unexpired" contract
+  (an already-expired `IssuedToken` row must not be counted). Mutation
+  score: 16/17 killed (94.1%); the one remaining survivor
+  (`IssuedToken.expires_at > now` loosened to `>=`) is a boundary
+  mutation in the SAFE direction (it would revoke marginally MORE
+  tokens at the exact expiry instant, never fewer) and is impractical
+  to pin exactly given real clock timing — left as a documented,
+  low-priority, narrow/fail-safe-direction survivor per Track 39's own
+  precedent for this category.
+- `tests/test_api_key.py`: two genuine, security-critical widen-access
+  gaps found and closed in `revoke_api_key`'s ownership guard (`if key
+  is None or key.tenant_id != tenant_id or key.user_id != user_id:
+  raise ApiKeyNotFoundError(...)`) and its idempotent-revoke body:
+  1. **A revoked-key-still-valid bug**: a mutant inverting `if
+     key.revoked_at is None:` to `is not None` (or replacing `key.
+     revoked_at = _now()` with `= None`) makes `revoke_api_key` a
+     silent no-op on a key's FIRST revoke — the existing idempotency
+     test (`first.revoked_at == second.revoked_at`) can't catch
+     either mutant, because both leave `revoked_at` as `None` on BOTH
+     calls, and `None == None` still passes. New
+     `test_revoke_api_key_genuinely_sets_revoked_at_on_the_first_call`
+     asserts `revoked_at is not None` after exactly one call — this
+     is precisely the "a revoked credential still treated as valid"
+     risk this track was told to prioritize.
+  2. **Two cross-tenant/cross-user isolation gaps**: the existing
+     `test_revoke_api_key_requires_your_own_key` mismatches BOTH
+     `tenant_id` AND `user_id` at once, so it cannot distinguish a
+     correct three-way `or` guard from one weakened to an `and`
+     between any two of its three terms — each such mutant still
+     raises for the "wrong" reason as long as at least one of the two
+     unrelated fields differs. New
+     `test_revoke_api_key_requires_your_own_key_even_within_the_same_tenant`
+     (same tenant, different user — a different staff member/customer
+     in the same tenant) and
+     `test_revoke_api_key_requires_your_own_tenant_even_with_the_same_user_id`
+     (different tenant, same `user_id` — a real scenario for a user
+     with memberships in more than one tenant) each isolate one `or`
+     term at a time. Also closed: the `delivery_receive` scope (one of
+     only three ever-valid scopes) had never actually been used by any
+     test (`test_generate_scoped_key_accepts_every_named_valid_scope`);
+     the label-length lower boundary (1 character, vs. only the 0/empty
+     case previously tested) and its own exact message text; the
+     empty-`scopes=[]` validation branch (never exercised at all) and
+     its exact message; the never-expiring-key and not-found exact
+     message text; and the raw secret's exact expected length (43
+     chars for `secrets.token_urlsafe(32)`'s real 256 bits of entropy —
+     a security-relevant constant that was previously unpinned in
+     either direction). Mutation score: 33/34 killed (97.1%); the one
+     remaining survivor (`expires_at <= _now()` loosened to `<`) is a
+     sub-millisecond boundary mutation that would only matter if a
+     caller passed `expires_at` equal to the exact instant
+     `generate_scoped_key` itself evaluates `_now()` — impractical to
+     pin reliably given real clock timing, and not a widen in any
+     security-meaningful sense (it would accept an already-dead key,
+     not grant broader authority) — left as a documented, low-priority
+     survivor.
+
+No production code changed in any of the three modules — every real
+gap found was a test gap, closed with a new, targeted test; no
+existing test was weakened or deleted. A background mutmut run was
+twice interrupted mid-mutation by unrelated session activity, leaving
+a temporarily-mutated source file on disk each time; both were caught
+and restored via `git checkout -- <file>` before any commit, verified
+clean with `git diff`/`git status` immediately afterward.
+
+Practicality note: this host ran several other agents' own concurrent
+`mutmut`/`pytest` invocations against other worktrees during this
+track, and one combined `auth.py` run genuinely failed outright with a
+Postgres `initdb: ... Permission denied` error from a stale,
+concurrently-reused `/tmp/pytest-of-root/` directory number — the same
+shared-`/tmp` hazard `docs/state/PROGRESS.md` already documents from
+an earlier track. Worked around by re-running with a dedicated,
+pre-created `TMPDIR` per attempt and resuming (`mutmut run` reuses its
+own `.mutmut-cache` across resumed invocations) rather than restarting
+from zero each time. Full suite and lint/type-check results below.
+
 ### 2026-10-01 — Track 47: mutation-testing pass (PAMM/MAM pooled-account accounting)
 
 Widens Track 39's mutation-testing pass (originally scoped to

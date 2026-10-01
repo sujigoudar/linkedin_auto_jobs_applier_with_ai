@@ -105,6 +105,7 @@ def test_revocation_writes_a_real_audit_event(db_session):
     )
     assert len(events) == 1
     assert events[0].actor_user_id == "user-audit"
+    assert events[0].object_type == "api_token"
 
 
 def test_fail_closed_a_broken_denylist_check_rejects_rather_than_admits(db_session, monkeypatch):
@@ -132,10 +133,10 @@ def test_fail_closed_a_broken_denylist_check_rejects_rather_than_admits(db_sessi
 
     with pytest.raises(InvalidTokenError) as exc_info:
         verify_token(token, db_session)
-    # Exact diagnostic text, not just the exception type -- a cosmetic
-    # string-literal mutation of this specific fail-closed message
-    # can't hide behind the type check above.
-    assert "could not verify token has not been revoked" in str(exc_info.value)
+    # `startswith`, not `in` -- a cosmetic XX-prefix/suffix-padding
+    # mutation of this whole message still contains this substring in
+    # the middle, so only anchoring at the start can catch it.
+    assert str(exc_info.value).startswith("could not verify token has not been revoked:")
 
 
 def test_fail_closed_regression_a_denylist_check_that_is_bypassed_lets_a_revoked_token_through(db_session):
@@ -173,3 +174,102 @@ def test_fail_closed_regression_a_denylist_check_that_is_bypassed_lets_a_revoked
     # revoked" is this module's own, distinct message from the
     # fail-closed denylist-check-itself-broke message above.
     assert str(exc_info.value) == "token has been revoked"
+
+
+def test_revoke_token_writes_its_own_audit_event_with_the_right_fields(db_session):
+    """`revoke_token` (the single-key revoke path) had NO test anywhere
+    asserting its own `AuditEvent` fields -- only `revoke_all_tokens_
+    for_user`'s audit write (a different action/object_type pairing)
+    was ever checked. Pins `object_type="api_token"`,
+    `action="revoke_token"`, and `object_id`=the target user, so a
+    cosmetic string-literal mutation of either field can't survive
+    unnoticed, and a real regression (e.g. silently logging the wrong
+    action for a single-key revoke) would be caught."""
+    from datetime import datetime, timedelta, timezone
+
+    from app.services.token_revocation import revoke_token
+
+    token = issue_token("tenant-single-revoke", "user-single-revoke", MembershipRole.CUSTOMER, session=db_session)
+    scope = verify_token(token, db_session)
+    db_session.commit()
+
+    revoke_token(
+        db_session,
+        jti=scope.jti,
+        tenant_id="tenant-single-revoke",
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+        actor_user_id="user-single-revoke",
+        target_user_id="user-single-revoke",
+    )
+    db_session.commit()
+
+    events = (
+        db_session.query(AuditEvent)
+        .filter(AuditEvent.tenant_id == "tenant-single-revoke")
+        .filter(AuditEvent.action == "revoke_token")
+        .all()
+    )
+    assert len(events) == 1
+    assert events[0].object_type == "api_token"
+    assert events[0].object_id == "user-single-revoke"
+    assert events[0].actor_user_id == "user-single-revoke"
+
+
+def test_revoke_all_tokens_for_user_returns_the_exact_count_newly_revoked(db_session):
+    """Every existing test for "log out everywhere" only ever has ONE
+    currently-active issued token per user, so an accumulator mutation
+    (`revoked_count += 1` weakened to `= 1`, `-= 1`, or `+= 2`) is
+    invisible -- the loop only ever runs zero or one time. Issuing TWO
+    real tokens for the same user/tenant and asserting the exact
+    returned count (not just "some tokens got rejected afterward")
+    closes that gap. Also proves a SECOND call (nothing left to newly
+    revoke) correctly returns 0, not a stale/incremented count."""
+    from app.services.token_revocation import revoke_all_tokens_for_user
+
+    issue_token("tenant-multi", "user-multi", MembershipRole.CUSTOMER, session=db_session)
+    issue_token("tenant-multi", "user-multi", MembershipRole.CUSTOMER, session=db_session)
+    db_session.commit()
+
+    revoked_count = revoke_all_tokens_for_user(
+        db_session, tenant_id="tenant-multi", user_id="user-multi", acting_user_id="user-multi"
+    )
+    db_session.commit()
+    assert revoked_count == 2
+
+    # Nothing left to newly revoke -- must be 0, not re-incremented.
+    second_call_count = revoke_all_tokens_for_user(
+        db_session, tenant_id="tenant-multi", user_id="user-multi", acting_user_id="user-multi"
+    )
+    assert second_call_count == 0
+
+
+def test_revoke_all_tokens_for_user_ignores_an_already_expired_issued_token(db_session):
+    """`revoke_all_tokens_for_user`'s own docstring says it denylists
+    every "currently-unexpired" `jti` -- an issued token whose
+    `expires_at` is already in the past is naturally rejected on its
+    own (by `decode_token`'s own expiry check) and must NOT be counted
+    here, or a caller showing "N tokens revoked" to the customer would
+    overcount tokens that were never actually at risk. Uses
+    `record_issued_token` directly (not `issue_token`) since a real
+    JWT's own `exp` claim can't easily be minted already-expired via
+    the public API with a stale `expires_at` row."""
+    from datetime import datetime, timedelta, timezone
+
+    from app.services.token_revocation import record_issued_token, revoke_all_tokens_for_user
+
+    now = datetime.now(timezone.utc)
+    record_issued_token(
+        db_session,
+        jti="already-expired-jti",
+        tenant_id="tenant-expired",
+        user_id="user-expired",
+        role=MembershipRole.CUSTOMER,
+        issued_at=now - timedelta(hours=2),
+        expires_at=now - timedelta(hours=1),
+    )
+    db_session.commit()
+
+    revoked_count = revoke_all_tokens_for_user(
+        db_session, tenant_id="tenant-expired", user_id="user-expired", acting_user_id="user-expired"
+    )
+    assert revoked_count == 0

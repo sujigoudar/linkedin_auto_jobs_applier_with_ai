@@ -9,6 +9,43 @@ detailed per-phase notes (now historical; much has been built since).
 
 ## What's real and tested, most recent first
 
+- **Track 50: auth/token-revocation/api-key mutation-testing pass
+  (2026-10-01).** Widens Track 39's mutation-testing pass to the
+  session/token authentication and revocable API-key issuance cluster:
+  `app/services/auth.py`, `app/services/token_revocation.py`, and
+  `app/services/api_key.py`. Found and closed three genuine,
+  security-relevant gaps (not just cosmetic survivors): (1) a
+  cross-tenant access-widening bug in `decode_token` where its `if not
+  tenant_id or not user_id: raise` guard survived mutation to `and`,
+  because the one existing test for a missing claim also happened to
+  omit `jti`, letting a downstream guard mask it; (2) a
+  revoked-key-still-valid bug in `api_key.revoke_api_key`, where either
+  of two mutants (`if key.revoked_at is None:` inverted, or `key.
+  revoked_at = _now()` replaced with `= None`) made the very first
+  revoke call a silent no-op — invisible to the existing idempotency
+  test since both leave `revoked_at` as `None` on every call; (3) two
+  ownership-guard isolation gaps in the same function's three-way `or`
+  chain (`key is None or key.tenant_id != tenant_id or key.user_id !=
+  user_id`), where the existing cross-account test mismatched both
+  `tenant_id` AND `user_id` at once and so couldn't distinguish a
+  correct `or` from one weakened to `and` between any two terms — new
+  tests isolate "same tenant, different user" and "different tenant,
+  same user_id" (a real scenario for multi-tenant memberships) each on
+  their own. No production code changed — every real gap was a test
+  gap, closed with a new, targeted test; a handful of cosmetic
+  (exception-message string-literal) and confirmed-equivalent
+  (inert-under-`from __future__ import annotations` type-annotation)
+  survivors are documented in CHANGELOG.md rather than chased, per
+  Track 39's own precedent. `auth.py`'s mutmut runner is `tests/
+  test_auth.py` + `tests/test_token_revocation.py` together (not
+  `test_auth.py` alone), since `verify_token` is defined in `auth.py`
+  but only exercised by the latter file. Final scores: `auth.py` 39/40
+  killed (97.5%, 1 confirmed equivalent); `token_revocation.py` 16/17
+  (94.1%, 1 low-priority boundary survivor in the safe/narrow
+  direction); `api_key.py` 33/34 (97.1%, 1 low-priority boundary
+  survivor, also safe-direction). Full suite, ruff, and mypy all
+  re-verified clean (see CHANGELOG.md for exact counts).
+
 - **Track 47: mutation-testing pass, PAMM/MAM pooled-account accounting
   (2026-10-01).** Widens Track 39's mutation-testing pass onto
   `app/services/pamm_accounting.py` (PAMM unit/NAV high-water-mark fee)

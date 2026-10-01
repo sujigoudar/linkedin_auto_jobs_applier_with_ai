@@ -2,6 +2,8 @@
 tests, no database needed. Real deployment identity comes from Supabase
 Auth; this issuer exists only so local code/tests have a real signed
 token to exercise tenant-scope enforcement against."""
+from dataclasses import FrozenInstanceError
+
 import jwt
 import pytest
 
@@ -59,7 +61,10 @@ def test_an_unrecognized_role_claim_is_rejected():
     )
     with pytest.raises(InvalidTokenError) as exc_info:
         decode_token(forged)
-    assert "unrecognized or missing role claim" in str(exc_info.value)
+    # `startswith`, not `in` -- a cosmetic XX-prefix/suffix-padding
+    # mutation of this whole message still contains this substring in
+    # the middle, so only anchoring at the start can catch it.
+    assert str(exc_info.value).startswith("unrecognized or missing role claim:")
 
 
 def test_a_token_missing_tenant_id_is_rejected():
@@ -87,7 +92,7 @@ def test_a_token_missing_tenant_id_but_carrying_a_real_user_id_and_jti_is_still_
     )
     with pytest.raises(InvalidTokenError) as exc_info:
         decode_token(forged)
-    assert "missing tenant_id or user_id" in str(exc_info.value)
+    assert str(exc_info.value) == "token is missing tenant_id or user_id claims"
 
 
 def test_a_token_missing_user_id_but_carrying_a_real_tenant_id_and_jti_is_still_rejected():
@@ -103,7 +108,7 @@ def test_a_token_missing_user_id_but_carrying_a_real_tenant_id_and_jti_is_still_
     )
     with pytest.raises(InvalidTokenError) as exc_info:
         decode_token(forged)
-    assert "missing tenant_id or user_id" in str(exc_info.value)
+    assert str(exc_info.value) == "token is missing tenant_id or user_id claims"
 
 
 def test_a_token_missing_its_jti_claim_is_rejected_with_its_own_message():
@@ -145,3 +150,16 @@ def test_tenant_scope_jti_defaults_to_none_when_omitted():
     that default."""
     scope = TenantScope(tenant_id="tenant-a", user_id="user-a", role=MembershipRole.OWNER)
     assert scope.jti is None
+
+
+def test_tenant_scope_is_genuinely_immutable():
+    """`TenantScope` is declared `@dataclass(frozen=True)` -- a real
+    guarantee that a decoded/verified scope can never be mutated in
+    place after the fact (e.g. a bug accidentally widening a request's
+    effective tenant_id or role mid-handling). Nothing previously
+    exercised this, so a `frozen=True` -> `frozen=False` mutation
+    (which `app/services/auth.py`'s own mutation-testing pass found
+    surviving) was invisible."""
+    scope = TenantScope(tenant_id="tenant-a", user_id="user-a", role=MembershipRole.OWNER)
+    with pytest.raises(FrozenInstanceError):
+        scope.tenant_id = "tenant-b"  # type: ignore[misc]
