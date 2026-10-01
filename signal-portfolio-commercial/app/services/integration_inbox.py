@@ -61,6 +61,8 @@ from signal_platform_contracts import (
     FeePayload,
     PositionSnapshotPayload,
     RoutingAdmissionOutcomePayload,
+    SourceEventKind,
+    SourceEventPayload,
     SourceReceiptPayload,
 )
 
@@ -84,6 +86,7 @@ _SUPPORTED_SCHEMA_VERSIONS = frozenset({CONTRACT_SCHEMA_VERSION})
 #: column's own docstring.
 PARKED_REASON_UNSUPPORTED_SCHEMA_VERSION = "unsupported_schema_version"
 PARKED_REASON_UNIMPLEMENTED_EVENT_TYPE = "unimplemented_event_type"
+PARKED_REASON_UNIMPLEMENTED_SOURCE_EVENT_KIND = "unimplemented_source_event_kind"
 PARKED_REASON_FEE_TARGET_NOT_FOUND = "fee_target_not_found"
 PARKED_REASON_ROUTING_OUTCOME_TARGET_NOT_FOUND = "routing_outcome_target_not_found"
 PARKED_REASON_GENERATION_ROLLBACK_DETECTED = "generation_rollback_detected"
@@ -402,6 +405,42 @@ def _apply_projection(session: Session, inbox_event: InboxEvent, envelope: Event
             return
         source_row.routing_outcome = payload.outcome
         inbox_event.applied_at = datetime.now(timezone.utc)
+    elif envelope.event_type == EventType.SOURCE_EVENT:
+        # The source ledger's own provenance/audit row (signal_platform_
+        # contracts's own `SourceEventKind` docstring -- "one row per
+        # real, native-provider-identified moment in a source message's
+        # life"). An `ORIGINAL` kind is the raw inbound event that this
+        # SAME stream's own `SOURCE_RECEIPT` (the same economic fact)
+        # already books into `Book.SOURCE` -- applying it here with NO
+        # second ledger entry is not a silent drop: the envelope itself
+        # stays durably stored, verbatim, in this row's own
+        # `envelope_json` (set at `received_at`, before this function is
+        # ever called), inspectable evidence of the source's own
+        # original wording even though it produces no additional
+        # financial fact. This also, critically, lets it ADVANCE
+        # `_next_expected_sequence` -- before this branch existed, an
+        # ORIGINAL kind fell into the generic "every other EventType"
+        # case below and parked at sequence 0 forever, which (per
+        # `_next_expected_sequence`'s own "keyed off applied_at" design)
+        # permanently blocked every later event on the SAME stream too
+        # -- including that stream's own SOURCE_RECEIPT and any
+        # ROUTING_ADMISSION_OUTCOME, neither of which this build ever
+        # actually failed to understand.
+        #
+        # Every OTHER kind (EDIT/DELETE/REPLY/CANCEL/CLOSE/ADD/
+        # TARGET_UPDATE/STOP_UPDATE) genuinely changes, retracts, or
+        # supersedes economic state this build has no ledger projection
+        # for yet -- parked honestly with its own distinct reason, same
+        # "never coerced, never blanket-accepted" posture as every other
+        # `parked_reason` here, not silently treated the same as
+        # ORIGINAL just because that would unblock the stream too.
+        source_event_payload = SourceEventPayload.model_validate(envelope.payload)
+        if source_event_payload.kind == SourceEventKind.ORIGINAL:
+            inbox_event.applied_at = datetime.now(timezone.utc)
+        else:
+            inbox_event.parked_reason = (
+                f"{PARKED_REASON_UNIMPLEMENTED_SOURCE_EVENT_KIND}:{source_event_payload.kind.value}"
+            )
     else:
         # Every other EventType has no implemented payload yet (see
         # signal_platform_contracts's own IMPLEMENTED_EVENT_TYPES) -- the

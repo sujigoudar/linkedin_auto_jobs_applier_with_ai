@@ -16,6 +16,8 @@ from signal_platform_contracts import (
     InstrumentIdentity,
     PrivateAccountIdentity,
     RoutingAdmissionOutcomePayload,
+    SourceEventKind,
+    SourceEventPayload,
     SourceIdentity,
     SourceReceiptPayload,
     build_subject,
@@ -27,6 +29,7 @@ from app.models.ledger import Book, LedgerEntry
 from app.models.sleeve import Sleeve
 from app.models.tenancy import Tenant
 from app.services.integration_inbox import (
+    PARKED_REASON_UNIMPLEMENTED_SOURCE_EVENT_KIND,
     EventIntegrityError,
     StreamAlreadyRegisteredToAnotherTenantError,
     UnregisteredStreamError,
@@ -212,6 +215,59 @@ def _routing_outcome_envelope(
         source_stream=source_stream,
         export_sequence=export_sequence,
         subject=build_subject(**subject_clusters),
+        event_time=now,
+        effective_time=now,
+        availability_time=now,
+        receipt_time=now,
+        environment=Environment.LOCAL_SIM,
+        evidence_class=EvidenceClass.SYNTHETIC_FIXTURE,
+        payload_hash=compute_payload_hash(payload_dict),
+        payload=payload_dict,
+    )
+
+
+def _source_event_envelope(
+    *,
+    event_id="evt-source-event-1",
+    export_sequence=0,
+    source_stream="signal-copier:acct1",
+    kind="original",
+    quantity="10",
+    price="150.00",
+    source_provider_id="telegram",
+    analyst_id=None,
+    parser_version="v3",
+    source_event_id="src-evt-1",
+):
+    """Mirrors exactly what signal-copier's own `app/export_events.py`
+    `build_source_event_envelope` produces -- same shared contracts
+    models every other envelope builder in this file already uses."""
+    source_identity = SourceIdentity(
+        source_provider_id=source_provider_id, analyst_id=analyst_id, parser_version=parser_version,
+        source_event_id=source_event_id,
+    )
+    inner_signal = None
+    if quantity is not None or price is not None:
+        inner_signal = SourceReceiptPayload(
+            source=source_identity, instrument=_instrument(), side="buy", quantity=quantity, price=price,
+        )
+    now = datetime.now(timezone.utc)
+    payload = SourceEventPayload(
+        kind=SourceEventKind(kind),
+        source=source_identity,
+        provider_timestamp=now,
+        local_receipt_timestamp=now,
+        instrument=_instrument(),
+        signal=inner_signal,
+    )
+    payload_dict = payload.model_dump(mode="json")
+    return EventEnvelope(
+        event_type=EventType.SOURCE_EVENT,
+        event_id=event_id,
+        producer_id="signal-copier-instance-1",
+        source_stream=source_stream,
+        export_sequence=export_sequence,
+        subject=build_subject(source=source_identity),
         event_time=now,
         effective_time=now,
         availability_time=now,
@@ -724,3 +780,86 @@ def test_a_schema_incompatible_event_permanently_parks_every_later_sequence_on_i
     assert follow_up_event.applied_at is None
     assert follow_up_event.parked_reason is None  # received, just waiting behind the gap -- not itself incompatible
     assert db_session.scalars(select(LedgerEntry).where(LedgerEntry.tenant_id == "tenant-a")).all() == []
+
+
+def test_a_source_event_then_receipt_then_routing_outcome_all_apply_in_order(db_session):
+    """Reproduces the exact live scenario that used to permanently park a
+    stream at sequence 0: a real webhook-ingested signal exports a
+    `SOURCE_EVENT` (kind=original) BEFORE its `SOURCE_RECEIPT` on the
+    same `signal-copier:source:<name>` stream, followed by a
+    `ROUTING_ADMISSION_OUTCOME` for that same receipt. Before this fix,
+    the SOURCE_EVENT fell into the generic "unimplemented event type"
+    branch and parked forever at sequence 0 -- which, because
+    `_next_expected_sequence` is keyed strictly off `applied_at`,
+    permanently blocked the SOURCE_RECEIPT and ROUTING_ADMISSION_OUTCOME
+    that followed it on the SAME stream too. All three must now apply,
+    in order."""
+    _seed_tenant(db_session)
+    register_export_stream(db_session, tenant_id="tenant-a", source_stream="signal-copier:source:telegram", environment="LOCAL_SIM")
+    db_session.commit()
+
+    source_event = _source_event_envelope(
+        event_id="evt-source-event-1", export_sequence=0, source_stream="signal-copier:source:telegram",
+        kind="original",
+    )
+    source_event_row = ingest_export_event(db_session, source_event.model_dump_json())
+    db_session.commit()
+
+    # Before the fix: parked at sequence 0 forever, blocking everything below.
+    assert source_event_row.applied_at is not None
+    assert source_event_row.parked_reason is None
+
+    receipt = _source_receipt_envelope(
+        event_id="evt-src-1", export_sequence=1, source_stream="signal-copier:source:telegram",
+        source_provider_id="telegram", source_event_id="src-evt-1",
+    )
+    receipt_row = ingest_export_event(db_session, receipt.model_dump_json())
+    db_session.commit()
+
+    assert receipt_row.applied_at is not None
+    assert receipt_row.parked_reason is None
+    assert receipt_row.ledger_entry_id is not None
+
+    outcome = _routing_outcome_envelope(
+        event_id="evt-outcome-1", export_sequence=2, source_stream="signal-copier:source:telegram",
+        originating_source_event_id="evt-src-1",
+    )
+    outcome_row = ingest_export_event(db_session, outcome.model_dump_json())
+    db_session.commit()
+
+    assert outcome_row.applied_at is not None
+    assert outcome_row.parked_reason is None
+    db_session.refresh(receipt_row)
+    assert receipt_row.routing_outcome == "admitted_filled"
+
+
+def test_a_source_event_kind_this_inbox_cannot_yet_interpret_still_parks_and_blocks_its_stream(db_session):
+    """The fix must not silently swallow EVERY SourceEventKind -- only
+    ORIGINAL (pure provenance, no financial consequence, already
+    covered by its own stream's SOURCE_RECEIPT) is applied as a no-op.
+    Any other kind (here: EDIT) genuinely changes economic state this
+    build has no ledger projection for yet, so it still parks honestly
+    -- and, same as any other unimplemented shape, still blocks its
+    stream's later sequences."""
+    _seed_tenant(db_session)
+    register_export_stream(db_session, tenant_id="tenant-a", source_stream="signal-copier:source:telegram", environment="LOCAL_SIM")
+    db_session.commit()
+
+    edit_event = _source_event_envelope(
+        event_id="evt-source-event-edit", export_sequence=0, source_stream="signal-copier:source:telegram",
+        kind="edit",
+    )
+    edit_event_row = ingest_export_event(db_session, edit_event.model_dump_json())
+    db_session.commit()
+
+    assert edit_event_row.applied_at is None
+    assert edit_event_row.parked_reason == f"{PARKED_REASON_UNIMPLEMENTED_SOURCE_EVENT_KIND}:edit"
+
+    follow_up = _source_receipt_envelope(
+        event_id="evt-src-after-edit", export_sequence=1, source_stream="signal-copier:source:telegram",
+    )
+    follow_up_row = ingest_export_event(db_session, follow_up.model_dump_json())
+    db_session.commit()
+
+    assert follow_up_row.applied_at is None
+    assert follow_up_row.parked_reason is None  # received, waiting behind the still-parked EDIT

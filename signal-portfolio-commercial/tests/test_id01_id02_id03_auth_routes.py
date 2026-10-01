@@ -7,9 +7,12 @@ own `_client(db_session)` convention."""
 import re
 
 from fastapi.testclient import TestClient
+from pwdlib import PasswordHash
 
 from app.api.dependencies import get_db_session
+from app.db import set_tenant_scope
 from app.main import create_app
+from app.models.tenancy import Membership, MembershipRole, Tenant, UserIdentity
 
 
 def _client(db_session):
@@ -88,6 +91,35 @@ def test_sign_in_with_correct_password_sets_session_cookie(db_session):
 
     assert response.status_code == 303
     assert response.headers["location"] == "/app"
+    assert "cp_session" in response.cookies
+
+
+def test_sign_in_as_an_owner_redirects_to_the_ops_landing_page_not_the_customer_app(db_session):
+    """`id01_auth.html`'s own sign-in form always submits the literal
+    default `return_route=/app` (no real deep-link flow populates it
+    with anything else yet) -- before this fix, every successfully
+    authenticated user landed on `/app` regardless of role, so an
+    OWNER/staff member hit an immediate 403 right after signing in
+    (`/app`'s own `_require_own_customer_overview` only grants
+    `view_own_customer_overview` to `MembershipRole.CUSTOMER`). Self-
+    service `/auth/signup` only ever creates a CUSTOMER membership
+    (`app/services/local_auth.py::create_account`'s own docstring: OWNER
+    is provisioned out of band), so this seeds an OWNER membership
+    directly, the same way a real operator's membership is provisioned."""
+    password_hasher = PasswordHash.recommended()
+    user = UserIdentity(email="owner@example.com", password_hash=password_hasher.hash("owner-password-1"))
+    tenant = Tenant(display_name="Owner Co", environment="LOCAL_SIM")
+    db_session.add_all([user, tenant])
+    db_session.flush()
+    set_tenant_scope(db_session, tenant.tenant_id)
+    db_session.add(Membership(tenant_id=tenant.tenant_id, user_id=user.user_id, role=MembershipRole.OWNER))
+    db_session.commit()
+
+    client = _client(db_session)
+    response = client.post("/auth/signin", data={"email": "owner@example.com", "password": "owner-password-1"})
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/ops"
     assert "cp_session" in response.cookies
 
 

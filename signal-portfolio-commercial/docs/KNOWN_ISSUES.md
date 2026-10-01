@@ -87,6 +87,48 @@ to sit immediately before its own true trough). Fixed, and a stronger
 regression test added. See `docs/agents/VERIFICATION.md` for why this
 matters to every future change, not just this one.
 
+## SOURCE_EVENT projection covers ORIGINAL only -- other kinds still park
+
+`app/services/integration_inbox.py`'s `_apply_projection` now has a
+real `EventType.SOURCE_EVENT` branch (previously: every `SOURCE_EVENT`
+fell into the generic "unimplemented event type" case and parked
+forever at sequence 0, permanently blocking every later event on the
+same stream -- including the stream's own `SOURCE_RECEIPT` and any
+`ROUTING_ADMISSION_OUTCOME` -- since `_next_expected_sequence` is keyed
+off `applied_at`). An `ORIGINAL` `SourceEventKind` (the raw inbound
+event, informational/provenance only -- the same economic fact its
+stream's own `SOURCE_RECEIPT` already books into `Book.SOURCE`) is now
+applied as a no-op: it advances the sequence, and stays durably,
+verbatim stored in its own `envelope_json`, but produces no second
+ledger entry.
+
+Genuinely remaining gap: `EDIT`/`DELETE`/`REPLY`/`CANCEL`/`CLOSE`/
+`ADD`/`TARGET_UPDATE`/`STOP_UPDATE` -- every OTHER `SourceEventKind` --
+still parks (`unimplemented_source_event_kind:<kind>`), honestly, since
+this build has no real ledger projection for an edited/cancelled/
+retargeted source instruction yet (e.g. revising a stop or cancelling a
+pending entry has no effect on `Book.SOURCE` today). As today, a
+producer that emits any of these on a real stream will park that event
+and everything after it on the same stream until a future build adds a
+real projection for it -- the same honest "keep separate received/
+applied cursors" consequence as any other unimplemented shape, not a
+silent drop (the row is always received and durably stored first,
+`SourceEventPayload.raw_source_event` carries the immutable raw
+provider event when the producer sends it). This has live impact
+today, not just future risk: signal-copier's own webhook ingress path
+(`app/sources/webhook.py`) only ever emits `ORIGINAL`, but several
+other real adapters already emit non-`ORIGINAL` kinds -- Telegram
+(`app/sources/telegram.py`, `telegram_user.py`: `EDIT`/`DELETE`),
+Slack (`app/sources/slack_user.py`: `EDIT`/`DELETE`), and Twitter
+(`app/sources/twitter_user.py`: `EDIT`). A source message edited or
+deleted through any of those adapters still parks its own `SOURCE_EVENT`
+row (and blocks everything after it on that stream) until a future
+build adds a real projection for that kind -- the webhook path's own
+permanent-park bug from this track is fixed, but these adapters' own
+edit/delete events are a separate, pre-existing instance of the same
+"unimplemented event type parks forever" shape, not newly introduced by
+this fix and not yet closed by it.
+
 ## Where to look for the authoritative, requirement-by-requirement account
 
 - `INTEGRATION_ACCEPTANCE_STATUS.md` (repo root) — every one of the

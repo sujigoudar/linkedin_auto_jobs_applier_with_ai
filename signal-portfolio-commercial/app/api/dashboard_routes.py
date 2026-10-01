@@ -3558,10 +3558,35 @@ def sign_in_submit(
     # AuditEvent for this tenant, which itself needs `app.tenant_id` set
     # to pass the ordinary `tenant_isolation` WITH CHECK on INSERT.
     set_tenant_scope(session, membership.tenant_id)
+    # Captured BEFORE `create_web_session` below -- that call commits
+    # (it writes a real "login" AuditEvent in the same transaction), and
+    # `expire_on_commit` means every attribute on `membership` is expired
+    # afterward: a later `membership.role` access would trigger a real
+    # refresh SELECT, which the `membership_self_lookup`/`tenant_isolation`
+    # RLS policies (each scoped to a GUC that a commit can clear) may no
+    # longer permit, raising a confusing `ObjectDeletedError` instead of
+    # the real role this request already legitimately read.
+    membership_role = membership.role
     session_id, csrf_token = create_web_session(
-        session, user_id=user.user_id, tenant_id=membership.tenant_id, role=membership.role
+        session, user_id=user.user_id, tenant_id=membership.tenant_id, role=membership_role
     )
-    safe_return_route = return_route if return_route.startswith("/") else "/app"
+    # `id01_auth.html`'s own form always submits the literal default
+    # "/app" (there is no real deep-link flow populating this field with
+    # anything else yet -- see that template's own hidden input), which
+    # used to send EVERY successfully authenticated user to the
+    # customer-only dashboard regardless of role: an OWNER/staff member
+    # landed on `/app`, whose own `_require_own_customer_overview` only
+    # grants `view_own_customer_overview` to `MembershipRole.CUSTOMER`
+    # (app/services/permissions.py), so they hit an immediate 403
+    # straight after a successful sign-in. Only the unmodified default is
+    # ever overridden here -- an explicit, non-default `return_route` a
+    # future deep-link flow actually supplies is still honored verbatim
+    # (subject to the same "must be a real relative path" check), so this
+    # never forecloses that later addition.
+    if return_route == "/app" and membership_role != MembershipRole.CUSTOMER:
+        safe_return_route = "/ops"
+    else:
+        safe_return_route = return_route if return_route.startswith("/") else "/app"
     response = RedirectResponse(url=safe_return_route, status_code=303)
     _set_session_cookie(request, response, session_id)
     _set_csrf_cookie(request, response, csrf_token)
