@@ -4,6 +4,7 @@ ARRAY(String) columns and the append-only PortfolioVersion tables)."""
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
+from app.db import set_tenant_scope
 from app.models.portfolio_version import PortfolioVersion, PortfolioVersionSleeve
 from app.models.rights import RightsGrant, RightsStatus, RightsUse
 from app.models.sleeve import Sleeve
@@ -93,6 +94,12 @@ def test_a_portfolio_with_no_sleeves_is_denied(db_session):
     result = check_portfolio_rights(db_session, **_check())
     assert result.allowed is False
     assert result.reason == "PORTFOLIO_HAS_NO_SLEEVES"
+    # `PortfolioRightsResult.failing_sleeve_id`'s own default must stay
+    # None (not "", or any other falsy-but-wrong sentinel) -- this is
+    # the one construction site (`_EMPTY_PORTFOLIO`) that relies on the
+    # dataclass field default rather than passing the argument
+    # explicitly.
+    assert result.failing_sleeve_id is None
 
 
 def test_a_portfolio_where_every_sleeve_qualifies_is_allowed(db_session):
@@ -164,3 +171,74 @@ def test_referencing_a_nonexistent_sleeve_is_denied(db_session):
         raise AssertionError("expected the FK to reject a membership row for a nonexistent sleeve")
     except IntegrityError:
         db_session.rollback()
+
+
+def test_a_cross_tenant_sleeve_reference_hidden_by_rls_is_treated_as_unknown_not_allowed(
+    db_session, tenant_session_factory
+):
+    """The FK on `PortfolioVersionSleeve.sleeve_id` (see that model's own
+    docstring: "a database-level RLS backstop, not this table's own
+    scoping mechanism") only guarantees the referenced sleeve_id exists
+    SOMEWHERE in `sleeves` -- it says nothing about which tenant owns it.
+    A membership row under tenant-a can legitimately reference a real
+    sleeve_id that belongs to tenant-b; under RLS that sleeve is
+    genuinely invisible to tenant-a's own session, so
+    `session.get(Sleeve, ...)` returns None exactly like a nonexistent
+    sleeve would, and `check_portfolio_rights` must fail closed
+    (UNKNOWN_SLEEVE, denied) rather than silently treating "I can't see
+    it" as "it must qualify." The previous test only proved the FK
+    blocks referencing a sleeve_id that exists nowhere at all -- it never
+    exercised this RLS-scoped, non-superuser path, so the `sleeve is
+    None` branch's own `allowed=False` was never actually checked by any
+    assertion calling `check_portfolio_rights` itself."""
+    db_session.add(
+        Sleeve(
+            sleeve_id="sleeve-b",
+            tenant_id="tenant-b",
+            provider="acme",
+            analyst="jane",
+            strategy_horizon="intraday-momentum",
+            asset_class="EQUITY",
+            parser_version="v1",
+            execution_policy_id="policy-1",
+            cost_model_id="cost-1",
+            capacity_policy_id="capacity-1",
+            risk_unit_id="risk-1",
+            history_origin="broker-confirmed",
+        )
+    )
+    _grant(db_session, source_id="acme")
+    pv = PortfolioVersion(
+        portfolio_version_id="pv-3",
+        tenant_id="tenant-a",
+        portfolio_id="P03",
+        version_number=1,
+        cash_weight=Decimal("0.15"),
+        research_cutoff=datetime.now(timezone.utc),
+        max_subscriber_capacity=100,
+        consent_disclosure_version="v1",
+    )
+    db_session.add(pv)
+    db_session.flush()
+    # sleeve-b is owned by tenant-b (it was added to the Sleeve model
+    # above under that tenant_id); this membership row deliberately
+    # records a DIFFERENT tenant_id ("tenant-a") -- the FK on sleeve_id
+    # alone permits this, since it only checks the row exists, not that
+    # tenant_id matches.
+    db_session.add(
+        PortfolioVersionSleeve(
+            portfolio_version_id="pv-3", sleeve_id="sleeve-b", weight=Decimal("1"), tenant_id="tenant-a"
+        )
+    )
+    db_session.commit()
+
+    session = tenant_session_factory()
+    try:
+        set_tenant_scope(session, "tenant-a")
+        result = check_portfolio_rights(session, **_check(portfolio_version_id="pv-3"))
+        assert result.allowed is False
+        assert result.reason == "UNKNOWN_SLEEVE"
+        assert result.failing_sleeve_id == "sleeve-b"
+    finally:
+        session.rollback()
+        session.close()
