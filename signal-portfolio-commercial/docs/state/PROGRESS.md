@@ -9,6 +9,19 @@ detailed per-phase notes (now historical; much has been built since).
 
 ## What's real and tested, most recent first
 
+- **Fix: NUL-byte signin/signup crash (2026-10-01).** Closes the gap
+  Track 39's fuzzing found and Track 41 flagged (unfixed, outside its
+  own scope) in `docs/KNOWN_ISSUES.md`: a signin/signup form body with
+  an embedded NUL byte crashed with a raw, unhandled
+  `psycopg.DataError` instead of a clean 4xx. `app/services/
+  local_auth.py`'s new `_reject_nul_bytes` guard, called from
+  `authenticate`/`create_account`/`request_password_reset` before any
+  email/password reaches a query, closes it treating a NUL byte
+  exactly like an ordinary bad-credentials/unknown-email case.
+  `tests/test_c39_schemathesis_api_fuzzing.py::
+  test_public_signin_signup_never_5xx_on_adversarial_form_bodies`
+  passes; full suite: `1018 passed, 0 failed`.
+
 - **Track 42: honest `"applied"`/`"parked"` relay ingest status.**
   Closes the gap Track 40 found and flagged in `docs/KNOWN_ISSUES.md`:
   `POST /internal/relay/ingest-batch` now reports `"parked"` with a

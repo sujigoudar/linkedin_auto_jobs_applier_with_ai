@@ -56,6 +56,26 @@ already fully specified in this endpoint's own module docstring and
 now in `docs/KNOWN_ISSUES.md`; a shared, versioned contract type would
 be more process than this fix needs.
 
+### 2026-10-01 — Fix: NUL-byte signin/signup crash
+
+Closes the gap `docs/KNOWN_ISSUES.md` flagged (found by Track 39's
+fuzzing, left unfixed by Track 41 as outside its own scope):
+`tests/test_c39_schemathesis_api_fuzzing.py::
+test_public_signin_signup_never_5xx_on_adversarial_form_bodies` — a
+signin/signup form body with an embedded NUL byte (e.g. `email=%00`)
+reached `UserIdentity.email == email` and crashed with a raw,
+unhandled `psycopg.DataError`/`sqlalchemy.exc.DataError` (Postgres
+`text` columns reject an embedded NUL byte outright), a 500 instead of
+a clean 4xx/401.
+
+#### Fixed
+- `app/services/local_auth.py`: new `_reject_nul_bytes` helper, called
+  from `authenticate`, `create_account`, and `request_password_reset`
+  before any email/password reaches a query — a NUL byte is treated
+  exactly like an ordinary bad-credentials/duplicate-account/unknown-
+  email case (the same error type/`None` each caller already returns
+  for that), so this closes no email-enumeration signal of its own.
+
 ### 2026-10-01 — Track 41: ledger correctness (SOURCE_RECEIPT edit supersession; TARGET_UPDATE/STOP_UPDATE representation)
 
 Closes two real gaps Tracks 35/40 flagged in `docs/KNOWN_ISSUES.md`.

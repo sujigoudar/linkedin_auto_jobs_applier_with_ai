@@ -78,6 +78,22 @@ class InvalidTokenError(Exception):
     pass
 
 
+def _reject_nul_bytes(*values: str, on_reject: type[Exception]) -> None:
+    """Postgres `text`/`varchar` columns cannot store a NUL (0x00) byte --
+    `UserIdentity.email == value` with one embedded raises a raw
+    `psycopg.DataError` straight out of the driver, below every ORM/app
+    error class, turning an ordinary bad-credentials/bad-signup case into
+    an unhandled 500 (found by Track 39's own adversarial-form-body
+    fuzzing: `email=%00&password=...` against `/auth/signin`). A NUL byte
+    can never appear in a real stored email/password, so rejecting it
+    here with the SAME error each caller already raises for an ordinary
+    lookup miss/duplicate is indistinguishable from that case -- no new
+    enumeration signal, no new caller-visible error type."""
+    for value in values:
+        if "\x00" in value:
+            raise on_reject()
+
+
 def create_account(session: Session, *, email: str, password: str, tenant_display_name: str) -> tuple[UserIdentity, AuthToken]:
     """ID-01's own F-IDENTITY "Create account" step. Creates a real
     `UserIdentity` + a new `Tenant` + a CUSTOMER-role `Membership` in
@@ -104,6 +120,7 @@ def create_account(session: Session, *, email: str, password: str, tenant_displa
     new tenant's own id is known immediately after `flush()`, so
     `set_tenant_scope` here is exactly ADR-0001's own documented
     pattern, not a new exception to it."""
+    _reject_nul_bytes(email, password, on_reject=AccountAlreadyExistsError)
     existing = session.scalar(select(UserIdentity).where(UserIdentity.email == email))
     if existing is not None:
         raise AccountAlreadyExistsError(email)
@@ -135,6 +152,7 @@ def authenticate(session: Session, *, email: str, password: str) -> UserIdentity
     InvalidCredentialsError whether the email doesn't exist or the
     password is wrong -- no email enumeration via a different error for
     each case."""
+    _reject_nul_bytes(email, password, on_reject=InvalidCredentialsError)
     user = session.scalar(select(UserIdentity).where(UserIdentity.email == email))
     if user is None or user.password_hash is None:
         raise InvalidCredentialsError()
@@ -152,6 +170,8 @@ def request_password_reset(session: Session, *, email: str) -> AuthToken | None:
     "if that email has an account, a reset link was sent" message
     either way; returning None vs a token is exactly the signal it
     needs to do that without enumerating accounts."""
+    if "\x00" in email:
+        return None
     user = session.scalar(select(UserIdentity).where(UserIdentity.email == email))
     if user is None:
         return None

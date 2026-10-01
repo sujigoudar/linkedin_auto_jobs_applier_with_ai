@@ -300,29 +300,6 @@ forever. That permanent-block class of bug, for every live kind this
 build will ever receive from a currently-shipped adapter, is now
 closed.
 
-## An adversarial signin/signup form body with an embedded NUL byte crashes with a raw DB error, not a clean 4xx
-
-Found during Track 41's own full-suite verification (not fixed — unrelated
-to that track's ledger-correctness scope, flagged here instead):
-`tests/test_c39_schemathesis_api_fuzzing.py::
-test_public_signin_signup_never_5xx_on_adversarial_form_bodies` fails
-reproducibly (confirmed via `git stash` against this same HEAD, before any
-of Track 41's own changes, so it is genuinely pre-existing, not a
-regression this track introduced). Schemathesis/Hypothesis generates a
-signin or signup form body containing an embedded NUL byte (e.g.
-`{"email": "\x00"}`); the public auth route passes it through to a real
-`INSERT`/`SELECT` against Postgres, which rejects a NUL byte in a text
-column outright — raised as an unhandled `sqlalchemy.exc.DataError`/
-`psycopg` error, not caught and translated into an honest 4xx the way
-`app/api/relay_routes.py`'s own per-event batch handling already does for
-the identical byte-shape problem on the relay ingest path (see this file's
-earlier "malformed_envelope" entry). The public signin/signup routes have
-no equivalent input-validation/exception-translation layer for this case
-yet. A real fix belongs to whichever track next owns the public auth
-routes (`app/api/auth_routes.py` or wherever signin/signup is implemented) —
-flagged here, not guessed at, since it's outside this track's own
-ledger/inbox-projection boundary.
-
 ## Where to look for the authoritative, requirement-by-requirement account
 
 - `INTEGRATION_ACCEPTANCE_STATUS.md` (repo root) — every one of the
