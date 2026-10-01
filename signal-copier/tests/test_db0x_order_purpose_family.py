@@ -247,8 +247,14 @@ def test_legacy_database_missing_purpose_and_family_id_backfills_cleanly(tmp_pat
         "    family_id TEXT,\n",
         "",
     )
-    assert "purpose TEXT" not in legacy_schema  # sanity: the strip actually worked
-    assert "family_id TEXT" not in legacy_schema
+    # Sanity: the strip actually worked. Anchored to the exact `orders`
+    # column declaration (trailing comma, no DEFAULT) rather than the
+    # bare substring "purpose TEXT" -- Track 24's unrelated
+    # `source_observations.purpose TEXT NOT NULL DEFAULT 'research'`
+    # column legitimately also contains that bare substring, so a loose
+    # check would false-collide with a completely different table.
+    assert "    purpose TEXT,\n" not in legacy_schema
+    assert "    family_id TEXT,\n" not in legacy_schema
 
     db_path = tmp_path / "legacy.db"
     conn = sqlite3.connect(db_path)

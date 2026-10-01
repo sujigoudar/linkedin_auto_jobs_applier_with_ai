@@ -445,6 +445,72 @@ promotion integration.
 Indexes: `idx_command_ledger_account_id`, `idx_command_ledger_created_at`,
 `idx_command_ledger_unresolved` (partial, `WHERE resolved_at IS NULL`).
 
+## `source_observations`
+
+Track 24: the generic, transport-agnostic adapter-boundary record
+(`app/sources/adapter_contract.py`'s `probe`/`fetch`/`poll`/`normalize`
+contract) — generalizes `notification_bridge_events`'
+`content_completeness`/`content_hash`/`revision_seq` shape from one
+specific transport (Android notification capture) into one any adapter
+built against that contract can write to (today, only
+`app/sources/rss_source.py`'s `RssSourceAdapter`). `connection_id`/
+`provider_id`/`source_id` are application-enforced references into
+`connections`/`providers`/`sources` (same no-DB-FK convention as every
+other table here), all nullable since a bare `probe`/`fetch` call can
+happen before a connection is wired to a registered source.
+`completeness` reuses `app.notification_bridge.ContentCompleteness`'s
+exact five states verbatim. `purpose`/`eligibility_state` gate whether
+an observation may ever become a real `Signal` — see
+`app/sources/rss_source.py`'s own module docstring.
+
+| column | type | notes |
+|---|---|---|
+| `id` | TEXT PK | |
+| `connection_id` | TEXT | nullable, app-enforced ref into `connections` |
+| `provider_id` | TEXT | nullable, app-enforced ref into `providers` |
+| `source_id` | TEXT | nullable, app-enforced ref into `sources` |
+| `platform` | TEXT NOT NULL | e.g. `"rss"` |
+| `source_namespace` | TEXT | adapter-defined sub-grouping, e.g. a feed's own namespace |
+| `original_item_id` | TEXT NOT NULL | the backend's own stable item identifier |
+| `canonical_url` | TEXT | |
+| `revision_identifier` | TEXT | |
+| `observation_kind` | TEXT NOT NULL | `created`/`edited`/`deleted`/`retrieved` |
+| `content_hash` | TEXT | |
+| `revision_seq` | INTEGER NOT NULL DEFAULT 1 | |
+| `source_authored_at` | TEXT | |
+| `source_updated_at` | TEXT | |
+| `first_observed_at` | TEXT NOT NULL | |
+| `retrieved_at` | TEXT NOT NULL | |
+| `timestamp_origin` | TEXT | `"source_reported"` / `"retrieval_time"` |
+| `timestamp_uncertain` | INTEGER NOT NULL DEFAULT 0 | |
+| `completeness` | TEXT NOT NULL | `app.notification_bridge.ContentCompleteness` value |
+| `extracted_text` | TEXT | |
+| `attachment_refs` | TEXT NOT NULL DEFAULT '[]' | JSON list |
+| `adapter_name` | TEXT NOT NULL | |
+| `backend` | TEXT | e.g. `"feedparser"` |
+| `parser_version` | TEXT | |
+| `retrieval_method` | TEXT | |
+| `correlation_id` | TEXT | |
+| `acquisition_run_id` | TEXT | |
+| `purpose` | TEXT NOT NULL DEFAULT 'research' | `research`/`backfill`/`signal_candidate` |
+| `eligibility_state` | TEXT NOT NULL DEFAULT 'not_eligible' | |
+| `rejection_reason` | TEXT | nullable, set only for a rejected `eligibility_state` |
+| `created_at` | TEXT NOT NULL | |
+
+Indexes: `idx_source_observations_source_id` (`source_id`, `retrieved_at`),
+`idx_source_observations_connection_id`, `idx_source_observations_eligibility`.
+
+See `SignalStore.record_source_observation`/
+`get_source_observations_for_source` (`app/db.py`) for the only write/
+read path.
+
+Track 24 also adds `sources.acquisition_checkpoint` (TEXT, nullable) —
+an opaque, adapter-owned JSON checkpoint (same role as `collectors.
+checkpoint`, but scoped to one `sources` row instead of a `collectors`
+row — see that column's own comment in `app/db.py` for why this
+adapter's checkpoint lives there instead of widening the `collectors`
+table's closed `CollectorKind` enum).
+
 ## `alembic_version`
 
 Standard Alembic bookkeeping table (not created by `SCHEMA` — created
