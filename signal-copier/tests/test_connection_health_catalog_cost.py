@@ -483,3 +483,41 @@ def test_cost_summary_and_record_cost_event_routes(client):
 
         invalid_amount = client.post("/connections/c1/cost-events", json={"amount": -1.0, "category": "api"})
         assert invalid_amount.status_code == 422
+
+
+def test_cost_summary_route_rejects_a_malformed_since_param_not_500(client):
+    """Track 40 (fault-injection fuzzing -- found by extending
+    tests/test_c30_schemathesis_api_fuzzing.py's coverage to this exact
+    route): `since` is a plain query-param string, never pydantic-
+    validated, so `datetime.fromisoformat(since)` used to raise an
+    unhandled `ValueError` straight out of the route as a real 500 for
+    ANY malformed value -- reproduced by Schemathesis with the generated
+    value `"Subject"`. Now a clean 400, same RISK-01 discipline every
+    other parsed-input call site in app/main.py already follows."""
+    with client:
+        test_store = main_module.store
+        test_store.register_connection(connection_id="c1", connection_type="webhook")
+
+        resp = client.get("/connections/c1/cost-summary", params={"since": "not-a-real-timestamp"})
+        assert resp.status_code == 400
+        assert resp.status_code < 500
+
+
+def test_record_cost_event_route_rejects_a_malformed_occurred_at_not_500(client):
+    """Same bug, same fix, the other call site: `occurred_at` on
+    `POST /connections/{connection_id}/cost-events` was parsed with
+    `datetime.fromisoformat` BEFORE entering the route's own
+    `try/except ValueError: raise HTTPException(422, ...)` block, so
+    that existing except clause could never actually catch it -- an
+    unhandled 500 on a malformed value reached straight past a guard
+    that looked, at a glance, like it already covered this."""
+    with client:
+        test_store = main_module.store
+        test_store.register_connection(connection_id="c1", connection_type="webhook")
+
+        resp = client.post(
+            "/connections/c1/cost-events",
+            json={"amount": 1.0, "category": "api", "occurred_at": "not-a-real-timestamp"},
+        )
+        assert resp.status_code == 422
+        assert resp.status_code < 500

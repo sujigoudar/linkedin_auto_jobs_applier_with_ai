@@ -124,13 +124,55 @@ full, honest per-phase account, and `docs/12_validation_report.md` /
 `docs/12_addendum_post_phase12_work.md` for the requirement-by-
 requirement audit those phases were checked against.
 
+## Track 40: fuzzing/fault-injection coverage (new for this repo)
+
+No Schemathesis/Toxiproxy-style coverage existed for this repo before
+this track (signal-copier already had both -- its own C30/C32). Added,
+following that exact established pattern rather than inventing a new
+one:
+- `tests/test_c39_schemathesis_api_fuzzing.py` -- first Schemathesis
+  pass, scoped to the highest-exposure routes: the relay/Stripe-webhook
+  ingress routes, `GET /health`/`/system/readiness`/`/api/v1/me`, and
+  the ID-01/ID-02/ID-03 `/auth/signin`/`/auth/signup` routes.
+- `tests/test_c40_relay_ingest_adversarial_payloads.py` -- adversarial
+  payloads against the real relay ingress route (wrong content-type,
+  truncated/deeply-nested/oversized JSON, unicode/embedded-NUL/
+  injection-style strings, duplicate event_id with a different body,
+  out-of-order sequences). Found and fixed two real unhandled-500 bugs
+  in `app/api/relay_routes.py` (an uncaught `pydantic.ValidationError`/
+  `sqlalchemy.exc.DataError` could crash an entire batch request) --
+  see CHANGELOG.md for the full detail. Also found and FLAGGED (not
+  fixed -- a cross-service wire-contract design question, see
+  `docs/KNOWN_ISSUES.md`) that the route's per-event `"status":
+  "applied"` label is inaccurate for a genuinely parked event.
+- `tests/test_c38_db_connection_drop_fault_injection.py` -- the
+  highest-value check given this is financial accounting software: a
+  real `pg_terminate_backend()` kills a session's backend mid-
+  transaction, after a real ledger write but before `COMMIT`, proving
+  Postgres's own rollback leaves no partial ledger state and the same
+  envelope redelivers and applies cleanly afterward.
+
+A note on verifying this: this repo's `postgres_cluster` fixture
+assumes one pytest invocation running alone against `/tmp/pytest-of-
+root/`'s shared, incrementing directory numbering -- running multiple
+overlapping `pytest` invocations against this repo at once (including
+from an unrelated concurrent session on a shared machine, e.g. another
+agent's mutation-testing run) can cause pytest's own temp-dir retention
+cleanup to delete a still-live cluster's data directory out from under
+it, which looks exactly like a flaky/corrupted suite but has nothing to
+do with any one test's own correctness. Verify with a dedicated
+`--basetemp` (outside `/tmp/pytest-of-root/`) if anything else might be
+running `pytest` against this repo concurrently.
+
 ## Current scale (approximate, from this snapshot)
 
 - 43 Alembic revisions (`alembic/versions/`).
 - ~15,600 lines across `app/`.
 - 941 tests across `tests/` (`pytest -q`, re-verified 2026-10-01 against
   HEAD `9ab1104`: 941 passed, 0 failed), all run against a real
-  disposable Postgres cluster.
+  disposable Postgres cluster. Track 40 added 17 more across its three
+  new test files (993 total, isolated full-suite re-run: 993 passed, 0
+  failed -- see above).
 - CI: lint (ruff) + type check (mypy) + `pytest -q` + a dedicated
   `alembic upgrade head` verification step against a second, fresh
   disposable cluster.

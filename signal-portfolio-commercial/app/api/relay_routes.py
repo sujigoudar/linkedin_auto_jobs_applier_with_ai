@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field, ValidationError
+from sqlalchemy.exc import DataError
 from sqlalchemy.orm import Session
 
 from app import config
@@ -87,6 +88,48 @@ async def ingest_batch(
         except SequenceSlotAlreadyConsumedError as exc:
             session.rollback()
             results.append({"status": "sequence_slot_already_consumed", "detail": str(exc)})
+            continue
+        except ValidationError as exc:
+            # Track 40 (fault-injection fuzzing): `ingest_export_event`
+            # itself validates `envelope_json` (`EventEnvelope.model_
+            # validate_json`, its own very first line) and, deeper in,
+            # `_apply_projection` validates the per-event-type payload
+            # (e.g. `ExecutionAppliedPayload.model_validate`) -- NEITHER
+            # was ever wrapped, unlike `_IngestBatchRequest.model_
+            # validate_json(raw_body)` just above, which already is. A
+            # single malformed event string anywhere in the batch (an
+            # extra/wrong-typed payload field, or JSON nested deep enough
+            # to trip pydantic-core's own internal recursion guard) used
+            # to raise straight out of this loop as an unhandled 500 --
+            # crashing the WHOLE request/batch, including every other,
+            # perfectly valid event already applied-and-committed earlier
+            # in the same loop. Same shape as the three sibling except
+            # blocks above: rollback (a no-op if nothing was flushed yet,
+            # a clean discard of this one event's uncommitted work if
+            # something was -- see `ingest_export_event`'s own comment on
+            # why it never rolls back itself), report a clean per-event
+            # result, and keep processing the rest of the batch.
+            session.rollback()
+            results.append({"status": "malformed_envelope", "detail": str(exc)})
+            continue
+        except DataError as exc:
+            # Track 40 (fault-injection fuzzing): a well-formed-JSON,
+            # well-typed envelope whose string field nonetheless carries
+            # a byte Postgres `text`/`varchar` columns reject outright
+            # (an embedded NUL byte -- `psycopg.DataError: PostgreSQL
+            # text fields cannot contain NUL (0x00) bytes` -- surfaces
+            # here, not as a pydantic ValidationError, since nothing at
+            # the Python/pydantic layer rejects a NUL byte in a plain
+            # `str` field). Raised from `append_entry`'s own INSERT
+            # (app/services/ledger.py), reached via `ingest_export_event`
+            # -> `_apply_and_cascade` -> `_apply_projection`'s real
+            # `session.flush()` -- same "one malformed event must not
+            # crash the whole batch" contract as the `ValidationError`
+            # block above, and the same safe rollback (a flush is never
+            # committed, so there is nothing durable to undo beyond
+            # discarding it).
+            session.rollback()
+            results.append({"status": "malformed_envelope", "detail": str(exc)})
             continue
         #: Read before `commit()`, not after: `set_tenant_scope` uses
         #: `set_config(..., is_local=true)` (app/db.py's own docstring on

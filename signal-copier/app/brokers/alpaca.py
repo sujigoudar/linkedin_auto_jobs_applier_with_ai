@@ -52,6 +52,36 @@ from app.brokers.base import BrokerAdapter
 from app.models import AccountBalance, AssetClass, DestinationAccount, OrderResult, OrderStatus, Side, Signal
 
 
+def _coerce_broker_order_id(raw_id: object) -> str | None:
+    """Track 40 (fault-injection fuzzing): every `OrderResult.broker_
+    order_id=order.get("id")` call site in this file used to pass
+    Alpaca's own JSON `"id"` field through completely unvalidated --
+    `OrderResult.broker_order_id` is declared `Optional[str]`
+    (app/models.py), but a plain `@dataclass` never enforces that at
+    construction. A genuinely malformed response body (this adapter's
+    own API contract drifting out from under it, or a corrupted
+    response surviving `response.raise_for_status()`/`response.json()`
+    without raising) whose `"id"` is some other JSON type (a nested
+    object was reproduced by this track's own fault-injection test,
+    tests/test_c36_broker_submission_fault_injection.py) used to reach
+    `app/db.py`'s `save_order_result` completely unchanged, far past
+    this adapter's own boundary, and crash there instead with an opaque
+    `sqlite3.ProgrammingError: type 'dict' is not supported` -- a real,
+    reproduced unhandled exception, NOT wrapped by
+    `app/engine.py`'s own per-account `except Exception` (that one only
+    wraps the `broker.place_order` call itself, not everything the
+    engine does afterward with its result), so it could crash the
+    entire `handle_signal` call, not just this one account's own entry.
+
+    Same `str(x) if x is not None else None` discipline this codebase
+    already uses for exactly this kind of externally-sourced optional
+    identity field (see `app/sources/webhook.py`'s own `message_id`
+    handling) -- never silently drops or guesses a real id, only
+    normalizes whatever JSON type it happened to arrive as into the
+    honest string this field's own type always claimed it would be."""
+    return str(raw_id) if raw_id is not None else None
+
+
 class AlpacaBroker(BrokerAdapter):
     name = "alpaca"
     supports_native_bracket = True  # bracket/OTO order_class, see place_order below
@@ -138,7 +168,7 @@ class AlpacaBroker(BrokerAdapter):
             account_id=account.account_id,
             status=OrderStatus.PENDING,
             signal_id=signal.id,
-            broker_order_id=order.get("id"),
+            broker_order_id=_coerce_broker_order_id(order.get("id")),
             message=f"submitted to Alpaca (status: {order.get('status')})",
         )
 
@@ -218,7 +248,7 @@ class AlpacaBroker(BrokerAdapter):
             account_id=account.account_id,
             status=OrderStatus.PENDING,
             signal_id="",
-            broker_order_id=order.get("id"),
+            broker_order_id=_coerce_broker_order_id(order.get("id")),
             message=f"Alpaca stop resting (status: {order.get('status')})",
         )
 
@@ -302,7 +332,7 @@ class AlpacaBroker(BrokerAdapter):
                 account_id=account.account_id,
                 status=OrderStatus.REJECTED,
                 signal_id="",
-                broker_order_id=order.get("id"),
+                broker_order_id=_coerce_broker_order_id(order.get("id")),
                 message=f"Alpaca stop replace was not accepted (status: {order_status})",
             )
         return OrderResult(
@@ -310,7 +340,7 @@ class AlpacaBroker(BrokerAdapter):
             status=OrderStatus.PENDING,
             signal_id="",
             # Alpaca's replace creates a new order id — see module docstring.
-            broker_order_id=order.get("id"),
+            broker_order_id=_coerce_broker_order_id(order.get("id")),
             message=f"Alpaca stop replaced (status: {order_status})",
         )
 

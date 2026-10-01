@@ -27,6 +27,19 @@ Scope, deliberately bounded rather than fuzzing the whole app:
   `app.auth.create_session`, not a network login round-trip) since GET
   requests don't need the separate CSRF header (see `RequireOwner`'s
   docstring in app/auth.py).
+* Track 40: `POST /webhook/{source_name}` (the webhook ingress route --
+  the single most adversarial-input-exposed endpoint in this service,
+  since it accepts untrusted external payloads with no owner session at
+  all) is deliberately NOT added to this generic, schema-wide pass for
+  the same reason every other mutating endpoint above it is excluded --
+  it calls `engine.handle_signal`, which can place a real (paper-broker)
+  order. It gets its OWN separate, narrowly-scoped Schemathesis pass
+  instead: tests/test_c37_webhook_schemathesis_fuzzing.py, reviewed and
+  bounded specifically for that one route (real webhook-secret auth,
+  asserts only `not_a_server_error` -- a fuzzed body/header combination
+  practically never carries a valid secret, so "matches its own 200
+  response schema" isn't a meaningful check against mostly-401/400
+  responses the way it is for the read-only GETs here).
 
 What this checks: every generated request against an included operation
 gets a response schemathesis's own `not_a_server_error` check accepts
@@ -64,6 +77,24 @@ SAFE_PATHS = [
     "/routing-rules",
     "/signals",
     "/orders",
+    # Track 40: this project's own newer, read-only GET routes, added so
+    # this file's coverage keeps pace with the schema instead of fuzzing
+    # only whatever existed when C30 first landed. Same owner-read-
+    # protected, side-effect-free reasoning as every path above -- see
+    # each route's own docstring in app/main.py for what it reads.
+    "/system/readiness",
+    "/export-events",
+    "/export-events/{event_id}",
+    "/mobile-devices",
+    "/mobile-devices/{device_id}",
+    "/mobile-devices/{device_id}/apps",
+    "/mobile-devices/{device_id}/apps/{package_name}",
+    "/connections/catalog",
+    "/connections/catalog/{connection_type}",
+    "/connections/health-summary",
+    "/connections/{connection_id}/health",
+    "/connections/{connection_id}/checkpoint-status",
+    "/connections/{connection_id}/cost-summary",
 ]
 
 

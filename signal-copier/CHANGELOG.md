@@ -30,6 +30,64 @@ engine's data integrity and operational-safety guarantees.
   case.
 
 ### Fixed
+- Track 40: `GET /connections/{connection_id}/cost-summary`'s `since`
+  query-param and `POST /connections/{connection_id}/cost-events`'s
+  `occurred_at` body field were both parsed with
+  `datetime.fromisoformat(...)` with no effective guard against a
+  malformed value -- the GET route had no try/except around it at all,
+  and the POST route parsed it BEFORE entering its own
+  `try/except ValueError: raise HTTPException(422, ...)` block, so that
+  existing except clause could never actually catch it. Both were
+  unhandled 500s on adversarial input, found by extending
+  tests/test_c30_schemathesis_api_fuzzing.py's coverage to these newer
+  routes (Schemathesis generated the value `"Subject"` for `since` and
+  reproduced it immediately). Fixed to match this file's own extensive,
+  pre-existing "malformed input must 4xx, not 500" convention: the GET
+  route now has its own `try/except ValueError -> 400`, and the POST
+  route's parse moved inside its existing try block. Regression tests:
+  `test_cost_summary_route_rejects_a_malformed_since_param_not_500` and
+  `test_record_cost_event_route_rejects_a_malformed_occurred_at_not_500`,
+  both in `tests/test_connection_health_catalog_cost.py`.
+- Track 40: `app/brokers/alpaca.py` passed `order.get("id")` (Alpaca's
+  own JSON response field) straight into `OrderResult.broker_order_id`
+  at every one of its four call sites with no type coercion at all --
+  `OrderResult.broker_order_id` is declared `Optional[str]`
+  (app/models.py) but, being a plain `@dataclass`, never enforces that
+  at construction. A malformed/unexpected response shape (this
+  adapter's own API contract drifting, or a corrupted response
+  surviving `response.raise_for_status()`/`response.json()` without
+  raising) whose `"id"` is some other JSON type used to reach
+  `app/db.py`'s `save_order_result` completely unchanged and crash
+  there with an opaque `sqlite3.ProgrammingError: type 'dict' is not
+  supported` -- a real, reproduced unhandled exception NOT wrapped by
+  `app/engine.py`'s own per-account `except Exception` (that one only
+  wraps the `broker.place_order` call itself, not everything the
+  engine does with its result afterward), so it could crash the entire
+  `handle_signal` call. Fixed with a new `_coerce_broker_order_id`
+  helper (`str(x) if x is not None else None`), the exact same
+  discipline this codebase already uses for `app/sources/webhook.py`'s
+  own externally-sourced `message_id` field. Found by this track's own
+  fault-injection test, tests/test_c36_broker_submission_fault_
+  injection.py.
+
+### Added
+- Track 40 (fuzzing/fault-injection extension): tests/test_c30_
+  schemathesis_api_fuzzing.py's `SAFE_PATHS` now also covers `GET
+  /system/readiness`, `/export-events`, `/export-events/{event_id}`,
+  `/mobile-devices` + its sub-paths, and `/connections/catalog`/
+  `/connections/health-summary`/per-connection health/checkpoint/cost
+  routes -- every read-only GET route added by recent tracks that
+  C30's own schema-wide pass had not yet picked up. A new, separate
+  tests/test_c37_webhook_schemathesis_fuzzing.py adds the one
+  deliberately-excluded-from-C30 route it is actually most worth
+  fuzzing: `POST /webhook/{source_name}`, the single most adversarial-
+  input-exposed endpoint in this service (untrusted external payloads,
+  no owner session). A new tests/test_c36_broker_submission_fault_
+  injection.py extends C32's own real-httpx-transport-fault approach
+  from `AlpacaBroker.get_order_status` to `AlpacaBroker.place_order`
+  itself (the real order-submission call) -- connect/read/connect
+  timeouts, and a genuinely malformed-but-200 success response -- and
+  is what found the `broker_order_id` type-coercion bug fixed above.
 - Track 36: `docs/state/PROGRESS.md`'s long-standing "`signal_platform_
   contracts` is stale relative to Track 14 and Track 22/23" note was
   re-investigated and found itself stale — it had been carried forward
