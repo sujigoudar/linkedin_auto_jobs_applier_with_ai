@@ -276,3 +276,66 @@ def test_upsert_config_account_updates_management_recipe_in_place(store):
     row = store.list_config_accounts()[0]
     assert row["management_recipe"] == "full_managed_lifecycle"
     assert row["qualification_level"] == "pending_review"
+
+
+# Track 43: direct boundary coverage for `_positions_reconcile` itself --
+# the pure tolerance-comparison function `_reconcile_before_plain_close`
+# calls to decide whether a fresh broker position readback "matches" the
+# locally tracked quantity. Previously only exercised indirectly (through
+# whichever specific values the reconciliation-flow tests above happened
+# to use), so a mutation that silently loosened/tightened this boundary
+# (e.g. `<=` -> `<`, `+` -> `*`, dropping the relative term, or comparing
+# the raw signed difference instead of its absolute value) could pass
+# every other test in this file and still let a materially different
+# broker-vs-local position through as "reconciled", or reject a
+# genuinely-matching one.
+from app.engine import _RECONCILIATION_ABS_TOLERANCE, _RECONCILIATION_REL_TOLERANCE, _positions_reconcile
+
+
+def test_positions_reconcile_exact_match():
+    assert _positions_reconcile(10.0, 10.0) is True
+
+
+def test_positions_reconcile_within_pure_absolute_tolerance_at_zero():
+    # At local_position == broker_position == 0, the relative term is 0 --
+    # only the absolute tolerance matters here.
+    just_inside = _RECONCILIATION_ABS_TOLERANCE * 0.5
+    assert _positions_reconcile(just_inside, 0.0) is True
+
+
+def test_positions_reconcile_rejects_just_outside_pure_absolute_tolerance_at_zero():
+    just_outside = _RECONCILIATION_ABS_TOLERANCE + _RECONCILIATION_REL_TOLERANCE + 1e-3
+    assert _positions_reconcile(just_outside, 0.0) is False
+
+
+def test_positions_reconcile_scales_tolerance_with_magnitude():
+    # At a large position, the *relative* term dominates: a difference
+    # that would fail at small magnitudes must pass at large ones, because
+    # the tolerance scales with max(|broker_position|, |local_position|).
+    local_position = 1_000_000.0
+    tolerance = _RECONCILIATION_ABS_TOLERANCE + _RECONCILIATION_REL_TOLERANCE * local_position
+    within = local_position + tolerance * 0.5
+    outside = local_position + tolerance * 2.0
+    assert _positions_reconcile(within, local_position) is True
+    assert _positions_reconcile(outside, local_position) is False
+
+
+def test_positions_reconcile_is_symmetric_in_sign_of_difference():
+    # A broker position *below* local by some delta must be treated
+    # identically to one *above* by the same delta -- the comparison must
+    # use the absolute difference, not the signed one (which would let a
+    # mutation silently accept every broker position <= local + tolerance
+    # regardless of how far below it is).
+    local_position = 50.0
+    delta = _RECONCILIATION_ABS_TOLERANCE + _RECONCILIATION_REL_TOLERANCE * local_position + 1.0
+    assert _positions_reconcile(local_position - delta, local_position) is False
+    assert _positions_reconcile(local_position + delta, local_position) is False
+
+
+def test_positions_reconcile_boundary_is_inclusive():
+    # Exactly at the computed tolerance boundary must still reconcile
+    # (`<=`, not `<`) -- this is the one-sided edge a mutation flipping the
+    # comparison operator would get wrong in only one direction.
+    local_position = 20.0
+    tolerance = _RECONCILIATION_ABS_TOLERANCE + _RECONCILIATION_REL_TOLERANCE * local_position
+    assert _positions_reconcile(local_position + tolerance, local_position) is True
