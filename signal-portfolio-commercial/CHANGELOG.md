@@ -86,6 +86,67 @@ file, no persisted `setup.cfg`/`pyproject.toml` config.
 Full suite: `1099 passed, 0 failed`; `ruff check .` and `mypy app
 --ignore-missing-imports` both clean.
 
+### 2026-10-01 — Track 55: mutation-testing pass (sleeve_mapping, sleeve_admin)
+
+Widens Track 39's mutation-testing pass onto the customer-to-sleeve
+routing boundary, per the user's instruction that mutation coverage
+needs to cover every module, highest financial-risk first:
+`app/services/sleeve_mapping.py` (S12 step 5 -- the EXPLICIT (provider,
+analyst, parser_version) identity match a `SOURCE_RECEIPT` is tagged
+with, i.e. which sleeve's trades a customer actually receives) and
+`app/services/sleeve_admin.py` (AD-03's own sleeve-catalog admin
+service that creates/lists/reads those sleeve lineage records). Same ad
+hoc approach as Track 39: `mutmut run --paths-to-mutate=<module>` scoped
+to each module's own dedicated test file, no persisted
+`setup.cfg`/`pyproject.toml` config. `sleeve_mapping.py` has no
+dedicated test file of its own -- it is exercised entirely through
+`tests/test_integration_inbox.py` (the only caller, in
+`app/services/integration_inbox.py`), so that is what its mutants ran
+against.
+
+#### Added
+- `tests/test_sleeve_admin.py`: one real gap closed in `create_sleeve`'s
+  required-field validation. The existing
+  `test_create_sleeve_rejects_a_missing_required_field` only ever sends
+  a BLANK (whitespace) value for the field -- never a field omitted
+  from the kwargs entirely. `missing` is built from `fields.get(key,
+  "")`; a mutant swapping that default for any non-blank placeholder
+  survived, because an omitted field then reads as present-and-blank
+  only when the default itself is blank -- with a non-blank default, an
+  omitted field slips straight past the validation and into the later
+  dict comprehension (`fields[key]`), which raises a raw `KeyError`
+  instead of the clean `InvalidSleeveDraftError` the admin UI expects.
+  New `test_create_sleeve_rejects_a_fully_omitted_required_field`
+  deletes a required key outright (rather than blanking it) and pins
+  that it still raises `InvalidSleeveDraftError`, not `KeyError`. This
+  is a real fail-closed-vs-crash gap on the admin side that creates
+  sleeve lineage records, not a routing-correctness bug, but it is
+  exactly the kind of admin-form boundary condition AD-03 depends on
+  for a clean error instead of a 500.
+
+#### Mutation results
+- `app/services/sleeve_mapping.py`: 5/5 killed (100%). All five mutants
+  are exactly the "customer mapped to the WRONG sleeve" risk this
+  module exists to prevent -- the `analyst_id is None` short-circuit
+  inverted, and each of the four `==` comparisons in the identity-tuple
+  `select(...)` flipped to `!=` -- and all five are already caught by
+  `tests/test_integration_inbox.py`'s existing
+  `test_a_source_receipt_matching_an_admitted_sleeve_is_tagged_with_it`
+  / `..._is_never_matched_to_a_sleeve_with_a_different_analyst` /
+  `..._with_no_analyst_is_never_matched_to_any_sleeve`. No test changes
+  needed; no gap found.
+- `app/services/sleeve_admin.py`: first run 19/22 killed (86.4%), one
+  genuine gap (above) closed, final run 20/22 killed (90.9%). The
+  remaining 2 survivors are both confirmed **equivalent/cosmetic**
+  mutants, same category Track 39/50/51 already established: string-
+  literal changes inside `InvalidSleeveDraftError`'s own diagnostic
+  message in `create_sleeve` (the `', '.join(...)` separator swapped,
+  and the message text itself padded) -- neither test suite nor any
+  caller asserts that message's exact text, so these have no observable
+  effect on behavior. The module's actual tenant-scoped
+  create/list/get routing logic was already fully covered by the
+  existing `tests/test_sleeve_admin.py` before this track.
+
 ### 2026-10-01 — Track 51: mutation-testing pass (copy_mandate, real_account_route)
 
 Widens Track 39's mutation-testing pass onto the real-money copy-

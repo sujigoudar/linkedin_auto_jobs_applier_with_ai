@@ -42,6 +42,34 @@ detailed per-phase notes (now historical; much has been built since).
   score: 21/21 killed (100%), no equivalent mutants. Full suite: `1099
   passed, 0 failed`; `ruff`/`mypy` both clean.
 
+- **Track 55: mutation-testing pass, sleeve_mapping/sleeve_admin
+  (2026-10-01).** Widens Track 39's mutation-testing pass onto the
+  customer-to-sleeve routing boundary: `app/services/sleeve_mapping.py`
+  (S12 step 5's EXPLICIT (provider, analyst, parser_version) identity
+  match -- which sleeve's trades a customer actually receives) and
+  `app/services/sleeve_admin.py` (AD-03's sleeve-catalog admin service
+  that creates/lists/reads sleeve lineage records), per the user's
+  instruction that mutation coverage needs to reach every module,
+  highest financial-risk first. `sleeve_mapping.py` has no dedicated
+  test file -- its mutants ran against `tests/test_integration_inbox.py`,
+  its only real caller. Found and closed one real gap in
+  `sleeve_admin.py`'s `create_sleeve`: a fully OMITTED required field
+  (not just a blank one) could slip past validation under a mutated
+  default and crash with a raw `KeyError` instead of the clean
+  `InvalidSleeveDraftError` the admin UI expects -- closed with a new
+  test that omits a key outright rather than blanking it. No
+  production code changed -- the one survivor was a test gap, closed
+  with a new test, none weakened or deleted. `sleeve_mapping.py` had no
+  gaps at all: every mutant was exactly the "customer mapped to the
+  WRONG sleeve" risk this module exists to prevent, and all were
+  already caught by the existing `test_integration_inbox.py` coverage.
+  Final scores: `sleeve_mapping.py` 5/5 killed (100%);
+  `sleeve_admin.py` 20/22 killed (90.9%, remaining 2 both confirmed
+  equivalent/cosmetic -- string-literal changes inside
+  `InvalidSleeveDraftError`'s own diagnostic message that no test or
+  caller asserts the exact text of). Full suite: `1067 passed`;
+  `ruff`/`mypy` both clean.
+
 - **Track 51: mutation-testing pass, copy_mandate/real_account_route
   (2026-10-01).** Widens Track 39's mutation-testing pass onto the
   real-money copy-trading authorization and routing boundary:

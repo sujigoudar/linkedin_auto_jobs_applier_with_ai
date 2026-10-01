@@ -85,6 +85,31 @@ def test_create_sleeve_rejects_a_missing_required_field(db_session, tenant_sessi
         session.close()
 
 
+def test_create_sleeve_rejects_a_fully_omitted_required_field(db_session, tenant_session_factory):
+    """Distinct from `..._rejects_a_missing_required_field` above, which
+    only ever sends a BLANK (whitespace) value for the field -- never a
+    field that is entirely absent from the kwargs. `missing` is built
+    from `fields.get(key, "")`: if that default were anything non-blank
+    (e.g. a mutant swapping `""` for some placeholder), a field omitted
+    outright would slip past this validation, and `create_sleeve` would
+    instead blow up with a raw `KeyError` out of the later dict
+    comprehension (`fields[key]`) -- an unhandled, admin-facing crash
+    instead of a clean `InvalidSleeveDraftError` the UI can render. This
+    pins the real contract: a fully omitted field is rejected exactly
+    the same way as a blank one."""
+    _seed_tenants(db_session)
+    session = tenant_session_factory()
+    try:
+        set_tenant_scope(session, "tenant-a")
+        fields = dict(_VALID_FIELDS)
+        del fields["provider"]
+        with pytest.raises(InvalidSleeveDraftError):
+            create_sleeve(session, tenant_id="tenant-a", **fields)
+    finally:
+        session.rollback()
+        session.close()
+
+
 def test_get_sleeve_cross_tenant_returns_none(db_session, tenant_session_factory):
     _seed_tenants(db_session)
     session_a = tenant_session_factory()
