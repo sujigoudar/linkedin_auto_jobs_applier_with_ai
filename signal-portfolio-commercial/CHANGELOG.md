@@ -12,6 +12,71 @@ Everything in this file. This is pre-1.0, development-branch software;
 nothing here has shipped to a live production deployment
 (`docs/process/RELEASE.md`).
 
+### 2026-10-01 — Track 48: mutation-testing pass (publication_admission, customer_billing)
+
+Widens Track 39's mutation-testing pass (which scoped
+`trading_authority.py`/`ledger.py`) to the two highest financial-risk
+modules outside that original scope: `app/services/
+publication_admission.py` (the real effect boundary admitting a
+`PublicationIntent` for live publication -- CP-003/CP-051) and
+`app/services/customer_billing.py` (CU-11's tenant-scoped billing
+read). Same ad hoc approach as Track 39: `mutmut run
+--paths-to-mutate=<module>` scoped to each module's own dedicated test
+file(s), not a persisted config.
+
+#### Added
+- `tests/test_publication_admission.py`: the existing five tests
+  already exercised every branch (rights-denied, entitlement-denied,
+  risk-reducing management bypassing entitlement, writer-claim
+  conflict), but asserted only the exception *type* raised, never the
+  diagnostic *message* text. Mutation score started at 8/12 killed
+  (66.7%); the 4 survivors were all cosmetic string-literal mutations
+  inside the two raised exceptions' messages (`RightsDeniedAtAdmission
+  Error`/`EntitlementDeniedAtAdmissionError`). Closed by asserting the
+  full, exact message text (not a substring `in` check, which a
+  prefix/suffix-padding mutation can still satisfy) in the two tests
+  that trigger those denials -- this is a real diagnosability gap on a
+  path an ops engineer relies on to understand *why* a portfolio/
+  subscription was blocked from live publication, not a cosmetic nit.
+  Mutation score after: 12/12 killed (100%); no equivalent mutants.
+- `tests/test_customer_billing.py` (new file -- `get_own_billing_state`/
+  `CustomerBillingState` had no dedicated test file at all before this
+  track; only incidental coverage via `app/models/billing.py`'s own
+  persistence tests). Nine tests covering: empty state, `current`
+  picking by `created_at` recency (never insertion order, per the
+  dataclass's own docstring on "more than one terminal-state row can
+  coexist"), `authorizes_new_entry`/`authorizes_risk_reducing_
+  management` delegation across ACTIVE_PAID/PAST_DUE/PENDING_PAYMENT
+  states, explicit tenant-scoping in the query itself (not just RLS as
+  the only backstop) under both a bypassed and a real RLS session, and
+  the dataclass's own `frozen=True` immutability guarantee. Mutation
+  score: first run 9/10 killed (90%) -- the one survivor was a real gap
+  (nothing asserted that the frozen dataclass actually raises
+  `FrozenInstanceError` on mutation), closed with a dedicated test.
+  Final score: 10/10 killed (100%); no equivalent mutants. Note: this
+  module's own docstring is explicit that it has no charge-amount math,
+  proration, or duplicate-charge logic at all -- there is no `Invoice`
+  model and no real Stripe transport in this build
+  (`app/services/stripe_webhook.py`'s own docstring) -- so the
+  "charge-amount math" financial-risk framing this track's scope was
+  given does not apply to this module as it exists today; the real
+  risk here is a billing-state read silently granting/denying
+  entitlement across tenants or subscription states, which the new
+  tests cover directly.
+
+Practicality note: `mutmut`'s own test-per-mutant subprocess model (a
+fresh disposable Postgres cluster per `db_session` fixture call, per
+`tests/conftest.py`'s own docstring) made each mutation run noticeably
+slower in this shared, concurrently-loaded sandbox than Track 39's
+original pass -- several runs needed retries after transient
+Postgres-fixture permission races from *other* concurrent agents'
+mutation-testing runs sharing the same `/tmp`, and one `pip install
+mutmut` from another concurrent session briefly upgraded the shared,
+non-venv `mutmut` install out from under this track's own run (fixed by
+pinning `mutmut==2.5.1` in a dedicated venv for the rest of this track).
+Full suite: `1027 passed, 0 failed`; `ruff check .` and `mypy app
+--ignore-missing-imports` both clean.
+
 ### 2026-10-01 — Track 42: honest `"applied"`/`"parked"` relay ingest status
 
 Closes the honesty gap Track 40 found and flagged (never fixed) in

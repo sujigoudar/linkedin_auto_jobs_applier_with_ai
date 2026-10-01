@@ -146,7 +146,7 @@ def test_a_rights_denied_portfolio_blocks_admission(db_session):
     _portfolio_version(db_session, "pv-1", ["sleeve-a"])
     db_session.commit()
 
-    with pytest.raises(RightsDeniedAtAdmissionError):
+    with pytest.raises(RightsDeniedAtAdmissionError) as excinfo:
         admit_publication_intent(
             db_session,
             _intent(),
@@ -156,6 +156,19 @@ def test_a_rights_denied_portfolio_blocks_admission(db_session):
             jurisdiction="US",
             asset="EQUITY",
         )
+    # Asserts the full, real diagnostic message an ops engineer relies on to
+    # understand WHY a portfolio was blocked -- not just that it was
+    # blocked. Exact equality (not a substring `in` check) matters here:
+    # a mutation that only prepends/appends "XX" to one joined f-string
+    # segment still leaves the original text present as a substring, so
+    # a substring assertion would NOT catch it -- only exact equality
+    # over the full, real text does.
+    message = str(excinfo.value)
+    assert message == (
+        "portfolio version 'pv-1' is not rights-eligible for channel "
+        "'collective2' right now: RIGHTS_USE_NOT_GRANTED "
+        "(failing_sleeve_id='sleeve-a')"
+    )
 
 
 def test_an_unentitled_subscription_blocks_a_new_open(db_session):
@@ -164,7 +177,7 @@ def test_an_unentitled_subscription_blocks_a_new_open(db_session):
     _portfolio_version(db_session, "pv-1", ["sleeve-a"])
     db_session.commit()
 
-    with pytest.raises(EntitlementDeniedAtAdmissionError):
+    with pytest.raises(EntitlementDeniedAtAdmissionError) as excinfo:
         admit_publication_intent(
             db_session,
             _intent(),
@@ -174,6 +187,14 @@ def test_an_unentitled_subscription_blocks_a_new_open(db_session):
             jurisdiction="US",
             asset="EQUITY",
         )
+    # Asserts the full, real diagnostic message -- which action was blocked
+    # and the actual subscription state that caused the block. Exact
+    # equality, for the same reason as the rights-denied test above.
+    message = str(excinfo.value)
+    assert message == (
+        "OPEN requires an entitled subscription in a new-entry-authorized state; "
+        "got PAST_DUE"
+    )
 
 
 def test_a_stop_update_is_admitted_with_no_subscription_at_all(db_session):
