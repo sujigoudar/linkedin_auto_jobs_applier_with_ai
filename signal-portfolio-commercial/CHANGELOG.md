@@ -93,6 +93,50 @@ nothing here has shipped to a live production deployment
   `tests/test_integration_inbox.py`.
 
 #### Fixed
+- Track 35: `app/services/integration_inbox.py`'s `_apply_projection`
+  `EventType.SOURCE_EVENT` branch now has a real, honest disposition
+  for every `SourceEventKind`, not just `ORIGINAL` (Track 30, above).
+  Before this, `EDIT`/`DELETE`/`REPLY`/`CANCEL`/`CLOSE`/`ADD`/
+  `TARGET_UPDATE`/`STOP_UPDATE` all parked with the generic
+  `unimplemented_source_event_kind:<kind>` reason and permanently
+  blocked everything after them on the same stream -- and this was a
+  LIVE bug, not a theoretical one: signal-copier's Telegram
+  (`app/sources/telegram.py`, `telegram_user.py`), Slack
+  (`app/sources/slack_user.py`), Twitter (`app/sources/
+  twitter_user.py`), and email (`app/sources/email_source.py`)
+  adapters already emit `EDIT`/`DELETE`/`REPLY` live today. Now:
+  - `ORIGINAL`/`ADD`/`REPLY` apply as a no-op and advance the stream
+    (verified against signal-copier's own adapters: each independently
+    books its own instruction, if any, through its own `SOURCE_RECEIPT`
+    before this row is even exported, so this row is pure, already-
+    redundant provenance).
+  - `DELETE`/`CANCEL`/`CLOSE` apply as a no-op and advance the stream
+    (none of these ever carries bookable instrument/side/quantity
+    content, by the taxonomy's own definition).
+  - `EDIT` correlates by native provider identity: a new, indexed
+    `InboxEvent.source_event_native_key` column (Alembic
+    `a7c3f29d1e56`) lets an `EDIT`'s own `source.
+    original_source_event_id` resolve back to the real, already-
+    applied `SOURCE_EVENT` row it revises. Resolves → applied as a
+    no-op (same reasoning as ORIGINAL/ADD/REPLY). Doesn't resolve (no
+    reference at all, or no match for this tenant) → parks honestly as
+    `edit_without_resolvable_target:<...>`, never silently treated as
+    safe provenance just to unblock the stream.
+  - `TARGET_UPDATE`/`STOP_UPDATE` always park as
+    `source_event_kind_not_ledger_representable:<kind>` --
+    `LedgerEntry` has no stop-loss/target column at all, so there is
+    nowhere honest to write these even with a perfect correlation; no
+    adapter emits either kind today, so this remains a disclosed,
+    theoretical gap. See `docs/KNOWN_ISSUES.md` for exactly what is
+    (and deliberately is not) covered, including a separate, pre-
+    existing `SOURCE_RECEIPT`-branch double-booking concern this track
+    flagged but did not fix.
+  Tests: 11 new cases in `tests/test_integration_inbox.py` covering
+  every kind's apply/park disposition, cross-tenant native-key
+  isolation (an `EDIT` must never resolve against a different tenant's
+  identically-keyed `ORIGINAL`), and a decoy-original case proving a
+  wrong/looser correlation can't look right by accident.
+
 - `/auth/signin`'s sign-in success redirect no longer always sends an
   authenticated user to `/app` (the CUSTOMER-only dashboard) regardless
   of role. `id01_auth.html`'s own sign-in form always submits the

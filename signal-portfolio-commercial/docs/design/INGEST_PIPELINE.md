@@ -141,4 +141,25 @@ financial coercion"):
 | `FEE` | A ledger **correction** (`append_correction`) against the `EXECUTION_APPLIED` entry sharing the same `{broker}\|{broker_order_id}` correlation key. Parks as `fee_target_not_found:<key>` if that execution hasn't arrived/applied yet — an honest "waiting," not a fault. |
 | `ROUTING_ADMISSION_OUTCOME` | Sets `routing_outcome` on the correlated `SOURCE_RECEIPT` row (found by `originating_source_event_id`, that receipt's own `event_id`). Parks as `routing_outcome_target_not_found:<id>` if the receipt hasn't applied yet. |
 | `POSITION_SNAPSHOT` | Handled entirely by §5, outside this function. |
+| `SOURCE_EVENT` | See the dedicated table below — never a flat "apply/park", one disposition per `SourceEventKind`. |
 | anything else | Parks as `unimplemented_event_type:<type>` — permanently, and permanently blocks every later sequence on the same stream (the honest cost of strict ordering). |
+
+### 7a. `SOURCE_EVENT` — one disposition per `SourceEventKind`
+
+Every `SOURCE_EVENT` row gets an indexed `InboxEvent.source_event_native_key`
+(`f"{tenant_id}|{source_provider_id}|{source_channel_id}|{source_event_id}"`)
+regardless of kind — the one native-provider identity
+`signal_platform_contracts.identity.SourceIdentity`'s own docstring says is
+stable across redelivery, so a later event can resolve back to this one
+without ever guessing from re-parsed text or arrival order.
+
+| `SourceEventKind` | Disposition |
+|---|---|
+| `ORIGINAL`, `ADD`, `REPLY` | Applied as a no-op (advances the sequence, no second ledger entry) — verified against signal-copier's own adapters: each calls `on_signal` on its own fresh `Signal.id` before exporting this row, so any real instruction it carries is independently booked by its own `SOURCE_RECEIPT`. A `REPLY` with `signal is None` has nothing economic to book regardless. |
+| `DELETE`, `CANCEL`, `CLOSE` | Applied as a no-op — the taxonomy's own definition guarantees none of these ever carries bookable instrument/side/quantity content. |
+| `EDIT` | Correlates `source.original_source_event_id` against `source_event_native_key`. Resolves to a real, already-applied `SOURCE_EVENT` row for the same tenant → applied as a no-op (its revised content, if any, is independently booked by its own `SOURCE_RECEIPT`). Doesn't resolve (missing reference, or no match) → parks as `edit_without_resolvable_target:<missing_original_source_event_id \| the unresolved key>`. |
+| `TARGET_UPDATE`, `STOP_UPDATE` | Always parks as `source_event_kind_not_ledger_representable:<kind>` — `LedgerEntry` has no stop-loss/target column at all, so there is nowhere to write this even with a perfect correlation. |
+
+See `docs/KNOWN_ISSUES.md`'s own SOURCE_EVENT section for what is
+deliberately NOT built here (e.g. a `DELETE`/`CANCEL`/`CLOSE` does not
+mark the earlier `Book.SOURCE` entry it retracts as void).

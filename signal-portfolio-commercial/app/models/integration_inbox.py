@@ -164,6 +164,21 @@ class InboxEvent(Base):
     #: non-`SOURCE_RECEIPT` row.
     routing_outcome: Mapped[str | None] = mapped_column(String, nullable=True)
 
+    #: Track 35: set ONLY on a `SOURCE_EVENT` row, to
+    #: f"{tenant_id}|{source_provider_id}|{source_channel_id}|
+    #: {source_event_id}" from that event's own `SourceEventPayload.
+    #: source` (app/services/integration_inbox.py's own
+    #: `_source_event_native_key`) -- the one native-provider identity
+    #: `signal_platform_contracts.identity.SourceIdentity`'s own
+    #: docstring says is stable across redelivery ("true deduplication
+    #: and edit/delete/reply correlation both key off this pair, never
+    #: off re-parsed message text"). Lets a LATER `SourceEventKind.EDIT`
+    #: naming this same native message (via its own `source.
+    #: original_source_event_id`) resolve back to it without ever
+    #: guessing from re-parsed text or arrival order. NULL for every
+    #: non-`SOURCE_EVENT` row.
+    source_event_native_key: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+
     __table_args__ = (
         #: Scoped to (source_stream, producer_generation, export_sequence)
         #: -- NOT (source_stream, export_sequence) alone -- because

@@ -29,7 +29,8 @@ from app.models.ledger import Book, LedgerEntry
 from app.models.sleeve import Sleeve
 from app.models.tenancy import Tenant
 from app.services.integration_inbox import (
-    PARKED_REASON_UNIMPLEMENTED_SOURCE_EVENT_KIND,
+    PARKED_REASON_EDIT_WITHOUT_RESOLVABLE_TARGET,
+    PARKED_REASON_SOURCE_EVENT_KIND_NOT_LEDGER_REPRESENTABLE,
     EventIntegrityError,
     StreamAlreadyRegisteredToAnotherTenantError,
     UnregisteredStreamError,
@@ -235,19 +236,26 @@ def _source_event_envelope(
     quantity="10",
     price="150.00",
     source_provider_id="telegram",
+    source_channel_id=None,
     analyst_id=None,
     parser_version="v3",
     source_event_id="src-evt-1",
+    original_source_event_id=None,
+    parent_event_id=None,
+    revision_id=None,
+    has_signal=True,
 ):
     """Mirrors exactly what signal-copier's own `app/export_events.py`
     `build_source_event_envelope` produces -- same shared contracts
     models every other envelope builder in this file already uses."""
     source_identity = SourceIdentity(
-        source_provider_id=source_provider_id, analyst_id=analyst_id, parser_version=parser_version,
-        source_event_id=source_event_id,
+        source_provider_id=source_provider_id, source_channel_id=source_channel_id, analyst_id=analyst_id,
+        parser_version=parser_version, source_event_id=source_event_id,
+        original_source_event_id=original_source_event_id, parent_event_id=parent_event_id,
+        revision_id=revision_id,
     )
     inner_signal = None
-    if quantity is not None or price is not None:
+    if has_signal and (quantity is not None or price is not None):
         inner_signal = SourceReceiptPayload(
             source=source_identity, instrument=_instrument(), side="buy", quantity=quantity, price=price,
         )
@@ -257,7 +265,7 @@ def _source_event_envelope(
         source=source_identity,
         provider_timestamp=now,
         local_receipt_timestamp=now,
-        instrument=_instrument(),
+        instrument=_instrument() if has_signal else None,
         signal=inner_signal,
     )
     payload_dict = payload.model_dump(mode="json")
@@ -833,33 +841,253 @@ def test_a_source_event_then_receipt_then_routing_outcome_all_apply_in_order(db_
     assert receipt_row.routing_outcome == "admitted_filled"
 
 
-def test_a_source_event_kind_this_inbox_cannot_yet_interpret_still_parks_and_blocks_its_stream(db_session):
-    """The fix must not silently swallow EVERY SourceEventKind -- only
-    ORIGINAL (pure provenance, no financial consequence, already
-    covered by its own stream's SOURCE_RECEIPT) is applied as a no-op.
-    Any other kind (here: EDIT) genuinely changes economic state this
-    build has no ledger projection for yet, so it still parks honestly
-    -- and, same as any other unimplemented shape, still blocks its
-    stream's later sequences."""
+def test_a_source_event_kind_with_no_ledger_representation_still_parks_and_blocks_its_stream(db_session):
+    """Track 35: TARGET_UPDATE/STOP_UPDATE are genuinely UNDERSTOOD kinds
+    (unlike the old generic "unimplemented" bucket) -- but
+    `LedgerEntry` has no stop-loss/target column at all, so there is
+    nowhere honest to write one even if it correlated perfectly. Parked
+    with the new, specific reason, and -- same as any other un-applied
+    shape -- still blocks its stream's later sequences."""
     _seed_tenant(db_session)
     register_export_stream(db_session, tenant_id="tenant-a", source_stream="signal-copier:source:telegram", environment="LOCAL_SIM")
     db_session.commit()
 
-    edit_event = _source_event_envelope(
-        event_id="evt-source-event-edit", export_sequence=0, source_stream="signal-copier:source:telegram",
-        kind="edit",
+    target_update_event = _source_event_envelope(
+        event_id="evt-source-event-target-update", export_sequence=0, source_stream="signal-copier:source:telegram",
+        kind="target_update", has_signal=False,
     )
-    edit_event_row = ingest_export_event(db_session, edit_event.model_dump_json())
+    target_update_row = ingest_export_event(db_session, target_update_event.model_dump_json())
     db_session.commit()
 
-    assert edit_event_row.applied_at is None
-    assert edit_event_row.parked_reason == f"{PARKED_REASON_UNIMPLEMENTED_SOURCE_EVENT_KIND}:edit"
+    assert target_update_row.applied_at is None
+    assert target_update_row.parked_reason == f"{PARKED_REASON_SOURCE_EVENT_KIND_NOT_LEDGER_REPRESENTABLE}:target_update"
 
     follow_up = _source_receipt_envelope(
-        event_id="evt-src-after-edit", export_sequence=1, source_stream="signal-copier:source:telegram",
+        event_id="evt-src-after-target-update", export_sequence=1, source_stream="signal-copier:source:telegram",
     )
     follow_up_row = ingest_export_event(db_session, follow_up.model_dump_json())
     db_session.commit()
 
     assert follow_up_row.applied_at is None
-    assert follow_up_row.parked_reason is None  # received, waiting behind the still-parked EDIT
+    assert follow_up_row.parked_reason is None  # received, waiting behind the still-parked TARGET_UPDATE
+
+
+def test_a_source_event_stop_update_also_parks_with_the_not_ledger_representable_reason(db_session):
+    _seed_tenant(db_session)
+    register_export_stream(db_session, tenant_id="tenant-a", source_stream="signal-copier:source:telegram", environment="LOCAL_SIM")
+    db_session.commit()
+
+    stop_update_event = _source_event_envelope(
+        event_id="evt-source-event-stop-update", export_sequence=0, source_stream="signal-copier:source:telegram",
+        kind="stop_update", has_signal=False,
+    )
+    stop_update_row = ingest_export_event(db_session, stop_update_event.model_dump_json())
+    db_session.commit()
+
+    assert stop_update_row.applied_at is None
+    assert stop_update_row.parked_reason == f"{PARKED_REASON_SOURCE_EVENT_KIND_NOT_LEDGER_REPRESENTABLE}:stop_update"
+
+
+@pytest.mark.parametrize("kind", ["delete", "cancel", "close"])
+def test_a_retraction_or_close_source_event_applies_as_a_no_op_and_unblocks_its_stream(db_session, kind):
+    """DELETE/CANCEL/CLOSE never carry new instruction content by the
+    taxonomy's own definition (signal_platform_contracts's own
+    SourceEventKind docstring) -- there is no economic fact for them to
+    book, so applying them as a no-op-advance is honest, not a guess,
+    and must not block the stream behind them."""
+    _seed_tenant(db_session)
+    register_export_stream(db_session, tenant_id="tenant-a", source_stream="signal-copier:source:telegram", environment="LOCAL_SIM")
+    db_session.commit()
+
+    event = _source_event_envelope(
+        event_id=f"evt-source-event-{kind}", export_sequence=0, source_stream="signal-copier:source:telegram",
+        kind=kind, has_signal=False,
+    )
+    row = ingest_export_event(db_session, event.model_dump_json())
+    db_session.commit()
+
+    assert row.applied_at is not None
+    assert row.parked_reason is None
+    assert db_session.scalars(select(LedgerEntry).where(LedgerEntry.tenant_id == "tenant-a")).all() == []
+
+    follow_up = _source_receipt_envelope(
+        event_id=f"evt-src-after-{kind}", export_sequence=1, source_stream="signal-copier:source:telegram",
+    )
+    follow_up_row = ingest_export_event(db_session, follow_up.model_dump_json())
+    db_session.commit()
+
+    assert follow_up_row.applied_at is not None
+    assert follow_up_row.parked_reason is None
+
+
+@pytest.mark.parametrize("kind", ["add", "reply"])
+def test_an_add_or_reply_source_event_with_its_own_signal_applies_as_a_no_op(db_session, kind):
+    """ADD/REPLY: verified against signal-copier's own live adapters --
+    an add-on entry or a reply carrying a real correction still calls
+    `on_signal` on its OWN fresh signal id before emitting this
+    SOURCE_EVENT, so its economic content (if any) is independently
+    booked by its own, separate SOURCE_RECEIPT, never by this row.
+    Economically identical to ORIGINAL -- no-op-advance, no second
+    ledger entry from this row."""
+    _seed_tenant(db_session)
+    register_export_stream(db_session, tenant_id="tenant-a", source_stream="signal-copier:source:telegram", environment="LOCAL_SIM")
+    db_session.commit()
+
+    event = _source_event_envelope(
+        event_id=f"evt-source-event-{kind}", export_sequence=0, source_stream="signal-copier:source:telegram",
+        kind=kind, parent_event_id="src-evt-original",
+    )
+    row = ingest_export_event(db_session, event.model_dump_json())
+    db_session.commit()
+
+    assert row.applied_at is not None
+    assert row.parked_reason is None
+    assert db_session.scalars(select(LedgerEntry).where(LedgerEntry.tenant_id == "tenant-a")).all() == []
+
+
+def test_a_reply_source_event_with_no_new_instruction_also_applies_as_a_no_op(db_session):
+    """A reply that carries no correction at all (`signal is None`) has
+    nothing economic to book in the first place -- still a no-op, for a
+    different, equally honest reason."""
+    _seed_tenant(db_session)
+    register_export_stream(db_session, tenant_id="tenant-a", source_stream="signal-copier:source:telegram", environment="LOCAL_SIM")
+    db_session.commit()
+
+    event = _source_event_envelope(
+        event_id="evt-source-event-reply-noop", export_sequence=0, source_stream="signal-copier:source:telegram",
+        kind="reply", has_signal=False, parent_event_id="src-evt-original",
+    )
+    row = ingest_export_event(db_session, event.model_dump_json())
+    db_session.commit()
+
+    assert row.applied_at is not None
+    assert row.parked_reason is None
+
+
+def test_an_edit_source_event_resolving_its_original_applies_as_a_no_op(db_session):
+    """Track 35: an EDIT whose `source.original_source_event_id` names a
+    real, already-applied SOURCE_EVENT for this tenant resolves cleanly
+    -- applied as a no-op-advance (its own revised content, if any, is
+    independently booked by the edit's own SOURCE_RECEIPT elsewhere on
+    the stream, never by this row)."""
+    _seed_tenant(db_session)
+    register_export_stream(db_session, tenant_id="tenant-a", source_stream="signal-copier:source:telegram", environment="LOCAL_SIM")
+    db_session.commit()
+
+    original = _source_event_envelope(
+        event_id="evt-source-event-original", export_sequence=0, source_stream="signal-copier:source:telegram",
+        kind="original", source_provider_id="telegram", source_channel_id="chan-1", source_event_id="msg-1",
+    )
+    original_row = ingest_export_event(db_session, original.model_dump_json())
+    db_session.commit()
+    assert original_row.applied_at is not None
+
+    edit = _source_event_envelope(
+        event_id="evt-source-event-edit", export_sequence=1, source_stream="signal-copier:source:telegram",
+        kind="edit", source_provider_id="telegram", source_channel_id="chan-1", source_event_id="msg-1",
+        original_source_event_id="msg-1", revision_id="msg-1:edit-1",
+    )
+    edit_row = ingest_export_event(db_session, edit.model_dump_json())
+    db_session.commit()
+
+    assert edit_row.applied_at is not None
+    assert edit_row.parked_reason is None
+    assert db_session.scalars(select(LedgerEntry).where(LedgerEntry.tenant_id == "tenant-a")).all() == []
+
+
+def test_an_edit_source_event_with_no_original_source_event_id_parks_honestly(db_session):
+    """An EDIT this build cannot even attempt to correlate (the adapter
+    never wired the revision chain) must never be silently treated as
+    safe, harmless provenance just to unblock the stream -- parked with
+    a specific, honest reason distinct from the old generic
+    "unimplemented" bucket, and -- same as any other un-applied shape --
+    still blocks its stream's later sequences."""
+    _seed_tenant(db_session)
+    register_export_stream(db_session, tenant_id="tenant-a", source_stream="signal-copier:source:telegram", environment="LOCAL_SIM")
+    db_session.commit()
+
+    edit = _source_event_envelope(
+        event_id="evt-source-event-edit-no-target", export_sequence=0, source_stream="signal-copier:source:telegram",
+        kind="edit",
+    )
+    edit_row = ingest_export_event(db_session, edit.model_dump_json())
+    db_session.commit()
+
+    assert edit_row.applied_at is None
+    assert edit_row.parked_reason == f"{PARKED_REASON_EDIT_WITHOUT_RESOLVABLE_TARGET}:missing_original_source_event_id"
+
+    follow_up = _source_receipt_envelope(
+        event_id="evt-src-after-edit-no-target", export_sequence=1, source_stream="signal-copier:source:telegram",
+    )
+    follow_up_row = ingest_export_event(db_session, follow_up.model_dump_json())
+    db_session.commit()
+
+    assert follow_up_row.applied_at is None
+    assert follow_up_row.parked_reason is None  # waiting behind the still-parked EDIT
+
+
+def test_an_edit_source_event_naming_an_unresolvable_original_parks_rather_than_guesses(db_session):
+    """The reference IS present (`original_source_event_id` is set) but
+    doesn't match any already-applied SOURCE_EVENT for this tenant --
+    this must never be treated as "close enough" (e.g. by matching on
+    source_provider_id alone, ignoring channel/message identity) just
+    to unblock the stream. Parked with the unresolved key itself in the
+    reason, never silently dropped or coerced onto some other row."""
+    _seed_tenant(db_session)
+    register_export_stream(db_session, tenant_id="tenant-a", source_stream="signal-copier:source:telegram", environment="LOCAL_SIM")
+    db_session.commit()
+
+    # A DIFFERENT original actually exists for this tenant/provider --
+    # proving a wrong, looser correlation (e.g. "any ORIGINAL on this
+    # provider") could look right by accident if it weren't exact.
+    decoy_original = _source_event_envelope(
+        event_id="evt-source-event-decoy", export_sequence=0, source_stream="signal-copier:source:telegram",
+        kind="original", source_provider_id="telegram", source_channel_id="chan-1", source_event_id="msg-decoy",
+    )
+    ingest_export_event(db_session, decoy_original.model_dump_json())
+    db_session.commit()
+
+    edit = _source_event_envelope(
+        event_id="evt-source-event-edit-unresolved", export_sequence=1, source_stream="signal-copier:source:telegram",
+        kind="edit", source_provider_id="telegram", source_channel_id="chan-1", source_event_id="msg-99",
+        original_source_event_id="msg-never-arrived",
+    )
+    edit_row = ingest_export_event(db_session, edit.model_dump_json())
+    db_session.commit()
+
+    assert edit_row.applied_at is None
+    expected_key = "tenant-a|telegram|chan-1|msg-never-arrived"
+    assert edit_row.parked_reason == f"{PARKED_REASON_EDIT_WITHOUT_RESOLVABLE_TARGET}:{expected_key}"
+
+
+def test_an_edit_source_event_does_not_resolve_against_a_different_tenants_identical_native_key(db_session):
+    """Two tenants whose adapters happen to relay the SAME native
+    provider/channel/message identity (e.g. the same public Telegram
+    channel registered to two different tenants) must never let one
+    tenant's EDIT resolve against the other's ORIGINAL -- the native
+    key is tenant-scoped specifically to prevent this cross-tenant
+    misattribution."""
+    _seed_tenant(db_session, "tenant-a")
+    _seed_tenant(db_session, "tenant-b")
+    register_export_stream(db_session, tenant_id="tenant-a", source_stream="signal-copier:source:telegram-a", environment="LOCAL_SIM")
+    register_export_stream(db_session, tenant_id="tenant-b", source_stream="signal-copier:source:telegram-b", environment="LOCAL_SIM")
+    db_session.commit()
+
+    original_for_a = _source_event_envelope(
+        event_id="evt-source-event-a-original", export_sequence=0, source_stream="signal-copier:source:telegram-a",
+        kind="original", source_provider_id="telegram", source_channel_id="chan-1", source_event_id="msg-shared",
+    )
+    ingest_export_event(db_session, original_for_a.model_dump_json())
+    db_session.commit()
+
+    edit_for_b = _source_event_envelope(
+        event_id="evt-source-event-b-edit", export_sequence=0, source_stream="signal-copier:source:telegram-b",
+        kind="edit", source_provider_id="telegram", source_channel_id="chan-1", source_event_id="msg-shared",
+        original_source_event_id="msg-shared",
+    )
+    edit_for_b_row = ingest_export_event(db_session, edit_for_b.model_dump_json())
+    db_session.commit()
+
+    assert edit_for_b_row.applied_at is None
+    expected_key = "tenant-b|telegram|chan-1|msg-shared"
+    assert edit_for_b_row.parked_reason == f"{PARKED_REASON_EDIT_WITHOUT_RESOLVABLE_TARGET}:{expected_key}"
