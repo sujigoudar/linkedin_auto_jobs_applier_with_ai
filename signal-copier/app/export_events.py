@@ -216,6 +216,7 @@ def build_source_receipt_envelope(
         source_event_id=signal.message_id or signal.id,
         revision_id=signal.revision_id,
         original_source_event_id=signal.original_message_id,
+        source_catalog_id=signal.source_catalog_id,
     )
     payload = SourceReceiptPayload(
         source=source_identity,
@@ -387,6 +388,7 @@ def build_source_event_envelope(
         revision_id=event.revision_id,
         original_source_event_id=event.original_message_id,
         parent_event_id=event.parent_message_id,
+        source_catalog_id=event.signal.source_catalog_id if event.signal is not None else None,
     )
     inner_signal_payload = None
     if event.signal is not None and event.signal.side != Side.CLOSE:

@@ -487,4 +487,9 @@ class RssSourceAdapter(SourceAdapter, SourceAdapterContract):
             return
         signal = candidate.to_signal(source=self.name)
         if signal is not None:
+            # Track 29: this adapter genuinely knows its own Track 14
+            # provider-catalog `sources.id` (`self.source_id`) -- the one
+            # real case today where a Signal's catalog source is known
+            # at emission time, not fabricated.
+            signal.source_catalog_id = self.source_id
             await self.on_signal(signal)

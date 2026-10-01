@@ -14,6 +14,17 @@ nothing here has shipped to a live production deployment
 
 ### 2026-10-01
 
+#### Added
+- Track 29: accepted `signal_platform_contracts` v1.1.0's new, additive,
+  optional `SourceIdentity.source_catalog_id` field (signal-copier's
+  Track 14 Provider/Source/Connection catalog's own `sources.id`) --
+  `app/services/integration_inbox.py`'s `SOURCE_RECEIPT`/`SOURCE_EVENT`
+  ingestion already tolerates it (shared pydantic model, extra field
+  simply parses through); no new column added to `inbox_events` or the
+  ledger yet, since no producer sends a real value for it in this
+  deployment today -- see `signal-copier`'s own changelog entry for
+  which adapter does.
+
 #### Fixed
 - Portfolio version `version_number` race: a database-level unique
   constraint on `(tenant_id, portfolio_id, version_number)` for

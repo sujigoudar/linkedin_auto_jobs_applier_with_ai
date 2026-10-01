@@ -37,7 +37,25 @@ class SourceIdentity(BaseModel):
     all. Never fabricated -- an adapter that hasn't wired real message
     identity yet (see app/sources/base.py's own docstring on this) simply
     leaves these `None`, same as it always could before this field
-    existed."""
+    existed.
+
+    `source_catalog_id` is a SEPARATE, later (Track 29) addition: a
+    signal-copier `Provider`/`Source`/`Connection` catalog's own
+    `sources.id` (see signal-copier's `app/provider_catalog.py` module
+    docstring for the full model) -- the specific TRANSPORT a provider's
+    alert arrived through, when that provider has more than one (e.g.
+    the same real-world seller reached via both a Telegram channel and a
+    Whop webhook: two distinct `sources` rows sharing one `providers`
+    row). This is NOT the same axis as `source_provider_id` (which, pre-
+    Track-14, already identifies the provider/collector by itself and is
+    never renamed or removed here) nor `source_channel_id` (that
+    provider's own native channel identity at the transport level, e.g.
+    a Telegram channel id -- which can legitimately be the FULL identity
+    for a single-source provider with no catalog entry at all). Purely
+    additive and optional: `None` for every event this contract has ever
+    exported before this field existed, and `None` still today for any
+    producer whose adapter hasn't been wired to the Track 14 catalog --
+    never fabricated or backfilled from `source_channel_id`."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -50,6 +68,7 @@ class SourceIdentity(BaseModel):
     revision_id: str | None = None
     parent_event_id: str | None = None
     original_source_event_id: str | None = None
+    source_catalog_id: str | None = None
 
 
 class InstrumentIdentity(BaseModel):

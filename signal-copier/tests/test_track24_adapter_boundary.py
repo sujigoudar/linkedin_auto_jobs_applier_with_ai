@@ -304,6 +304,10 @@ async def test_signal_candidate_purpose_with_complete_content_produces_a_signal(
     assert len(observations) == 1
     assert len(signals) == 1
     assert signals[0].symbol == "XYZ"
+    # Track 29: this adapter genuinely knows its own Track 14 catalog
+    # `sources.id` at emission time -- it must be carried onto the
+    # emitted Signal, not left None.
+    assert signals[0].source_catalog_id == "src_rss_1"
 
     rows = store.get_source_observations_for_source("src_rss_1")
     assert rows[0]["purpose"] == "signal_candidate"

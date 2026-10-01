@@ -136,11 +136,12 @@ def _source_receipt_envelope(
     analyst_id=None,
     parser_version="v3",
     source_event_id="src-evt-1",
+    source_catalog_id=None,
 ):
     payload = SourceReceiptPayload(
         source=SourceIdentity(
             source_provider_id=source_provider_id, analyst_id=analyst_id, parser_version=parser_version,
-            source_event_id=source_event_id,
+            source_event_id=source_event_id, source_catalog_id=source_catalog_id,
         ),
         instrument=_instrument(),
         side="buy",
@@ -335,6 +336,31 @@ def test_ingest_source_receipt_event_with_unknown_quantity_or_price_creates_no_l
 
     assert inbox_event.ledger_entry_id is None
     assert inbox_event.applied_at is not None
+
+
+def test_ingest_source_receipt_event_with_a_catalog_source_id_is_accepted_and_ignored(db_session):
+    """Track 29: SourceIdentity.source_catalog_id is a new, additive,
+    optional field on the SAME shared `signal_platform_contracts`
+    package this repo imports -- a SOURCE_RECEIPT carrying a real value
+    for it must still ingest and apply exactly as before. This consumer
+    has no column for it yet (nothing real produces it in this
+    deployment today); the assertion here is that an envelope carrying
+    it does not raise, does not get parked, and produces the identical
+    ledger entry a payload without it would."""
+    _seed_tenant(db_session)
+    register_export_stream(db_session, tenant_id="tenant-a", source_stream="signal-copier:acct1", environment="LOCAL_SIM")
+    db_session.commit()
+
+    envelope = _source_receipt_envelope(source_catalog_id="catalog-source-42")
+    assert envelope.payload["source"]["source_catalog_id"] == "catalog-source-42"
+    inbox_event = ingest_export_event(db_session, envelope.model_dump_json())
+    db_session.commit()
+
+    assert inbox_event.applied_at is not None
+    entry = db_session.get(LedgerEntry, inbox_event.ledger_entry_id)
+    assert entry is not None
+    assert entry.book == Book.SOURCE
+    assert entry.quantity == Decimal("10")
 
 
 def test_a_routing_admission_outcome_attaches_the_real_outcome_to_its_receipt(db_session):

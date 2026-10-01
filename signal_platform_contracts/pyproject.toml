@@ -1,6 +1,6 @@
 [project]
 name = "signal-platform-contracts"
-version = "1.0.0"
+version = "1.1.0"
 description = "Pure, versioned cross-service contract between signal-copier and signal-portfolio-commercial. No database, broker-client or secret imports -- see this package's own __init__.py docstring."
 requires-python = ">=3.11"
 dependencies = [
