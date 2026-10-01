@@ -7,6 +7,90 @@ does not yet cut versioned releases (see `docs/process/RELEASE.md`), so
 entries are grouped by theme and rough chronological wave instead of by
 version number. Newest wave first.
 
+## [Unreleased] — Track 45: widen mutation-testing scope to writer_lease, command_ledger, reconciliation (2026-10-01)
+
+Per explicit instruction ("mutation covering needs to cover every
+module"), widened pyproject.toml's `[tool.mutmut]` scope (previously
+app/auth.py only, see its own C31 comment) one deliberate step further
+to the next three highest financial-risk modules: `app/writer_lease.py`
+(cross-process/cross-host single-writer fencing), `app/command_ledger.py`
+(the idempotent, pre-effect financial-command ledger), and
+`app/reconciliation.py` (fill-confirmation reconciliation against
+PENDING orders and managed-lifecycle pending exits) — see pyproject.toml's
+own comment for the full per-file mutation-score breakdown and what was
+fixed vs. disclosed as a residual.
+
+### Added
+- `tests/test_p0_2_command_ledger.py`: 11 new direct unit tests for
+  `app/command_ledger.py`'s classification/fingerprint helpers
+  (`classify_order_result`, `compute_fingerprint`,
+  `ambiguous_evidence_for_exception`, `classify_optional_order_result`),
+  which had NO direct tests at all before this — every branch was only
+  ever exercised indirectly through `PaperBroker`, which always returns
+  FILLED. Closes the audit's own named exposure case (a PENDING result
+  with no broker_order_id must land UNKNOWN_AMBIGUOUS with an EMPTY
+  `remote_identifiers`, not a stray `{"broker_order_id": None}`) and the
+  idempotency-key fingerprint's order-independence guarantee
+  (`sort_keys=True`).
+- `tests/test_writer_lease_fencing.py`: 6 new tests. The most significant:
+  `WriterLeaseGuard.renew()`'s happy path had never been exercised by any
+  existing test (only the already-fenced-raises case was) — an `is None`
+  -> `is not None` mutation there makes `renew()` always raise
+  `FencedOutError` once a token is held, which would self-fence a
+  genuinely live, current writer's own heartbeat renewal. Also added:
+  `is_expired`'s exact-expiry-boundary case, and `holder_id`'s
+  site-id-prefix format.
+- `tests/test_reconciliation.py`: a FILLED **SELL**-side order's sign in
+  `_correct_position` had never been tested (only REJECTED-SELL and
+  FILLED-BUY were) — a `+delta`/`-delta` mix-up there would move a SELL
+  position's correction in the WRONG direction instead of truing it up.
+- `tests/test_pending_fill_reconciliation_integration.py`: a pass with
+  TWO pending managed entries, where the first hits an early
+  `continue` (its broker isn't registered with the reconciler) and the
+  second genuinely confirms FILLED — proves the first's early exit
+  doesn't silently stop the loop before reaching the second (a
+  `continue` -> `break` mutation in `_reconcile_pending_entries` would
+  do exactly that, leaving every account after the first one's own
+  unresolvable entry unreconciled for the rest of that pass).
+- `tests/test_5e91e78_lifecycle_composition.py`: a managed close that's
+  flatly REJECTED by the broker with zero new fill (same, already-known
+  zero progress) must still call `resolve_pending_exit` to restore the
+  stop and release the reservation — `_reconcile_pending_exits`'s guard
+  requires BOTH not-terminal AND no-new-progress together; an `and` ->
+  `or` mutation there would leave a managed position stuck with no
+  protective stop after its close attempt is rejected.
+- `tests/test_exe01_exit_response_lost.py`: the zero-drop counterpart of
+  the existing lost-exit-response test — an exit whose response was lost
+  AND that genuinely never reached the venue at all (broker's own book
+  unchanged) must resolve to exactly 0.0 filled, not a floor of 1.0 (a
+  `max(0.0, ...)` -> `max(1.0, ...)` mutation in
+  `_reconcile_broker_positions` would fabricate a phantom 1-unit fill).
+- `tests/test_b2_b6_reconciliation_and_lifecycle_previews.py`:
+  `run_now()`'s `pending_exits_examined`/`pending_entries_examined`
+  breakdown fields had never been exercised against a real
+  `lifecycle_manager` with actual pending work queued (only an empty
+  store was tested) — closes mutations that hard-code either field to
+  `[]` regardless of real state, or flip `+`/`-` in the `orders_examined`
+  sum.
+
+Every new test above was individually, hand-verified to fail against its
+exact target mutant (by hand-applying that mutant's diff and re-running
+just that test) and pass against real code — a genuine kill, not merely
+"passes against current code." No existing test was weakened or deleted.
+
+### Known residual (disclosed, not chased to zero)
+`app/reconciliation.py`'s ~130 remaining mutmut survivors are
+predominantly cosmetic (`logger.info`/`logger.exception` argument and
+string-literal mutations inside exception handlers, which the suite
+correctly never asserts on) plus a smaller set of real but lower-severity
+AUD-01 field-plumbing gaps (`confirmed_cumulative_fill`/
+`applied_execution_delta`/`outstanding_possible_fill` passed as `None` or
+a wrong literal to `correct_position_and_update_order_status`) and a
+handful of analogous `continue`->`break` survivors elsewhere in
+`_reconcile_broker_positions` not yet individually triaged. See
+pyproject.toml's own comment for the full baseline numbers and
+docs/state/PROGRESS.md for this track's verification status.
+
 ## [Unreleased] — Track 42: honest handling of a relay `"parked"` status
 
 signal-portfolio-commercial's `POST /internal/relay/ingest-batch` used

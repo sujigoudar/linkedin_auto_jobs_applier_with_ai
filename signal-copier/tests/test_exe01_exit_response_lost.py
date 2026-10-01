@@ -101,3 +101,53 @@ async def test_pending_exit_with_no_order_id_is_resolved_via_broker_position_rea
     assert lifecycle.pending_exit is None
     assert lifecycle.confirmed_owned_quantity == 90.0
     assert manager.arbiter.snapshot("acct1", "AAPL")["reserved"] == 0.0
+
+
+@pytest.mark.asyncio
+async def test_pending_exit_with_no_order_id_that_never_reached_the_venue_resolves_to_zero_filled(store):
+    """Track 45: the exact-zero-drop counterpart of the test above --
+    `filled = min(max(0.0, confirmed_owned_quantity - broker_owned),
+    requested_quantity)` must floor at genuinely ZERO when the broker's
+    own book shows NOTHING actually left (confirmed_owned_quantity ==
+    broker_owned), not some nonzero floor (a `max(1.0, ...)` mutation
+    would wrongly report 1 unit filled when the exit never reached the
+    venue at all)."""
+    from app.reconciliation import OrderReconciler
+    from app.models import Signal
+
+    broker = PaperBroker()
+    account = DestinationAccount(account_id="acct1", broker="paper", managed_lifecycle=True)
+    manager = PositionLifecycleManager(brokers={"paper": broker}, store=store)
+
+    plan = PositionPlan(
+        account_id="acct1", symbol="AAPL", side=Side.BUY, planned_quantity=100, broker="paper", initial_stop=90
+    )
+    manager.start_plan(plan)
+    await broker.place_order(Signal(source="test", symbol="AAPL", side=Side.BUY), account, 100, "AAPL")
+    await manager.on_entry_fill(account, "AAPL", 100)
+
+    async def never_reaches_venue(*args, **kwargs):
+        raise TimeoutError("request never left this process")
+
+    broker.place_order = never_reaches_venue
+
+    with pytest.raises(TimeoutError):
+        await manager.request_exit(account, "AAPL", 10, "target")
+
+    lifecycle = manager.get_lifecycle("acct1", "AAPL")
+    assert lifecycle.pending_exit is not None
+    assert lifecycle.pending_exit.broker_order_id is None
+    # The broker's own book is untouched -- the exit genuinely never
+    # reached the venue (unlike the test above, where it did).
+    assert broker.positions["acct1"]["AAPL"] == 100.0
+
+    reconciler = OrderReconciler(store, {"paper": broker}, lifecycle_manager=manager)
+    corrected = await reconciler.reconcile_once()
+
+    assert corrected >= 1
+    lifecycle = manager.get_lifecycle("acct1", "AAPL")
+    assert lifecycle.pending_exit is None
+    # Zero actually filled -- the full 100 is still genuinely owned, not
+    # 99 (the `max(1.0, ...)` bug's outcome).
+    assert lifecycle.confirmed_owned_quantity == 100.0
+    assert manager.arbiter.snapshot("acct1", "AAPL")["reserved"] == 0.0

@@ -32,14 +32,120 @@
 # with targeted regression tests in tests/test_owner_auth.py rather than
 # chased to zero here; this is a starting baseline, not a target score.
 #
+# Track 45 (2026-10-01): widened per explicit instruction ("mutation
+# covering needs to cover every module") to the next three highest
+# financial-risk modules, in the same deliberate, one-module-at-a-time
+# way the comment above called for -- not all at once. Added:
+# app/writer_lease.py (the cross-process/cross-host single-writer
+# fencing mechanism -- see its own docstring; a silently-wrong lease/
+# fencing-token comparison is how two processes end up believing they're
+# both the active writer, or a fenced-out process keeps submitting
+# commands), app/command_ledger.py (the idempotent, pre-effect
+# financial-command ledger -- see its own docstring; a silently-wrong
+# idempotency-key fingerprint comparison or uncertainty-state
+# classification is how a retried command double-executes, or a
+# genuinely ambiguous outcome gets recorded as resolved), and
+# app/reconciliation.py (fill-confirmation reconciliation against
+# PENDING orders and managed-lifecycle pending exits; a silently-wrong
+# fill-matching/quantity-truing comparison here means a missed fill or
+# a wrongly-reversed position). See CHANGELOG.md for the full writeup.
+#
+# Baseline for the widened scope, full `mutmut run` (819 mutants across
+# all four files): 549 killed / 254 survived / 16 timeout (the timeouts
+# are an artifact of running the much larger test selection this widened
+# scope needs under 6-way worker parallelism, not a real behavior
+# change). Per file: app/auth.py 74/51 (unchanged from before, just
+# re-measured against the bigger shared test run); app/writer_lease.py
+# 29/19/10-timeout; app/command_ledger.py 23/50; app/reconciliation.py
+# 423/134/6-timeout. The overwhelming majority of command_ledger.py's
+# survivors were simply its own classification/fingerprint helpers
+# (classify_order_result, compute_fingerprint, ambiguous_evidence_for_
+# exception, classify_optional_order_result) having had ZERO direct unit
+# tests before this -- every branch exercised only indirectly through
+# PaperBroker, which always returns FILLED. Closed with 11 new direct
+# tests in tests/test_p0_2_command_ledger.py covering every branch
+# (FILLED/REJECTED/PENDING-with-id/PENDING-without-id/ERROR, the
+# None-vs-real-result capability check, and fingerprint order-
+# independence). writer_lease.py's one genuinely dangerous survivor:
+# `WriterLeaseGuard.renew()`'s happy path had NO prior test at all (only
+# the already-fenced-raises case was covered) -- an `is None` -> `is not
+# None` mutation there makes renew() always raise once a token is held,
+# i.e. a live writer's own heartbeat would self-fence. Closed in
+# tests/test_writer_lease_fencing.py, along with is_expired's exact-
+# boundary case and holder_id's site-prefix format. reconciliation.py:
+# triaged by hand (prioritizing the fill-matching/quantity-truing logic
+# per this comment's own stated priority) and closed four confirmed real
+# gaps, each hand-verified to fail against the actual mutant and pass
+# against real code: (1) a FILLED SELL order's sign in `_correct_position`
+# (a `+delta`/`-delta` mix-up would move the position the WRONG
+# direction, not true it up -- tests/test_reconciliation.py); (2) a
+# `continue` -> `break` in `_reconcile_pending_entries`'s per-entry loop
+# (one account's unresolvable entry would silently stop reconciling
+# every OTHER account's entry for the rest of that pass --
+# tests/test_pending_fill_reconciliation_integration.py); (3)
+# `_reconcile_pending_exits`'s "nothing new to report" guard requiring
+# BOTH not-terminal AND no-new-progress, not either alone (an `and` ->
+# `or` mutation leaves a flatly-REJECTED exit with zero new fill stuck
+# forever with no protective stop -- tests/test_5e91e78_lifecycle_
+# composition.py); (4) `_reconcile_broker_positions`'s exit-side
+# zero-drop floor (`max(0.0, ...)` -> `max(1.0, ...)` would fabricate a
+# phantom 1-unit fill for an exit that never reached the venue at all --
+# tests/test_exe01_exit_response_lost.py); and a fifth, `run_now`'s
+# pending_exits_examined/pending_entries_examined breakdown fields never
+# having been exercised against a real lifecycle_manager at all (closed
+# in tests/test_b2_b6_reconciliation_and_lifecycle_previews.py). The
+# remaining ~130 reconciliation.py survivors are predominantly cosmetic
+# (logger.info argument/string mutations inside exception handlers,
+# which the test suite correctly doesn't assert on) plus a residual set
+# of real-but-lower-severity AUD-01 field-plumbing gaps
+# (confirmed_cumulative_fill/applied_execution_delta/
+# outstanding_possible_fill passed as None/a wrong literal to
+# `correct_position_and_update_order_status`, and analogous
+# `continue`->`break`/off-by-one survivors elsewhere in
+# `_reconcile_broker_positions` not yet individually triaged) --
+# disclosed here as a known, time-boxed residual rather than chased to
+# zero, same posture as the original C31 baseline above. A fresh
+# `mutmut run` after these fixes land was not re-run to completion in
+# this pass (each full run across this now-much-larger test selection
+# takes 30-45+ minutes); every fix above was instead individually
+# confirmed by hand-applying its exact mutant diff and checking the new
+# test fails against it and passes against real code -- a real kill
+# confirmation, just not a re-aggregated whole-suite score. Re-running
+# `mutmut run` fresh is the natural next step before chasing the
+# remaining survivors further.
+#
 # source_paths must cover the whole importable "app" package (mutmut
 # copies it verbatim into mutants/app/ so the test suite's `import
 # app.main` etc. still resolves); only_mutate is what actually narrows
-# the mutation scope to app/auth.py -- every other file under app/ is
-# copied unmutated.
+# the mutation scope -- every other file under app/ is copied unmutated.
 source_paths = ["app"]
-only_mutate = ["app/auth.py"]
-pytest_add_cli_args_test_selection = ["tests/test_owner_auth.py", "tests/test_sms_twilio_sender_authorization.py"]
+only_mutate = ["app/auth.py", "app/writer_lease.py", "app/command_ledger.py", "app/reconciliation.py"]
+pytest_add_cli_args_test_selection = [
+    "tests/test_owner_auth.py",
+    "tests/test_sms_twilio_sender_authorization.py",
+    "tests/test_writer_lease_fencing.py",
+    "tests/test_p0_2_command_ledger.py",
+    "tests/test_trkq1_quantity_breakdown.py",
+    "tests/test_reconciliation.py",
+    "tests/test_pending_fill_reconciliation_integration.py",
+    "tests/test_p0_5_close_reconciliation.py",
+    "tests/test_ops01_ops02_ops03_worker_health_and_reconciliation.py",
+    "tests/test_b2_b6_reconciliation_and_lifecycle_previews.py",
+    "tests/test_5e91e78_lifecycle_composition.py",
+    "tests/test_aud01_distinct_quantity_model.py",
+    "tests/test_c23_prometheus_metrics.py",
+    "tests/test_c32_fault_injection.py",
+    "tests/test_c36_broker_submission_fault_injection.py",
+    "tests/test_e03_capital_exposure_gate.py",
+    "tests/test_edd2b70_review_regressions.py",
+    "tests/test_exe01_exit_response_lost.py",
+    "tests/test_exe01_submission_response_lost.py",
+    "tests/test_exe01b_error_result_response_lost.py",
+    "tests/test_health_truthfulness.py",
+    "tests/test_relay_scheduler.py",
+    "tests/test_tr13_tr16_trading_screens.py",
+    "tests/test_trk23_managed_lifecycle_export.py",
+]
 
 # C38 (bounded): static analysis -- ruff (lint) + mypy (type checking).
 # Neither existed at all before this; both close a genuine gap, not busywork

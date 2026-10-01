@@ -258,3 +258,64 @@ always passed anyway), routing.py 260/262 (2 confirmed equivalent — an
 code changed; every real survivor was closed with a new test, no
 genuine production logic bug was found. Full `pytest -q` re-verified
 after these additions: 2170 passed, 0 failed.
+
+### Track 45: widen the checked-in mutmut scope (2026-10-01)
+
+Per explicit instruction ("mutation covering needs to cover every
+module"), widened pyproject.toml's own checked-in `[tool.mutmut]`
+config (previously `app/auth.py` only) to also mutate
+`app/writer_lease.py`, `app/command_ledger.py`, and
+`app/reconciliation.py` -- the next three highest financial-risk
+modules, done the same deliberate, one-step-at-a-time way the original
+C31 comment called for. Full `mutmut run` across all four files: 819
+mutants, 549 killed / 254 survived / 16 timeout. Per file: app/auth.py
+74/51 (unchanged, re-measured against the larger shared test run);
+app/writer_lease.py 29/19/10-timeout; app/command_ledger.py 23/50;
+app/reconciliation.py 423/134/6-timeout.
+
+Closed the genuinely dangerous survivors found by hand-triaging each
+file's results (`mutmut show <name>` on every survivor, prioritizing
+idempotency-key comparisons, lease ownership/expiry checks, and
+reconciliation's fill-matching logic per the track brief):
+- `app/command_ledger.py`'s classification helpers
+  (`classify_order_result`/`compute_fingerprint`/
+  `ambiguous_evidence_for_exception`/`classify_optional_order_result`)
+  had ZERO direct unit tests before this -- 11 new tests added in
+  `tests/test_p0_2_command_ledger.py` covering every branch.
+- `app/writer_lease.py`'s `WriterLeaseGuard.renew()` happy path had
+  never been tested (only the fenced-out-raises case was) -- an
+  `is None`/`is not None` flip there makes a genuinely live writer's own
+  heartbeat renewal always raise `FencedOutError`, i.e. self-fence a
+  healthy writer. Closed along with `is_expired`'s boundary case and
+  `holder_id`'s format, in `tests/test_writer_lease_fencing.py`.
+- `app/reconciliation.py`: four confirmed real gaps closed (a FILLED
+  SELL order's sign in `_correct_position`; a `continue`->`break` in
+  `_reconcile_pending_entries`'s per-account loop that would silently
+  stop reconciling every account after the first one's own
+  unresolvable entry; `_reconcile_pending_exits`'s "nothing new to
+  report" guard needing BOTH not-terminal AND no-new-progress, not
+  either alone, or a flatly-rejected exit with zero new fill never gets
+  its stop restored; `_reconcile_broker_positions`'s zero-drop floor
+  fabricating a phantom 1-unit fill for an exit that never reached the
+  venue) plus `run_now`'s pending-exit/entry breakdown fields never
+  having been exercised against a real `lifecycle_manager`. See
+  CHANGELOG.md for the per-test writeup and pyproject.toml's own
+  comment for the full score breakdown.
+
+Each of these new tests was individually hand-verified (apply the exact
+mutant diff, confirm the new test fails against it and passes against
+real code) rather than re-confirmed via a second complete `mutmut run`
+-- each full run across the widened test selection this scope needs
+takes 30-45+ minutes, and doing so a third time was not practical within
+this pass. `app/reconciliation.py`'s remaining ~130 survivors (mostly
+cosmetic logger-argument mutations plus a smaller set of lower-severity
+AUD-01 field-plumbing gaps and un-triaged `_reconcile_broker_positions`
+continue/break survivors) are disclosed as a known residual in
+pyproject.toml's comment, not chased to zero -- a natural follow-up is
+re-running `mutmut run` fresh against the current test suite and
+continuing the same triage.
+
+No production code was changed; every fix was a new test. `ruff check
+.` and the CI-scoped `mypy` command both clean. Full `pytest -q`
+(isolated `TMPDIR`) re-verified after these additions: 2185 passed, 8
+skipped, 0 failed.
