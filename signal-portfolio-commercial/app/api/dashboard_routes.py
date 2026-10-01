@@ -463,10 +463,11 @@ def integration_status_endpoint(
     app/services/integration_status.py's own module docstring for
     exactly what this reports and what it deliberately doesn't yet
     (gaps, snapshot/bootstrap state, cross-service lag). A JSON API
-    rather than a template page: this is the first real backing query
-    for that panel (S12's own "First complete proof... populates the
-    corresponding private staff view"), not yet wired into a rendered
-    screen."""
+    rather than a template page -- but this report IS now also rendered,
+    via `GET /ops/trading` below (`trading_performance_page`), which
+    calls this same `get_integration_status()` and renders it through
+    `ad_trading_performance.html`; this JSON route remains for direct/
+    programmatic access to the same data."""
     try:
         require_permission(scope.role, "view_integration_status")
     except PermissionDenied as exc:

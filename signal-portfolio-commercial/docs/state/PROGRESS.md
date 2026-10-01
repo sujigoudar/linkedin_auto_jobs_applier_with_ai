@@ -100,9 +100,10 @@ requirement audit those phases were checked against.
 
 ## Current scale (approximate, from this snapshot)
 
-- 37 Alembic revisions (`alembic/versions/`).
+- 43 Alembic revisions (`alembic/versions/`).
 - ~15,600 lines across `app/`.
-- ~800+ test functions across `tests/`, all run against a real
+- 941 tests across `tests/` (`pytest -q`, re-verified 2026-10-01 against
+  HEAD `9ab1104`: 941 passed, 0 failed), all run against a real
   disposable Postgres cluster.
 - CI: lint (ruff) + type check (mypy) + `pytest -q` + a dedicated
   `alembic upgrade head` verification step against a second, fresh

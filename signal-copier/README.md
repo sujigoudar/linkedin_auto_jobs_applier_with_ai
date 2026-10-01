@@ -13,10 +13,16 @@ MT4/MT5 via [MetaApi](https://github.com/metaapi/metaapi-python-sdk),
 Rithmic via [async_rithmic](https://github.com/rundef/async_rithmic), and
 NinjaTrader execution via
 [TradeRouter](https://github.com/roydufek/traderouter)'s NinjaScript
-strategy. One gap remains genuinely open — NinjaTrader as a signal
-*source* — because no existing open-source project reads trade events back
-out of NinjaTrader (everything found is one-way, TradingView-in only); see
-"What's real vs. stubbed" below.
+strategy. NinjaTrader as a signal *source* is also real, working code now
+(`app/sources/ninjatrader.py` plus a fresh-written NinjaScript indicator,
+`ninjascript/SignalCopierAutoJournal.cs`, since no existing open-source
+project reads trade events back out of NinjaTrader — everything found is
+one-way, TradingView-in only). The remaining gap is narrower than "genuinely
+open": the Python side (parsing, the `/ninjatrader/webhook` route) is real
+and tested; the NinjaScript `.cs` side has been reviewed against two
+verified real reference implementations but never compiled or run against
+a real or Sim101 NinjaTrader 8 install, since there is no NinjaTrader or
+Windows environment available here — see "What's real vs. stubbed" below.
 
 ## Architecture
 
