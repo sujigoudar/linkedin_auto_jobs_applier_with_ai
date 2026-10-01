@@ -15,6 +15,29 @@ nothing here has shipped to a live production deployment
 ### 2026-10-01
 
 #### Added
+- Track 38 (property-based test hardening):
+  - `tests/test_trk38_edit_correlation_hypothesis.py` -- a Hypothesis
+    property test for Track 35's EDIT-kind SourceEvent correlation
+    (`_source_event_native_key` / the EDIT branch of `_apply_projection`
+    in `app/services/integration_inbox.py`). Generates 60 random cases
+    of ORIGINAL/EDIT/duplicate events, including the EDIT delivered
+    BEFORE its own ORIGINAL (out-of-order export delivery) and two
+    tenants sharing an identical `source_provider_id`/`source_channel_id`/
+    `source_event_id` triple, and proves correlation never produces a
+    false-positive match: only ever a safe no-op-advance against a real
+    same-tenant original, or an honest park -- never a cross-tenant
+    resolution. Supplements the four hand-picked EDIT tests already in
+    `tests/test_integration_inbox.py`. No bug found.
+  - `tests/test_trk38_rls_ledger_and_inbox.py` -- extends
+    `tests/test_row_level_security.py`'s real, non-superuser `app_role`
+    unfiltered-query RLS proof to two financially load-bearing models
+    that had no such proof yet: `LedgerEntry` (the append-only four-book
+    accounting journal) and `InboxEvent` (the integration inbox's
+    durable event log). Six new tests covering unfiltered-select,
+    read-by-primary-key, and no-scope-means-no-rows for each model, same
+    shape as the existing Product/PortfolioVersion/PublicationIntent/
+    Sleeve/ContentDocument/CustomerProfile coverage. No bug found; RLS
+    held in every case.
 - **`GET /system/readiness` -- a real release taxonomy and trading-
   authority qualification gate** (ADR-0010). Two fields this build had
   never computed for real: `release_status`

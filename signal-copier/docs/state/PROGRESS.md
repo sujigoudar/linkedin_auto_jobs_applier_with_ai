@@ -41,12 +41,19 @@ anything past Track 29 has landed since this snapshot was written.
 
 ## What's genuinely landed and working, as of HEAD
 
-- Alembic head is `0034`. Full `pytest -q` suite: **2119 passed, 0 failed**
-  (re-verified against this exact HEAD, after the Track 24–30/33 merges
-  below had landed).
+- Alembic head is `0034`. Full `pytest -q` suite: **2129 passed, 0 failed**
+  (re-verified against this exact HEAD, after Track 38's new Hypothesis
+  stateful test landed on top of the Track 24–30/33 merges below).
 - `ruff check .` and the CI-scoped `mypy` command (file list in
   `.github/workflows/signal-copier-ci.yml`, 39 files) both clean against
   this HEAD.
+- Track 38: `tests/test_trk38_quantity_conservation_and_idempotency.py`
+  extends C29's Hypothesis stateful quantity-conservation machine with
+  generated full-close/re-entry/duplicate-close event orderings (75
+  examples x 25 steps), proving quantity conservation, no negative/
+  over-filled ownership, and the TRK-27 duplicate-exit guard's boundary
+  all hold across far more interleavings than the existing hand-written
+  suite covers alone. No real bug found.
 - Managed-lifecycle fills now populate the AUD-01 quantity fields
   internally (Track 22) **and** export a real `EXECUTION_APPLIED` contract
   event (Track 23) — previously, per Track 22's own changelog entry, this
