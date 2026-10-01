@@ -85,12 +85,30 @@ def append_correction(
     event_time: datetime,
     source_authority: str,
     fee: Decimal | None = None,
+    instrument: str | None = None,
+    side: Side | None = None,
+    currency: str | None = None,
+    multiplier: Decimal | None = None,
 ) -> LedgerEntry:
     """Record a correction for `original_entry_id` as a brand-new row
     referencing it via `correction_of` -- the original is never modified.
-    The correction inherits the original's tenant/book/instrument/side/
-    currency/multiplier/evidence_class (those identify WHAT was being
-    recorded; only the numbers being corrected are supplied fresh here)."""
+
+    `quantity`/`price` are always supplied fresh (there is no honest
+    default for "the corrected number"). `instrument`/`side`/`currency`/
+    `multiplier` default to `None`, meaning "inherit the original's own
+    value, unchanged" -- the original, fee-correction-only caller
+    (`EventType.FEE`, `app/services/integration_inbox.py`) never passes
+    these, so its behavior is byte-for-byte unchanged by their addition.
+    A caller that genuinely knows one of these changed too (Track 41:
+    `EventType.SOURCE_RECEIPT`'s own revision/EDIT handling, where the
+    analyst's edited instruction may rename the instrument or flip the
+    side, not just the quantity/price) passes the real new value
+    explicitly -- same `None`-means-unknown-or-unchanged idiom `fee`
+    already used here. Every other identity field (tenant/book/
+    evidence_class/follower_connection_id/originating_analyst_id/
+    sleeve_id/external_observation_id) always inherits from the
+    original verbatim; a correction never reassigns WHO or WHAT BOOK an
+    entry belongs to, only ITS OWN economic numbers."""
     original = session.get(LedgerEntry, original_entry_id)
     if original is None:
         raise UnknownLedgerEntryError(f"no ledger entry {original_entry_id!r} to correct")
@@ -98,12 +116,12 @@ def append_correction(
     correction = LedgerEntry(
         tenant_id=original.tenant_id,
         book=original.book,
-        instrument=original.instrument,
-        side=original.side,
+        instrument=original.instrument if instrument is None else instrument,
+        side=original.side if side is None else side,
         quantity=quantity,
         price=price,
-        multiplier=original.multiplier,
-        currency=original.currency,
+        multiplier=original.multiplier if multiplier is None else multiplier,
+        currency=original.currency if currency is None else currency,
         fee=original.fee if fee is None else fee,
         evidence_class=original.evidence_class,
         follower_connection_id=original.follower_connection_id,

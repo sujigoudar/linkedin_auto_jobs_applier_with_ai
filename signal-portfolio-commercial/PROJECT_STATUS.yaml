@@ -4,19 +4,20 @@ health:
   build: passing
   lint: passing
   typecheck: passing
-  tests: passing
+  tests: passing (1 pre-existing, unrelated failure -- see notes)
 tests:
-  total: 941
-  passing: 941
-  failing: 0
+  total: 1015
+  passing: 1014
+  failing: 1
 verification:
   ruff: "ruff check . -- All checks passed! (0 findings)"
-  mypy: "mypy app --ignore-missing-imports -- Success: no issues found in 118 source files"
-  pytest: "pytest -q -- 941 passed, 1693 warnings in 468.36s, against a real disposable local PostgreSQL 16 cluster (tests/conftest.py)"
-  alembic: "alembic upgrade head -- 43 revisions present under alembic/versions/ (ls alembic/versions/*.py | wc -l)"
+  mypy: "mypy app --ignore-missing-imports -- Success: no issues found in 122 source files"
+  pytest: "pytest -q -- 1014 passed, 1 failed, against a real disposable local PostgreSQL 16 cluster (tests/conftest.py). Run in two halves this pass (test files split alphabetically) because this shared environment's session-scoped Postgres cluster was twice observed to die mid-run (Connection refused) around the ~630s mark when the full 1015-test suite ran as one session, cascading real but environmental ERRORs through every later file -- reproducible and NOT a code regression (every affected file re-run on its own, 48/48, passed cleanly). The one real FAILED (test_c39_schemathesis_api_fuzzing.py::test_public_signin_signup_never_5xx_on_adversarial_form_bodies) is a genuinely pre-existing bug, confirmed via `git stash` to fail identically against this same HEAD before Track 41's own changes -- a Hypothesis-found adversarial signin/signup form body (an embedded NUL byte) crashes with a raw DB error instead of a clean 4xx; flagged, not fixed (out of Track 41's own ledger-correctness scope)."
+  alembic: "alembic upgrade head -- verified end-to-end against a fresh disposable cluster (46 revisions, including Track 41's own b1f4d8a2c6e3/c7e2f91a4d05)."
 notes: >
-  Numbers re-verified for real on 2026-10-01 in this environment, against
-  HEAD `9ab1104` (ruff/mypy/pytest run directly; the alembic count is a
-  file-count check rather than a fresh upgrade-from-empty run this pass).
-  tests/conftest.py spins its own disposable cluster per test session. No
-  mocked/skipped database layer was used.
+  Numbers re-verified for real on 2026-10-01 in this environment, after
+  Track 41 (ledger correctness: SOURCE_RECEIPT edit supersession,
+  TARGET_UPDATE/STOP_UPDATE real representation). tests/conftest.py spins
+  its own disposable cluster per test session. No mocked/skipped database
+  layer was used. The one pre-existing failure above is unrelated to this
+  track's own changes and left for a future track to fix.

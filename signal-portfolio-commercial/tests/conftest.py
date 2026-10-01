@@ -32,6 +32,7 @@ from app.db import (
     enable_membership_self_lookup_policy,
     enable_product_visibility_policy,
     enable_relay_role_access,
+    enable_relay_role_source_stop_target_revisions_access,
     enable_row_level_security,
     enforce_append_only,
     make_engine,
@@ -74,6 +75,7 @@ import app.models.research_run  # noqa: F401
 import app.models.rights  # noqa: F401
 import app.models.service_health_sample  # noqa: F401
 import app.models.sleeve  # noqa: F401
+import app.models.source_stop_target_revision  # noqa: F401
 import app.models.support_case  # noqa: F401
 import app.models.tenancy  # noqa: F401
 import app.models.token_revocation  # noqa: F401
@@ -219,6 +221,7 @@ def db_session(postgres_cluster):
     enable_product_visibility_policy(engine)
     enable_content_document_visibility_policy(engine)
     enable_relay_role_access(engine)
+    enable_relay_role_source_stop_target_revisions_access(engine)
     enable_membership_self_lookup_policy(engine)
     enforce_append_only(engine)
     session_factory = make_session_factory(engine)

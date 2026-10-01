@@ -48,11 +48,17 @@ before any `:<detail>` suffix):
 | `new_generation_requires_bootstrap:...` | An envelope claims a **newer** `producer_generation` than established, without a reconciled bootstrap. | Permanent for this row in this build (no reconciled-bootstrap path exists yet). |
 | `manifest_metadata_mismatch:<manifest_id>` | A `POSITION_SNAPSHOT` page disagrees with an already-received sibling page on `page_count`/`cutoff_sequence`. | Permanent for this page. |
 | `manifest_generation_mismatch:<manifest_id>` | A `POSITION_SNAPSHOT` page claims a different `producer_generation` than an already-received sibling. | Permanent for this page. |
-| `edit_without_resolvable_target:<missing_original_source_event_id \| key>` | A `SOURCE_EVENT` of kind `EDIT` either has no `source.original_source_event_id` at all, or that reference doesn't resolve (via `source_event_native_key`) to any already-applied `SOURCE_EVENT` for this tenant. | Not permanent in principle (resolves once/if a matching original is received and reprocessed), but if the reference is genuinely missing or wrong it never resolves. |
-| `source_event_kind_not_ledger_representable:<target_update\|stop_update>` | A `SOURCE_EVENT` of kind `TARGET_UPDATE`/`STOP_UPDATE` — `LedgerEntry` has no stop-loss/target column, so there is nowhere to write this even with a correct correlation. | Permanent in this build (needs a ledger-model change, not a correlation fix). |
+| `edit_without_resolvable_target:<missing_original_source_event_id \| key>` | A `SOURCE_EVENT` of kind `EDIT` either has no `source.original_source_event_id` at all, or that reference doesn't resolve (via `source_event_native_key`) to any already-applied `SOURCE_EVENT` for this tenant. **Track 41**: the SAME prefix is also set on a `SOURCE_RECEIPT` row whose own `source.original_source_event_id` IS set (a genuine revision of an earlier receipt) but doesn't resolve to any already-applied `SOURCE_RECEIPT` that booked a real ledger entry — see `ledger_entries.correction_of` below. | Not permanent in principle (resolves once/if a matching original is received and reprocessed), but if the reference is genuinely missing or wrong it never resolves. |
 
 None of these is ever "resolved" by silently coercing or guessing a value — every
 one is an honest, visible "not applied yet, and here's exactly why."
+
+**Retired (Track 41)**: `source_event_kind_not_ledger_representable:<target_update|stop_update>`
+used to park a `SOURCE_EVENT` of kind `TARGET_UPDATE`/`STOP_UPDATE` permanently,
+since `LedgerEntry` had no stop-loss/target column. It is no longer set by any
+code path — both kinds now apply, writing a real
+`source_stop_target_revisions` row instead (ADR-0011). See that table's own
+entry below.
 
 ## `inbox_events.routing_outcome`
 
@@ -81,7 +87,7 @@ own tests forbid.
 of `_apply_projection` (`app/services/integration_inbox.py::_source_event_native_key`).
 
 Set on **every** `SOURCE_EVENT` row, regardless of `SourceEventKind` (even one
-that ends up parked, e.g. `TARGET_UPDATE`) — `f"{tenant_id}|{source_provider_id}|
+that applies as a no-op) — `f"{tenant_id}|{source_provider_id}|
 {source_channel_id}|{source_event_id}"`, the one native-provider identity
 `signal_platform_contracts.identity.SourceIdentity`'s own docstring says is
 stable across redelivery ("true deduplication and edit/delete/reply correlation
@@ -90,8 +96,14 @@ purpose: two tenants whose adapters happen to relay the same public channel
 must never let one tenant's `EDIT` resolve against the other's `ORIGINAL`. A
 later `SourceEventKind.EDIT` names its target by `source.
 original_source_event_id`, which this same formula turns into the exact key to
-look up — never a looser match (e.g. "any row on this provider"). `NULL` for
-every non-`SOURCE_EVENT` row.
+look up — never a looser match (e.g. "any row on this provider").
+
+**Track 41**: the identical formula is ALSO set on every `SOURCE_RECEIPT` row
+now (previously `SOURCE_EVENT`-only) — a later receipt's own `source.
+original_source_event_id` resolves back to an earlier receipt through this same
+column, letting a genuine revision supersede (via `ledger_entries.correction_of`)
+the `Book.SOURCE` entry it revises instead of booking a second, independent one.
+`NULL` for every row that is neither a `SOURCE_EVENT` nor a `SOURCE_RECEIPT`.
 
 ## `ledger_entries.sleeve_id`
 
@@ -119,6 +131,49 @@ deduplicated by — the same "same identity, harmless re-detect" contract
 `inbox_events.event_id` already gives the private-relay boundary (§ ingest), applied
 here to the third-party-observation boundary instead. Nothing in this build
 populates this column yet.
+
+## `ledger_entries.correction_of` (Track 41 extension)
+
+**Source**: `app/models/ledger.py`; written by `app/services/ledger.py::
+append_correction`.
+
+Previously only ever produced by `EventType.FEE` (`append_correction(...,
+fee=payload.fee)`, never touching `quantity`/`price`/`instrument`/`side`).
+**Track 41**: `EventType.SOURCE_RECEIPT`'s own handling now also calls
+`append_correction` — when a receipt's `source.original_source_event_id`
+resolves (via `source_event_native_key`) to an earlier, already-booked
+`Book.SOURCE` receipt, the new receipt is a genuine revision of the SAME
+economic fact, not a second independent one, so it is booked as a correction
+carrying the REVISED `quantity`/`price`/`instrument`/`side` (`append_correction`
+gained optional `instrument`/`side`/`currency`/`multiplier` override
+parameters for exactly this; `None` — the only way `EventType.FEE` ever calls
+it — still means "inherit the original's own value, unchanged"). Every reader
+of `LedgerEntry` history (`platform_performance.compute_book_performance`,
+`analyst_attribution.compute_analyst_attribution`,
+`customer_performance_report.compute_customer_equity_series`) resolves which
+values — root or latest correction — are the real ones through the shared
+`platform_performance.effective_fill` helper, so a revision's corrected
+numbers are reflected exactly once, never both the stale original's and the
+revision's.
+
+## `source_stop_target_revisions` (Track 41, ADR-0011)
+
+**Source**: `app/models/source_stop_target_revision.py`; written by
+`app/services/integration_inbox.py`'s `SOURCE_EVENT` branch for
+`SourceEventKind.TARGET_UPDATE`/`STOP_UPDATE`, via `app/services/
+source_stop_target_revisions.py::append_stop_target_revision`.
+
+The real, dedicated, append-only, tenant-scoped representation of a stop-loss/
+take-profit revision — never a `LedgerEntry` (ADR-0011: a revision carries no
+quantity/price economic fact; it revises risk parameters on an EXISTING
+`Book.SOURCE` recommendation). `resolved_source_entry_id` is a best-effort,
+never-required correlation (via `source.parent_event_id`, resolved through the
+SAME native-key mechanism `EDIT` uses) to the `LedgerEntry` this revision
+concerns — `NULL` when it wasn't given or didn't resolve, never guessed; unlike
+`EDIT`, an unresolved revision still applies (no money is at stake in recording
+risk-parameter metadata, so there is no reason to park it). `targets_json` is
+the revised ordered multi-target collection (`SourceReceiptPayload.targets`),
+serialized verbatim as JSON text, `"[]"` when none was given.
 
 ## Related, worth knowing
 

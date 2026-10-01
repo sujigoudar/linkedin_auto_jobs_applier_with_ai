@@ -62,6 +62,7 @@ the `append_only_guard` trigger (ADR-0008).
 | Table | Model | Key | RLS | Notes |
 |---|---|---|---|---|
 | `ledger_entries` | `ledger.LedgerEntry` | `entry_id` PK | RLS. **Append-only.** | See `DATA_DICTIONARY.md` and `docs/design/LEDGER_MODEL.md`. |
+| `source_stop_target_revisions` | `source_stop_target_revision.SourceStopTargetRevision` | `revision_id` PK | RLS. **Append-only.** | Track 41, ADR-0011: a `SourceEventKind.TARGET_UPDATE`/`STOP_UPDATE` revision -- never a `LedgerEntry` (no quantity/price economic fact). See `DATA_DICTIONARY.md`. |
 
 ## Integration ingest
 

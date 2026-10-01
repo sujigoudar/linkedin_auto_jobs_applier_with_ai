@@ -25,12 +25,12 @@ from signal_platform_contracts import (
 )
 
 from app.models.integration_inbox import InboxEvent
-from app.models.ledger import Book, LedgerEntry
+from app.models.ledger import Book, LedgerEntry, Side
 from app.models.sleeve import Sleeve
+from app.models.source_stop_target_revision import SourceStopTargetRevision, StopTargetRevisionKind
 from app.models.tenancy import Tenant
 from app.services.integration_inbox import (
     PARKED_REASON_EDIT_WITHOUT_RESOLVABLE_TARGET,
-    PARKED_REASON_SOURCE_EVENT_KIND_NOT_LEDGER_REPRESENTABLE,
     EventIntegrityError,
     StreamAlreadyRegisteredToAnotherTenantError,
     UnregisteredStreamError,
@@ -38,7 +38,7 @@ from app.services.integration_inbox import (
     register_export_stream,
 )
 from app.services.analyst_attribution import compute_analyst_attribution
-from app.services.platform_performance import compute_platform_performance
+from app.services.platform_performance import compute_book_performance, compute_platform_performance
 
 
 def _seed_tenant(db_session, tenant_id="tenant-a"):
@@ -136,19 +136,29 @@ def _source_receipt_envelope(
     source_stream="signal-copier:acct1",
     quantity="10",
     price="150.00",
+    side="buy",
+    instrument_id="AAPL",
     source_provider_id="telegram",
+    source_channel_id=None,
     analyst_id=None,
     parser_version="v3",
     source_event_id="src-evt-1",
     source_catalog_id=None,
+    original_source_event_id=None,
+    revision_id=None,
 ):
+    instrument = _instrument() if instrument_id == "AAPL" else InstrumentIdentity(
+        instrument_id=instrument_id, venue="NASDAQ", market_type="equity", currency="USD",
+        multiplier="1", quantity_convention="shares",
+    )
     payload = SourceReceiptPayload(
         source=SourceIdentity(
-            source_provider_id=source_provider_id, analyst_id=analyst_id, parser_version=parser_version,
-            source_event_id=source_event_id, source_catalog_id=source_catalog_id,
+            source_provider_id=source_provider_id, source_channel_id=source_channel_id, analyst_id=analyst_id,
+            parser_version=parser_version, source_event_id=source_event_id, source_catalog_id=source_catalog_id,
+            original_source_event_id=original_source_event_id, revision_id=revision_id,
         ),
-        instrument=_instrument(),
-        side="buy",
+        instrument=instrument,
+        side=side,
         quantity=quantity,
         price=price,
     )
@@ -244,6 +254,8 @@ def _source_event_envelope(
     parent_event_id=None,
     revision_id=None,
     has_signal=True,
+    stop_loss=None,
+    take_profit=None,
 ):
     """Mirrors exactly what signal-copier's own `app/export_events.py`
     `build_source_event_envelope` produces -- same shared contracts
@@ -255,9 +267,10 @@ def _source_event_envelope(
         revision_id=revision_id,
     )
     inner_signal = None
-    if has_signal and (quantity is not None or price is not None):
+    if has_signal and (quantity is not None or price is not None or stop_loss is not None or take_profit is not None):
         inner_signal = SourceReceiptPayload(
             source=source_identity, instrument=_instrument(), side="buy", quantity=quantity, price=price,
+            stop_loss=stop_loss, take_profit=take_profit,
         )
     now = datetime.now(timezone.utc)
     payload = SourceEventPayload(
@@ -425,6 +438,169 @@ def test_ingest_source_receipt_event_with_a_catalog_source_id_is_accepted_and_ig
     assert entry is not None
     assert entry.book == Book.SOURCE
     assert entry.quantity == Decimal("10")
+
+
+def test_a_source_receipt_edit_books_a_correction_not_a_second_independent_entry(db_session):
+    """Track 41 (Gap 1): the real two-event scenario the fix is about --
+    an ORIGINAL SOURCE_RECEIPT, then an EDIT of the SAME native message
+    (signal-copier's own revision_id/original_source_event_id chain)
+    that revises the quantity. Only ONE net economic fact must ever
+    reach `compute_book_performance`/`compute_analyst_attribution` --
+    not the original's 10 AND the edit's 15 (25), but exactly the
+    edit's own corrected 15 -- while the correction trail (two real
+    `LedgerEntry` rows, `correction_of` pointing at the original) stays
+    fully inspectable."""
+    _seed_tenant(db_session)
+    register_export_stream(db_session, tenant_id="tenant-a", source_stream="signal-copier:source:telegram", environment="LOCAL_SIM")
+    db_session.commit()
+
+    original = _source_receipt_envelope(
+        event_id="evt-src-original", export_sequence=0, source_stream="signal-copier:source:telegram",
+        source_provider_id="telegram", source_channel_id="chan-1", source_event_id="msg-1",
+        analyst_id="alice", quantity="10", price="100.00",
+    )
+    original_row = ingest_export_event(db_session, original.model_dump_json())
+    db_session.commit()
+    assert original_row.applied_at is not None
+    assert original_row.ledger_entry_id is not None
+    assert original_row.source_event_native_key == "tenant-a|telegram|chan-1|msg-1"
+
+    edit = _source_receipt_envelope(
+        event_id="evt-src-edit", export_sequence=1, source_stream="signal-copier:source:telegram",
+        source_provider_id="telegram", source_channel_id="chan-1", source_event_id="msg-1-edit",
+        analyst_id="alice", quantity="15", price="105.00",
+        original_source_event_id="msg-1", revision_id="msg-1:edit-1",
+    )
+    edit_row = ingest_export_event(db_session, edit.model_dump_json())
+    db_session.commit()
+
+    assert edit_row.applied_at is not None
+    assert edit_row.parked_reason is None
+    assert edit_row.ledger_entry_id is not None
+
+    # The correction trail: exactly TWO real rows, the original
+    # untouched, the correction pointing back at it.
+    all_entries = db_session.scalars(
+        select(LedgerEntry).where(LedgerEntry.tenant_id == "tenant-a", LedgerEntry.book == Book.SOURCE)
+    ).all()
+    assert len(all_entries) == 2
+    original_entry = db_session.get(LedgerEntry, original_row.ledger_entry_id)
+    correction_entry = db_session.get(LedgerEntry, edit_row.ledger_entry_id)
+    assert original_entry.entry_id != correction_entry.entry_id
+    assert correction_entry.correction_of == original_entry.entry_id
+    assert original_entry.quantity == Decimal("10")  # never mutated
+    assert original_entry.price == Decimal("100.00")
+    assert correction_entry.quantity == Decimal("15")  # the revised value
+    assert correction_entry.price == Decimal("105.00")
+
+    # Exactly ONE net economic fact reaches both downstream readers --
+    # the corrected 15, never 10+15=25.
+    performance = compute_book_performance(db_session, tenant_id="tenant-a", book=Book.SOURCE)
+    aapl = performance.per_instrument["AAPL"]
+    assert aapl.open_quantity == Decimal("15")
+    assert aapl.average_cost == Decimal("105.00")
+
+    attribution = compute_analyst_attribution(db_session, tenant_id="tenant-a", book=Book.SOURCE)
+    alice = attribution.per_instrument_analyst[("AAPL", "alice")]
+    assert alice.entries_opened == 1  # not 2 -- the edit never opens a SECOND lot
+
+
+def test_a_source_receipt_edit_changing_instrument_and_side_uses_the_new_values(db_session):
+    """A revision may rename the instrument or flip the side, not only
+    quantity/price -- the correction (and every downstream reader) must
+    reflect the NEW values, grouped under the NEW instrument."""
+    _seed_tenant(db_session)
+    register_export_stream(db_session, tenant_id="tenant-a", source_stream="signal-copier:source:telegram", environment="LOCAL_SIM")
+    db_session.commit()
+
+    original = _source_receipt_envelope(
+        event_id="evt-src-original-2", export_sequence=0, source_stream="signal-copier:source:telegram",
+        source_provider_id="telegram", source_channel_id="chan-2", source_event_id="msg-2",
+        instrument_id="AAPL", side="buy", quantity="10", price="100.00",
+    )
+    original_row = ingest_export_event(db_session, original.model_dump_json())
+    db_session.commit()
+
+    edit = _source_receipt_envelope(
+        event_id="evt-src-edit-2", export_sequence=1, source_stream="signal-copier:source:telegram",
+        source_provider_id="telegram", source_channel_id="chan-2", source_event_id="msg-2-edit",
+        instrument_id="MSFT", side="sell", quantity="10", price="300.00",
+        original_source_event_id="msg-2",
+    )
+    edit_row = ingest_export_event(db_session, edit.model_dump_json())
+    db_session.commit()
+
+    correction_entry = db_session.get(LedgerEntry, edit_row.ledger_entry_id)
+    assert correction_entry.instrument == "MSFT"
+    assert correction_entry.side == Side.SELL
+
+    performance = compute_book_performance(db_session, tenant_id="tenant-a", book=Book.SOURCE)
+    assert "AAPL" not in performance.per_instrument or performance.per_instrument["AAPL"].open_quantity == Decimal(0)
+    assert performance.per_instrument["MSFT"].open_quantity == Decimal("-10")  # short, under the NEW instrument
+
+    original_entry = db_session.get(LedgerEntry, original_row.ledger_entry_id)
+    assert original_entry.instrument == "AAPL"  # unchanged
+    assert original_entry.side == Side.BUY  # unchanged
+
+
+def test_a_source_receipt_edit_with_no_resolvable_target_parks_honestly(db_session):
+    """Edge case (a): if the EDIT's target can't be resolved (not yet
+    arrived, or genuinely wrong), it is NOT safe to guess whether this
+    is a revision of something real -- park, same as Track 35's EDIT
+    handling, never silently book a brand-new, possibly-wrong entry."""
+    _seed_tenant(db_session)
+    register_export_stream(db_session, tenant_id="tenant-a", source_stream="signal-copier:source:telegram", environment="LOCAL_SIM")
+    db_session.commit()
+
+    edit = _source_receipt_envelope(
+        event_id="evt-src-edit-orphan", export_sequence=0, source_stream="signal-copier:source:telegram",
+        source_provider_id="telegram", source_channel_id="chan-3", source_event_id="msg-3-edit",
+        original_source_event_id="msg-3-never-arrived",
+    )
+    edit_row = ingest_export_event(db_session, edit.model_dump_json())
+    db_session.commit()
+
+    assert edit_row.applied_at is None
+    expected_key = "tenant-a|telegram|chan-3|msg-3-never-arrived"
+    assert edit_row.parked_reason == f"{PARKED_REASON_EDIT_WITHOUT_RESOLVABLE_TARGET}:{expected_key}"
+    assert db_session.scalars(select(LedgerEntry).where(LedgerEntry.tenant_id == "tenant-a")).all() == []
+
+
+def test_an_add_or_reply_source_receipt_is_never_treated_as_an_edit(db_session):
+    """Edge case (b): a REPLY/ADD is a genuine NEW economic fact, never
+    an edit -- signal-copier's own adapters never set `source.
+    original_source_event_id` for these (only a real in-place EDIT
+    does), so a receipt with it unset always books independently, even
+    if it names the same provider/channel as an earlier receipt."""
+    _seed_tenant(db_session)
+    register_export_stream(db_session, tenant_id="tenant-a", source_stream="signal-copier:source:telegram", environment="LOCAL_SIM")
+    db_session.commit()
+
+    original = _source_receipt_envelope(
+        event_id="evt-src-original-3", export_sequence=0, source_stream="signal-copier:source:telegram",
+        source_provider_id="telegram", source_channel_id="chan-4", source_event_id="msg-4",
+        quantity="10", price="100.00",
+    )
+    ingest_export_event(db_session, original.model_dump_json())
+    db_session.commit()
+
+    add_on = _source_receipt_envelope(
+        event_id="evt-src-add-on", export_sequence=1, source_stream="signal-copier:source:telegram",
+        source_provider_id="telegram", source_channel_id="chan-4", source_event_id="msg-4-add",
+        quantity="5", price="101.00",
+        # No original_source_event_id -- a genuine add-on, not an edit.
+    )
+    add_on_row = ingest_export_event(db_session, add_on.model_dump_json())
+    db_session.commit()
+
+    assert add_on_row.applied_at is not None
+    assert add_on_row.parked_reason is None
+    # TWO independent entries -- never a correction of the first.
+    entries = db_session.scalars(
+        select(LedgerEntry).where(LedgerEntry.tenant_id == "tenant-a", LedgerEntry.book == Book.SOURCE)
+    ).all()
+    assert len(entries) == 2
+    assert all(e.correction_of is None for e in entries)
 
 
 def test_a_routing_admission_outcome_attaches_the_real_outcome_to_its_receipt(db_session):
@@ -841,51 +1017,119 @@ def test_a_source_event_then_receipt_then_routing_outcome_all_apply_in_order(db_
     assert receipt_row.routing_outcome == "admitted_filled"
 
 
-def test_a_source_event_kind_with_no_ledger_representation_still_parks_and_blocks_its_stream(db_session):
-    """Track 35: TARGET_UPDATE/STOP_UPDATE are genuinely UNDERSTOOD kinds
-    (unlike the old generic "unimplemented" bucket) -- but
-    `LedgerEntry` has no stop-loss/target column at all, so there is
-    nowhere honest to write one even if it correlated perfectly. Parked
-    with the new, specific reason, and -- same as any other un-applied
-    shape -- still blocks its stream's later sequences."""
+def test_a_target_update_source_event_applies_and_writes_a_real_revision_row(db_session):
+    """Track 41 (ADR-0011): TARGET_UPDATE now has a real, dedicated
+    representation -- it applies (never parks/blocks its stream) and a
+    real `SourceStopTargetRevision` row is written and readable back,
+    carrying the revision's own stop/target content."""
     _seed_tenant(db_session)
     register_export_stream(db_session, tenant_id="tenant-a", source_stream="signal-copier:source:telegram", environment="LOCAL_SIM")
     db_session.commit()
 
     target_update_event = _source_event_envelope(
         event_id="evt-source-event-target-update", export_sequence=0, source_stream="signal-copier:source:telegram",
-        kind="target_update", has_signal=False,
+        kind="target_update", quantity=None, price=None, take_profit="160.00",
+        source_provider_id="telegram", source_channel_id="chan-1", source_event_id="msg-target-update",
+        parent_event_id="msg-original",
     )
     target_update_row = ingest_export_event(db_session, target_update_event.model_dump_json())
     db_session.commit()
 
-    assert target_update_row.applied_at is None
-    assert target_update_row.parked_reason == f"{PARKED_REASON_SOURCE_EVENT_KIND_NOT_LEDGER_REPRESENTABLE}:target_update"
+    assert target_update_row.applied_at is not None
+    assert target_update_row.parked_reason is None
+    assert target_update_row.source_event_native_key == "tenant-a|telegram|chan-1|msg-target-update"
 
+    revisions = db_session.scalars(
+        select(SourceStopTargetRevision).where(SourceStopTargetRevision.tenant_id == "tenant-a")
+    ).all()
+    assert len(revisions) == 1
+    revision = revisions[0]
+    assert revision.kind == StopTargetRevisionKind.TARGET_UPDATE
+    assert revision.take_profit == Decimal("160.00")
+    assert revision.stop_loss is None
+    assert revision.instrument == "AAPL"
+    assert revision.source_event_native_key == "tenant-a|telegram|chan-1|msg-target-update"
+    # No already-applied receipt named "msg-original" exists yet -- never
+    # guessed, left genuinely unresolved, but still applied (no money is
+    # at stake in recording risk-parameter metadata).
+    assert revision.resolved_source_entry_id is None
+
+    # Never blocks the stream behind it.
     follow_up = _source_receipt_envelope(
         event_id="evt-src-after-target-update", export_sequence=1, source_stream="signal-copier:source:telegram",
     )
     follow_up_row = ingest_export_event(db_session, follow_up.model_dump_json())
     db_session.commit()
 
-    assert follow_up_row.applied_at is None
-    assert follow_up_row.parked_reason is None  # received, waiting behind the still-parked TARGET_UPDATE
+    assert follow_up_row.applied_at is not None
+    assert follow_up_row.parked_reason is None
 
 
-def test_a_source_event_stop_update_also_parks_with_the_not_ledger_representable_reason(db_session):
+def test_a_stop_update_source_event_applies_and_resolves_against_its_named_position(db_session):
+    """A STOP_UPDATE whose `source.parent_event_id` names a real,
+    already-applied SOURCE_RECEIPT resolves `resolved_source_entry_id`
+    to that receipt's own booked ledger entry -- best-effort, via the
+    same native-key mechanism EDIT uses, but never required to apply."""
     _seed_tenant(db_session)
     register_export_stream(db_session, tenant_id="tenant-a", source_stream="signal-copier:source:telegram", environment="LOCAL_SIM")
     db_session.commit()
 
+    original_receipt = _source_receipt_envelope(
+        event_id="evt-src-original", export_sequence=0, source_stream="signal-copier:source:telegram",
+        source_provider_id="telegram", source_channel_id="chan-1", source_event_id="msg-original",
+    )
+    original_row = ingest_export_event(db_session, original_receipt.model_dump_json())
+    db_session.commit()
+    assert original_row.applied_at is not None
+    assert original_row.ledger_entry_id is not None
+
     stop_update_event = _source_event_envelope(
-        event_id="evt-source-event-stop-update", export_sequence=0, source_stream="signal-copier:source:telegram",
-        kind="stop_update", has_signal=False,
+        event_id="evt-source-event-stop-update", export_sequence=1, source_stream="signal-copier:source:telegram",
+        kind="stop_update", quantity=None, price=None, stop_loss="95.00",
+        source_provider_id="telegram", source_channel_id="chan-1", source_event_id="msg-stop-update",
+        parent_event_id="msg-original",
     )
     stop_update_row = ingest_export_event(db_session, stop_update_event.model_dump_json())
     db_session.commit()
 
-    assert stop_update_row.applied_at is None
-    assert stop_update_row.parked_reason == f"{PARKED_REASON_SOURCE_EVENT_KIND_NOT_LEDGER_REPRESENTABLE}:stop_update"
+    assert stop_update_row.applied_at is not None
+    assert stop_update_row.parked_reason is None
+
+    revision = db_session.scalars(
+        select(SourceStopTargetRevision).where(SourceStopTargetRevision.tenant_id == "tenant-a")
+    ).one()
+    assert revision.kind == StopTargetRevisionKind.STOP_UPDATE
+    assert revision.stop_loss == Decimal("95.00")
+    assert revision.resolved_source_entry_id == original_row.ledger_entry_id
+
+
+def test_a_stop_target_revision_is_append_only_never_updated_in_place(db_session):
+    """ADR-0011/ADR-0008: a direct UPDATE against
+    source_stop_target_revisions is rejected at the database level,
+    same as ledger_entries."""
+    from sqlalchemy import text
+    from sqlalchemy.exc import DBAPIError
+
+    _seed_tenant(db_session)
+    register_export_stream(db_session, tenant_id="tenant-a", source_stream="signal-copier:source:telegram", environment="LOCAL_SIM")
+    db_session.commit()
+
+    event = _source_event_envelope(
+        event_id="evt-source-event-stop-update-ao", export_sequence=0, source_stream="signal-copier:source:telegram",
+        kind="stop_update", quantity=None, price=None, stop_loss="95.00",
+    )
+    ingest_export_event(db_session, event.model_dump_json())
+    db_session.commit()
+
+    revision = db_session.scalars(select(SourceStopTargetRevision)).one()
+
+    with pytest.raises(DBAPIError, match="append-only"):
+        db_session.execute(
+            text("UPDATE source_stop_target_revisions SET stop_loss = 999 WHERE revision_id = :id"),
+            {"id": revision.revision_id},
+        )
+        db_session.commit()
+    db_session.rollback()
 
 
 @pytest.mark.parametrize("kind", ["delete", "cancel", "close"])

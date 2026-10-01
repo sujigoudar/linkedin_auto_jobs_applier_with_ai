@@ -81,10 +81,10 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models.ledger import Book, LedgerEntry, Side
+from app.models.ledger import Book, Side
+from app.services.platform_performance import effective_fill, load_ordered_root_entries
 
 
 @dataclass
@@ -178,17 +178,24 @@ def compute_analyst_attribution(
     `platform_performance.load_ordered_root_entries`'s own -- only
     meaningful (and only ever passed) for `book == Book.FOLLOWER`, to
     scope this replay to one customer's own connections rather than a
-    tenant's whole FOLLOWER book across every customer."""
-    filters = [LedgerEntry.tenant_id == tenant_id, LedgerEntry.book == book]
-    if follower_connection_ids is not None:
-        filters.append(LedgerEntry.follower_connection_id.in_(follower_connection_ids))
-    all_entries = list(
-        session.scalars(select(LedgerEntry).where(*filters).order_by(LedgerEntry.event_time, LedgerEntry.created_at)).all()
+    tenant's whole FOLLOWER book across every customer.
+
+    Track 41: replays `platform_performance.load_ordered_root_entries`'s
+    own real query (never a second, separately-maintained one) and
+    folds each root entry's latest correction through the SAME
+    `platform_performance.effective_fill` every other reader uses -- a
+    correction may now revise `instrument`/`side`/`quantity`/`price`
+    (a genuine `SOURCE_RECEIPT` revision/EDIT), not only `fee`, and this
+    replay must see exactly the same corrected values
+    `compute_book_performance` does, or `account_total_realized_pnl`
+    would stop reconciling to it. `originating_analyst_id` is the ONE
+    field `effective_fill` deliberately never touches (it isn't one of
+    `EffectiveFill`'s fields at all) -- an edit never reassigns whose
+    recommendation this was, so it is always read straight off the
+    ROOT entry, correction or not."""
+    entries, latest_correction_by_original = load_ordered_root_entries(
+        session, tenant_id=tenant_id, book=book, follower_connection_ids=follower_connection_ids,
     )
-    # Same correction-folding as platform_performance.py: a fee
-    # correction never changes quantity/price/side/analyst, so it is
-    # never itself replayed as a second, separate fill.
-    entries = [entry for entry in all_entries if entry.correction_of is None]
 
     report = AnalystAttributionReport()
 
@@ -204,16 +211,18 @@ def compute_analyst_attribution(
     open_lots_by_instrument: dict[str, list[_Lot]] = {}
 
     for entry in entries:
-        instrument = entry.instrument
-        analyst = entry.originating_analyst_id
-        signed_qty = entry.quantity if entry.side == Side.BUY else -entry.quantity
+        correction = latest_correction_by_original.get(entry.entry_id)
+        fill = effective_fill(entry, correction)
+        instrument = fill.instrument
+        analyst = entry.originating_analyst_id  # never revised by a correction -- see docstring above
+        signed_qty = fill.quantity if fill.side == Side.BUY else -fill.quantity
         open_quantity = open_quantity_by_instrument.get(instrument, Decimal(0))
         lots = open_lots_by_instrument.setdefault(instrument, [])
 
         if open_quantity == 0 or (open_quantity > 0) == (signed_qty > 0):
             # Opening or adding to the position on the same side: a
             # brand-new lot, attributed to THIS fill's own analyst.
-            lots.append(_Lot(quantity=entry.quantity, entry_price=entry.price, analyst=analyst, opened_at=entry.event_time))
+            lots.append(_Lot(quantity=fill.quantity, entry_price=fill.price, analyst=analyst, opened_at=fill.event_time))
             open_quantity_by_instrument[instrument] = open_quantity + signed_qty
             _bucket(instrument, analyst).entries_opened += 1
             continue
@@ -226,7 +235,7 @@ def compute_analyst_attribution(
         while remaining_to_close > 0 and lots:
             lot = lots[0]
             consumed = min(lot.quantity, remaining_to_close)
-            realized = (entry.price - lot.entry_price) * direction * consumed * entry.multiplier
+            realized = (fill.price - lot.entry_price) * direction * consumed * fill.multiplier
             bucket = _bucket(instrument, lot.analyst)
             bucket.realized_pnl += realized
             bucket.closing_fills += 1
@@ -242,7 +251,7 @@ def compute_analyst_attribution(
                         instrument=instrument,
                         analyst=lot.analyst,
                         opened_at=lot.opened_at,
-                        closed_at=entry.event_time,
+                        closed_at=fill.event_time,
                         pnl=lot.episode_pnl,
                     )
                 )
@@ -254,7 +263,7 @@ def compute_analyst_attribution(
             # Flipped through flat -- the remainder opens a fresh
             # position in the NEW direction, attributed to THIS fill's
             # own analyst.
-            lots.append(_Lot(quantity=remainder, entry_price=entry.price, analyst=analyst, opened_at=entry.event_time))
+            lots.append(_Lot(quantity=remainder, entry_price=fill.price, analyst=analyst, opened_at=fill.event_time))
             _bucket(instrument, analyst).entries_opened += 1
 
     return report

@@ -23,6 +23,9 @@ from signal_platform_contracts import (
     ExecutionAppliedPayload,
     InstrumentIdentity,
     PrivateAccountIdentity,
+    SourceEventKind,
+    SourceEventPayload,
+    SourceIdentity,
     build_subject,
     compute_payload_hash,
 )
@@ -31,6 +34,7 @@ from app.db import set_tenant_scope
 from app.models.copy_mandate import CopyMandate, CopyMandateStartMode
 from app.models.integration_inbox import ExportStreamRegistration, InboxEvent
 from app.models.ledger import LedgerEntry
+from app.models.source_stop_target_revision import SourceStopTargetRevision
 from app.models.tenancy import Tenant
 from app.services.integration_inbox import ingest_export_event, register_export_stream
 
@@ -191,3 +195,60 @@ def test_ingest_export_event_end_to_end_through_relay_role_populates_the_correct
     assert len(entries_a) == 1
     assert entries_a[0].quantity == Decimal("10")
     assert entries_b == []
+
+
+def _stop_update_envelope(*, event_id, source_stream):
+    source_identity = SourceIdentity(
+        source_provider_id="telegram", source_channel_id="chan-1", parser_version="v3",
+        source_event_id="msg-stop-update",
+    )
+    payload = SourceEventPayload(
+        kind=SourceEventKind.STOP_UPDATE,
+        source=source_identity,
+        provider_timestamp=datetime.now(timezone.utc),
+        local_receipt_timestamp=datetime.now(timezone.utc),
+    )
+    payload_dict = payload.model_dump(mode="json")
+    now = datetime.now(timezone.utc)
+    return EventEnvelope(
+        event_type=EventType.SOURCE_EVENT,
+        event_id=event_id,
+        producer_id="signal-copier-instance-1",
+        source_stream=source_stream,
+        export_sequence=0,
+        subject=build_subject(source=source_identity),
+        event_time=now,
+        effective_time=now,
+        availability_time=now,
+        receipt_time=now,
+        environment=Environment.LOCAL_SIM,
+        evidence_class=EvidenceClass.SYNTHETIC_FIXTURE,
+        payload_hash=compute_payload_hash(payload_dict),
+        payload=payload_dict,
+    )
+
+
+def test_relay_role_can_write_a_stop_target_revision_through_ingest(db_session, relay_session_factory):
+    """Track 41/ADR-0011: `_apply_relay_role_source_stop_target_
+    revisions_access`'s own real grant, exercised end-to-end through
+    the actual restricted `relay_role` login -- not just asserted by
+    inspecting the grant SQL. Without the grant, this would fail with
+    a real Postgres permission error, not a silent no-op."""
+    _seed_tenant(db_session, "tenant-a")
+    register_export_stream(db_session, tenant_id="tenant-a", source_stream="signal-copier:source:telegram", environment="LOCAL_SIM")
+    db_session.commit()
+
+    relay_session = relay_session_factory()
+    try:
+        envelope = _stop_update_envelope(event_id="evt-relay-stop-update", source_stream="signal-copier:source:telegram")
+        inbox_event = ingest_export_event(relay_session, envelope.model_dump_json())
+        applied = inbox_event.applied_at is not None
+        relay_session.commit()
+        assert applied
+    finally:
+        relay_session.close()
+
+    revisions = db_session.scalars(
+        select(SourceStopTargetRevision).where(SourceStopTargetRevision.tenant_id == "tenant-a")
+    ).all()
+    assert len(revisions) == 1

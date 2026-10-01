@@ -222,17 +222,25 @@ it for every other `SourceEventKind`:
   `edit_without_resolvable_target:<missing_original_source_event_id |
   unresolved-key>` -- never silently treated as safe provenance just to
   unblock the stream.
-- **`TARGET_UPDATE`/`STOP_UPDATE`** always park, as
-  `source_event_kind_not_ledger_representable:<kind>` -- a KIND this
-  build genuinely understands, but `app/models/ledger.py::LedgerEntry`
-  has no stop-loss/target column at all (see
-  `docs/design/LEDGER_MODEL.md`'s own column table), so there is
-  nowhere honest to write a stop/target revision even if it correlated
-  perfectly to an existing position. No adapter in this codebase emits
+- **`TARGET_UPDATE`/`STOP_UPDATE`** (Track 41, ADR-0011 -- **closed**):
+  used to always park, as `source_event_kind_not_ledger_representable:
+  <kind>`, permanently blocking the stream (this build still had no
+  slot to write one even if it correlated perfectly). Now writes a
+  real, dedicated, append-only `SourceStopTargetRevision` row
+  (`app/models/source_stop_target_revision.py`,
+  `app/services/source_stop_target_revisions.py`) -- deliberately NOT
+  a `LedgerEntry` (a stop/target revision has no quantity/price
+  economic fact of its own; it revises risk parameters on an EXISTING
+  `Book.SOURCE` recommendation, see ADR-0011 for the full reasoning
+  against adding nullable stop/target columns to `LedgerEntry`
+  instead). Applies and advances the stream like every other
+  genuinely-understood kind; `resolved_source_entry_id` is a best-
+  effort, never-required correlation (via `source.parent_event_id`) to
+  the `Book.SOURCE` entry it concerns -- unresolved is never a reason
+  to park (no money is at stake). No adapter in this codebase emits
   either kind today (grep `SourceEventKind\.\(TARGET_UPDATE\|
-  STOP_UPDATE\)` across signal-copier's own `app/`), so this is a
-  disclosed theoretical gap, not a live one the way EDIT/DELETE were
-  before this track.
+  STOP_UPDATE\)` across signal-copier's own `app/`), so this was a
+  disclosed theoretical gap, closed before it could become a live one.
 
 **Deliberately NOT built here** (flagged, out of this track's own
 inbox-projection boundary, per its own task scope):
@@ -250,28 +258,36 @@ inbox-projection boundary, per its own task scope):
   trading logic, strictly outside this commercial platform's read-only
   inbox-projection boundary, and is not touched by this change.
 - `TARGET_UPDATE`/`STOP_UPDATE` correlation (the same native-key
-  mechanism as EDIT) was deliberately not built, since even a perfect
-  match has nowhere to write its data today -- building the
-  correlation plumbing for a projection that still couldn't apply
-  would just move the "no real work happens" point without closing the
-  actual gap, which is the ledger model itself.
-- A SEPARATE, pre-existing concern this track did NOT fix (it lives in
-  `SOURCE_RECEIPT`'s own branch, unchanged here, not in `SOURCE_EVENT`):
-  an edited signal gets its own, independent `SOURCE_RECEIPT` (a new
-  `Signal.id`, since signal-copier's own `_handle_signal` only
-  dedupes by exact `(channel_id, message_id, revision_id)`), so a
-  message edited once ends up with TWO `Book.SOURCE` rows -- the
-  original's and the edit's -- rather than one row superseding the
-  other. For an analyst who frequently edits price/quantity, this
-  could overstate `compute_book_performance`/`compute_analyst_
-  attribution`'s recommended size for that instrument. Fixing it would
-  mean teaching `SOURCE_RECEIPT`'s own projection to correlate and
-  correct against a prior revision's ledger entry -- a real,
-  non-trivial design decision (what does "correcting" a `SOURCE`-book
-  row even mean, since `Book.SOURCE` quantity feeds attribution
-  differently than `Book.PLATFORM` does) squarely outside this track's
-  SOURCE_EVENT-kind scope. Flagged for a future track, not guessed at
-  here.
+  mechanism as EDIT) was deliberately not built **at the time this was
+  written** -- Track 41 (ADR-0011) built it: `resolved_source_entry_id`
+  on the new `SourceStopTargetRevision` row, via `source.
+  parent_event_id`. See the closed entry above.
+- **CLOSED by Track 41**: the SOURCE_RECEIPT double-booking gap. An
+  edited signal used to get its own, independent `SOURCE_RECEIPT` (a
+  new `Signal.id`, since signal-copier's own `_handle_signal` only
+  dedupes by exact `(channel_id, message_id, revision_id)`), ending up
+  with TWO `Book.SOURCE` rows -- the original's and the edit's --
+  rather than one row superseding the other, which could overstate
+  `compute_book_performance`/`compute_analyst_attribution`'s
+  recommended size for a frequently-edited analyst's instrument.
+  `EventType.SOURCE_RECEIPT`'s own branch of `_apply_projection` now
+  resolves a revision (`source.original_source_event_id` set) against
+  the earlier receipt it supersedes, via the exact same tenant-scoped
+  native-key mechanism Track 35 built for `SOURCE_EVENT`'s own `EDIT`
+  (now also set on `SOURCE_RECEIPT` rows), and books a correction
+  (`app/services/ledger.py::append_correction`, extended with optional
+  `instrument`/`side`/`currency`/`multiplier` overrides) carrying the
+  REVISED quantity/price/instrument/side -- never a second,
+  independent `SOURCE` entry for the same economic fact. Every reader
+  of ledger history (`compute_book_performance`, `compute_analyst_
+  attribution`, `customer_performance_report.
+  compute_customer_equity_series`) now resolves a root entry's real
+  effective values through the shared `platform_performance.
+  effective_fill` helper, so the corrected numbers are reflected
+  exactly once. An edit that arrives before its target can be resolved
+  parks as `edit_without_resolvable_target:<key>` -- the same honest
+  "never guess" posture Track 35 established, never a silent fallback
+  to double-booking.
 
 This has live impact: signal-copier's Telegram (`app/sources/
 telegram.py`, `telegram_user.py`: `EDIT`/`DELETE`), Slack
@@ -283,6 +299,29 @@ kinds live today -- before this track, any of them parked its own
 forever. That permanent-block class of bug, for every live kind this
 build will ever receive from a currently-shipped adapter, is now
 closed.
+
+## An adversarial signin/signup form body with an embedded NUL byte crashes with a raw DB error, not a clean 4xx
+
+Found during Track 41's own full-suite verification (not fixed — unrelated
+to that track's ledger-correctness scope, flagged here instead):
+`tests/test_c39_schemathesis_api_fuzzing.py::
+test_public_signin_signup_never_5xx_on_adversarial_form_bodies` fails
+reproducibly (confirmed via `git stash` against this same HEAD, before any
+of Track 41's own changes, so it is genuinely pre-existing, not a
+regression this track introduced). Schemathesis/Hypothesis generates a
+signin or signup form body containing an embedded NUL byte (e.g.
+`{"email": "\x00"}`); the public auth route passes it through to a real
+`INSERT`/`SELECT` against Postgres, which rejects a NUL byte in a text
+column outright — raised as an unhandled `sqlalchemy.exc.DataError`/
+`psycopg` error, not caught and translated into an honest 4xx the way
+`app/api/relay_routes.py`'s own per-event batch handling already does for
+the identical byte-shape problem on the relay ingest path (see this file's
+earlier "malformed_envelope" entry). The public signin/signup routes have
+no equivalent input-validation/exception-translation layer for this case
+yet. A real fix belongs to whichever track next owns the public auth
+routes (`app/api/auth_routes.py` or wherever signin/signup is implemented) —
+flagged here, not guessed at, since it's outside this track's own
+ledger/inbox-projection boundary.
 
 ## Where to look for the authoritative, requirement-by-requirement account
 

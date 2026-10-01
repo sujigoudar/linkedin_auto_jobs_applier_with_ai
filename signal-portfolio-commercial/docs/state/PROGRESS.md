@@ -21,6 +21,28 @@ detailed per-phase notes (now historical; much has been built since).
   for real (transient vs. structural, per its own CHANGELOG.md entry)
   instead of silently falling through unrecognized.
 
+- **Track 41: ledger correctness (2026-10-01)** -- closed two real gaps
+  Tracks 35/40 flagged. (1) `EventType.SOURCE_RECEIPT` edit
+  double-booking: an edited instruction used to book a second,
+  independent `Book.SOURCE` entry instead of superseding the original
+  (signal-copier dedupes an edit by exact `(channel_id, message_id,
+  revision_id)`, never reusing the original `Signal.id`) --
+  `source_event_native_key` is now also set on `SOURCE_RECEIPT` rows,
+  and a revision (`source.original_source_event_id` set) resolves
+  against the earlier receipt it supersedes, booking a correction
+  (`append_correction`, extended with optional `instrument`/`side`/
+  `currency`/`multiplier` overrides) with the revised values instead of
+  a new entry. Every ledger-history reader (`compute_book_performance`,
+  `compute_analyst_attribution`, `compute_customer_equity_series`) now
+  resolves a root entry's real values through a new shared
+  `platform_performance.effective_fill` helper. (2) `TARGET_UPDATE`/
+  `STOP_UPDATE` real representation (ADR-0011): a new, dedicated,
+  append-only `source_stop_target_revisions` table -- never new
+  `LedgerEntry` columns, since a stop/target revision carries no
+  quantity/price economic fact of its own. Both kinds now apply and
+  advance their stream instead of parking forever. Full suite passing
+  against a real disposable Postgres cluster; see `CHANGELOG.md` for
+  the full list of files touched.
 - **Track 38 property-based/stateful test hardening** -- two new test
   files, both passing against a real disposable Postgres cluster:
   `tests/test_trk38_edit_correlation_hypothesis.py` (60 generated cases
