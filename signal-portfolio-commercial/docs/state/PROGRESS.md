@@ -9,6 +9,22 @@ detailed per-phase notes (now historical; much has been built since).
 
 ## What's real and tested, most recent first
 
+- **Release taxonomy + trading-authority qualification gate
+  (`GET /system/readiness`)** -- see ADR-0010
+  (`docs/adr/0010-release-taxonomy-and-trading-authority-qualification-gate.md`).
+  This route, and both fields it reports, did not exist before this
+  track; it is new, real, computed work, not a stub replacement.
+  `release_status` renames the existing `Product.lifecycle_state`/
+  `ReleaseReview` pipeline onto `RESEARCH_ONLY -> SHADOW ->
+  LIMITED_LIVE -> FULLY_RELEASED`. `trading_authority`
+  (`app/services/trading_authority.py`) is a fail-closed gate checking
+  publication, release-review approval, order-routing-specific rights
+  (`AUTOMATED_PUBLICATION`/`MANAGED_ACCOUNTS`, not the alerts grant),
+  and open high/critical incidents -- and, once every one of those
+  passes, correctly reports `missing_input:execution_activation_
+  pipeline` rather than a fabricated qualified pass, since neither
+  `CopyMandate` nor `ManagedProgram` has a real ACTIVE/enrolled-live
+  state in this build yet. 18 new tests.
 - **Revocable JWT sessions** (`72efeae`) — Bearer-token JWTs were
   previously cryptographically self-contained and unrevocable before
   natural expiry. Now: `issued_tokens`/`revoked_tokens` tables

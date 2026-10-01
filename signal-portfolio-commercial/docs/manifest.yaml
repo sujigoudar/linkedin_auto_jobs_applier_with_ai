@@ -177,6 +177,7 @@ categories:
       - docs/adr/0007-local-auth-revocable-jwt-sessions.md
       - docs/adr/0008-append-only-triggers-on-ledger-tables.md
       - docs/adr/0009-membership-self-lookup-rls-policy.md
+      - docs/adr/0010-release-taxonomy-and-trading-authority-qualification-gate.md
     read_when:
       - "Before reversing or significantly altering a past architectural decision"
       - "After making a significant architectural decision, to record it"
