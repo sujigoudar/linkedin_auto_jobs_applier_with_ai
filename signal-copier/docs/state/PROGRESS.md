@@ -1,13 +1,13 @@
 # Current progress snapshot
 
-As of `HEAD` = `9ab1104` on `claude/signal-copier-readiness-sm44tr`
+As of `HEAD` = `4a24d07` on `claude/signal-copier-readiness-sm44tr`
 (2026-10-01). This is a snapshot, not a roadmap — update it when the state
 it describes actually changes. This file was previously stale for an
 extended period (it referenced an old branch, `claude/signal-copier-
 redesign`, and alembic head `0015`, long after both had moved on), and was
 stale again after that (alembic head `0033`/2057 passed, and three items
 below listed as not-yet-landed that had in fact landed as Track 25/27) — if
-you find it stale a third time, fix it rather than working around it.
+you find it stale again, fix it rather than working around it.
 
 ## What wave this is
 
@@ -41,9 +41,9 @@ anything past Track 29 has landed since this snapshot was written.
 
 ## What's genuinely landed and working, as of HEAD
 
-- Alembic head is `0034`. Full `pytest -q` suite: **2105 passed, 0 failed**
-  (re-verified this session against this exact HEAD, after the Track
-  24–29 merges below had landed).
+- Alembic head is `0034`. Full `pytest -q` suite: **2119 passed, 0 failed**
+  (re-verified against this exact HEAD, after the Track 24–30/33 merges
+  below had landed).
 - `ruff check .` and the CI-scoped `mypy` command (file list in
   `.github/workflows/signal-copier-ci.yml`, 39 files) both clean against
   this HEAD.
@@ -71,6 +71,27 @@ anything past Track 29 has landed since this snapshot was written.
   duplicate-recognized and genuine-re-entry-not-suppressed cases. See the
   ADR for the explicitly-scoped remainder this does NOT cover (in-memory
   only, no cross-restart persistence).
+- An exhaustive, no-sampling E2E validation wave (both repos' full
+  pytest suites, every dashboard screen/template driven live via
+  Playwright, 5 live trading scenarios, a live cross-repo contract proof)
+  surfaced one significant gap and several smaller ones, now all closed:
+  **signal-portfolio-commercial's `_apply_projection` had no branch for
+  `EventType.SOURCE_EVENT`** (Track 30) — a plain webhook `SOURCE_EVENT`
+  emitted before its own `SOURCE_RECEIPT` on the same per-source stream
+  parked permanently and blocked every later event on that stream, so in
+  practice no `SOURCE_RECEIPT`/`ROUTING_ADMISSION_OUTCOME` delivered via
+  the real webhook path ever reached the ledger. Fixed: `ORIGINAL`-kind
+  events now advance the stream as a no-op (provenance already captured
+  verbatim in `InboxEvent.envelope_json`); other kinds still park
+  honestly as `unimplemented_source_event_kind`. Track 30 also fixed an
+  owner-login bug (owners were redirected to the customer `/app` instead
+  of `/ops`). Track 33 added an RSS-source duplicate-feed-URL warning
+  (soft, not a rejection), a real-RLS proof that the rollback-recovery
+  `require_tenant_scope` pattern is genuinely tenant-isolated (no bug
+  found — reported as a verified-safe finding), and an owner-gated
+  `GET /export-events` read endpoint for the export outbox. Tracks 31/32
+  closed the remaining doc-staleness and accessibility-scaffolding
+  findings from the same wave.
 
 ## What's genuinely NOT yet landed / still open
 
@@ -88,8 +109,8 @@ closed:
 
 ## Verification status
 
-Last independently re-verified state: this exact HEAD (`9ab1104`), full
-`pytest -q` (2105 passed), single alembic head `0034` confirmed via
+Last independently re-verified state: this exact HEAD (`4a24d07`), full
+`pytest -q` (2119 passed), single alembic head `0034` confirmed via
 `alembic heads`. Any commit after this HEAD should be treated as
 unverified by this snapshot until its own merge commit documents a fresh
 run of the same checks.
