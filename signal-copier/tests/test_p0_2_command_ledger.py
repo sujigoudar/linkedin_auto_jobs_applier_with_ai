@@ -296,6 +296,127 @@ def test_ambiguous_broker_exception_lands_the_ledger_row_in_unknown_ambiguous(st
     assert ledger_key in unresolved_keys
 
 
+# --- Track 45: direct unit coverage for app/command_ledger.py's own
+# classification/fingerprint helpers -- these had no direct tests at all
+# before this (only exercised indirectly through real call sites using
+# PaperBroker, which only ever returns FILLED), so mutmut found 90+
+# surviving mutants across classify_order_result/compute_fingerprint/
+# ambiguous_evidence_for_exception/classify_optional_order_result. ---
+
+
+def test_classify_order_result_filled_is_confirmed_with_full_evidence():
+    result = OrderResult(
+        account_id="a1", status=OrderStatus.FILLED, signal_id="s1",
+        broker_order_id="bo-1", filled_quantity=5.0, filled_price=101.5, message="ok",
+    )
+    state, remote_identifiers, evidence = command_ledger.classify_order_result(result)
+    assert state == UncertaintyState.CONFIRMED
+    assert remote_identifiers == {"broker_order_id": "bo-1"}
+    assert evidence == {
+        "broker_status": "filled",
+        "filled_quantity": 5.0,
+        "filled_price": 101.5,
+        "message": "ok",
+    }
+
+
+def test_classify_order_result_rejected_is_rejected_confirmed():
+    result = OrderResult(
+        account_id="a1", status=OrderStatus.REJECTED, signal_id="s1",
+        broker_order_id="bo-2", message="insufficient buying power",
+    )
+    state, remote_identifiers, evidence = command_ledger.classify_order_result(result)
+    assert state == UncertaintyState.REJECTED_CONFIRMED
+    assert remote_identifiers == {"broker_order_id": "bo-2"}
+    assert evidence == {"broker_status": "rejected", "message": "insufficient buying power"}
+
+
+def test_classify_order_result_pending_with_broker_order_id_is_submitted_unconfirmed():
+    """The audit's own confirmed-acceptable case: PENDING but with
+    something to poll later -- SUBMITTED_UNCONFIRMED, not ambiguous."""
+    result = OrderResult(
+        account_id="a1", status=OrderStatus.PENDING, signal_id="s1", broker_order_id="bo-3",
+    )
+    state, remote_identifiers, evidence = command_ledger.classify_order_result(result)
+    assert state == UncertaintyState.SUBMITTED_UNCONFIRMED
+    assert remote_identifiers == {"broker_order_id": "bo-3"}
+    assert evidence == {}
+
+
+def test_classify_order_result_pending_without_broker_order_id_is_unknown_ambiguous():
+    """The exact "PENDING result without a broker order ID" exposure gap
+    the audit names -- UNKNOWN_AMBIGUOUS, and critically NO
+    broker_order_id key at all in remote_identifiers (nothing durable to
+    poll)."""
+    result = OrderResult(
+        account_id="a1", status=OrderStatus.PENDING, signal_id="s1", message="accepted, no id yet",
+    )
+    state, remote_identifiers, evidence = command_ledger.classify_order_result(result)
+    assert state == UncertaintyState.UNKNOWN_AMBIGUOUS
+    assert remote_identifiers == {}
+    assert evidence == {"broker_status": "pending_no_broker_order_id", "message": "accepted, no id yet"}
+
+
+def test_classify_order_result_error_status_is_unknown_ambiguous():
+    result = OrderResult(account_id="a1", status=OrderStatus.ERROR, signal_id="s1", message="timeout")
+    state, remote_identifiers, evidence = command_ledger.classify_order_result(result)
+    assert state == UncertaintyState.UNKNOWN_AMBIGUOUS
+    assert remote_identifiers == {}
+    assert evidence == {"broker_status": "error", "message": "timeout"}
+
+
+def test_ambiguous_evidence_for_exception_shape():
+    exc = ConnectionError("connection reset by peer")
+    evidence = command_ledger.ambiguous_evidence_for_exception(exc)
+    assert evidence == {
+        "broker_status": "exception",
+        "exception_type": "ConnectionError",
+        "message": "connection reset by peer",
+    }
+
+
+def test_classify_optional_order_result_none_is_rejected_confirmed_capability_not_supported():
+    """A broker with no verified implementation of this capability returns
+    `None` -- a definite, immediate, local answer, not an ambiguous one."""
+    state, remote_identifiers, evidence = command_ledger.classify_optional_order_result(None)
+    assert state == UncertaintyState.REJECTED_CONFIRMED
+    assert remote_identifiers == {}
+    assert evidence == {"broker_status": "capability_not_supported"}
+
+
+def test_classify_optional_order_result_delegates_to_classify_order_result_for_a_real_result():
+    result = OrderResult(account_id="a1", status=OrderStatus.FILLED, signal_id="s1", filled_quantity=2.0)
+    state, remote_identifiers, evidence = command_ledger.classify_optional_order_result(result)
+    assert (state, remote_identifiers, evidence) == command_ledger.classify_order_result(result)
+    assert state == UncertaintyState.CONFIRMED
+
+
+def test_compute_fingerprint_is_independent_of_dict_key_order():
+    """Load-bearing for idempotency: the SAME request repeated (same
+    logical payload, any key order) must hash to the SAME fingerprint, or
+    a legitimate retry would be wrongly flagged as a fingerprint mismatch
+    (CommandFingerprintMismatch) against its own earlier attempt."""
+    fp_a = command_ledger.compute_fingerprint({"symbol": "AAPL", "quantity": 5.0, "side": "buy"})
+    fp_b = command_ledger.compute_fingerprint({"side": "buy", "quantity": 5.0, "symbol": "AAPL"})
+    assert fp_a == fp_b
+
+
+def test_compute_fingerprint_differs_for_a_genuinely_different_payload():
+    fp_a = command_ledger.compute_fingerprint({"symbol": "AAPL", "quantity": 5.0})
+    fp_b = command_ledger.compute_fingerprint({"symbol": "AAPL", "quantity": 6.0})
+    assert fp_a != fp_b
+
+
+def test_compute_fingerprint_handles_non_json_native_values_via_default_str():
+    """`default=str` lets a caller pass enums/datetimes/etc. without
+    pre-serializing by hand -- must not raise, and must still be
+    order-independent."""
+    fp_a = command_ledger.compute_fingerprint({"side": Side.BUY, "qty": 1.0})
+    fp_b = command_ledger.compute_fingerprint({"qty": 1.0, "side": Side.BUY})
+    assert fp_a == fp_b
+    assert isinstance(fp_a, str) and len(fp_a) == 64  # a real sha256 hex digest
+
+
 def test_classify_cancel_result_false_is_unknown_ambiguous_not_rejected():
     """`BrokerAdapter.cancel_order`'s own docstring: False means "isn't
     supported or confirmed", which covers both "definitely never

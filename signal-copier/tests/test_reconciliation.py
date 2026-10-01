@@ -97,6 +97,32 @@ async def test_confirmed_fill_with_different_quantity_trues_up_position(store):
 
 
 @pytest.mark.asyncio
+async def test_confirmed_fill_sell_side_with_different_quantity_trues_up_in_the_correct_direction(store):
+    """Track 45: no existing test confirmed a FILLED (not REJECTED) SELL-
+    side order's sign -- `signed_delta = delta if side == Side.BUY else
+    -delta` must NEGATE the delta for a SELL, same as the REJECTED branch
+    already covers. A sign bug here (e.g. `+delta` instead of `-delta`)
+    would move a SELL position's correction in the WRONG direction
+    instead of truing it up -- financially dangerous and previously
+    undetected."""
+    _seed_pending_order(store, side=Side.SELL, optimistic_filled=3.0)
+    assert store.get_position("acct1", "AAPL") == -3.0
+
+    # Broker actually only filled 2.0 of the requested 3.0 sell.
+    confirmed = OrderResult(
+        account_id="acct1", status=OrderStatus.FILLED, signal_id="", filled_quantity=2.0, message="filled"
+    )
+    reconciler = OrderReconciler(store, {"stub": _StubBroker(status_to_return=confirmed)})
+
+    await reconciler.reconcile_once()
+
+    # Correct direction: the position moves back TOWARD zero (less short),
+    # landing at exactly -2.0 -- not further negative (-4.0, the sign-bug
+    # outcome) and not left at the stale optimistic -3.0.
+    assert store.get_position("acct1", "AAPL") == -2.0
+
+
+@pytest.mark.asyncio
 async def test_rejected_order_reverses_optimistic_position(store):
     _seed_pending_order(store, side=Side.BUY, optimistic_filled=2.0)
     assert store.get_position("acct1", "AAPL") == 2.0

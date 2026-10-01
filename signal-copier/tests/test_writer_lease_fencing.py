@@ -20,6 +20,7 @@ Covers:
 """
 from __future__ import annotations
 
+import os
 import threading
 import time
 from datetime import datetime, timedelta, timezone
@@ -224,6 +225,92 @@ def test_renew_after_fencing_raises(store):
     store.acquire_or_reacquire_writer_lease("site-a", "site-a:2:new-instance", 30.0)  # a "restart" supersedes it
     with pytest.raises(FencedOutError):
         guard_a.renew()
+
+
+# --- Track 45: direct unit coverage closing survivors mutmut found once
+# writer_lease.py was added to the widened mutation scope -- in particular
+# `renew()`'s happy path was NEVER exercised by any existing test (only
+# the fenced-out-raises case was), so a mutant that flipped `if self._token
+# is None` to `is not None` (making renew() always raise, even for a
+# genuinely still-current writer -- which would wrongly fence out a live
+# writer's own heartbeat) survived undetected. ---
+
+
+def test_guard_renew_succeeds_and_returns_the_current_token_while_still_active(store):
+    """The real heartbeat path (app/main.py calls this on a timer): a
+    guard that is still the genuine, current writer must be able to renew
+    repeatedly without ever raising -- this was never asserted anywhere
+    before Track 45."""
+    guard = WriterLeaseGuard(store, site_id="site-a", lease_seconds=30.0)
+    token = guard.acquire()
+    renewed_token = guard.renew()
+    assert renewed_token == token
+    # A second renewal must also succeed -- not a one-shot fluke.
+    assert guard.renew() == token
+    guard.require_active()  # still genuinely current
+
+
+def test_is_expired_true_exactly_at_the_boundary(store):
+    """`is_expired` uses `<=`, not `<`: a lease whose `expires_at` is
+    exactly `now` must be treated as expired (so `promote_writer_lease`
+    can issue a new token right at the boundary instant, never leaving a
+    gap where it's neither clearly valid nor clearly expired)."""
+    from app.writer_lease import WriterLeaseRecord
+
+    now = datetime.now(timezone.utc)
+    record = WriterLeaseRecord(
+        fencing_token=1, site_id="site-a", holder_id="h1", acquired_at=now, expires_at=now, renewed_at=now
+    )
+    assert record.is_expired(now=now) is True
+
+
+def test_is_expired_direct_call_with_no_now_argument_uses_the_real_clock(store):
+    """`is_expired()`'s own `now = now or datetime.now(timezone.utc)`
+    fallback is never hit through either real call site (app/db.py and
+    app/promote_cli.py both always pass `now=` explicitly) -- but the
+    method itself must still behave correctly if called directly with no
+    argument at all, not raise (e.g. a naive/aware comparison crash from
+    a wrong timezone default)."""
+    from app.writer_lease import WriterLeaseRecord
+
+    far_future = datetime.now(timezone.utc) + timedelta(hours=1)
+    not_yet_expired = WriterLeaseRecord(
+        fencing_token=1, site_id="site-a", holder_id="h1",
+        acquired_at=datetime.now(timezone.utc), expires_at=far_future, renewed_at=datetime.now(timezone.utc),
+    )
+    assert not_yet_expired.is_expired() is False
+
+    far_past = datetime.now(timezone.utc) - timedelta(hours=1)
+    already_expired = WriterLeaseRecord(
+        fencing_token=1, site_id="site-a", holder_id="h1",
+        acquired_at=far_past, expires_at=far_past, renewed_at=far_past,
+    )
+    assert already_expired.is_expired() is True
+
+
+def test_holder_id_is_prefixed_with_its_own_site_id(store):
+    """`holder_id` is built from THIS guard's own `site_id`
+    (`_new_holder_id(self.site_id)`) -- a guard constructed for "site-a"
+    must never end up with a holder_id built from a different (or missing)
+    site identity; several debugging/ops paths parse this prefix."""
+    guard = WriterLeaseGuard(store, site_id="site-a")
+    assert guard.holder_id.startswith("site-a:")
+
+    other = WriterLeaseGuard(store, site_id="site-b")
+    assert other.holder_id.startswith("site-b:")
+    assert other.holder_id != guard.holder_id
+
+
+def test_new_holder_id_format_has_the_real_pid_and_an_8_char_hex_suffix():
+    from app.writer_lease import _new_holder_id
+
+    holder_id = _new_holder_id("site-a")
+    parts = holder_id.split(":")
+    assert len(parts) == 3
+    assert parts[0] == "site-a"
+    assert parts[1] == str(os.getpid())
+    assert len(parts[2]) == 8
+    int(parts[2], 16)  # a real hex string, not garbage
 
 
 # --- End-to-end: two engine instances sharing one store -------------------

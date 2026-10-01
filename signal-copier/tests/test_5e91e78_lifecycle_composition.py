@@ -571,3 +571,36 @@ async def test_full_exit_of_confirmed_entry_does_not_delete_a_still_working_entr
     assert world.store.get_position(ACCOUNT, SYMBOL) == 70.0
     assert manager_lifecycle.confirmed_owned_quantity == 70.0
     assert world.broker.standing_stop_quantity() == 70.0  # the late fill is protected, not orphaned
+
+
+@pytest.mark.asyncio
+async def test_pending_exit_terminal_with_zero_new_progress_still_resolves_and_restores_the_stop(world):
+    """Track 45: `_reconcile_pending_exits`'s own
+    `if not is_terminal and filled <= pending.confirmed_filled_quantity:
+    continue` must gate on BOTH conditions together -- a REJECTED close
+    with nothing newly filled (filled == the already-known 0.0) is still
+    TERMINAL and must still call `resolve_pending_exit` (to restore the
+    stop and release the reservation), not be silently skipped forever
+    just because `filled <= confirmed_filled_quantity` happens to hold.
+    No existing test had a terminal exit observation with zero NEW
+    progress, so an `and` -> `or` (or an `is_terminal` flip) mutation
+    here survived undetected -- the real-world consequence is a managed
+    position stuck with no protective stop after its close attempt is
+    flatly rejected by the broker."""
+    entry = await start_entry(world, quantity=100.0)
+    await progress(world, entry, 100.0, OrderStatus.FILLED)
+
+    exit_result = await world.engine.close_position(world.account, SYMBOL)
+    assert exit_result.status is OrderStatus.PENDING
+
+    # The broker flatly rejects the close -- nothing filled, same (zero)
+    # progress as already known, but now genuinely terminal.
+    await progress(world, exit_result.broker_order_id, 0.0, OrderStatus.REJECTED)
+
+    # Must have actually resolved: the full 100 is still owned and
+    # protected again -- not stuck in limbo with pending_exit still set
+    # and no standing stop.
+    assert lifecycle(world).pending_exit is None
+    assert lifecycle(world).confirmed_owned_quantity == 100.0
+    assert world.store.get_position(ACCOUNT, SYMBOL) == 100.0
+    assert world.broker.standing_stop_quantity() == 100.0

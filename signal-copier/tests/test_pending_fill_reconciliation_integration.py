@@ -208,3 +208,62 @@ async def test_managed_pending_entry_that_never_fills_unregisters_cleanly(store)
 
     assert lifecycle_manager.get_lifecycle("acct1", "AAPL") is None
     assert store.get_position("acct1", "AAPL") == 0.0
+
+
+@pytest.mark.asyncio
+async def test_one_unresolvable_pending_entry_does_not_stop_a_later_one_in_the_same_pass(store):
+    """Track 45: `_reconcile_pending_entries` loops over EVERY pending
+    entry in one pass. No existing test ever had more than one pending
+    entry at once, so a `continue` -> `break` mutation on the
+    "broker missing" early-exit (or on the "nothing new to report" skip)
+    survived undetected -- it would silently stop reconciling every OTHER
+    account's pending entry for the rest of that pass, exactly the
+    routing.py "continue -> break" bug class Track 39 already found
+    elsewhere. Here acct1's broker is deliberately NOT registered with
+    the reconciler (forcing its early `continue`), and it's registered
+    BEFORE acct2 so iteration order puts the `continue` case first --
+    acct2's own pending entry, which the broker genuinely confirms FILLED,
+    must still be resolved in the very same pass."""
+    broker = _ControllablePendingBroker()
+    account1 = DestinationAccount(account_id="acct1", broker="missing_broker", managed_lifecycle=True)
+    account2 = DestinationAccount(account_id="acct2", broker="paper", managed_lifecycle=True)
+    routing = RoutingConfig(
+        rules=[
+            RoutingRule(source="tv", destinations=["acct1"]),
+            RoutingRule(source="tv2", destinations=["acct2"]),
+        ],
+        accounts={"acct1": account1, "acct2": account2},
+    )
+    # Deliberately no "missing_broker" entry here -- acct1's pending entry
+    # can never be polled, exactly the "lost response, no usable broker"
+    # case `broker is None` guards against.
+    lifecycle_manager = PositionLifecycleManager(brokers={"missing_broker": broker, "paper": broker}, store=store)
+    engine = SignalCopierEngine(
+        routing=routing, brokers={"missing_broker": broker, "paper": broker}, store=store,
+        lifecycle_manager=lifecycle_manager,
+    )
+
+    # acct1 registers its pending entry first (so it's iterated first).
+    await engine.handle_signal(Signal(source="tv", symbol="AAPL", side=Side.BUY, quantity=10.0, stop_loss=90.0))
+    broker.next_broker_order_id = "order-2"
+    await engine.handle_signal(Signal(source="tv2", symbol="MSFT", side=Side.BUY, quantity=5.0, stop_loss=90.0))
+
+    broker.script_terminal_result("order-2", status=OrderStatus.FILLED, filled_quantity=5.0)
+    # Only "paper" (not "missing_broker") is wired into the reconciler --
+    # acct1's own pending entry can never be resolved via get_order_status.
+    reconciler = OrderReconciler(store, {"paper": broker}, lifecycle_manager=lifecycle_manager)
+    resolved = await reconciler.reconcile_once()
+
+    # acct2's genuinely-confirmable entry must still resolve in this same
+    # pass, not be silently skipped because acct1's came first and hit
+    # its own early exit.
+    assert resolved >= 1
+    lifecycle2 = lifecycle_manager.get_lifecycle("acct2", "MSFT")
+    assert lifecycle2 is not None
+    assert lifecycle2.pending_entry is None
+    assert lifecycle2.confirmed_owned_quantity == 5.0
+    assert store.get_position("acct2", "MSFT") == 5.0
+    # acct1's entry is correctly still unresolved (nothing silently guessed).
+    lifecycle1 = lifecycle_manager.get_lifecycle("acct1", "AAPL")
+    assert lifecycle1 is not None
+    assert lifecycle1.pending_entry is not None

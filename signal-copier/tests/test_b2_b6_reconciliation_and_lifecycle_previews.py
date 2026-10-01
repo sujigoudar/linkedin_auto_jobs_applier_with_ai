@@ -203,6 +203,42 @@ async def test_run_now_reports_real_examined_and_corrected_counts(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_run_now_reports_real_pending_exit_and_entry_breakdown_counts(tmp_path):
+    """Track 45: no existing test ever gave `run_now` a real
+    `lifecycle_manager` with actual pending exits/entries queued -- the
+    `pending_exits_examined`/`pending_entries_examined` breakdown fields
+    (and the `orders_examined` sum they feed) were only ever exercised
+    against an empty store, so a mutation that hard-codes the
+    lifecycle_manager's contribution to `[]` regardless of its real state
+    (or flips `+`/`-` in the sum) survived undetected."""
+    from app.db import SignalStore
+    from app.lifecycle.manager import PositionLifecycleManager
+    from app.lifecycle.models import PositionPlan
+
+    store = SignalStore(str(tmp_path / "test3.db"))
+    broker = PaperBroker()
+    account = DestinationAccount(account_id="acct1", broker="paper", managed_lifecycle=True)
+    manager = PositionLifecycleManager(brokers={"paper": broker}, store=store)
+    plan = PositionPlan(
+        account_id="acct1", symbol="AAPL", side=Side.BUY, planned_quantity=100, broker="paper", initial_stop=90
+    )
+    manager.start_plan(plan)
+    # A pending entry with no resolved fill yet -- list_pending_entries()
+    # must report it.
+    manager.register_pending_entry(account, "AAPL", broker_order_id="order-1", requested_quantity=100.0)
+
+    reconciler = OrderReconciler(store=store, brokers={"paper": broker}, lifecycle_manager=manager)
+    result = await reconciler.run_now()
+
+    assert result["already_running"] is False
+    assert result["pending_entries_examined"] == 1
+    assert result["pending_exits_examined"] == 0
+    # The sum must be the real total, not silently forced to 0 or
+    # miscounted by a +/- sign flip.
+    assert result["orders_examined"] == 1
+
+
+@pytest.mark.asyncio
 async def test_run_now_guards_against_concurrent_manual_runs(tmp_path):
     from app.db import SignalStore
 
