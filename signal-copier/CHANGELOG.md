@@ -13,6 +13,29 @@ Fixes responding to an external release-readiness audit of the trading
 engine's data integrity and operational-safety guarantees.
 
 ### Added
+- Track 33: `GET /export-events` and `GET /export-events/{event_id}` --
+  the first live, read-only HTTP surface over the `export_events` outbox
+  (`SignalStore.list_export_events`/`get_export_event`, app/db.py).
+  Previously inspecting the outbox's contents required a direct DB
+  connection; `export_outbox_backlog`'s aggregate count was the only
+  thing exposed over the running API. Same `require_owner_read`/bounded-
+  `limit`/newest-first convention as `GET /signals`/`GET /orders`, with
+  optional `source_stream`/`delivered` filters. Returns the real typed
+  `signal_platform_contracts` payload (subject/quantities/prices) as-is
+  -- it carries no credentials or secrets (those live only as
+  `credential_reference` env-var names) and is the same content the
+  owner already sees via `GET /signals`/`GET /orders`.
+- Track 33: `register_source` (app/db.py) now detects a new source's
+  `url_or_reference` (e.g. an RSS `feed_url`) already matching another
+  enabled `sources` row's and surfaces a non-blocking `duplicate_url_
+  warning` on the returned dict. Deliberately NOT a hard rejection or a
+  DB-level unique constraint -- two sources legitimately sharing one
+  feed_url (e.g. a `research`-purpose route and a `signal_candidate`-
+  purpose route, or a PRIMARY/RECONCILIATION pair -- see `SourceRole`'s
+  own docstring in app/provider_catalog.py) is a real, intentional use
+  case a hard constraint would break. Closes the gap where two sources
+  silently polling the identical feed could each independently emit a
+  `Signal` for the same real-world article with no detection at all.
 - Track 29: `SourceIdentity.source_catalog_id` (`signal_platform_contracts`
   v1.1.0) -- a new, additive, optional field making Track 14's
   Provider/Source/Connection catalog's `sources.id` expressible in the

@@ -3870,6 +3870,34 @@ async def list_orders(
     return {"orders": orders, "unreconciled_order_count": len(unreconciled)}
 
 
+@app.get("/export-events")
+async def list_export_events(
+    limit: int = Query(default=50, ge=1, le=500),
+    source_stream: str | None = Query(default=None),
+    delivered: bool | None = Query(default=None),
+    _owner: dict = Depends(require_owner_read),
+) -> dict:
+    """Track 33: read-only, owner-authenticated view of the `export_events`
+    outbox (see app/db.py's `export_events` CREATE TABLE comment) -- the
+    same `GET /signals`/`GET /orders` convention (bounded `limit`, newest
+    first, optional narrowing filter, `require_owner_read`). Previously
+    the ONLY way to inspect this outbox's contents was a direct DB
+    connection; `export_outbox_backlog` (surfaced elsewhere) gives an
+    aggregate count but never the actual rows. `delivered` narrows to
+    delivered-only/undelivered-only when given; omitted returns both."""
+    return {"export_events": store.list_export_events(limit=limit, source_stream=source_stream, delivered=delivered)}
+
+
+@app.get("/export-events/{event_id}")
+async def get_export_event(event_id: str, _owner: dict = Depends(require_owner_read)) -> dict:
+    """One outbox event by its own idempotency key -- 404 if it was never
+    appended (same convention as every other get-by-id route in this file)."""
+    event = store.get_export_event(event_id)
+    if event is None:
+        raise HTTPException(status_code=404, detail=f"no export event with event_id={event_id!r}")
+    return event
+
+
 class ClassifyMessagesRequest(BaseModel):
     """E02 (bounded): batch-classify free-text messages against
     app/sources/text_parser.py's grammar, without ever creating or
