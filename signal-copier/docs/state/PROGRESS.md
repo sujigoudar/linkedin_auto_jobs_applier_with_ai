@@ -156,6 +156,30 @@ closed:
   Connection and ingestion-architecture work this branch has otherwise
   been doing; not a regression, just still genuinely unbuilt.
 
+## Track 40: fuzzing/fault-injection coverage extension
+
+Extended both C30 (Schemathesis) and C32 (fault injection) past their
+original scope: C30's `SAFE_PATHS` now also covers `/system/readiness`,
+`/export-events`, `/mobile-devices`, and `/connections/*`'s read-only
+GETs added by recent tracks; a new, separately-scoped
+`tests/test_c37_webhook_schemathesis_fuzzing.py` fuzzes the webhook
+ingress route itself (deliberately excluded from C30's generic pass --
+see that file's own module docstring for why). A new
+`tests/test_c36_broker_submission_fault_injection.py` extends C32's
+real-httpx-transport-fault approach from `AlpacaBroker.get_order_status`
+to `place_order` itself.
+
+This found and fixed three real, previously-unproven unhandled-5xx bugs
+on adversarial input, all now closed with regression tests (see
+CHANGELOG.md's own Track 40 entries for the full detail on each):
+`AlpacaBroker`'s four `broker_order_id=order.get("id")` call sites with
+no type coercion, `GET /connections/{id}/cost-summary`'s unparsed
+`since`, and `POST /connections/{id}/cost-events`'s `occurred_at` being
+parsed outside its own except block. Nothing found that needed flagging
+rather than fixing -- every gap this pass found had a small, obvious fix
+matching an existing convention already established elsewhere in the
+same file.
+
 ## Verification status
 
 Last independently re-verified state: this exact HEAD (`4a24d07`), full

@@ -10,7 +10,7 @@ asserts.
 
 | Source / concern | Test file(s) |
 |---|---|
-| Generic webhook source | `test_webhook_source.py` |
+| Generic webhook source | `test_webhook_source.py`, `test_c37_webhook_schemathesis_fuzzing.py` (hypothesis-generated adversarial bodies/headers against the real `POST /webhook/{source_name}` route, Track 40) |
 | WhatsApp | `test_whatsapp_webhook.py` |
 | SMS (Twilio) + sender authorization | `test_sms_twilio_sender_authorization.py` |
 | NinjaTrader source | `test_ninjatrader_source.py`, `test_ninjatrader_webhook.py` |
@@ -132,8 +132,8 @@ asserts.
 | Dashboard XSS prevention (real browser) | `test_c14_dashboard_xss_prevention.py` |
 | Dashboard accessibility (real browser) | `test_c33_c34_dashboard_accessibility.py` |
 | Hypothesis-based quantity-conservation property test (C29) | `test_c29_hypothesis_quantity_conservation.py` |
-| Schemathesis API fuzzing (C30) | `test_c30_schemathesis_api_fuzzing.py` |
-| Fault injection (C32) | `test_c32_fault_injection.py` |
+| Schemathesis API fuzzing (C30, extended Track 40) | `test_c30_schemathesis_api_fuzzing.py` (read-only GETs, now including `/system/readiness`, `/export-events`, `/mobile-devices`, `/connections/*`), `test_c37_webhook_schemathesis_fuzzing.py` (the webhook ingress route specifically) |
+| Fault injection (C32, extended Track 40) | `test_c32_fault_injection.py` (broker `get_order_status`/reconciliation), `test_c36_broker_submission_fault_injection.py` (broker `place_order` itself -- real transport faults + malformed response shapes) |
 | DB foreign-key enforcement (DB-01) | `test_db01_foreign_key_enforcement.py` |
 | Alembic migration stamping (E01) | `test_e01_alembic_migration_stamping.py` |
 | Context-source rate limiting (C07) | `test_c07_context_rate_limiting.py` |

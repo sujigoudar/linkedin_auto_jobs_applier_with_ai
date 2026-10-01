@@ -3347,7 +3347,17 @@ async def get_connection_cost_summary_route(
     `since` (ISO-8601) defaults to the start of the current UTC month.
     See SignalStore.get_connection_cost_summary's own docstring for the
     honest `insufficient_data` case."""
-    since_dt = datetime.fromisoformat(since) if since else None
+    try:
+        since_dt = datetime.fromisoformat(since) if since else None
+    except ValueError as exc:
+        # Track 40 (fault-injection fuzzing): an adversarial/malformed
+        # `since` query-param value (this isn't a pydantic-validated
+        # request-body field, so nothing converts this ValueError to a
+        # 4xx automatically) used to raise straight out of this route as
+        # an unhandled 500 -- same RISK-01 "malformed input must 4xx,
+        # not 500" discipline every other parsed-input call site in this
+        # file already follows.
+        raise HTTPException(status_code=400, detail=f"invalid 'since' (expected ISO-8601): {exc}") from exc
     try:
         return store.get_connection_cost_summary(connection_id, since=since_dt)
     except KeyError as exc:
@@ -3379,8 +3389,16 @@ class RecordConnectionCostEventRequest(BaseModel):
 async def record_connection_cost_event_route(
     connection_id: str, request: RecordConnectionCostEventRequest, _owner: dict = Depends(require_owner)
 ) -> dict:
-    occurred_at = datetime.fromisoformat(request.occurred_at) if request.occurred_at else None
     try:
+        # Track 40 (fault-injection fuzzing): previously parsed BEFORE
+        # this try block, so a malformed `occurred_at` raised a
+        # `ValueError` the `except ValueError` below could never
+        # actually catch -- an unhandled 500 on exactly the adversarial
+        # input this file's own established convention (see every other
+        # `except ValueError: raise HTTPException(422, ...)` call site)
+        # exists to turn into a clean 422 instead. Moved inside so it's
+        # covered by the same except block below.
+        occurred_at = datetime.fromisoformat(request.occurred_at) if request.occurred_at else None
         return store.record_connection_cost_event(
             connection_id,
             amount=request.amount,

@@ -105,6 +105,78 @@ to sit immediately before its own true trough). Fixed, and a stronger
 regression test added. See `docs/agents/VERIFICATION.md` for why this
 matters to every future change, not just this one.
 
+## `POST /internal/relay/ingest-batch` reports "applied" for a genuinely PARKED event
+
+**Found by Track 40's own fault-injection/fuzzing pass
+(tests/test_c40_relay_ingest_adversarial_payloads.py::
+test_out_of_order_sequence_in_one_batch_parks_then_resolves_without_500),
+flagged rather than fixed — see that test's own docstring for the full
+reasoning.**
+
+`app/api/relay_routes.py`'s `ingest_batch` per-event loop hardcodes
+`results.append({"status": "applied", "event_id": applied_event_id})`
+for every event that reaches that line without raising one of the
+three explicitly-named exceptions (`UnregisteredStreamError`/
+`EventIntegrityError`/`SequenceSlotAlreadyConsumedError`, plus Track
+40's own new `ValidationError`/`DataError` handling for malformed
+input — see below). It never actually checks `InboxEvent.applied_at`.
+
+A genuinely **PARKED** event — received and durably stored, but with
+NO ledger projection applied (a sequence gap waiting on a missing
+predecessor, an unsupported `schema_version`, an unimplemented
+`event_type`, a `FEE`/`ROUTING_ADMISSION_OUTCOME` whose correlation
+target hasn't arrived yet, a generation rollback/bootstrap-required
+case — every `PARKED_REASON_*` constant in `app/services/
+integration_inbox.py`) is reported back to the caller as `"applied"`
+exactly the same as a real, economically-applied event. This is a
+fabricated status for this codebase's own stated discipline (see
+CLAUDE.md rule 11 and this module's own docstring: "never coerced,
+never blanket-accepted").
+
+**Real, non-cosmetic consequence:** signal-copier's own
+`app/relay_worker.py` consumes this exact field (`if status ==
+"applied": delivered.append(envelope.event_id)`) and calls
+`store.mark_export_events_delivered(delivered)` on it — permanently
+removing the event from its own outbox, never to be redelivered. For
+most park reasons this is harmless (the event is already durably
+received on the commercial side, and redelivery alone couldn't unstick
+a *structural* park like an unsupported schema version anyway) — but
+the status label itself is still dishonest, and a consumer with no way
+to see `applied_at` on the other side of the wire has no way to tell
+"this was really booked to the ledger" from "this was merely received
+and will sit here forever."
+
+**Why this is flagged, not fixed:** the "obvious" fix (check
+`inbox_event.applied_at` and report a distinct `"parked"` status with
+`parked_reason`) is a cross-service WIRE CONTRACT change — signal-
+copier's own `relay_worker.py` has no branch for a `"parked"` status
+today (it would simply fall through unrecognized, which happens to be
+harmless now, but that's an accident of the current `if/elif` chain,
+not a decision anyone made). Deciding what the relay worker should
+actually DO with a distinct "parked" signal (retry forever? only for
+some park reasons? surface an operator alert for the structural-park
+cases that will never resolve on their own?) is real, reviewed design
+work spanning both repos, not a same-file bugfix — exactly the kind of
+high-stakes ambiguous finding this track's own instructions say to
+flag rather than guess at.
+
+**What WAS fixed in the same pass** (see
+`app/api/relay_routes.py`'s new `except ValidationError`/`except
+DataError` blocks, CHANGELOG.md, and the tests named above): a single
+malformed event anywhere in a batch — an envelope failing its own
+`EventEnvelope.model_validate_json` (e.g. JSON nested deep enough to
+trip pydantic-core's own internal recursion guard), a per-event-type
+payload with an extra/wrong-typed field, or a string field carrying a
+byte Postgres text columns reject outright (an embedded NUL byte) —
+used to raise an UNHANDLED exception straight out of the route as a
+real 500, aborting the entire batch request including every other,
+already-committed, perfectly valid event processed earlier in the same
+loop. That crash is now caught, rolled back cleanly (no partial ledger
+entry), and reported as a new, honest `"malformed_envelope"` per-event
+status instead — this one WAS small, obvious, and matched this exact
+file's own pre-existing per-event try/except convention, so it was
+fixed directly rather than flagged.
+
 ## SOURCE_EVENT projection: every kind now has a real, honest disposition
 
 `app/services/integration_inbox.py`'s `_apply_projection` has a real

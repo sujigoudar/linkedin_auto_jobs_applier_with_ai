@@ -112,6 +112,29 @@ nothing here has shipped to a live production deployment
   `tests/test_integration_inbox.py`.
 
 #### Fixed
+- Track 40 (fuzzing/fault-injection extension): `app/api/relay_routes.py`'s
+  `ingest_batch` per-event loop only caught three named exceptions
+  (`UnregisteredStreamError`/`EventIntegrityError`/
+  `SequenceSlotAlreadyConsumedError`) from `ingest_export_event` -- a
+  genuinely malformed event anywhere in a batch (an envelope failing
+  `EventEnvelope.model_validate_json`, e.g. JSON nested deep enough to
+  trip pydantic-core's own internal recursion guard; a per-event-type
+  payload with an extra/wrong-typed field, e.g.
+  `ExecutionAppliedPayload`'s `extra="forbid"`; or a string field
+  carrying a byte Postgres `text`/`varchar` columns reject outright, an
+  embedded NUL byte) raised an UNHANDLED `pydantic.ValidationError` or
+  `sqlalchemy.exc.DataError` straight out of the route as a real,
+  unhandled 500 -- aborting the ENTIRE batch request, including every
+  other, already-committed, perfectly valid event processed earlier in
+  the same loop. Two new `except` blocks (same shape as the three
+  existing ones: rollback, append a clean per-event result, continue)
+  now catch both exception types and report `"status":
+  "malformed_envelope"` instead. Found and reproduced by
+  `tests/test_c40_relay_ingest_adversarial_payloads.py`'s own
+  `test_deeply_nested_payload_field_is_rejected_cleanly_not_500`,
+  `test_oversized_single_event_string_is_rejected_cleanly_not_500`, and
+  `test_embedded_nul_byte_instrument_id_is_rejected_cleanly_not_500`.
+
 - Track 35: `app/services/integration_inbox.py`'s `_apply_projection`
   `EventType.SOURCE_EVENT` branch now has a real, honest disposition
   for every `SourceEventKind`, not just `ORIGINAL` (Track 30, above).
@@ -226,6 +249,44 @@ nothing here has shipped to a live production deployment
   raw product UUID in the "My selections" table.
 
 #### Tests
+- Track 40: fuzzing and fault-injection coverage extension, following
+  signal-copier's own established C30 (Schemathesis)/C32 (fault
+  injection) pattern rather than inventing a new approach for this
+  repo.
+  - `tests/test_c39_schemathesis_api_fuzzing.py` -- the first
+    Schemathesis pass for this service: `POST /internal/relay/
+    ingest-batch` and `POST /api/v1/billing/webhook/stripe` (external
+    ingress, `not_a_server_error` only -- generated examples can't
+    forge a valid signature), `GET /health`/`/system/readiness`/
+    `/api/v1/me` (full response-schema-conformance with a real signed
+    Bearer token), and `POST /auth/signin`/`/auth/signup` (ID-01/
+    ID-02/ID-03, `not_a_server_error` only -- both return HTML with no
+    declared response schema).
+  - `tests/test_c40_relay_ingest_adversarial_payloads.py` -- genuinely
+    adversarial payloads against the real relay ingress route: wrong
+    content-type, truncated JSON, deeply nested/oversized payloads,
+    unicode/embedded-NUL/injection-style strings in text fields
+    (confirmed stored verbatim as data via a parameterized write, never
+    executed/interpolated), a duplicate `event_id` with a genuinely
+    different body (the first HTTP-level test of `EventIntegrityError`
+    -- previously only unit-tested at the service layer), and an
+    out-of-order sequence. Found and fixed the two `ValidationError`/
+    `DataError` 500s documented above. Also documents (in
+    `docs/KNOWN_ISSUES.md`, flagged rather than fixed -- see that
+    file's new "`POST /internal/relay/ingest-batch` reports 'applied'
+    for a genuinely PARKED event" section) that this route's per-event
+    `"status": "applied"` label is inaccurate for a genuinely parked
+    event, which has a real (if largely benign today) consequence for
+    signal-copier's own `relay_worker.py`.
+  - `tests/test_c38_db_connection_drop_fault_injection.py` -- the
+    highest-value check for this track given this is financial
+    accounting software: a real `pg_terminate_backend()` against the
+    disposable Postgres cluster's own admin connection kills a
+    session's backend mid-transaction, after a real ledger write but
+    before `COMMIT`. Confirms Postgres's own rollback guarantee leaves
+    NO partial `ledger_entries`/`inbox_events` row, and that the exact
+    same envelope redelivers and applies cleanly on a fresh connection
+    afterward.
 - Track 33: `tests/test_rollback_recovery_rls.py` -- the ~8 rollback-
   recovery routes' (e.g. `create_product_draft`) manual post-`rollback()`
   `set_tenant_scope()` re-call (see this date's own `require_tenant_scope`
