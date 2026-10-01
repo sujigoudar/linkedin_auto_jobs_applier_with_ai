@@ -64,8 +64,53 @@ nothing here has shipped to a live production deployment
   ledger yet, since no producer sends a real value for it in this
   deployment today -- see `signal-copier`'s own changelog entry for
   which adapter does.
+- `app/services/integration_inbox.py`'s `_apply_projection` now has a
+  real `EventType.SOURCE_EVENT` branch. Before this, EVERY `SOURCE_EVENT`
+  (including an `ORIGINAL` kind -- the raw inbound event that arrives
+  BEFORE its own `SOURCE_RECEIPT` on the same
+  `signal-copier:source:<name>` stream in the real webhook ingress path)
+  fell into the generic "unimplemented event type" branch and parked at
+  sequence 0 forever -- which, since `_next_expected_sequence` is keyed
+  strictly off `applied_at`, permanently blocked every later event on
+  that SAME stream too, including the `SOURCE_RECEIPT` and any
+  `ROUTING_ADMISSION_OUTCOME` that followed it. An `ORIGINAL`
+  `SourceEventKind` (signal_platform_contracts's own taxonomy) is now
+  applied as a no-op: it advances the sequence and stays durably stored,
+  verbatim, in its own `envelope_json` (inspectable provenance/audit
+  evidence), but produces NO second ledger entry -- the same economic
+  fact is already booked into `Book.SOURCE` by that stream's own
+  `SOURCE_RECEIPT`, so a second entry would double-count it. Every OTHER
+  kind (`EDIT`/`DELETE`/`REPLY`/`CANCEL`/`CLOSE`/`ADD`/`TARGET_UPDATE`/
+  `STOP_UPDATE`) genuinely changes or retracts economic state this build
+  has no ledger projection for yet, so it still parks honestly, with its
+  own new `unimplemented_source_event_kind:<kind>` reason -- never
+  blanket-accepted just because that would also unblock the stream.
+  Tests: `test_a_source_event_then_receipt_then_routing_outcome_all_apply_in_order`
+  (reproduces the exact live scenario and confirms all three now apply,
+  in order) and
+  `test_a_source_event_kind_this_inbox_cannot_yet_interpret_still_parks_and_blocks_its_stream`
+  (confirms this fix does not silently swallow every kind), both in
+  `tests/test_integration_inbox.py`.
 
 #### Fixed
+- `/auth/signin`'s sign-in success redirect no longer always sends an
+  authenticated user to `/app` (the CUSTOMER-only dashboard) regardless
+  of role. `id01_auth.html`'s own sign-in form always submits the
+  literal default `return_route=/app` (there is no real deep-link flow
+  populating it with anything else yet), so an OWNER or any other
+  operator role landed on `/app` and hit an immediate 403 straight after
+  a successful login (`/app`'s own `_require_own_customer_overview`
+  grants `view_own_customer_overview` to `MembershipRole.CUSTOMER` only).
+  `sign_in_submit` (`app/api/dashboard_routes.py`) now redirects a
+  non-CUSTOMER membership to `/ops` instead, only when `return_route` is
+  still that unmodified default -- an explicit, non-default
+  `return_route` a future deep-link flow supplies is still honored
+  verbatim. Tests:
+  `test_sign_in_as_an_owner_redirects_to_the_ops_landing_page_not_the_customer_app`
+  (new) and the existing
+  `test_sign_in_with_correct_password_sets_session_cookie` (CUSTOMER
+  still redirects to `/app`), both in
+  `tests/test_id01_id02_id03_auth_routes.py`.
 - Accessibility gaps in the shared layout (`app/templates/_base.html`,
   used by every dashboard/auth screen): added a skip-to-content link
   (`.skip-link` → `#main-content`), wrapped the header's navigation
