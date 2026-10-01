@@ -48,6 +48,8 @@ before any `:<detail>` suffix):
 | `new_generation_requires_bootstrap:...` | An envelope claims a **newer** `producer_generation` than established, without a reconciled bootstrap. | Permanent for this row in this build (no reconciled-bootstrap path exists yet). |
 | `manifest_metadata_mismatch:<manifest_id>` | A `POSITION_SNAPSHOT` page disagrees with an already-received sibling page on `page_count`/`cutoff_sequence`. | Permanent for this page. |
 | `manifest_generation_mismatch:<manifest_id>` | A `POSITION_SNAPSHOT` page claims a different `producer_generation` than an already-received sibling. | Permanent for this page. |
+| `edit_without_resolvable_target:<missing_original_source_event_id \| key>` | A `SOURCE_EVENT` of kind `EDIT` either has no `source.original_source_event_id` at all, or that reference doesn't resolve (via `source_event_native_key`) to any already-applied `SOURCE_EVENT` for this tenant. | Not permanent in principle (resolves once/if a matching original is received and reprocessed), but if the reference is genuinely missing or wrong it never resolves. |
+| `source_event_kind_not_ledger_representable:<target_update\|stop_update>` | A `SOURCE_EVENT` of kind `TARGET_UPDATE`/`STOP_UPDATE` — `LedgerEntry` has no stop-loss/target column, so there is nowhere to write this even with a correct correlation. | Permanent in this build (needs a ledger-model change, not a correlation fix). |
 
 None of these is ever "resolved" by silently coercing or guessing a value — every
 one is an honest, visible "not applied yet, and here's exactly why."
@@ -72,6 +74,24 @@ path exists anywhere in signal-copier's engine or broker adapters) or `loss`/
 later from closed positions, never a state routing/admission reports). Inventing
 either of those would be exactly the fabrication `source_coverage.py` and INT-035's
 own tests forbid.
+
+## `inbox_events.source_event_native_key`
+
+**Source**: `app/models/integration_inbox.py`; set by the `SOURCE_EVENT` branch
+of `_apply_projection` (`app/services/integration_inbox.py::_source_event_native_key`).
+
+Set on **every** `SOURCE_EVENT` row, regardless of `SourceEventKind` (even one
+that ends up parked, e.g. `TARGET_UPDATE`) — `f"{tenant_id}|{source_provider_id}|
+{source_channel_id}|{source_event_id}"`, the one native-provider identity
+`signal_platform_contracts.identity.SourceIdentity`'s own docstring says is
+stable across redelivery ("true deduplication and edit/delete/reply correlation
+both key off this pair, never off re-parsed message text"). Tenant-scoped on
+purpose: two tenants whose adapters happen to relay the same public channel
+must never let one tenant's `EDIT` resolve against the other's `ORIGINAL`. A
+later `SourceEventKind.EDIT` names its target by `source.
+original_source_event_id`, which this same formula turns into the exact key to
+look up — never a looser match (e.g. "any row on this provider"). `NULL` for
+every non-`SOURCE_EVENT` row.
 
 ## `ledger_entries.sleeve_id`
 

@@ -86,13 +86,27 @@ _SUPPORTED_SCHEMA_VERSIONS = frozenset({CONTRACT_SCHEMA_VERSION})
 #: column's own docstring.
 PARKED_REASON_UNSUPPORTED_SCHEMA_VERSION = "unsupported_schema_version"
 PARKED_REASON_UNIMPLEMENTED_EVENT_TYPE = "unimplemented_event_type"
-PARKED_REASON_UNIMPLEMENTED_SOURCE_EVENT_KIND = "unimplemented_source_event_kind"
 PARKED_REASON_FEE_TARGET_NOT_FOUND = "fee_target_not_found"
 PARKED_REASON_ROUTING_OUTCOME_TARGET_NOT_FOUND = "routing_outcome_target_not_found"
 PARKED_REASON_GENERATION_ROLLBACK_DETECTED = "generation_rollback_detected"
 PARKED_REASON_NEW_GENERATION_REQUIRES_BOOTSTRAP = "new_generation_requires_bootstrap"
 PARKED_REASON_MANIFEST_METADATA_MISMATCH = "manifest_metadata_mismatch"
 PARKED_REASON_MANIFEST_GENERATION_MISMATCH = "manifest_generation_mismatch"
+#: Track 35: a `SourceEventKind.EDIT` whose own `source.
+#: original_source_event_id` either isn't set at all, or doesn't match
+#: any already-applied `SOURCE_EVENT` row's native identity for this
+#: tenant -- see `_apply_projection`'s own `SourceEventKind.EDIT`
+#: handling for why this is never guessed. Suffix is either
+#: `missing_original_source_event_id` (the adapter never wired the
+#: revision chain) or the unresolved native key itself.
+PARKED_REASON_EDIT_WITHOUT_RESOLVABLE_TARGET = "edit_without_resolvable_target"
+#: Track 35: a `SourceEventKind.TARGET_UPDATE`/`STOP_UPDATE` -- the
+#: four-book ledger (`app/models/ledger.py::LedgerEntry`) has no
+#: stop-loss/target columns at all, so even a perfectly-correlated
+#: revision has nowhere honest to be written. Never "unimplemented" in
+#: the generic sense (the kind IS understood) -- the ledger MODEL
+#: itself has no slot for this data yet. Suffix is the kind's own value.
+PARKED_REASON_SOURCE_EVENT_KIND_NOT_LEDGER_REPRESENTABLE = "source_event_kind_not_ledger_representable"
 
 
 def _execution_correlation_key(*, broker: str, broker_order_id: str) -> str:
@@ -100,6 +114,22 @@ def _execution_correlation_key(*, broker: str, broker_order_id: str) -> str:
     carry -- see `InboxEvent.execution_correlation_key`'s own
     docstring."""
     return f"{broker}|{broker_order_id}"
+
+
+def _source_event_native_key(
+    tenant_id: str, *, source_provider_id: str, source_channel_id: str | None, source_event_id: str,
+) -> str:
+    """The one identity `SourceEventPayload.source.source_event_id`
+    actually guarantees is stable across redelivery (`SourceIdentity`'s
+    own docstring: "source_channel_id + source_event_id together ARE
+    this event's native provider message identity... true
+    deduplication and edit/delete/reply correlation both key off this
+    pair, never off re-parsed message text"). Scoped by `tenant_id` the
+    same way `execution_correlation_key` is -- two tenants whose
+    adapters happen to share a `source_provider_id`/`source_channel_id`/
+    `source_event_id` triple (e.g. two tenants both relaying the same
+    public Telegram channel) must never collide."""
+    return f"{tenant_id}|{source_provider_id}|{source_channel_id or ''}|{source_event_id}"
 
 
 class StreamAlreadyRegisteredToAnotherTenantError(Exception):
@@ -409,37 +439,140 @@ def _apply_projection(session: Session, inbox_event: InboxEvent, envelope: Event
         # The source ledger's own provenance/audit row (signal_platform_
         # contracts's own `SourceEventKind` docstring -- "one row per
         # real, native-provider-identified moment in a source message's
-        # life"). An `ORIGINAL` kind is the raw inbound event that this
-        # SAME stream's own `SOURCE_RECEIPT` (the same economic fact)
-        # already books into `Book.SOURCE` -- applying it here with NO
-        # second ledger entry is not a silent drop: the envelope itself
-        # stays durably stored, verbatim, in this row's own
-        # `envelope_json` (set at `received_at`, before this function is
-        # ever called), inspectable evidence of the source's own
-        # original wording even though it produces no additional
-        # financial fact. This also, critically, lets it ADVANCE
-        # `_next_expected_sequence` -- before this branch existed, an
-        # ORIGINAL kind fell into the generic "every other EventType"
-        # case below and parked at sequence 0 forever, which (per
-        # `_next_expected_sequence`'s own "keyed off applied_at" design)
-        # permanently blocked every later event on the SAME stream too
-        # -- including that stream's own SOURCE_RECEIPT and any
-        # ROUTING_ADMISSION_OUTCOME, neither of which this build ever
-        # actually failed to understand.
-        #
-        # Every OTHER kind (EDIT/DELETE/REPLY/CANCEL/CLOSE/ADD/
-        # TARGET_UPDATE/STOP_UPDATE) genuinely changes, retracts, or
-        # supersedes economic state this build has no ledger projection
-        # for yet -- parked honestly with its own distinct reason, same
-        # "never coerced, never blanket-accepted" posture as every other
-        # `parked_reason` here, not silently treated the same as
-        # ORIGINAL just because that would unblock the stream too.
+        # life"). Every kind is received and durably stored verbatim in
+        # `envelope_json` regardless of what follows below -- this
+        # branch only ever decides (a) whether it ADVANCES
+        # `_next_expected_sequence` (never silently blocking a stream
+        # for a kind this build genuinely understands) and (b) whether
+        # it produces its own `Book.SOURCE` ledger effect (most kinds
+        # never do, by design -- see per-kind reasoning below).
         source_event_payload = SourceEventPayload.model_validate(envelope.payload)
-        if source_event_payload.kind == SourceEventKind.ORIGINAL:
+
+        # Every SOURCE_EVENT row gets its own native-identity key, keyed
+        # off the one thing `SourceIdentity`'s own docstring says is
+        # stable across redelivery -- `source_channel_id` +
+        # `source_event_id` -- regardless of kind, so a LATER event
+        # (e.g. a second EDIT of an edit, or a CANCEL naming an ADD) can
+        # always resolve back to it. Harmless to set even for a kind
+        # that ends up parked below (see TARGET_UPDATE/STOP_UPDATE) --
+        # the key describes THIS row's own identity, independent of
+        # whether this row's content could be applied.
+        inbox_event.source_event_native_key = _source_event_native_key(
+            tenant_id,
+            source_provider_id=source_event_payload.source.source_provider_id,
+            source_channel_id=source_event_payload.source.source_channel_id,
+            source_event_id=source_event_payload.source.source_event_id,
+        )
+
+        if source_event_payload.kind in (
+            SourceEventKind.ORIGINAL,
+            SourceEventKind.ADD,
+            SourceEventKind.REPLY,
+        ):
+            # ORIGINAL (Track 30): the raw inbound event that this SAME
+            # stream's own `SOURCE_RECEIPT` (the same economic fact)
+            # already books into `Book.SOURCE` -- applying it here with
+            # NO second ledger entry is not a silent drop, it's evidence
+            # preservation (the envelope itself stays durably stored).
+            #
+            # ADD: signal-copier's own `app/sources/*` adapters call
+            # `on_signal(signal)` for an add-on entry exactly the same
+            # way they do for a brand-new ORIGINAL (see
+            # `app/export_events.py::build_source_event_envelope`'s own
+            # docstring: "posted as its own separate execution intent")
+            # -- its `source_event_id` is a genuinely NEW native message
+            # id, never the same one an earlier ORIGINAL/EDIT used, so
+            # its own economic content (if any) is independently booked
+            # by its OWN SOURCE_RECEIPT, not by this row. Economically
+            # identical to ORIGINAL.
+            #
+            # REPLY: verified against signal-copier's own
+            # `app/sources/email_source.py` (the one live adapter that
+            # emits it) -- a reply carrying a real correction still
+            # calls `on_signal(signal)` on its OWN fresh `Signal.id`
+            # BEFORE emitting this SOURCE_EVENT, so any instruction it
+            # carries is -- again -- independently booked by its own
+            # SOURCE_RECEIPT. A reply with no new instruction at all
+            # (`signal is None`) has nothing economic to book in the
+            # first place. Either way, this row is pure provenance.
             inbox_event.applied_at = datetime.now(timezone.utc)
+        elif source_event_payload.kind in (
+            SourceEventKind.DELETE,
+            SourceEventKind.CANCEL,
+            SourceEventKind.CLOSE,
+        ):
+            # By the taxonomy's own definition (signal_platform_
+            # contracts's `SourceEventKind` docstring), none of these
+            # ever carries new instruction content -- DELETE/CANCEL
+            # always have `signal is None`, and CLOSE's own `signal` (if
+            # any) never resolves to a bookable instrument/side at this
+            # stage (`build_source_event_envelope` deliberately excludes
+            # a CLOSE-side signal from its own exported payload, same
+            # reasoning as `build_source_receipt_envelope`'s own
+            # Side.CLOSE skip). There is therefore no new economic fact
+            # for this row to book -- applying it as a no-op-advance is
+            # not "coercing" anything, it genuinely has nothing further
+            # to apply.
+            #
+            # KNOWN, FLAGGED GAP (see docs/KNOWN_ISSUES.md): this does
+            # NOT retroactively mark the earlier SOURCE ledger entry it
+            # retracts/closes as void, and does NOT stop any downstream
+            # managed-position logic from continuing to act on it --
+            # neither exists in this build. Fixing the first needs a new
+            # "void"/correction concept on `Book.SOURCE` entries; fixing
+            # the second is signal-copier's own engine, not this inbox's
+            # projection boundary. Both are out of this track's scope,
+            # deliberately not built here.
+            inbox_event.applied_at = datetime.now(timezone.utc)
+        elif source_event_payload.kind == SourceEventKind.EDIT:
+            # Unlike ADD/REPLY, an EDIT's `source.original_source_event_id`
+            # names the SAME native message as an earlier event (it is a
+            # revision IN PLACE, not a new one) -- so, before treating it
+            # as safe pure-provenance the same way ORIGINAL/ADD/REPLY
+            # are, this build verifies that reference actually resolves
+            # to a real, already-applied SOURCE_EVENT row for this
+            # tenant. This is NOT used to write or supersede anything
+            # (this branch never writes a ledger row for any kind) --
+            # it's a legitimacy check: an EDIT naming a target this
+            # build cannot find is never silently treated as harmless
+            # provenance just to unblock the stream, per this whole
+            # function's "never coerced, never blanket-accepted" posture.
+            original_source_event_id = source_event_payload.source.original_source_event_id
+            if original_source_event_id is None:
+                inbox_event.parked_reason = (
+                    f"{PARKED_REASON_EDIT_WITHOUT_RESOLVABLE_TARGET}:missing_original_source_event_id"
+                )
+            else:
+                target_key = _source_event_native_key(
+                    tenant_id,
+                    source_provider_id=source_event_payload.source.source_provider_id,
+                    source_channel_id=source_event_payload.source.source_channel_id,
+                    source_event_id=original_source_event_id,
+                )
+                target_row = session.scalars(
+                    select(InboxEvent).where(
+                        InboxEvent.tenant_id == tenant_id,
+                        InboxEvent.source_event_native_key == target_key,
+                        InboxEvent.applied_at.is_not(None),
+                    )
+                ).first()
+                if target_row is None:
+                    inbox_event.parked_reason = f"{PARKED_REASON_EDIT_WITHOUT_RESOLVABLE_TARGET}:{target_key}"
+                else:
+                    inbox_event.applied_at = datetime.now(timezone.utc)
         else:
+            # TARGET_UPDATE / STOP_UPDATE: `app/models/ledger.py::
+            # LedgerEntry` has NO stop-loss/target columns at all (see
+            # docs/design/LEDGER_MODEL.md's own column table) -- there is
+            # nowhere honest to write this revision even if it correlated
+            # perfectly to an existing position, so this build does not
+            # even attempt correlation for these two kinds. Parked with a
+            # reason distinct from "unimplemented": the KIND is
+            # understood, the ledger MODEL has no slot for it yet. See
+            # docs/KNOWN_ISSUES.md.
+            assert source_event_payload.kind in (SourceEventKind.TARGET_UPDATE, SourceEventKind.STOP_UPDATE)
             inbox_event.parked_reason = (
-                f"{PARKED_REASON_UNIMPLEMENTED_SOURCE_EVENT_KIND}:{source_event_payload.kind.value}"
+                f"{PARKED_REASON_SOURCE_EVENT_KIND_NOT_LEDGER_REPRESENTABLE}:{source_event_payload.kind.value}"
             )
     else:
         # Every other EventType has no implemented payload yet (see

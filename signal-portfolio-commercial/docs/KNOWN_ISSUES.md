@@ -87,47 +87,109 @@ to sit immediately before its own true trough). Fixed, and a stronger
 regression test added. See `docs/agents/VERIFICATION.md` for why this
 matters to every future change, not just this one.
 
-## SOURCE_EVENT projection covers ORIGINAL only -- other kinds still park
+## SOURCE_EVENT projection: every kind now has a real, honest disposition
 
-`app/services/integration_inbox.py`'s `_apply_projection` now has a
-real `EventType.SOURCE_EVENT` branch (previously: every `SOURCE_EVENT`
-fell into the generic "unimplemented event type" case and parked
-forever at sequence 0, permanently blocking every later event on the
-same stream -- including the stream's own `SOURCE_RECEIPT` and any
+`app/services/integration_inbox.py`'s `_apply_projection` has a real
+`EventType.SOURCE_EVENT` branch (previously: every `SOURCE_EVENT` fell
+into the generic "unimplemented event type" case and parked forever at
+sequence 0, permanently blocking every later event on the same stream
+-- including the stream's own `SOURCE_RECEIPT` and any
 `ROUTING_ADMISSION_OUTCOME` -- since `_next_expected_sequence` is keyed
-off `applied_at`). An `ORIGINAL` `SourceEventKind` (the raw inbound
-event, informational/provenance only -- the same economic fact its
-stream's own `SOURCE_RECEIPT` already books into `Book.SOURCE`) is now
-applied as a no-op: it advances the sequence, and stays durably,
-verbatim stored in its own `envelope_json`, but produces no second
-ledger entry.
+off `applied_at`). Track 30 closed this for `ORIGINAL`; Track 35 closed
+it for every other `SourceEventKind`:
 
-Genuinely remaining gap: `EDIT`/`DELETE`/`REPLY`/`CANCEL`/`CLOSE`/
-`ADD`/`TARGET_UPDATE`/`STOP_UPDATE` -- every OTHER `SourceEventKind` --
-still parks (`unimplemented_source_event_kind:<kind>`), honestly, since
-this build has no real ledger projection for an edited/cancelled/
-retargeted source instruction yet (e.g. revising a stop or cancelling a
-pending entry has no effect on `Book.SOURCE` today). As today, a
-producer that emits any of these on a real stream will park that event
-and everything after it on the same stream until a future build adds a
-real projection for it -- the same honest "keep separate received/
-applied cursors" consequence as any other unimplemented shape, not a
-silent drop (the row is always received and durably stored first,
-`SourceEventPayload.raw_source_event` carries the immutable raw
-provider event when the producer sends it). This has live impact
-today, not just future risk: signal-copier's own webhook ingress path
-(`app/sources/webhook.py`) only ever emits `ORIGINAL`, but several
-other real adapters already emit non-`ORIGINAL` kinds -- Telegram
-(`app/sources/telegram.py`, `telegram_user.py`: `EDIT`/`DELETE`),
-Slack (`app/sources/slack_user.py`: `EDIT`/`DELETE`), and Twitter
-(`app/sources/twitter_user.py`: `EDIT`). A source message edited or
-deleted through any of those adapters still parks its own `SOURCE_EVENT`
-row (and blocks everything after it on that stream) until a future
-build adds a real projection for that kind -- the webhook path's own
-permanent-park bug from this track is fixed, but these adapters' own
-edit/delete events are a separate, pre-existing instance of the same
-"unimplemented event type parks forever" shape, not newly introduced by
-this fix and not yet closed by it.
+- **`ORIGINAL`/`ADD`/`REPLY`** apply as a no-op and advance the stream.
+  Verified against signal-copier's own live adapters
+  (`app/sources/*.py`, `app/export_events.py`): each of these calls
+  `on_signal(signal)` on its own fresh `Signal.id` (ADD/REPLY) or is
+  itself that fresh signal (ORIGINAL) *before* exporting this
+  `SOURCE_EVENT` row, so any real instruction it carries is
+  independently booked by its own, separate `SOURCE_RECEIPT` on the
+  same stream -- this row is pure, already-redundant provenance, never
+  a second ledger entry for the same economic fact. A `REPLY` with no
+  correction at all (`signal is None`) simply has nothing economic to
+  book in the first place.
+- **`DELETE`/`CANCEL`/`CLOSE`** apply as a no-op and advance the
+  stream. By the taxonomy's own definition
+  (`signal_platform_contracts.payloads.SourceEventKind`'s own
+  docstring) none of these ever carries bookable instrument/side/
+  quantity content, so there is no economic fact for this row to book;
+  applying it unconditionally is honest, not a guess.
+- **`EDIT`** correlates by native provider identity: a new, indexed
+  `InboxEvent.source_event_native_key` column
+  (`f"{tenant_id}|{source_provider_id}|{source_channel_id}|
+  {source_event_id}"`, Alembic revision `a7c3f29d1e56`) is set on
+  every `SOURCE_EVENT` row. An `EDIT` whose own `source.
+  original_source_event_id` resolves, via that key, to a real,
+  already-applied `SOURCE_EVENT` row for the SAME tenant applies as a
+  no-op (its own revised content, if any, is independently booked by
+  the edit's own `SOURCE_RECEIPT`, same reasoning as ORIGINAL/ADD/
+  REPLY above). An `EDIT` with no `original_source_event_id` at all, or
+  one that doesn't resolve to any known row, parks honestly as
+  `edit_without_resolvable_target:<missing_original_source_event_id |
+  unresolved-key>` -- never silently treated as safe provenance just to
+  unblock the stream.
+- **`TARGET_UPDATE`/`STOP_UPDATE`** always park, as
+  `source_event_kind_not_ledger_representable:<kind>` -- a KIND this
+  build genuinely understands, but `app/models/ledger.py::LedgerEntry`
+  has no stop-loss/target column at all (see
+  `docs/design/LEDGER_MODEL.md`'s own column table), so there is
+  nowhere honest to write a stop/target revision even if it correlated
+  perfectly to an existing position. No adapter in this codebase emits
+  either kind today (grep `SourceEventKind\.\(TARGET_UPDATE\|
+  STOP_UPDATE\)` across signal-copier's own `app/`), so this is a
+  disclosed theoretical gap, not a live one the way EDIT/DELETE were
+  before this track.
+
+**Deliberately NOT built here** (flagged, out of this track's own
+inbox-projection boundary, per its own task scope):
+
+- A `DELETE`/`CANCEL`/`CLOSE` does not retroactively mark the earlier
+  `Book.SOURCE` entry it retracts/closes as void/superseded -- the
+  original entry stays in `Book.SOURCE` unmarked, exactly as before.
+  `LedgerEntry` has no "void"/correction concept for a `SOURCE`-book
+  row today (`append_correction` is only ever called against an
+  `EXECUTION_APPLIED` row, for `FEE`); adding one is a real ledger-
+  model design decision for a future track, not a guess to make here.
+- Nothing in this repo stops signal-copier's own engine from
+  continuing to act on a position whose originating signal was later
+  edited/cancelled/deleted/closed -- that's signal-copier's own
+  trading logic, strictly outside this commercial platform's read-only
+  inbox-projection boundary, and is not touched by this change.
+- `TARGET_UPDATE`/`STOP_UPDATE` correlation (the same native-key
+  mechanism as EDIT) was deliberately not built, since even a perfect
+  match has nowhere to write its data today -- building the
+  correlation plumbing for a projection that still couldn't apply
+  would just move the "no real work happens" point without closing the
+  actual gap, which is the ledger model itself.
+- A SEPARATE, pre-existing concern this track did NOT fix (it lives in
+  `SOURCE_RECEIPT`'s own branch, unchanged here, not in `SOURCE_EVENT`):
+  an edited signal gets its own, independent `SOURCE_RECEIPT` (a new
+  `Signal.id`, since signal-copier's own `_handle_signal` only
+  dedupes by exact `(channel_id, message_id, revision_id)`), so a
+  message edited once ends up with TWO `Book.SOURCE` rows -- the
+  original's and the edit's -- rather than one row superseding the
+  other. For an analyst who frequently edits price/quantity, this
+  could overstate `compute_book_performance`/`compute_analyst_
+  attribution`'s recommended size for that instrument. Fixing it would
+  mean teaching `SOURCE_RECEIPT`'s own projection to correlate and
+  correct against a prior revision's ledger entry -- a real,
+  non-trivial design decision (what does "correcting" a `SOURCE`-book
+  row even mean, since `Book.SOURCE` quantity feeds attribution
+  differently than `Book.PLATFORM` does) squarely outside this track's
+  SOURCE_EVENT-kind scope. Flagged for a future track, not guessed at
+  here.
+
+This has live impact: signal-copier's Telegram (`app/sources/
+telegram.py`, `telegram_user.py`: `EDIT`/`DELETE`), Slack
+(`app/sources/slack_user.py`: `EDIT`/`DELETE`), Twitter
+(`app/sources/twitter_user.py`: `EDIT`), and email
+(`app/sources/email_source.py`: `REPLY`) adapters already emit these
+kinds live today -- before this track, any of them parked its own
+`SOURCE_EVENT` row and blocked everything after it on that stream
+forever. That permanent-block class of bug, for every live kind this
+build will ever receive from a currently-shipped adapter, is now
+closed.
 
 ## Where to look for the authoritative, requirement-by-requirement account
 
