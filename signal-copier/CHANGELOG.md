@@ -7,6 +7,17 @@ does not yet cut versioned releases (see `docs/process/RELEASE.md`), so
 entries are grouped by theme and rough chronological wave instead of by
 version number. Newest wave first.
 
+## [Unreleased] — Track 58: mutation-testing re-verification for app/risk.py and app/quantity.py (2026-10-01)
+
+A re-verification pass (not an initial baseline) on `app/risk.py` and
+`app/quantity.py`, the two modules originally tested in Track 39.
+Results confirm the existing test suite in `tests/test_risk_sizing.py`
+and `tests/test_trkq1_quantity_breakdown.py` completely holds both
+modules: app/risk.py 5/5 mutants killed, app/quantity.py 20/22 mutants
+killed (2 confirmed equivalent type-annotation mutations, no production
+logic bugs). No code changes needed; full `pytest -q` suite passes:
+2129 passed, 0 failed.
+
 ## [Unreleased] — Track 57: mutation testing for capital_allocator.py, routing.py (2026-10-01)
 
 Mutation testing (mutmut<3) on the live-trading capital-routing

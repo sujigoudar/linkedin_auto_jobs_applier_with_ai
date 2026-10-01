@@ -568,7 +568,35 @@ No production code was changed; every fix was a new test. `ruff check
 (isolated `TMPDIR`) re-verified after these additions: 2255 passed, 0
 failed.
 
-## Track 57: mutation testing for capital_allocator.py, routing.py
+### Track 58: mutation-testing re-verification for app/risk.py and app/quantity.py (2026-10-01)
+
+A re-verification pass (not an initial baseline) on the two modules
+that Track 39 originally tested: `app/risk.py` (position sizing and
+symbol translation per destination account) and `app/quantity.py`
+(builders for the TRK-Q1 `QuantityBreakdown` distinct-field model).
+These modules were not added to the permanent checked-in `[tool.mutmut]`
+config (pyproject.toml's `only_mutate` list) after Track 39, so this
+track runs them in isolation to confirm the existing test suite still
+holds them completely.
+
+**Mutation test results:** `mutmut run --paths-to-mutate=app/risk.py
+--runner="python -m pytest tests/test_risk_sizing.py -q"` yields 5
+mutants, 5/5 killed. `mutmut run --paths-to-mutate=app/quantity.py
+--runner="python -m pytest tests/test_trkq1_quantity_breakdown.py -q"`
+yields 22 mutants, 20/22 killed / 2 survived.
+
+The 2 survivors are type-annotation mutations (`float | None` -> `float &
+None` on lines 83-84 of `build_quantity_breakdown`'s local variable
+declarations); confirmed equivalent mutants that do not affect runtime
+behavior since Python does not evaluate type annotations at runtime --
+see Track 39's entry above for the same pattern observed on
+`app/quantity.py` during that baseline run. No production code changed;
+no regression tests needed (the logic is already fully tested).
+
+**Full `pytest -q` re-verified:** 2129 passed, 0 failed (isolated
+`TMPDIR` on the same container shared with Tracks 54/56/57).
+
+### Track 57: mutation testing for capital_allocator.py, routing.py
 
 Targeted mutation testing (mutmut<3) on the live-trading capital-routing
 orchestrator and per-route allocation decision logic:
