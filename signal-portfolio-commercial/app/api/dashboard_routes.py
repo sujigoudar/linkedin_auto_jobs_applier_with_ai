@@ -206,7 +206,12 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app import config
-from app.api.dependencies import SESSION_COOKIE_NAME, get_current_scope, get_db_session
+from app.api.dependencies import (
+    SESSION_COOKIE_NAME,
+    get_current_scope,
+    get_db_session,
+    require_tenant_scope,
+)
 from app.db import set_current_user_scope, set_tenant_scope
 from app.models.product import ProductLifecycleState, ServiceMode
 from app.models.tenancy import Membership, MembershipRole
@@ -421,7 +426,7 @@ def _require_product_admin(scope: TenantScope) -> None:
 @router.get("/ops")
 def operations_overview_page(
     request: Request,
-    scope: TenantScope = Depends(get_current_scope),
+    scope: TenantScope = Depends(require_tenant_scope),
     session: Session = Depends(get_db_session),
 ):
     """AD-01 "Commercial operations overview" -- see this route module's
@@ -436,7 +441,6 @@ def operations_overview_page(
     except PermissionDenied as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
 
-    set_tenant_scope(session, scope.tenant_id)
     overview = get_operations_overview(session, tenant_id=scope.tenant_id)
     return templates.TemplateResponse(
         request, "ad01_overview.html",
@@ -451,7 +455,7 @@ def operations_overview_page(
 
 @router.get("/api/v1/ops/integration-status")
 def integration_status_endpoint(
-    scope: TenantScope = Depends(get_current_scope),
+    scope: TenantScope = Depends(require_tenant_scope),
     session: Session = Depends(get_db_session),
 ) -> dict:
     """Signal Platform Integration Correction Pack's own
@@ -468,7 +472,6 @@ def integration_status_endpoint(
     except PermissionDenied as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
 
-    set_tenant_scope(session, scope.tenant_id)
     report = get_integration_status(session, tenant_id=scope.tenant_id)
     return {
         "streams": [
@@ -490,7 +493,7 @@ def integration_status_endpoint(
 
 @router.get("/api/v1/ops/platform-performance")
 def platform_performance_endpoint(
-    scope: TenantScope = Depends(get_current_scope),
+    scope: TenantScope = Depends(require_tenant_scope),
     session: Session = Depends(get_db_session),
 ) -> dict:
     """INTEGRATION_DECISION.md S12 step 4: "Complete scoped financial/
@@ -505,7 +508,6 @@ def platform_performance_endpoint(
     except PermissionDenied as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
 
-    set_tenant_scope(session, scope.tenant_id)
     report = compute_platform_performance(session, tenant_id=scope.tenant_id)
     return {
         "realized_pnl": str(report.realized_pnl),
@@ -528,7 +530,7 @@ def platform_performance_endpoint(
 
 @router.get("/api/v1/ops/source-coverage")
 def source_coverage_endpoint(
-    scope: TenantScope = Depends(get_current_scope),
+    scope: TenantScope = Depends(require_tenant_scope),
     session: Session = Depends(get_db_session),
 ) -> dict:
     """INTEGRATION_ACCEPTANCE_CASES.json INT-027 "All permitted source
@@ -543,7 +545,6 @@ def source_coverage_endpoint(
     except PermissionDenied as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
 
-    set_tenant_scope(session, scope.tenant_id)
     report = compute_source_coverage(session, tenant_id=scope.tenant_id)
     return {
         "total_count": report.total_count,
@@ -568,7 +569,7 @@ def source_coverage_endpoint(
 @router.get("/ops/trading")
 def trading_performance_page(
     request: Request,
-    scope: TenantScope = Depends(get_current_scope),
+    scope: TenantScope = Depends(require_tenant_scope),
     session: Session = Depends(get_db_session),
 ):
     """The rendered owner workspace page for the two private-telemetry
@@ -583,7 +584,6 @@ def trading_performance_page(
     except PermissionDenied as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
 
-    set_tenant_scope(session, scope.tenant_id)
     integration_status = get_integration_status(session, tenant_id=scope.tenant_id)
     performance = compute_platform_performance(session, tenant_id=scope.tenant_id)
     return templates.TemplateResponse(
@@ -599,11 +599,10 @@ def trading_performance_page(
 @router.get("/ops/products")
 def list_products_page(
     request: Request,
-    scope: TenantScope = Depends(get_current_scope),
+    scope: TenantScope = Depends(require_tenant_scope),
     session: Session = Depends(get_db_session),
 ):
     _require_product_admin(scope)
-    set_tenant_scope(session, scope.tenant_id)
     products = list_products(session, tenant_id=scope.tenant_id)
     return templates.TemplateResponse(
         request,
@@ -617,16 +616,18 @@ def create_product_draft(
     request: Request,
     product_name: str = Form(...),
     slug: str = Form(...),
-    scope: TenantScope = Depends(get_current_scope),
+    scope: TenantScope = Depends(require_tenant_scope),
     session: Session = Depends(get_db_session),
 ):
     _require_product_admin(scope)
-    set_tenant_scope(session, scope.tenant_id)
     try:
         product = create_draft_product(session, tenant_id=scope.tenant_id, product_name=product_name, slug=slug)
         session.commit()
     except (InvalidProductDraftError, SlugAlreadyExistsError) as exc:
         session.rollback()
+        # Re-set after rollback(): set_tenant_scope's set_config(..., is_local=true)
+        # does not survive a rollback, and require_tenant_scope only runs once, at
+        # the start of the request -- see its own docstring (app/api/dependencies.py).
         set_tenant_scope(session, scope.tenant_id)
         products = list_products(session, tenant_id=scope.tenant_id)
         return templates.TemplateResponse(
@@ -648,11 +649,10 @@ def product_detail_page(
     product_id: str,
     request: Request,
     conflict: int = 0,
-    scope: TenantScope = Depends(get_current_scope),
+    scope: TenantScope = Depends(require_tenant_scope),
     session: Session = Depends(get_db_session),
 ):
     _require_product_admin(scope)
-    set_tenant_scope(session, scope.tenant_id)
     product = get_product(session, product_id, tenant_id=scope.tenant_id)
     if product is None:
         raise HTTPException(status_code=404, detail="not found")
@@ -682,11 +682,10 @@ def update_product_draft_route(
     audience_policy_id: str = Form(""),
     research_report_id: str = Form(""),
     methodology_document_id: str = Form(""),
-    scope: TenantScope = Depends(get_current_scope),
+    scope: TenantScope = Depends(require_tenant_scope),
     session: Session = Depends(get_db_session),
 ):
     _require_product_admin(scope)
-    set_tenant_scope(session, scope.tenant_id)
     product = get_product(session, product_id, tenant_id=scope.tenant_id)
     if product is None:
         raise HTTPException(status_code=404, detail="not found")
@@ -710,6 +709,9 @@ def update_product_draft_route(
         return RedirectResponse(url=f"/ops/products/{product_id}?conflict=1", status_code=303)
     except InvalidProductDraftError as exc:
         session.rollback()
+        # Re-set after rollback(): set_tenant_scope's set_config(..., is_local=true)
+        # does not survive a rollback, and require_tenant_scope only runs once, at
+        # the start of the request -- see its own docstring (app/api/dependencies.py).
         set_tenant_scope(session, scope.tenant_id)
         product = get_product(session, product_id, tenant_id=scope.tenant_id)
         blockers = compute_publication_blockers(session, product) if product is not None else []
@@ -735,7 +737,7 @@ def request_release_review_route(
     request: Request,
     evidence_manifest_id: str = Form(...),
     audience_policy_id: str = Form(...),
-    scope: TenantScope = Depends(get_current_scope),
+    scope: TenantScope = Depends(require_tenant_scope),
     session: Session = Depends(get_db_session),
 ):
     """AD-07's own "Confirm: Submit version for review" -- creates a
@@ -743,7 +745,6 @@ def request_release_review_route(
     a review is a research/release decision, same trio of roles as
     drafting the product itself."""
     _require_product_admin(scope)
-    set_tenant_scope(session, scope.tenant_id)
     product = get_product(session, product_id, tenant_id=scope.tenant_id)
     if product is None:
         raise HTTPException(status_code=404, detail="not found")
@@ -760,6 +761,9 @@ def request_release_review_route(
         session.commit()
     except ReviewNotEligibleError as exc:
         session.rollback()
+        # Re-set after rollback(): set_tenant_scope's set_config(..., is_local=true)
+        # does not survive a rollback, and require_tenant_scope only runs once, at
+        # the start of the request -- see its own docstring (app/api/dependencies.py).
         set_tenant_scope(session, scope.tenant_id)
         product = get_product(session, product_id, tenant_id=scope.tenant_id)
         blockers = compute_publication_blockers(session, product) if product is not None else []
@@ -788,11 +792,10 @@ def _require_release_reviewer(scope: TenantScope) -> None:
 @router.get("/ops/reviews")
 def release_review_queue_page(
     request: Request,
-    scope: TenantScope = Depends(get_current_scope),
+    scope: TenantScope = Depends(require_tenant_scope),
     session: Session = Depends(get_db_session),
 ):
     _require_release_reviewer(scope)
-    set_tenant_scope(session, scope.tenant_id)
     reviews = list_release_reviews(session, tenant_id=scope.tenant_id)
     return templates.TemplateResponse(request, "ad08_reviews.html", {"reviews": reviews})
 
@@ -801,11 +804,10 @@ def release_review_queue_page(
 def release_review_detail_page(
     release_review_id: str,
     request: Request,
-    scope: TenantScope = Depends(get_current_scope),
+    scope: TenantScope = Depends(require_tenant_scope),
     session: Session = Depends(get_db_session),
 ):
     _require_release_reviewer(scope)
-    set_tenant_scope(session, scope.tenant_id)
     review = get_release_review(session, release_review_id, tenant_id=scope.tenant_id)
     if review is None:
         raise HTTPException(status_code=404, detail="not found")
@@ -821,11 +823,10 @@ def decide_release_review_route(
     request: Request,
     decision: str = Form(...),
     reason: str = Form(...),
-    scope: TenantScope = Depends(get_current_scope),
+    scope: TenantScope = Depends(require_tenant_scope),
     session: Session = Depends(get_db_session),
 ):
     _require_release_reviewer(scope)
-    set_tenant_scope(session, scope.tenant_id)
     review = get_release_review(session, release_review_id, tenant_id=scope.tenant_id)
     if review is None:
         raise HTTPException(status_code=404, detail="not found")
@@ -840,6 +841,9 @@ def decide_release_review_route(
         session.commit()
     except (SelfReviewNotAllowedError, StaleReviewTargetError, ReviewNotEligibleError, InvalidReviewDecisionError) as exc:
         session.rollback()
+        # Re-set after rollback(): set_tenant_scope's set_config(..., is_local=true)
+        # does not survive a rollback, and require_tenant_scope only runs once, at
+        # the start of the request -- see its own docstring (app/api/dependencies.py).
         set_tenant_scope(session, scope.tenant_id)
         review = get_release_review(session, release_review_id, tenant_id=scope.tenant_id)
         product = get_product(session, review.product_id, tenant_id=scope.tenant_id) if review is not None else None
@@ -863,11 +867,10 @@ def _require_research_run_admin(scope: TenantScope) -> None:
 @router.get("/ops/research/new")
 def research_run_list_page(
     request: Request,
-    scope: TenantScope = Depends(get_current_scope),
+    scope: TenantScope = Depends(require_tenant_scope),
     session: Session = Depends(get_db_session),
 ):
     _require_research_run_admin(scope)
-    set_tenant_scope(session, scope.tenant_id)
     runs = list_research_runs(session, tenant_id=scope.tenant_id)
     sleeves = list_sleeves(session, tenant_id=scope.tenant_id)
     return templates.TemplateResponse(
@@ -895,11 +898,10 @@ def create_research_run_route(
     holdout_fraction: str = Form("0.20"),
     cost_scenario_ids: str = Form(""),
     resource_profile_id: str = Form(""),
-    scope: TenantScope = Depends(get_current_scope),
+    scope: TenantScope = Depends(require_tenant_scope),
     session: Session = Depends(get_db_session),
 ):
     _require_research_run_admin(scope)
-    set_tenant_scope(session, scope.tenant_id)
     try:
         try:
             holdout_fraction_decimal = Decimal(holdout_fraction)
@@ -929,6 +931,9 @@ def create_research_run_route(
         session.commit()
     except InvalidResearchRunError as exc:
         session.rollback()
+        # Re-set after rollback(): set_tenant_scope's set_config(..., is_local=true)
+        # does not survive a rollback, and require_tenant_scope only runs once, at
+        # the start of the request -- see its own docstring (app/api/dependencies.py).
         set_tenant_scope(session, scope.tenant_id)
         runs = list_research_runs(session, tenant_id=scope.tenant_id)
         sleeves = list_sleeves(session, tenant_id=scope.tenant_id)
@@ -945,11 +950,10 @@ def create_research_run_route(
 def research_run_detail_page(
     research_run_id: str,
     request: Request,
-    scope: TenantScope = Depends(get_current_scope),
+    scope: TenantScope = Depends(require_tenant_scope),
     session: Session = Depends(get_db_session),
 ):
     _require_research_run_admin(scope)
-    set_tenant_scope(session, scope.tenant_id)
     run = get_research_run(session, research_run_id, tenant_id=scope.tenant_id)
     if run is None:
         raise HTTPException(status_code=404, detail="not found")
@@ -968,7 +972,7 @@ def _require_research_run_detail(scope: TenantScope) -> None:
 def research_run_full_results_page(
     research_run_id: str,
     request: Request,
-    scope: TenantScope = Depends(get_current_scope),
+    scope: TenantScope = Depends(require_tenant_scope),
     session: Session = Depends(get_db_session),
 ):
     """AD-05 "Research run and full results" -- see this route
@@ -981,7 +985,6 @@ def research_run_full_results_page(
     real, honest "this run has not started" empty state, never a
     fabricated percentage or count."""
     _require_research_run_detail(scope)
-    set_tenant_scope(session, scope.tenant_id)
     run = get_research_run(session, research_run_id, tenant_id=scope.tenant_id)
     if run is None:
         raise HTTPException(status_code=404, detail="not found")
@@ -1027,7 +1030,7 @@ def candidate_comparison_page(
     candidate_a: int | None = Query(None),
     candidate_b: int | None = Query(None),
     created_portfolio_version_id: str | None = Query(None),
-    scope: TenantScope = Depends(get_current_scope),
+    scope: TenantScope = Depends(require_tenant_scope),
     session: Session = Depends(get_db_session),
 ):
     """AD-06 "Candidate comparison and shadow report" -- see
@@ -1036,7 +1039,6 @@ def candidate_comparison_page(
     allocation comparison and draft creation, never fabricated
     performance metrics."""
     _require_candidate_comparison(scope)
-    set_tenant_scope(session, scope.tenant_id)
     comparable_runs = list_comparable_research_runs(session, tenant_id=scope.tenant_id)
 
     run = None
@@ -1083,7 +1085,7 @@ def create_candidate_draft_route(
     portfolio_id: str = Form(...),
     consent_disclosure_version: str = Form("v1"),
     max_subscriber_capacity: int = Form(100),
-    scope: TenantScope = Depends(get_current_scope),
+    scope: TenantScope = Depends(require_tenant_scope),
     session: Session = Depends(get_db_session),
 ):
     """AD-06-A01 "Choose candidate for draft" -- see
@@ -1091,7 +1093,6 @@ def create_candidate_draft_route(
     `create_portfolio_version_draft_from_candidate` docstring for why
     this structurally can never publish or activate anything."""
     _require_candidate_comparison(scope)
-    set_tenant_scope(session, scope.tenant_id)
     run = get_research_run(session, research_run_id, tenant_id=scope.tenant_id)
     if run is None:
         raise HTTPException(status_code=404, detail="not found")
@@ -1113,6 +1114,9 @@ def create_candidate_draft_route(
         session.commit()
     except (InvalidCandidateDraftError, CandidateNotFoundError) as exc:
         session.rollback()
+        # Re-set after rollback(): set_tenant_scope's set_config(..., is_local=true)
+        # does not survive a rollback, and require_tenant_scope only runs once, at
+        # the start of the request -- see its own docstring (app/api/dependencies.py).
         set_tenant_scope(session, scope.tenant_id)
         comparable_runs = list_comparable_research_runs(session, tenant_id=scope.tenant_id)
         comparison = None
@@ -1181,11 +1185,10 @@ def _require_sleeve_admin(scope: TenantScope) -> None:
 @router.get("/ops/research/universe")
 def sleeve_catalog_page(
     request: Request,
-    scope: TenantScope = Depends(get_current_scope),
+    scope: TenantScope = Depends(require_tenant_scope),
     session: Session = Depends(get_db_session),
 ):
     _require_sleeve_admin(scope)
-    set_tenant_scope(session, scope.tenant_id)
     sleeves = list_sleeves(session, tenant_id=scope.tenant_id)
     return templates.TemplateResponse(
         request,
@@ -1207,11 +1210,10 @@ def create_sleeve_route(
     capacity_policy_id: str = Form(...),
     risk_unit_id: str = Form(...),
     history_origin: str = Form(...),
-    scope: TenantScope = Depends(get_current_scope),
+    scope: TenantScope = Depends(require_tenant_scope),
     session: Session = Depends(get_db_session),
 ):
     _require_sleeve_admin(scope)
-    set_tenant_scope(session, scope.tenant_id)
     try:
         create_sleeve(
             session,
@@ -1230,6 +1232,9 @@ def create_sleeve_route(
         session.commit()
     except InvalidSleeveDraftError as exc:
         session.rollback()
+        # Re-set after rollback(): set_tenant_scope's set_config(..., is_local=true)
+        # does not survive a rollback, and require_tenant_scope only runs once, at
+        # the start of the request -- see its own docstring (app/api/dependencies.py).
         set_tenant_scope(session, scope.tenant_id)
         sleeves = list_sleeves(session, tenant_id=scope.tenant_id)
         return templates.TemplateResponse(
@@ -1291,6 +1296,26 @@ def public_service_status_page(request: Request):
     no completed incident query behind it to make that zero honest."""
     service_status = get_service_status()
     return templates.TemplateResponse(request, "pu07_status.html", {"service_status": service_status})
+
+
+@router.get("/terms")
+def public_terms_page(request: Request):
+    """Audit finding: ID-01's signup form has always required an "I accept
+    the Terms and Privacy Policy" checkbox (server-enforced -- see
+    `sign_up_submit`'s own `accept_terms` check), but no `/terms` route or
+    content ever existed for that checkbox to link to. Anonymous, no
+    database query -- this is honest PLACEHOLDER content pending real
+    legal review (see the template's own banner), not actual Terms of
+    Service; no one on this team is qualified to author real legal
+    copy."""
+    return templates.TemplateResponse(request, "pu09_terms.html", {})
+
+
+@router.get("/privacy")
+def public_privacy_page(request: Request):
+    """Same audit finding as `public_terms_page` above, for the Privacy
+    Policy half of the same signup checkbox link."""
+    return templates.TemplateResponse(request, "pu10_privacy.html", {})
 
 
 @router.get("/portfolios/{slug}")
@@ -1425,14 +1450,13 @@ def _require_customer(scope: TenantScope) -> None:
 @router.get("/onboarding/eligibility")
 def eligibility_page(
     request: Request,
-    scope: TenantScope = Depends(get_current_scope),
+    scope: TenantScope = Depends(require_tenant_scope),
     session: Session = Depends(get_db_session),
 ):
     """ID-04 "Service eligibility onboarding" -- a customer's own real
     facts and a live-computed decision, never a stored verdict (see
     app/services/eligibility.py's own docstring)."""
     _require_customer(scope)
-    set_tenant_scope(session, scope.tenant_id)
     assessment = get_eligibility_assessment(session, tenant_id=scope.tenant_id, user_id=scope.user_id)
     decisions = evaluate_eligibility(session, assessment) if assessment is not None else []
     return templates.TemplateResponse(
@@ -1449,11 +1473,10 @@ def save_eligibility_page(
     requested_service_modes: list[str] = Form([]),
     document_versions: str = Form(""),
     facts_confirmed: str = Form(""),
-    scope: TenantScope = Depends(get_current_scope),
+    scope: TenantScope = Depends(require_tenant_scope),
     session: Session = Depends(get_db_session),
 ):
     _require_customer(scope)
-    set_tenant_scope(session, scope.tenant_id)
     document_version_list = [v.strip() for v in document_versions.split(",") if v.strip()]
     try:
         save_eligibility_facts(
@@ -1489,7 +1512,7 @@ def _require_staff_access(scope: TenantScope) -> None:
 @router.get("/ops/access")
 def staff_access_page(
     request: Request,
-    scope: TenantScope = Depends(get_current_scope),
+    scope: TenantScope = Depends(require_tenant_scope),
     session: Session = Depends(get_db_session),
     error: str | None = None,
 ):
@@ -1502,7 +1525,6 @@ def staff_access_page(
     never the membership-grant events AD-18's own full audit log
     already covers."""
     _require_staff_access(scope)
-    set_tenant_scope(session, scope.tenant_id)
     memberships = list_staff_memberships(session, tenant_id=scope.tenant_id)
     session_events = [
         e for e in list_audit_events(session, tenant_id=scope.tenant_id) if e.object_type == "session"
@@ -1524,11 +1546,10 @@ def invite_staff_page(
     request: Request,
     user_id: str = Form(...),
     role: str = Form(...),
-    scope: TenantScope = Depends(get_current_scope),
+    scope: TenantScope = Depends(require_tenant_scope),
     session: Session = Depends(get_db_session),
 ):
     _require_staff_access(scope)
-    set_tenant_scope(session, scope.tenant_id)
     try:
         role_enum = MembershipRole(role)
         invite_staff_member(
@@ -1559,11 +1580,10 @@ def invite_staff_page(
 def revoke_staff_page(
     user_id: str,
     request: Request,
-    scope: TenantScope = Depends(get_current_scope),
+    scope: TenantScope = Depends(require_tenant_scope),
     session: Session = Depends(get_db_session),
 ):
     _require_staff_access(scope)
-    set_tenant_scope(session, scope.tenant_id)
     try:
         revoke_staff_member(session, tenant_id=scope.tenant_id, user_id=user_id, acting_user_id=scope.user_id)
     except (MembershipNotFoundError, CannotRevokeOwnerError, CannotRevokeSelfError) as exc:
@@ -1591,7 +1611,7 @@ def revoke_staff_page(
 def revoke_staff_api_tokens_page(
     user_id: str,
     request: Request,
-    scope: TenantScope = Depends(get_current_scope),
+    scope: TenantScope = Depends(require_tenant_scope),
     session: Session = Depends(get_db_session),
 ):
     """AD-16's own "Session audit" panel -- resolves that panel's own
@@ -1604,7 +1624,6 @@ def revoke_staff_api_tokens_page(
     this never touches the membership row itself, so it's safe to call
     on the owner's own account too (e.g. after a suspected compromise)."""
     _require_staff_access(scope)
-    set_tenant_scope(session, scope.tenant_id)
     revoke_all_tokens_for_user(session, tenant_id=scope.tenant_id, user_id=user_id, acting_user_id=scope.user_id)
     session.commit()
     return RedirectResponse(url="/ops/access", status_code=303)
@@ -1623,7 +1642,7 @@ def _require_own_support_case(scope: TenantScope) -> None:
 @router.get("/app/support")
 def support_case_page(
     request: Request,
-    scope: TenantScope = Depends(get_current_scope),
+    scope: TenantScope = Depends(require_tenant_scope),
     session: Session = Depends(get_db_session),
     error: str | None = None,
 ):
@@ -1633,7 +1652,6 @@ def support_case_page(
     shown honestly as plain unverified references, never a fabricated
     'scanned clean' status."""
     _require_own_support_case(scope)
-    set_tenant_scope(session, scope.tenant_id)
     cases = list_support_cases(session, tenant_id=scope.tenant_id, user_id=scope.user_id)
     return templates.TemplateResponse(
         request,
@@ -1650,11 +1668,10 @@ def create_support_case_page(
     subject: str = Form(...),
     description: str = Form(...),
     attachment_ids: str = Form(""),
-    scope: TenantScope = Depends(get_current_scope),
+    scope: TenantScope = Depends(require_tenant_scope),
     session: Session = Depends(get_db_session),
 ):
     _require_own_support_case(scope)
-    set_tenant_scope(session, scope.tenant_id)
     attachment_id_list = [v.strip() for v in attachment_ids.split(",") if v.strip()]
     try:
         create_support_case(
@@ -1695,7 +1712,7 @@ def _require_publisher_destinations(scope: TenantScope) -> None:
 @router.get("/ops/publishers")
 def publisher_destinations_page(
     request: Request,
-    scope: TenantScope = Depends(get_current_scope),
+    scope: TenantScope = Depends(require_tenant_scope),
     session: Session = Depends(get_db_session),
     error: str | None = None,
 ):
@@ -1703,7 +1720,6 @@ def publisher_destinations_page(
     identity" and "Prepare qualification" are NOT implemented: both need
     real external platform connectivity this build doesn't have."""
     _require_publisher_destinations(scope)
-    set_tenant_scope(session, scope.tenant_id)
     destinations = list_publisher_destinations(session, tenant_id=scope.tenant_id)
     return templates.TemplateResponse(
         request,
@@ -1727,11 +1743,10 @@ def create_publisher_destination_page(
     credential_ref: str = Form(""),
     capability_manifest_id: str = Form(""),
     publication_mode: str = Form("api_strategy_publisher"),
-    scope: TenantScope = Depends(get_current_scope),
+    scope: TenantScope = Depends(require_tenant_scope),
     session: Session = Depends(get_db_session),
 ):
     _require_publisher_destinations(scope)
-    set_tenant_scope(session, scope.tenant_id)
     try:
         create_publisher_destination(
             session,
@@ -1775,7 +1790,7 @@ def _require_own_api_keys(scope: TenantScope) -> None:
 @router.get("/app/developer")
 def api_keys_page(
     request: Request,
-    scope: TenantScope = Depends(get_current_scope),
+    scope: TenantScope = Depends(require_tenant_scope),
     session: Session = Depends(get_db_session),
     error: str | None = None,
     new_secret: str | None = None,
@@ -1785,7 +1800,6 @@ def api_keys_page(
     is no webhook-destination or export-job infrastructure in this
     build."""
     _require_own_api_keys(scope)
-    set_tenant_scope(session, scope.tenant_id)
     keys = list_api_keys(session, tenant_id=scope.tenant_id, user_id=scope.user_id)
     return templates.TemplateResponse(
         request,
@@ -1800,14 +1814,13 @@ def create_api_key_page(
     label: str = Form(...),
     scopes: list[str] = Form([]),
     expires_at: str = Form(...),
-    scope: TenantScope = Depends(get_current_scope),
+    scope: TenantScope = Depends(require_tenant_scope),
     session: Session = Depends(get_db_session),
 ):
     """Returns 200 (never a redirect) on success -- the freshly
     generated secret exists only in THIS response and must be shown
     here, per "Generated key shown once only"."""
     _require_own_api_keys(scope)
-    set_tenant_scope(session, scope.tenant_id)
     try:
         expires_at_parsed = datetime.fromisoformat(expires_at)
         if expires_at_parsed.tzinfo is None:
@@ -1842,11 +1855,10 @@ def create_api_key_page(
 def revoke_api_key_page(
     key_id: str,
     request: Request,
-    scope: TenantScope = Depends(get_current_scope),
+    scope: TenantScope = Depends(require_tenant_scope),
     session: Session = Depends(get_db_session),
 ):
     _require_own_api_keys(scope)
-    set_tenant_scope(session, scope.tenant_id)
     try:
         revoke_api_key(session, tenant_id=scope.tenant_id, user_id=scope.user_id, key_id=key_id)
     except ApiKeyNotFoundError as exc:
@@ -1891,7 +1903,7 @@ def _require_manage_operating_costs(scope: TenantScope) -> None:
 @router.get("/ops/business")
 def business_economics_page(
     request: Request,
-    scope: TenantScope = Depends(get_current_scope),
+    scope: TenantScope = Depends(require_tenant_scope),
     session: Session = Depends(get_db_session),
     error: str | None = None,
 ):
@@ -1908,7 +1920,6 @@ def business_economics_page(
     except PermissionDenied as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
 
-    set_tenant_scope(session, scope.tenant_id)
     economics = get_business_economics(session, tenant_id=scope.tenant_id)
     cost_summary = summarize_operating_costs(session, tenant_id=scope.tenant_id)
     period_start, period_end = _current_month_bounds()
@@ -1942,7 +1953,7 @@ async def create_operating_cost_page(
     period_end: str = Form(...),
     description: str = Form(""),
     cost_center: str = Form(""),
-    scope: TenantScope = Depends(get_current_scope),
+    scope: TenantScope = Depends(require_tenant_scope),
     session: Session = Depends(get_db_session),
 ):
     """AD-12's manual cost-entry form -- one real `OperatingCost` row per
@@ -1950,7 +1961,6 @@ async def create_operating_cost_page(
     operating_cost.py's own docstring on why this build has no live
     billing-API pull to offer instead."""
     _require_manage_operating_costs(scope)
-    set_tenant_scope(session, scope.tenant_id)
     try:
         parsed_start = datetime.fromisoformat(period_start)
         if parsed_start.tzinfo is None:
@@ -1983,14 +1993,13 @@ async def create_operating_cost_page(
 async def import_operating_costs_page(
     request: Request,
     csv_file: UploadFile,
-    scope: TenantScope = Depends(get_current_scope),
+    scope: TenantScope = Depends(require_tenant_scope),
     session: Session = Depends(get_db_session),
 ):
     """AD-12's bounded CSV import -- see app/services/operating_cost.py's
     own `import_operating_costs_csv` docstring: all-or-nothing, no
     partial import."""
     _require_manage_operating_costs(scope)
-    set_tenant_scope(session, scope.tenant_id)
     raw = await csv_file.read()
     try:
         text_content = raw.decode("utf-8")
@@ -2010,11 +2019,10 @@ async def import_operating_costs_page(
 @router.post("/ops/business/costs/{cost_id}/delete")
 def delete_operating_cost_page(
     cost_id: str,
-    scope: TenantScope = Depends(get_current_scope),
+    scope: TenantScope = Depends(require_tenant_scope),
     session: Session = Depends(get_db_session),
 ):
     _require_manage_operating_costs(scope)
-    set_tenant_scope(session, scope.tenant_id)
     deleted = delete_operating_cost(session, cost_id, tenant_id=scope.tenant_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="operating cost not found")
@@ -2029,14 +2037,13 @@ def delete_operating_cost_page(
 #: vs `/ops/system`).
 @router.get("/api/v1/ops/costs")
 def list_operating_costs_api(
-    scope: TenantScope = Depends(get_current_scope),
+    scope: TenantScope = Depends(require_tenant_scope),
     session: Session = Depends(get_db_session),
 ):
     try:
         require_permission(scope.role, "view_business_economics")
     except PermissionDenied as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
-    set_tenant_scope(session, scope.tenant_id)
     summary = summarize_operating_costs(session, tenant_id=scope.tenant_id)
     return {
         "rows": [
@@ -2065,11 +2072,10 @@ def list_operating_costs_api(
 @router.post("/api/v1/ops/costs")
 async def create_operating_cost_api(
     request: Request,
-    scope: TenantScope = Depends(get_current_scope),
+    scope: TenantScope = Depends(require_tenant_scope),
     session: Session = Depends(get_db_session),
 ):
     _require_manage_operating_costs(scope)
-    set_tenant_scope(session, scope.tenant_id)
     payload = await request.json()
     try:
         row = create_operating_cost(
@@ -2096,11 +2102,10 @@ async def create_operating_cost_api(
 @router.delete("/api/v1/ops/costs/{cost_id}")
 def delete_operating_cost_api(
     cost_id: str,
-    scope: TenantScope = Depends(get_current_scope),
+    scope: TenantScope = Depends(require_tenant_scope),
     session: Session = Depends(get_db_session),
 ):
     _require_manage_operating_costs(scope)
-    set_tenant_scope(session, scope.tenant_id)
     deleted = delete_operating_cost(session, cost_id, tenant_id=scope.tenant_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="operating cost not found")
@@ -2111,7 +2116,7 @@ def delete_operating_cost_api(
 @router.get("/ops/customers")
 def customers_page(
     request: Request,
-    scope: TenantScope = Depends(get_current_scope),
+    scope: TenantScope = Depends(require_tenant_scope),
     session: Session = Depends(get_db_session),
 ):
     """AD-11 "Customers and scoped support record" -- see this route
@@ -2121,7 +2126,6 @@ def customers_page(
     except PermissionDenied as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
 
-    set_tenant_scope(session, scope.tenant_id)
     customers = list_customers(session, tenant_id=scope.tenant_id)
     return templates.TemplateResponse(request, "ad11_customers.html", {"customers": customers})
 
@@ -2130,7 +2134,7 @@ def customers_page(
 def customer_detail_page(
     user_id: str,
     request: Request,
-    scope: TenantScope = Depends(get_current_scope),
+    scope: TenantScope = Depends(require_tenant_scope),
     session: Session = Depends(get_db_session),
 ):
     """A user_id belonging to another tenant, or that isn't a CUSTOMER
@@ -2141,7 +2145,6 @@ def customer_detail_page(
     except PermissionDenied as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
 
-    set_tenant_scope(session, scope.tenant_id)
     record = get_customer_support_record(session, tenant_id=scope.tenant_id, user_id=user_id)
     if record is None:
         raise HTTPException(status_code=404, detail="not found")
@@ -2162,14 +2165,13 @@ def _require_integration_configurations(scope: TenantScope) -> None:
 @router.get("/ops/integrations")
 def integrations_page(
     request: Request,
-    scope: TenantScope = Depends(get_current_scope),
+    scope: TenantScope = Depends(require_tenant_scope),
     session: Session = Depends(get_db_session),
     error: str | None = None,
 ):
     """AD-17 "Integrations, data rights and quotas" -- see this route
     module's own docstring above for what is and is not implemented."""
     _require_integration_configurations(scope)
-    set_tenant_scope(session, scope.tenant_id)
     configurations = list_integration_configurations(session, tenant_id=scope.tenant_id)
     return templates.TemplateResponse(
         request,
@@ -2192,11 +2194,10 @@ def create_integration_page(
     credential_ref: str = Form(""),
     entitlement_evidence_id: str = Form(""),
     quota_profile_id: str = Form(...),
-    scope: TenantScope = Depends(get_current_scope),
+    scope: TenantScope = Depends(require_tenant_scope),
     session: Session = Depends(get_db_session),
 ):
     _require_integration_configurations(scope)
-    set_tenant_scope(session, scope.tenant_id)
     try:
         create_integration_configuration(
             session,
@@ -2241,7 +2242,7 @@ def _require_pricing(scope: TenantScope) -> None:
 @router.get("/ops/billing")
 def pricing_page(
     request: Request,
-    scope: TenantScope = Depends(get_current_scope),
+    scope: TenantScope = Depends(require_tenant_scope),
     session: Session = Depends(get_db_session),
     error: str | None = None,
 ):
@@ -2249,7 +2250,6 @@ def pricing_page(
     route module's own docstring above for what is and is not
     implemented."""
     _require_pricing(scope)
-    set_tenant_scope(session, scope.tenant_id)
     price_versions = list_price_versions(session, tenant_id=scope.tenant_id)
     return templates.TemplateResponse(
         request,
@@ -2275,11 +2275,10 @@ def create_price_version_page(
     portfolio_limit: str = Form(""),
     features: list[str] = Form([]),
     mode: str = Form("test"),
-    scope: TenantScope = Depends(get_current_scope),
+    scope: TenantScope = Depends(require_tenant_scope),
     session: Session = Depends(get_db_session),
 ):
     _require_pricing(scope)
-    set_tenant_scope(session, scope.tenant_id)
     unlimited = bool(is_unlimited_portfolios)
     try:
         portfolio_limit_parsed = None if unlimited or not portfolio_limit else int(portfolio_limit)
@@ -2327,14 +2326,13 @@ def _require_content_documents(scope: TenantScope) -> None:
 @router.get("/ops/content")
 def content_documents_page(
     request: Request,
-    scope: TenantScope = Depends(get_current_scope),
+    scope: TenantScope = Depends(require_tenant_scope),
     session: Session = Depends(get_db_session),
     error: str | None = None,
 ):
     """AD-19 "Content and disclosure publishing" -- see this route
     module's own docstring above for what is and is not implemented."""
     _require_content_documents(scope)
-    set_tenant_scope(session, scope.tenant_id)
     documents = list_content_documents(session, tenant_id=scope.tenant_id)
     return templates.TemplateResponse(
         request,
@@ -2352,11 +2350,10 @@ def save_content_draft_page(
     body: str = Form(...),
     audience_policy_id: str = Form(...),
     source_evidence_ids: str = Form(""),
-    scope: TenantScope = Depends(get_current_scope),
+    scope: TenantScope = Depends(require_tenant_scope),
     session: Session = Depends(get_db_session),
 ):
     _require_content_documents(scope)
-    set_tenant_scope(session, scope.tenant_id)
     evidence_ids = [v.strip() for v in source_evidence_ids.split(",") if v.strip()]
     try:
         document = save_content_draft(
@@ -2390,11 +2387,10 @@ def save_content_draft_page(
 def request_content_review_page(
     document_id: str,
     request: Request,
-    scope: TenantScope = Depends(get_current_scope),
+    scope: TenantScope = Depends(require_tenant_scope),
     session: Session = Depends(get_db_session),
 ):
     _require_content_documents(scope)
-    set_tenant_scope(session, scope.tenant_id)
     document = get_content_document(session, document_id, tenant_id=scope.tenant_id)
     if document is None:
         raise HTTPException(status_code=404, detail="not found")
@@ -2421,7 +2417,7 @@ def request_content_review_page(
 def publish_content_document_page(
     document_id: str,
     request: Request,
-    scope: TenantScope = Depends(get_current_scope),
+    scope: TenantScope = Depends(require_tenant_scope),
     session: Session = Depends(get_db_session),
 ):
     """PU-06's own missing admission decision, wired up from AD-19's own
@@ -2431,7 +2427,6 @@ def publish_content_document_page(
     request-review already uses (OWNER, REVIEWER) -- exactly this
     screen's own access list."""
     _require_content_documents(scope)
-    set_tenant_scope(session, scope.tenant_id)
     document = get_content_document(session, document_id, tenant_id=scope.tenant_id)
     if document is None:
         raise HTTPException(status_code=404, detail="not found")
@@ -2484,14 +2479,13 @@ def _require_managed_programs(scope: TenantScope) -> None:
 @router.get("/ops/managed-programs")
 def managed_programs_page(
     request: Request,
-    scope: TenantScope = Depends(get_current_scope),
+    scope: TenantScope = Depends(require_tenant_scope),
     session: Session = Depends(get_db_session),
     error: str | None = None,
 ):
     """AD-14 "Managed-program setup" -- see this route module's own
     docstring above for what is and is not implemented."""
     _require_managed_programs(scope)
-    set_tenant_scope(session, scope.tenant_id)
     programs = list_managed_programs(session, tenant_id=scope.tenant_id)
     return templates.TemplateResponse(
         request,
@@ -2511,11 +2505,10 @@ def create_managed_program_page(
     dealing_schedule_id: str = Form(...),
     fee_policy_id: str = Form(""),
     agreement_evidence_ids: str = Form(""),
-    scope: TenantScope = Depends(get_current_scope),
+    scope: TenantScope = Depends(require_tenant_scope),
     session: Session = Depends(get_db_session),
 ):
     _require_managed_programs(scope)
-    set_tenant_scope(session, scope.tenant_id)
     evidence_ids = [v.strip() for v in agreement_evidence_ids.split(",") if v.strip()]
     try:
         create_managed_program(
@@ -2547,11 +2540,10 @@ def create_managed_program_page(
 def request_managed_program_review_page(
     program_id: str,
     request: Request,
-    scope: TenantScope = Depends(get_current_scope),
+    scope: TenantScope = Depends(require_tenant_scope),
     session: Session = Depends(get_db_session),
 ):
     _require_managed_programs(scope)
-    set_tenant_scope(session, scope.tenant_id)
     program = get_managed_program(session, program_id, tenant_id=scope.tenant_id)
     if program is None:
         raise HTTPException(status_code=404, detail="not found")
@@ -2573,7 +2565,7 @@ def request_managed_program_review_page(
 @router.get("/ops/audit")
 def audit_log_page(
     request: Request,
-    scope: TenantScope = Depends(get_current_scope),
+    scope: TenantScope = Depends(require_tenant_scope),
     session: Session = Depends(get_db_session),
     actor_user_id: str | None = None,
     object_id: str | None = None,
@@ -2586,7 +2578,6 @@ def audit_log_page(
     except PermissionDenied as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
 
-    set_tenant_scope(session, scope.tenant_id)
     events = list_audit_events(
         session, tenant_id=scope.tenant_id, actor_user_id=actor_user_id, object_id=object_id, action=action
     )
@@ -2607,7 +2598,7 @@ def audit_log_page(
 
 @router.post("/ops/audit/evidence-manifest")
 def export_evidence_manifest_page(
-    scope: TenantScope = Depends(get_current_scope),
+    scope: TenantScope = Depends(require_tenant_scope),
     session: Session = Depends(get_db_session),
     actor_user_id: str | None = Form(None),
     object_id: str | None = Form(None),
@@ -2624,7 +2615,6 @@ def export_evidence_manifest_page(
     except PermissionDenied as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
 
-    set_tenant_scope(session, scope.tenant_id)
     manifest = generate_evidence_manifest(
         session,
         tenant_id=scope.tenant_id,
@@ -2657,7 +2647,7 @@ def _require_workspace_settings(scope: TenantScope) -> None:
 @router.get("/ops/settings")
 def workspace_settings_page(
     request: Request,
-    scope: TenantScope = Depends(get_current_scope),
+    scope: TenantScope = Depends(require_tenant_scope),
     session: Session = Depends(get_db_session),
     error: str | None = None,
 ):
@@ -2665,7 +2655,6 @@ def workspace_settings_page(
     route module's own docstring above for what is and is not
     implemented."""
     _require_workspace_settings(scope)
-    set_tenant_scope(session, scope.tenant_id)
     settings = get_workspace_settings(session, tenant_id=scope.tenant_id)
     return templates.TemplateResponse(
         request,
@@ -2689,11 +2678,10 @@ def save_workspace_settings_page(
     visible_panel_ids: str = Form(""),
     column_order: str = Form(""),
     notification_route_id: str = Form(""),
-    scope: TenantScope = Depends(get_current_scope),
+    scope: TenantScope = Depends(require_tenant_scope),
     session: Session = Depends(get_db_session),
 ):
     _require_workspace_settings(scope)
-    set_tenant_scope(session, scope.tenant_id)
     panel_ids = [v.strip() for v in visible_panel_ids.split(",") if v.strip()]
     columns = [v.strip() for v in column_order.split(",") if v.strip()]
     try:
@@ -2737,13 +2725,12 @@ def _require_publication_intent_detail(scope: TenantScope) -> None:
 def publication_intent_detail_page(
     intent_id: str,
     request: Request,
-    scope: TenantScope = Depends(get_current_scope),
+    scope: TenantScope = Depends(require_tenant_scope),
     session: Session = Depends(get_db_session),
 ):
     """AD-10 "Publication intent and cohort detail" -- see this route
     module's own docstring above for what is and is not implemented."""
     _require_publication_intent_detail(scope)
-    set_tenant_scope(session, scope.tenant_id)
     detail = get_publication_intent_detail(session, intent_id, tenant_id=scope.tenant_id)
     if detail is None:
         raise HTTPException(status_code=404, detail="not found")
@@ -2760,13 +2747,12 @@ def _require_own_customer_overview(scope: TenantScope) -> None:
 @router.get("/app")
 def customer_overview_page(
     request: Request,
-    scope: TenantScope = Depends(get_current_scope),
+    scope: TenantScope = Depends(require_tenant_scope),
     session: Session = Depends(get_db_session),
 ):
     """CU-01 "Customer overview" -- see app/services/customer_overview.py's
     own docstring for what is and is not implemented."""
     _require_own_customer_overview(scope)
-    set_tenant_scope(session, scope.tenant_id)
     overview = get_customer_overview(session, tenant_id=scope.tenant_id, user_id=scope.user_id)
     return templates.TemplateResponse(request, "cu01_overview.html", {"overview": overview})
 
@@ -2782,14 +2768,13 @@ def _require_own_selection_detail(scope: TenantScope) -> None:
 def customer_selection_detail_page(
     selection_id: str,
     request: Request,
-    scope: TenantScope = Depends(get_current_scope),
+    scope: TenantScope = Depends(require_tenant_scope),
     session: Session = Depends(get_db_session),
 ):
     """CU-03 "Selected portfolio detail" -- see
     app/services/customer_selection_detail.py's own docstring for what
     is and is not implemented."""
     _require_own_selection_detail(scope)
-    set_tenant_scope(session, scope.tenant_id)
     detail = get_own_selection_detail(session, selection_id, tenant_id=scope.tenant_id, user_id=scope.user_id)
     if detail is None:
         raise HTTPException(status_code=404, detail="not found")
@@ -2806,14 +2791,13 @@ def _require_own_alerts(scope: TenantScope) -> None:
 @router.get("/app/alerts")
 def customer_alerts_page(
     request: Request,
-    scope: TenantScope = Depends(get_current_scope),
+    scope: TenantScope = Depends(require_tenant_scope),
     session: Session = Depends(get_db_session),
 ):
     """CU-04 "Alerts and delivery history" -- see
     app/services/customer_alerts.py's own docstring for what is and is
     not implemented."""
     _require_own_alerts(scope)
-    set_tenant_scope(session, scope.tenant_id)
     alerts = list_own_alerts(session, tenant_id=scope.tenant_id, user_id=scope.user_id)
     return templates.TemplateResponse(request, "cu04_alerts.html", {"alerts": alerts})
 
@@ -2829,14 +2813,13 @@ def _require_own_activity_detail(scope: TenantScope) -> None:
 def customer_activity_detail_page(
     episode_id: str,
     request: Request,
-    scope: TenantScope = Depends(get_current_scope),
+    scope: TenantScope = Depends(require_tenant_scope),
     session: Session = Depends(get_db_session),
 ):
     """CU-05 "Alert, trade and order-family detail" -- see
     app/services/customer_alerts.py's own docstring for what is and is
     not implemented."""
     _require_own_activity_detail(scope)
-    set_tenant_scope(session, scope.tenant_id)
     detail = get_own_alert_episode(session, episode_id, tenant_id=scope.tenant_id, user_id=scope.user_id)
     if detail is None:
         raise HTTPException(status_code=404, detail="not found")
@@ -2853,14 +2836,13 @@ def _require_own_performance(scope: TenantScope) -> None:
 @router.get("/app/performance")
 def customer_performance_page(
     request: Request,
-    scope: TenantScope = Depends(get_current_scope),
+    scope: TenantScope = Depends(require_tenant_scope),
     session: Session = Depends(get_db_session),
 ):
     """CU-06 "Performance and costs" -- see
     app/services/customer_performance_report.py's own docstring for what
     is and is not implemented."""
     _require_own_performance(scope)
-    set_tenant_scope(session, scope.tenant_id)
     report = get_own_performance_report(session, tenant_id=scope.tenant_id, user_id=scope.user_id)
     return templates.TemplateResponse(request, "cu06_performance.html", {"report": report})
 
@@ -2875,14 +2857,13 @@ def _require_own_billing(scope: TenantScope) -> None:
 @router.get("/app/billing")
 def customer_billing_page(
     request: Request,
-    scope: TenantScope = Depends(get_current_scope),
+    scope: TenantScope = Depends(require_tenant_scope),
     session: Session = Depends(get_db_session),
 ):
     """CU-11 "Billing, invoices and plan changes" -- see
     app/services/customer_billing.py's own docstring for what is and is
     not implemented."""
     _require_own_billing(scope)
-    set_tenant_scope(session, scope.tenant_id)
     billing_state = get_own_billing_state(session, tenant_id=scope.tenant_id)
     return templates.TemplateResponse(request, "cu11_billing.html", {"billing_state": billing_state})
 
@@ -2897,14 +2878,13 @@ def _require_own_managed_programs(scope: TenantScope) -> None:
 @router.get("/app/managed-programs")
 def customer_managed_programs_page(
     request: Request,
-    scope: TenantScope = Depends(get_current_scope),
+    scope: TenantScope = Depends(require_tenant_scope),
     session: Session = Depends(get_db_session),
 ):
     """CU-15 "Managed program investor report" -- see
     app/services/customer_managed_programs.py's own docstring for what
     is and is not implemented."""
     _require_own_managed_programs(scope)
-    set_tenant_scope(session, scope.tenant_id)
     view = get_own_managed_programs_view(session, tenant_id=scope.tenant_id, user_id=scope.user_id)
     return templates.TemplateResponse(request, "cu15_managed_programs.html", {"view": view})
 
@@ -2919,14 +2899,13 @@ def _require_portfolio_selections(scope: TenantScope) -> None:
 @router.get("/app/portfolios")
 def portfolio_selections_page(
     request: Request,
-    scope: TenantScope = Depends(get_current_scope),
+    scope: TenantScope = Depends(require_tenant_scope),
     session: Session = Depends(get_db_session),
     error: str | None = None,
 ):
     """CU-02 "My portfolios" -- see this route module's own docstring
     above for what is and is not implemented."""
     _require_portfolio_selections(scope)
-    set_tenant_scope(session, scope.tenant_id)
     selections = list_own_portfolio_selections(session, tenant_id=scope.tenant_id, user_id=scope.user_id)
     products = list_products(session, tenant_id=scope.tenant_id)
     selectable_products = [p for p in products if p.lifecycle_state == ProductLifecycleState.PUBLISHED]
@@ -2953,11 +2932,10 @@ def portfolio_selections_page(
 def create_portfolio_selection_page(
     request: Request,
     product_id: str = Form(...),
-    scope: TenantScope = Depends(get_current_scope),
+    scope: TenantScope = Depends(require_tenant_scope),
     session: Session = Depends(get_db_session),
 ):
     _require_portfolio_selections(scope)
-    set_tenant_scope(session, scope.tenant_id)
     try:
         create_portfolio_selection(session, tenant_id=scope.tenant_id, user_id=scope.user_id, product_id=product_id)
     except InvalidPortfolioSelectionError as exc:
@@ -2985,11 +2963,10 @@ def create_portfolio_selection_page(
 def cancel_portfolio_selection_page(
     selection_id: str,
     request: Request,
-    scope: TenantScope = Depends(get_current_scope),
+    scope: TenantScope = Depends(require_tenant_scope),
     session: Session = Depends(get_db_session),
 ):
     _require_portfolio_selections(scope)
-    set_tenant_scope(session, scope.tenant_id)
     selection = get_own_portfolio_selection(session, selection_id, tenant_id=scope.tenant_id, user_id=scope.user_id)
     if selection is None:
         raise HTTPException(status_code=404, detail="not found")
@@ -3011,14 +2988,13 @@ def _require_notification_preferences(scope: TenantScope) -> None:
 @router.get("/app/settings/notifications")
 def notification_preferences_page(
     request: Request,
-    scope: TenantScope = Depends(get_current_scope),
+    scope: TenantScope = Depends(require_tenant_scope),
     session: Session = Depends(get_db_session),
     error: str | None = None,
 ):
     """CU-12 "Alert delivery preferences" -- see this route module's
     own docstring above for what is and is not implemented."""
     _require_notification_preferences(scope)
-    set_tenant_scope(session, scope.tenant_id)
     preferences = get_notification_preferences(session, tenant_id=scope.tenant_id, user_id=scope.user_id)
     return templates.TemplateResponse(
         request,
@@ -3037,11 +3013,10 @@ def save_notification_preferences_page(
     quiet_start: str = Form(""),
     quiet_end: str = Form(""),
     marketing_consent: bool = Form(False),
-    scope: TenantScope = Depends(get_current_scope),
+    scope: TenantScope = Depends(require_tenant_scope),
     session: Session = Depends(get_db_session),
 ):
     _require_notification_preferences(scope)
-    set_tenant_scope(session, scope.tenant_id)
     try:
         save_notification_preferences(
             session,
@@ -3083,7 +3058,7 @@ def _require_display_preferences(scope: TenantScope) -> None:
 @router.get("/app/settings")
 def display_preferences_page(
     request: Request,
-    scope: TenantScope = Depends(get_current_scope),
+    scope: TenantScope = Depends(require_tenant_scope),
     session: Session = Depends(get_db_session),
     error: str | None = None,
     revoked_token_count: int | None = None,
@@ -3092,7 +3067,6 @@ def display_preferences_page(
     route module's own docstring above for what is and is not
     implemented."""
     _require_display_preferences(scope)
-    set_tenant_scope(session, scope.tenant_id)
     preferences = get_display_preferences(session, tenant_id=scope.tenant_id, user_id=scope.user_id)
     return templates.TemplateResponse(
         request,
@@ -3118,11 +3092,10 @@ def save_display_preferences_page(
     number_locale: str = Form("en-US"),
     view_currency: str = Form(""),
     reduce_motion: str = Form("system"),
-    scope: TenantScope = Depends(get_current_scope),
+    scope: TenantScope = Depends(require_tenant_scope),
     session: Session = Depends(get_db_session),
 ):
     _require_display_preferences(scope)
-    set_tenant_scope(session, scope.tenant_id)
     try:
         save_display_preferences(
             session,
@@ -3158,7 +3131,7 @@ def save_display_preferences_page(
 
 @router.post("/app/settings/revoke-api-tokens")
 def revoke_own_api_tokens_page(
-    scope: TenantScope = Depends(get_current_scope),
+    scope: TenantScope = Depends(require_tenant_scope),
     session: Session = Depends(get_db_session),
 ):
     """CU-13's own "Sessions/security" panel -- resolves this page's
@@ -3171,7 +3144,6 @@ def revoke_own_api_tokens_page(
     case -- that cookie session itself is untouched, only Bearer JWTs
     are affected) or a Bearer token directly."""
     _require_display_preferences(scope)
-    set_tenant_scope(session, scope.tenant_id)
     revoked_count = revoke_all_tokens_for_user(
         session, tenant_id=scope.tenant_id, user_id=scope.user_id, acting_user_id=scope.user_id
     )
@@ -3189,7 +3161,7 @@ def _require_managed_operations(scope: TenantScope) -> None:
 @router.get("/ops/managed-operations")
 def managed_operations_page(
     request: Request,
-    scope: TenantScope = Depends(get_current_scope),
+    scope: TenantScope = Depends(require_tenant_scope),
     session: Session = Depends(get_db_session),
 ):
     """AD-15 "Managed allocations, NAV and dealing" -- see this route
@@ -3202,7 +3174,6 @@ def managed_operations_page(
     panel about broker-originated activity is an explicit UNSUPPORTED,
     never a fabricated zero or a computed figure with no real input."""
     _require_managed_operations(scope)
-    set_tenant_scope(session, scope.tenant_id)
     programs = list_managed_programs(session, tenant_id=scope.tenant_id)
     return templates.TemplateResponse(request, "ad15_managed_operations.html", {"programs": programs})
 
@@ -3229,7 +3200,13 @@ def deployment_status_page(
     computed uptime %/p50/p95 latency over the trailing 24h -- from
     actual recorded `ServiceHealthSample` rows only (app/services/
     service_health.py), reporting "insufficient sample history" rather
-    than a fabricated percentage when too few samples exist yet."""
+    than a fabricated percentage when too few samples exist yet.
+
+    Deliberate exception to the `require_tenant_scope` dependency (see
+    its own docstring): `scope` is used only for the role check below,
+    not for any tenant-scoped query -- `get_service_status()` and
+    `compute_all_services_uptime_latency()` read no tenant-scoped
+    table."""
     _require_deployment_status(scope)
     service_status = get_service_status()
     uptime_latency = compute_all_services_uptime_latency(session, window_hours=24.0)
@@ -3251,13 +3228,12 @@ def _require_platform_connections(scope: TenantScope) -> None:
 @router.get("/app/connections")
 def platform_connections_page(
     request: Request,
-    scope: TenantScope = Depends(get_current_scope),
+    scope: TenantScope = Depends(require_tenant_scope),
     session: Session = Depends(get_db_session),
 ):
     """CU-07 "Platform connections" -- see this route module's own
     docstring above for what is and is not implemented."""
     _require_platform_connections(scope)
-    set_tenant_scope(session, scope.tenant_id)
     connections = list_own_platform_connections(session, tenant_id=scope.tenant_id, user_id=scope.user_id)
     return templates.TemplateResponse(request, "cu07_connections.html", {"connections": connections})
 
@@ -3271,7 +3247,11 @@ def platform_connection_wizard_page(
     """CU-08 "Connection wizard" -- see this route module's own
     docstring above for what is and is not implemented: no real hosted
     OAuth authorization or account-identity readback exists, so only a
-    DECLARED, local_simulation-only record can honestly be saved here."""
+    DECLARED, local_simulation-only record can honestly be saved here.
+
+    Deliberate exception to the `require_tenant_scope` dependency (see
+    its own docstring): this page has no `session` dependency at all --
+    it renders a static form and runs no query."""
     _require_platform_connections(scope)
     return templates.TemplateResponse(
         request, "cu08_connection_wizard.html", {"all_platforms": _ALL_PLATFORM_CONNECTION_PLATFORMS, "error": error}
@@ -3284,11 +3264,10 @@ def create_platform_connection_page(
     platform: str = Form(...),
     environment: str = Form(...),
     masked_account_label: str = Form(...),
-    scope: TenantScope = Depends(get_current_scope),
+    scope: TenantScope = Depends(require_tenant_scope),
     session: Session = Depends(get_db_session),
 ):
     _require_platform_connections(scope)
-    set_tenant_scope(session, scope.tenant_id)
     try:
         create_platform_connection(
             session,
@@ -3313,11 +3292,10 @@ def create_platform_connection_page(
 @router.post("/app/connections/{connection_id}/disconnect")
 def disconnect_platform_connection_page(
     connection_id: str,
-    scope: TenantScope = Depends(get_current_scope),
+    scope: TenantScope = Depends(require_tenant_scope),
     session: Session = Depends(get_db_session),
 ):
     _require_platform_connections(scope)
-    set_tenant_scope(session, scope.tenant_id)
     connection = get_own_platform_connection(session, connection_id, tenant_id=scope.tenant_id, user_id=scope.user_id)
     if connection is None:
         raise HTTPException(status_code=404, detail="not found")
@@ -3339,7 +3317,7 @@ def _require_copy_mandates(scope: TenantScope) -> None:
 @router.get("/app/copy/new")
 def copy_mandate_wizard_page(
     request: Request,
-    scope: TenantScope = Depends(get_current_scope),
+    scope: TenantScope = Depends(require_tenant_scope),
     session: Session = Depends(get_db_session),
     error: str | None = None,
 ):
@@ -3350,7 +3328,6 @@ def copy_mandate_wizard_page(
     real price/position/publisher connectivity this build does not
     have."""
     _require_copy_mandates(scope)
-    set_tenant_scope(session, scope.tenant_id)
     selections = [
         s
         for s in list_own_portfolio_selections(session, tenant_id=scope.tenant_id, user_id=scope.user_id)
@@ -3387,11 +3364,10 @@ def create_copy_mandate_draft_page(
     start_mode: str = Form("new_entries_only"),
     policy_version_id: str = Form(...),
     consent_version: str = Form(...),
-    scope: TenantScope = Depends(get_current_scope),
+    scope: TenantScope = Depends(require_tenant_scope),
     session: Session = Depends(get_db_session),
 ):
     _require_copy_mandates(scope)
-    set_tenant_scope(session, scope.tenant_id)
     try:
         mandate = create_copy_mandate_draft(
             session,
@@ -3444,7 +3420,7 @@ def create_copy_mandate_draft_page(
 def manage_copy_mandate_page(
     mandate_id: str,
     request: Request,
-    scope: TenantScope = Depends(get_current_scope),
+    scope: TenantScope = Depends(require_tenant_scope),
     session: Session = Depends(get_db_session),
     error: str | None = None,
 ):
@@ -3457,7 +3433,6 @@ def manage_copy_mandate_page(
     one real, always-available action -- "revoking authority" over a
     mandate that never activated is exactly cancelling its draft."""
     _require_copy_mandates(scope)
-    set_tenant_scope(session, scope.tenant_id)
     mandate = get_own_copy_mandate(session, mandate_id, tenant_id=scope.tenant_id, user_id=scope.user_id)
     if mandate is None:
         raise HTTPException(status_code=404, detail="not found")
@@ -3468,11 +3443,10 @@ def manage_copy_mandate_page(
 def cancel_copy_mandate_page(
     mandate_id: str,
     request: Request,
-    scope: TenantScope = Depends(get_current_scope),
+    scope: TenantScope = Depends(require_tenant_scope),
     session: Session = Depends(get_db_session),
 ):
     _require_copy_mandates(scope)
-    set_tenant_scope(session, scope.tenant_id)
     mandate = get_own_copy_mandate(session, mandate_id, tenant_id=scope.tenant_id, user_id=scope.user_id)
     if mandate is None:
         raise HTTPException(status_code=404, detail="not found")
@@ -3729,7 +3703,7 @@ def incident_register_page(
     service: str | None = Query(None),
     severity: str | None = Query(None),
     state: str | None = Query(None),
-    scope: TenantScope = Depends(get_current_scope),
+    scope: TenantScope = Depends(require_tenant_scope),
     session: Session = Depends(get_db_session),
 ):
     """AD-21 "Commercial incidents and obligations" -- see
@@ -3738,7 +3712,6 @@ def incident_register_page(
     a tenant with no incidents is a genuinely empty queue -- never a
     fabricated placeholder incident."""
     _require_incident_register(scope)
-    set_tenant_scope(session, scope.tenant_id)
     incidents = list_incidents(session, tenant_id=scope.tenant_id, service=service, severity=severity, state=state)
     return templates.TemplateResponse(
         request,
@@ -3757,11 +3730,10 @@ def incident_register_page(
 def incident_detail_page(
     incident_id: str,
     request: Request,
-    scope: TenantScope = Depends(get_current_scope),
+    scope: TenantScope = Depends(require_tenant_scope),
     session: Session = Depends(get_db_session),
 ):
     _require_incident_register(scope)
-    set_tenant_scope(session, scope.tenant_id)
     incident = get_incident(session, incident_id, tenant_id=scope.tenant_id)
     if incident is None:
         raise HTTPException(status_code=404, detail="not found")
@@ -3786,7 +3758,7 @@ def incident_action_route(
     note: str = Form(...),
     assignee_id: str = Form(""),
     evidence_ids: str = Form(""),
-    scope: TenantScope = Depends(get_current_scope),
+    scope: TenantScope = Depends(require_tenant_scope),
     session: Session = Depends(get_db_session),
 ):
     """F-INCIDENT: "save/validate/preview/confirm are distinct bound
@@ -3796,7 +3768,6 @@ def incident_action_route(
     performs; an unrecognized operation is a real 400, never a silent
     no-op."""
     _require_incident_management(scope)
-    set_tenant_scope(session, scope.tenant_id)
     incident = get_incident(session, incident_id, tenant_id=scope.tenant_id)
     if incident is None:
         raise HTTPException(status_code=404, detail="not found")
@@ -3818,6 +3789,9 @@ def incident_action_route(
         session.commit()
     except InvalidIncidentOperationError as exc:
         session.rollback()
+        # Re-set after rollback(): set_tenant_scope's set_config(..., is_local=true)
+        # does not survive a rollback, and require_tenant_scope only runs once, at
+        # the start of the request -- see its own docstring (app/api/dependencies.py).
         set_tenant_scope(session, scope.tenant_id)
         incident = get_incident(session, incident_id, tenant_id=scope.tenant_id)
         timeline = get_object_timeline(session, tenant_id=scope.tenant_id, object_id=incident_id)

@@ -2729,6 +2729,19 @@ def test_copy_mandate_wizard_page_shows_the_real_empty_state(db_session):
     assert "A verified eligible connection and released portfolio are required." in response.text
 
 
+def test_copy_mandate_wizard_page_shows_a_risk_of_loss_disclosure(db_session):
+    """Audit finding: the wizard where a customer sets allocation_amount/
+    max_trade_risk/max_loss had no risk-of-loss disclosure anywhere on the
+    page. This asserts the disclosure renders, on the real empty-state
+    render (no portfolio/connection required to reach it -- it is above
+    that branch in the template)."""
+    client = _client(db_session)
+    response = client.get("/app/copy/new", headers=_auth_headers(role=MembershipRole.CUSTOMER))
+    assert response.status_code == 200
+    assert "Risk and fee notice" in response.text
+    assert "Copy trading involves risk of loss" in response.text
+
+
 def test_create_copy_mandate_draft_over_real_http(db_session):
     from app.models.product import Product, ProductLifecycleState
 

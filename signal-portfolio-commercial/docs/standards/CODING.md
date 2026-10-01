@@ -63,7 +63,20 @@ rules:
   (`app.tenant_id`) the RLS policies key off of, via `set_config` (a bound
   parameter) -- never build `SET LOCAL app.tenant_id = ...` by hand, since
   Postgres's `SET` statement takes only string literals, not bind
-  parameters, which would be a real injection point.
+  parameters, which would be a real injection point. In
+  `app/api/dashboard_routes.py`, declare
+  `scope: TenantScope = Depends(require_tenant_scope)`
+  (`app/api/dependencies.py`) rather than calling `set_tenant_scope`
+  imperatively in the handler body -- this is now the default way a
+  route gets a tenant-scoped session, so a new route that simply
+  declares the dependency gets correct isolation with no per-handler
+  code. A manual call remains correct only for the dependency's own
+  documented exceptions (see its docstring): a handler that
+  `session.rollback()`s mid-request and must re-set scope for the query
+  that follows, a route with no tenant-scoped query to make, the
+  pre-authentication bootstrap flow (ADR-0009), and the relay ingress
+  (`app/api/relay_routes.py`, a different restricted-role mechanism
+  entirely).
 - **Never trust a browser-supplied tenant id as proof of access.** Per
   `app/db.py`'s own docstring (quoting `docs/02`): "Never accept a browser
   tenant ID as proof of access." A tenant id only becomes real once it's

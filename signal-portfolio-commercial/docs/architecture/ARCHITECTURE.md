@@ -18,11 +18,17 @@ a **different** database role/session factory:
   catalog/marketing site (`/`, `/portfolios`, `/pricing`, `/methodology`,
   `/help`, `/compare`), and local auth (`/auth/...`). Bound to
   `app.state.session_factory`, the ordinary `app_role` connection. Every
-  handler resolves a `TenantScope` (`app/services/auth.py`) via
-  `app/api/dependencies.py::get_current_scope` and calls
-  `set_tenant_scope` before touching any tenant-scoped table — the RLS
-  policy (below) is the real enforcement; the route handler's own
-  tenant filtering is a convenience, not the only guard.
+  handler that queries a tenant-scoped table resolves a `TenantScope`
+  (`app/services/auth.py`) and calls `set_tenant_scope` through a single
+  shared dependency, `app/api/dependencies.py::require_tenant_scope`
+  (declared as `scope: TenantScope = Depends(require_tenant_scope)` in
+  place of the plain `get_current_scope`) — the RLS policy (below) is the
+  real enforcement; the route handler's own tenant filtering is a
+  convenience, not the only guard. A handful of routes keep the plain
+  `get_current_scope` instead (no tenant-scoped query to make), and a
+  handler that rolls back mid-request re-sets scope by hand afterward —
+  both documented as exceptions on `require_tenant_scope`'s own
+  docstring.
 - **`app/api/relay_routes.py`** — exactly one route,
   `POST /internal/relay/ingest-batch`. Bound to
   `app.state.relay_session_factory`, a **separate engine** connected as

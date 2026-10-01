@@ -104,6 +104,53 @@ def test_sign_in_with_wrong_password_shows_error_not_a_500(db_session):
     assert response.status_code == 401
     assert "Incorrect email or password" in response.text
     assert "cp_session" not in response.cookies
+    # Accessibility audit finding: the shared `.conflict` error-banner
+    # pattern (app/templates/_base.html) had no aria-live/role="alert" --
+    # a screen-reader user got no announcement at all when a submit
+    # failed. Checked here against the real sign-in failure render, the
+    # same banner every other template that uses `class="conflict"` also
+    # renders.
+    assert 'class="conflict" role="alert" aria-live="assertive"' in response.text
+
+
+def test_base_layout_has_skip_link_and_landmark_roles(db_session):
+    """Accessibility audit finding: app/templates/_base.html (the shared
+    layout for every screen) had no skip-to-content link and no landmark
+    roles beyond a bare header/main. Checked against a real rendered
+    page rather than the template source directly, since that is what a
+    browser/screen-reader actually sees."""
+    client = _client(db_session)
+    response = client.get("/auth")
+    assert response.status_code == 200
+    assert 'class="skip-link" href="#main-content"' in response.text
+    assert '<nav aria-label="Primary">' in response.text
+    assert 'id="main-content"' in response.text
+    assert 'role="main"' in response.text
+
+
+def test_terms_and_privacy_pages_exist_and_are_linked_from_signup(db_session):
+    """Audit finding: ID-01's signup checkbox has always required
+    accepting "the Terms and Privacy Policy" but no /terms or /privacy
+    route or content ever existed -- the checkbox's own text pointed
+    nowhere. This confirms both routes now return real, honest
+    (explicitly placeholder) content, and that the signup page's
+    checkbox links resolve to them."""
+    client = _client(db_session)
+
+    terms_response = client.get("/terms")
+    assert terms_response.status_code == 200
+    assert "placeholder" in terms_response.text.lower()
+    assert "not yet the platform's actual Terms of Service" in terms_response.text
+
+    privacy_response = client.get("/privacy")
+    assert privacy_response.status_code == 200
+    assert "placeholder" in privacy_response.text.lower()
+    assert "not yet the platform's actual Privacy Policy" in privacy_response.text
+
+    signup_page = client.get("/auth")
+    assert signup_page.status_code == 200
+    assert '<a href="/terms">Terms</a>' in signup_page.text
+    assert '<a href="/privacy">Privacy Policy</a>' in signup_page.text
 
 
 def test_signup_without_accepting_terms_is_refused(db_session):

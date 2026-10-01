@@ -33,11 +33,36 @@
     ul.blockers { list-style: none; padding: 0; margin: 0; }
     ul.blockers li { padding: 0.4rem 0.6rem; margin-bottom: 0.35rem; background: #fef2f2; color: #991b1b; border-radius: 0.25rem; font-size: 0.85rem; }
     .conflict { background: #fef2f2; border: 1px solid #fecaca; padding: 0.75rem 1rem; border-radius: 0.25rem; margin-bottom: 1rem; color: #7f1d1d; }
+    .skip-link {
+      position: absolute;
+      left: -999px;
+      top: auto;
+      width: 1px;
+      height: 1px;
+      overflow: hidden;
+      background: #111827;
+      color: #f9fafb;
+      padding: 0.5rem 1rem;
+      border-radius: 0.25rem;
+      z-index: 100;
+    }
+    .skip-link:focus {
+      left: 0.5rem;
+      top: 0.5rem;
+      width: auto;
+      height: auto;
+      overflow: visible;
+    }
   </style>
 </head>
 <body>
-  <header><a href="/ops">signal-portfolio-commercial &mdash; operator console</a></header>
-  <main>
+  <a class="skip-link" href="#main-content">Skip to content</a>
+  <header>
+    <nav aria-label="Primary">
+      <a href="/ops">signal-portfolio-commercial &mdash; operator console</a>
+    </nav>
+  </header>
+  <main id="main-content" role="main">
     {% block content %}{% endblock %}
   </main>
   <script>

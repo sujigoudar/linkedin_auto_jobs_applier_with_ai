@@ -4,7 +4,7 @@
 <h1>Account recovery</h1>
 
 {% if error %}
-<div class="conflict">{{ error }}</div>
+<div class="conflict" role="alert" aria-live="assertive">{{ error }}</div>
 {% endif %}
 {% if notice %}
 <div class="panel">{{ notice }}</div>

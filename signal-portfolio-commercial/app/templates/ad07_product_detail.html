@@ -7,14 +7,14 @@
 </h1>
 
 {% if conflict %}
-<div class="conflict">
+<div class="conflict" role="alert" aria-live="assertive">
   <strong>Someone else saved a newer change to this draft.</strong>
   This page now shows the current server revision ({{ product.revision }}). Re-apply your edit and save again.
 </div>
 {% endif %}
 
 {% if error %}
-<div class="conflict">{{ error }}</div>
+<div class="conflict" role="alert" aria-live="assertive">{{ error }}</div>
 {% endif %}
 
 <div class="panel">

@@ -14,7 +14,62 @@ nothing here has shipped to a live production deployment
 
 ### 2026-10-01
 
+#### Added
+- `app/api/dependencies.py`'s `require_tenant_scope`: a FastAPI
+  dependency that centralizes `app/db.py`'s `set_tenant_scope()`,
+  replacing ~85 individual `set_tenant_scope(session, scope.tenant_id)`
+  calls previously made at the top of each dashboard route handler in
+  `app/api/dashboard_routes.py` with `scope: TenantScope =
+  Depends(require_tenant_scope)` in place of `Depends(get_current_scope)`.
+  No public behavior changes -- every route that set tenant scope still
+  does, through the exact same `set_config(..., is_local=true)`
+  mechanism, just once, during dependency resolution instead of
+  imperatively in the handler body. A handful of genuinely different
+  call sites are left as explicit, documented exceptions rather than
+  forced into this one shape: ~8 routes that call `session.rollback()`
+  mid-handler (the rolled-back transaction clears the session-local GUC,
+  so they still set it again by hand after the rollback); 3 routes
+  (`rights_register_page`, `deployment_status_page`,
+  `platform_connection_wizard_page`) that need the caller's role for a
+  permission check but run no tenant-scoped query at all; the
+  pre-authentication `sign_in_submit`/`verify_email_page` bootstrap flow
+  (ADR-0009), which has no `TenantScope` yet by construction; and
+  `app/api/relay_routes.py`, which never sets `app.tenant_id` at all --
+  it runs on the separate, restricted `relay_role` connection instead.
+- `/terms` and `/privacy` routes and templates
+  (`app/templates/pu09_terms.html`, `app/templates/pu10_privacy.html`):
+  ID-01's signup checkbox has always required accepting "the Terms and
+  Privacy Policy", but no such route or content ever existed. Both
+  pages are explicit, honestly-labeled PLACEHOLDER content pending real
+  legal review (not real Terms of Service/Privacy Policy -- no one on
+  this team is positioned to author that), with a few generic,
+  uncontroversial structural sections (who this applies to, data
+  collected, how to contact us). `id01_auth.html`'s signup checkbox now
+  links both terms in place of unlinked plain text.
+- Risk-of-loss disclosure on the copy-mandate wizard
+  (`app/templates/cu09_copy_wizard.html`): the screen where a customer
+  sets `allocation_amount`/`max_trade_risk`/`max_loss` had no risk
+  disclosure anywhere on the page. Added a "Risk and fee notice" panel
+  near the top of the form, matching the wording/tone of the existing
+  disclosures on `pu01_home.html` and `pu05_pricing.html`. This build's
+  mandates can only ever reach DRAFT/CANCELLED state (no real activation
+  pipeline exists), so no real money moves from this screen today, but
+  it is still the natural place for this disclosure.
+
 #### Fixed
+- Accessibility gaps in the shared layout (`app/templates/_base.html`,
+  used by every dashboard/auth screen): added a skip-to-content link
+  (`.skip-link` → `#main-content`), wrapped the header's navigation
+  link in a real `<nav aria-label="Primary">`, and gave `<main>` an
+  explicit `id="main-content" role="main"`. Also added `role="alert"
+  aria-live="assertive"` to every template's `.conflict` error banner
+  (the shared failed-submission pattern, confirmed in 27 templates --
+  `id01_auth.html` among them -- not just one), so a screen reader now
+  announces a failed submission instead of staying silent. No
+  axe-core/pa11y harness exists in this repo; verified by reading the
+  rendered template source and by a new test
+  (`test_base_layout_has_skip_link_and_landmark_roles`) asserting these
+  attributes appear in a real rendered page.
 - Portfolio version `version_number` race: a database-level unique
   constraint on `(tenant_id, portfolio_id, version_number)` for
   `portfolio_versions`, plus a catch-and-retry-once around it in

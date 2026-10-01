@@ -20,7 +20,7 @@
   <p>Your email is verified, but this identity has no tenant membership yet. <a href="/auth">Sign in</a> once one is provisioned.</p>
 </div>
 {% elif state == "invalid" %}
-<div class="conflict">{{ error }}</div>
+<div class="conflict" role="alert" aria-live="assertive">{{ error }}</div>
 <p><a href="/auth">Return to sign in</a></p>
 {% else %}
 <div class="empty-state">

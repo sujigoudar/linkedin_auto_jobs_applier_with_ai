@@ -299,11 +299,15 @@ integration topology.
 **A browser request to a dashboard route:**
 `get_current_scope()` (`app/api/dependencies.py`) reads the `cp_session`
 cookie, resolves it via `get_web_session()` (local_auth), checks CSRF on
-mutations, and returns a `TenantScope`. The route handler then calls
+mutations, and returns a `TenantScope`. Most routes depend on
+`require_tenant_scope` (also `app/api/dependencies.py`) rather than
+`get_current_scope` directly -- it wraps `get_current_scope` and calls
+`set_tenant_scope(session, scope.tenant_id)` once, during dependency
+resolution, before the handler body runs. The route handler then calls
 `require_permission(scope.role, "<action>")` (see
-`docs/security/AUTHORIZATION.md`) before doing anything, and
-`set_tenant_scope(session, scope.tenant_id)` before touching any RLS-guarded
-table.
+`docs/security/AUTHORIZATION.md`) before doing anything else. A small,
+documented set of routes still call `set_tenant_scope` by hand (see
+`require_tenant_scope`'s own docstring for exactly which, and why).
 
 **A Bearer-token API/relay caller:** `get_current_scope()` calls
 `verify_token()` (fail-closed denylist check) instead. Everything else --

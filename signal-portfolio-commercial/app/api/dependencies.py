@@ -46,6 +46,7 @@ from collections.abc import Iterator
 from fastapi import Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
+from app.db import set_tenant_scope
 from app.models.tenancy import MembershipRole
 from app.services.auth import InvalidTokenError, TenantScope, verify_token
 from app.services.local_auth import get_web_session
@@ -108,3 +109,58 @@ async def get_current_scope(request: Request, db: Session = Depends(get_db_sessi
     except ValueError as exc:
         raise HTTPException(status_code=401, detail="session has an unrecognized role") from exc
     return TenantScope(tenant_id=web_session.tenant_id, user_id=web_session.user_id, role=role)
+
+
+def require_tenant_scope(
+    scope: TenantScope = Depends(get_current_scope),
+    session: Session = Depends(get_db_session),
+) -> TenantScope:
+    """Centralizes `app/db.py`'s `set_tenant_scope()` as a dependency
+    instead of an imperative call repeated at the top of ~85 individual
+    route handlers in `app/api/dashboard_routes.py` -- the prior pattern
+    worked (a forgotten call fails closed under RLS, never leaks a row
+    out of tenant) but was structurally fragile: nothing caught a new
+    route that forgot the call except that same fail-closed behavior in
+    production. A route declares `scope: TenantScope = Depends(require_tenant_scope)`
+    in place of `Depends(get_current_scope)` and gets both the verified
+    scope AND a session already `set_tenant_scope`-d to it, with no
+    other change to its body.
+
+    FastAPI caches a dependency's result per request, keyed by the
+    callable -- `Depends(get_db_session)` here and a route's own
+    `session: Session = Depends(get_db_session)` resolve to the exact
+    same `Session` instance within one request, so this really does run
+    before the handler body touches that session, not on a second one.
+
+    Deliberately NOT applied everywhere `get_current_scope` is used --
+    left as explicit, documented exceptions rather than forced through
+    this one shape:
+
+    * `rights_register_page`, `deployment_status_page` and
+      `platform_connection_wizard_page` (app/api/dashboard_routes.py)
+      need the verified caller identity/role for a permission check but
+      never run a tenant-scoped query (`RightsGrant` carries no
+      `tenant_id`; the other two read no tenant-scoped table at all) --
+      they keep `Depends(get_current_scope)` directly.
+    * A handler that hits `session.rollback()` mid-request (e.g. to
+      re-render a form after a validation error) still needs its own,
+      explicit, POST-rollback `set_tenant_scope(session, scope.tenant_id)`
+      call for the query that follows -- `set_tenant_scope` uses
+      `set_config(..., is_local=true)`, which `rollback()` (like
+      `commit()`) clears, and this dependency only ever runs once, at
+      the start of request handling, before any rollback exists to undo
+      it. ~8 such sites remain in dashboard_routes.py, each with a
+      comment pointing back here.
+    * `sign_in_submit` and `verify_email_page` (app/api/dashboard_routes.py)
+      run BEFORE any `TenantScope` exists -- discovering the caller's
+      tenant membership is the whole point of that code path (ADR-0009)
+      -- so they call `set_current_user_scope` (a distinct, narrower,
+      SELECT-only bootstrap policy) and then `set_tenant_scope` by hand
+      once the tenant is known, never through this dependency.
+    * `app/api/relay_routes.py` sets no tenant scope at all -- it runs
+      on the separate, restricted `relay_role` connection
+      (`get_relay_db_session`), which can only ever see one tenant's
+      rows to begin with (see that module's own docstring).
+    """
+    set_tenant_scope(session, scope.tenant_id)
+    return scope

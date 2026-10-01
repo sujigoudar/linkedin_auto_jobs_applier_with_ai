@@ -1,0 +1,33 @@
+{% extends "_base.html" %}
+{% block title %}Privacy Policy (placeholder){% endblock %}
+{% block content %}
+<h1>Privacy Policy</h1>
+
+<div class="panel">
+  <p><strong>PLACEHOLDER NOTICE:</strong> This is placeholder text pending real legal review; it is not yet the platform's actual Privacy Policy. No real Privacy Policy has been drafted or approved for this product yet. Nothing on this page should be relied on as a binding statement of how data is actually handled.</p>
+</div>
+
+<div class="panel">
+  <h2>Who this applies to</h2>
+  <p>This placeholder would apply to anyone whose data this platform processes: account holders, connected-platform users, and staff/operator users of the commercial dashboard.</p>
+</div>
+
+<div class="panel">
+  <h2>Data we collect</h2>
+  <p>In general terms, this service's own account/auth model (app/services/local_auth.py) stores an email address, a hashed password, and session/audit records. A copy-trading mandate additionally stores allocation and risk-limit values and a masked, non-secret label for a connected platform account. Real privacy copy would need to enumerate every field actually stored, how long it is retained, and who within the organization can access it.</p>
+</div>
+
+<div class="panel">
+  <h2>How data is used</h2>
+  <p>Account data is used to authenticate sign-in, enforce tenant isolation (row-level security separates every tenant's data from every other tenant's), and operate the features described on this product's own pages. This placeholder makes no claim about any other use, such as advertising or resale, pending real legal review.</p>
+</div>
+
+<div class="panel">
+  <h2>How to contact us</h2>
+  <p>Questions about this policy, once a real policy exists, would be directed to this product's support channel referenced from the <a href="/help">Help and compatibility guide</a>. This build has no live support-ticket system yet.</p>
+</div>
+
+<div class="panel">
+  <p>See the placeholder <a href="/terms">Terms of Service</a> as well -- it is equally a placeholder, pending the same legal review.</p>
+</div>
+{% endblock %}
