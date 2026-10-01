@@ -12,6 +12,23 @@ version number. Newest wave first.
 Fixes responding to an external release-readiness audit of the trading
 engine's data integrity and operational-safety guarantees.
 
+### Added
+- Track 38: `tests/test_trk38_quantity_conservation_and_idempotency.py`,
+  a Hypothesis stateful test extending C29's quantity-conservation
+  machine (`tests/test_c29_hypothesis_quantity_conservation.py`) with
+  full closes via the real engine `Signal(side=CLOSE)` entrypoint,
+  re-entries after a close, and genuinely duplicate CLOSE signals (both
+  the literal same signal.id, caught by SIG-01, and a different
+  channel_id/message_id within the TRK-27 duplicate-exit window). Proves
+  across 75 generated event-orderings (25 steps each) that
+  `confirmed_owned_quantity`/broker book/SignalStore position always
+  agree, owned quantity never goes negative or exceeds cumulative
+  entered-minus-exited, and a REJECTED duplicate close never changes
+  quantity anywhere. Supplements, never replaces, C29 and
+  `tests/test_trk27_managed_exit_duplicate_episode.py`'s two hand-picked
+  scenarios. No bug found; all invariants held across every generated
+  case.
+
 ### Fixed
 - Track 36: `docs/state/PROGRESS.md`'s long-standing "`signal_platform_
   contracts` is stale relative to Track 14 and Track 22/23" note was

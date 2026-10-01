@@ -9,6 +9,16 @@ detailed per-phase notes (now historical; much has been built since).
 
 ## What's real and tested, most recent first
 
+- **Track 38 property-based/stateful test hardening** -- two new test
+  files, both passing against a real disposable Postgres cluster:
+  `tests/test_trk38_edit_correlation_hypothesis.py` (60 generated cases
+  proving Track 35's EDIT-kind SourceEvent correlation never produces a
+  cross-tenant false-positive match, including out-of-order delivery)
+  and `tests/test_trk38_rls_ledger_and_inbox.py` (6 tests extending the
+  real, non-superuser `app_role` unfiltered-query RLS proof pattern to
+  `LedgerEntry` and `InboxEvent`, the two financially load-bearing
+  models that had no such proof yet). No real bug found; full suite
+  remains 983 passed, 0 failed.
 - **Release taxonomy + trading-authority qualification gate
   (`GET /system/readiness`)** -- see ADR-0010
   (`docs/adr/0010-release-taxonomy-and-trading-authority-qualification-gate.md`).
