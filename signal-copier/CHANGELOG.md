@@ -63,6 +63,28 @@ engine's data integrity and operational-safety guarantees.
   be backed by a real adapter (`app.sources.website.WebsiteSource`'s FEED
   mode, not a placeholder) — no catalog change was needed; a new test
   exercises the TR-17 wizard's full three-call sequence against it.
+- `TR-18`: Mobile devices (`#/trade/mobile-devices`) — the dashboard
+  screen Track 20's `/mobile-devices*` REST surface never had. Lists
+  every paired device's real health/battery/permission/last-heartbeat
+  state (honestly `null` until that device reports it), drills into a
+  device's per-app configuration (`GET /mobile-devices/{id}/apps`), edits
+  `device_name`/`allowed_apps`/`blocked_apps` via `PATCH
+  /mobile-devices/{id}`, and runs "Test App" via the existing
+  `POST .../test` route, which this build always answers with an honest
+  `status="unavailable"` (no physical Android/ADB backend exists). No
+  unpair/revoke action is offered — the backend has none.
+- `TR-19`: Provider catalog (`#/trade/provider-catalog`) — the dashboard
+  screen Track 14/21's newer provider/source/connection catalog data
+  model never had, so `TR-17`'s onboarding wizard previously had nowhere
+  to send an operator to see what it just created (`TR-09` reads a
+  different, older `ProviderConfig` model and never will). Lists
+  providers from `GET /provider-catalog/providers`, with drill-down into
+  a provider's sources (`GET /provider-catalog/providers/{id}/sources`)
+  and each source's linked connection, showing `status`/
+  `execution_eligibility`/`certification_state`/`health_state` exactly as
+  the API returns them. `TR-17`'s post-creation success and
+  partial-failure messages now link here instead of to the `TR-09`
+  dead end.
 
 ### Changed
 - Capital allocator: fail-closed sizing on a missing price, an
