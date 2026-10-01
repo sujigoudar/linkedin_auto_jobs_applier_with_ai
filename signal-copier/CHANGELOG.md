@@ -7,6 +7,56 @@ does not yet cut versioned releases (see `docs/process/RELEASE.md`), so
 entries are grouped by theme and rough chronological wave instead of by
 version number. Newest wave first.
 
+## [Unreleased] — Track 39: mutation-testing pass
+
+Ran `mutmut` against the existing test suite for the financially
+load-bearing modules named in the track brief (`app/risk.py`,
+`app/capital_allocator.py`, `app/quantity.py`, the AUD-01 quantity
+fields in `app/db.py`, `app/routing.py`), scoped per-module to the
+dedicated test file(s) that exercise each one, to measure whether those
+tests actually CATCH a real injected bug rather than merely not
+failing against current code.
+
+### Added
+- `tests/test_risk_sizing.py`: `app/risk.py`'s `size_for_account`/
+  `symbol_for_account` had no direct unit test before this (only
+  indirect, end-to-end coverage) — closes the two real survivors this
+  found: the `else 1.0` default-quantity fallback, and
+  `symbol_for_account`'s symbol-translation lookup.
+- `tests/test_routing_evaluate.py`: `app/routing.py`'s `RoutingConfig
+  .evaluate`/`destinations_for` and the static YAML/DB config loaders
+  (`load_routing_config`/`load_routing_config_from_store`) had no
+  dedicated direct unit test file before this (only incidental coverage
+  through dozens of other tests' own account/routing setup). Closes
+  several real survivors, most seriously two `continue` → `break`
+  mutations in `evaluate`'s per-rule loop that would silently stop
+  evaluating every rule after the first one whose source/symbol_filter
+  doesn't match the current signal — undetected by every existing
+  config in this suite because none of them happens to put a
+  non-matching rule before a matching one. Also closes governance-field
+  (`managed_lifecycle`/`management_recipe`/`qualification_level`/
+  `exclusive_writer_qualified`) parsing gaps in both config loaders.
+- `tests/test_capital_allocator.py`: added coverage for
+  `confirmed_open_notional`'s per-symbol loop (a flat/closed position
+  ordered before an open one), `owner_wide_exposure` (previously
+  untested at all — wrong sign on pending-reservation addition,
+  wrong/dropped account-id argument, dropped `unresolved_symbols`), and
+  `admit`/`reserve_locked`'s `signal_id` persistence and `+=`
+  accumulation (a plain `=` bug there would only show up on a THIRD
+  sequential admission to the same account, which no existing test
+  exercised).
+- `tests/test_trkq1_quantity_breakdown.py` / `tests/test_aud01_distinct_quantity_model.py`:
+  added coverage for `quantity_still_executable_for`'s `None`-confirmed-
+  fill and exactly-zero-remainder boundaries, `quantity_breakdown_for_lifecycle`'s
+  `requested_quantity` field (previously never asserted), and
+  `SignalStore.get_outstanding_possible_fill`'s SELL-side sign and
+  zero-remainder exclusion (every existing scenario in that file only
+  ever used BUY).
+
+See `docs/state/PROGRESS.md` for the full per-module mutation scores,
+root-cause analysis of every survivor, and which ones were triaged as
+equivalent mutations rather than fixed.
+
 ## [Unreleased] — P0 audit-response foundation wave
 
 Fixes responding to an external release-readiness audit of the trading

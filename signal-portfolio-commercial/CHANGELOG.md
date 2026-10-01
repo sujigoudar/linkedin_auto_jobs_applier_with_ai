@@ -12,7 +12,44 @@ Everything in this file. This is pre-1.0, development-branch software;
 nothing here has shipped to a live production deployment
 (`docs/process/RELEASE.md`).
 
-### 2026-10-01
+### 2026-10-01 — Track 39: mutation-testing pass
+
+Ran `mutmut` against `app/services/trading_authority.py` and
+`app/services/ledger.py`, scoped to each module's own dedicated test
+file(s), to measure whether the existing tests actually catch a real
+injected bug. `app/services/release_taxonomy.py` was also scoped but
+turned out to have zero mutable mutation points (a pure, total
+dict-lookup table over `ProductLifecycleState`) — already fully
+covered by its own 5-test file, nothing to add.
+
+#### Added
+- `tests/test_trading_authority.py`: `assess_trading_authority`'s
+  `applicable`/`checks` fields were asserted only at the FIRST couple
+  of its six early-return gates; added coverage at every remaining one
+  (no-approved-review, no-execution-rights, blocking-incident), plus
+  two real production-logic gaps the fix closed: a REJECTED review for
+  the product's current revision, and a genuinely APPROVED review
+  belonging to a DIFFERENT product (or a now-stale prior revision of
+  the SAME product), must never be mistaken for "this product's
+  current approved review" — both are exactly the kind of query-filter
+  regression that could silently grant trading authority it shouldn't.
+  Mutation score: 180/188 killed (95.7%); the 8 remaining survivors are
+  either cosmetic string-join formatting in multi-item diagnostic
+  strings, or query-filter drops on the blocking-incident check that
+  only WIDEN which incidents count as blocking (the fail-safe
+  direction this module's own "fail closed" design already biases
+  toward — a false reject, never a false authorization).
+- `tests/test_ledger.py`: `append_entry`/`append_correction` had no
+  test setting `multiplier`/`follower_connection_id`/
+  `originating_analyst_id`/`sleeve_id`/`external_observation_id` to a
+  real, non-default value, and `append_correction`'s explicit-new-fee
+  override (the real `app/services/integration_inbox.py` FEE-event
+  call path) was entirely untested — only its "inherit from original"
+  branch was ever exercised. Mutation score: 82/82 killed (two
+  `reconciliation_state=None` mutants are confirmed equivalent: the
+  underlying `LedgerEntry.reconciliation_state` column is declared
+  `nullable=False, default=UNRECONCILED`, so SQLAlchemy backstops an
+  explicit `None` at the DB layer regardless).
 
 #### Added
 - **`GET /system/readiness` -- a real release taxonomy and trading-
