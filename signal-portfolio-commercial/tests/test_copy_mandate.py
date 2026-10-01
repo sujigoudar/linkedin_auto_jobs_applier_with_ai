@@ -2,6 +2,7 @@
 position handoff" -- app/services/copy_mandate.py's own tests. Real
 Postgres, real tenant-scoped session."""
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 
 import pytest
 
@@ -192,6 +193,30 @@ def test_create_copy_mandate_draft_rejects_a_non_positive_allocation(db_session)
         )
 
 
+def test_create_copy_mandate_draft_accepts_an_allocation_at_or_below_one_but_still_positive(db_session):
+    """The positive-allocation boundary (`<= 0`) had no test between the
+    rejected `0` and a comfortably-positive `100` -- an off-by-one mutant
+    (`<= 1`) survived by wrongly rejecting a legitimate small allocation
+    at or below 1 (e.g. exactly `1`, or a fractional `0.5`)."""
+    _seed_membership(db_session)
+    selection, connection = _eligible_selection_and_connection(db_session)
+    mandate = create_copy_mandate_draft(
+        db_session,
+        tenant_id="tenant-a",
+        user_id="user-a",
+        selection_id=selection.selection_id,
+        connection_id=connection.connection_id,
+        allocation_amount="1",
+        allocation_currency="USD",
+        max_trade_risk=None,
+        max_loss=None,
+        start_mode="new_entries_only",
+        policy_version_id="policy-1",
+        consent_version="consent-1",
+    )
+    assert mandate.allocation_amount == Decimal("1")
+
+
 def test_create_copy_mandate_draft_rejects_an_unknown_start_mode(db_session):
     _seed_membership(db_session)
     selection, connection = _eligible_selection_and_connection(db_session)
@@ -258,6 +283,133 @@ def test_get_own_copy_mandate_is_none_for_a_cross_tenant_mandate(db_session):
     db_session.commit()
 
     assert get_own_copy_mandate(db_session, mandate.mandate_id, tenant_id="tenant-b", user_id="user-b") is None
+
+
+def test_get_own_copy_mandate_returns_the_mandate_for_its_true_owner(db_session):
+    """The positive path `test_get_own_copy_mandate_is_none_for_a_cross_tenant_mandate`
+    never exercises: a customer fetching a mandate they actually own must
+    get the real row back, not `None`. Without this, mutating the
+    ownership check's `!=` to `==` (always-true, so the guard fires even
+    for the true owner) or dropping the `session.get` lookup entirely
+    (always `None`) are both invisible -- they only ever over-block, never
+    leak, so the cross-tenant-only test above can't catch them."""
+    _seed_membership(db_session)
+    selection, connection = _eligible_selection_and_connection(db_session)
+    mandate = create_copy_mandate_draft(
+        db_session,
+        tenant_id="tenant-a",
+        user_id="user-a",
+        selection_id=selection.selection_id,
+        connection_id=connection.connection_id,
+        allocation_amount="100",
+        allocation_currency="USD",
+        max_trade_risk=None,
+        max_loss=None,
+        start_mode="new_entries_only",
+        policy_version_id="policy-1",
+        consent_version="consent-1",
+    )
+    db_session.commit()
+
+    fetched = get_own_copy_mandate(db_session, mandate.mandate_id, tenant_id="tenant-a", user_id="user-a")
+    assert fetched is not None
+    assert fetched.mandate_id == mandate.mandate_id
+
+
+def test_get_own_copy_mandate_is_none_for_a_different_tenant_sharing_the_same_user_id(db_session):
+    """A real cross-tenant leak that the existing cross-tenant test can't
+    catch because it uses a different `user_id` too: if the ownership
+    check's `or` chain ever regresses to `and` on its first clause
+    (operator precedence: `(mandate is None and tenant mismatch) or user
+    mismatch`), a request naming the WRONG tenant but the SAME `user_id`
+    as the true owner sails through -- a different tenant's customer
+    reading another tenant's real-money mandate just by knowing/sharing a
+    user_id. This is exactly the kind of misdirection this module's own
+    docstring is about guarding against."""
+    _seed_membership(db_session, tenant_id="tenant-a", user_id="user-a")
+    selection, connection = _eligible_selection_and_connection(db_session, tenant_id="tenant-a", user_id="user-a")
+    mandate = create_copy_mandate_draft(
+        db_session,
+        tenant_id="tenant-a",
+        user_id="user-a",
+        selection_id=selection.selection_id,
+        connection_id=connection.connection_id,
+        allocation_amount="100",
+        allocation_currency="USD",
+        max_trade_risk=None,
+        max_loss=None,
+        start_mode="new_entries_only",
+        policy_version_id="policy-1",
+        consent_version="consent-1",
+    )
+    db_session.commit()
+
+    # Same user_id as the true owner, but a DIFFERENT tenant_id.
+    assert get_own_copy_mandate(db_session, mandate.mandate_id, tenant_id="tenant-b", user_id="user-a") is None
+
+
+def test_create_copy_mandate_draft_persists_the_risk_limits_it_was_given(db_session):
+    """`max_trade_risk`/`max_loss` are real-money risk limits a customer
+    sets on their own mandate -- nothing previously asserted that a
+    supplied value actually lands on the persisted row rather than being
+    silently dropped (e.g. a decimal-parsing step that never assigns its
+    result)."""
+    _seed_membership(db_session)
+    selection, connection = _eligible_selection_and_connection(db_session)
+    mandate = create_copy_mandate_draft(
+        db_session,
+        tenant_id="tenant-a",
+        user_id="user-a",
+        selection_id=selection.selection_id,
+        connection_id=connection.connection_id,
+        allocation_amount="100",
+        allocation_currency="USD",
+        max_trade_risk="25.50",
+        max_loss="75.00",
+        start_mode="new_entries_only",
+        policy_version_id="policy-1",
+        consent_version="consent-1",
+    )
+    db_session.commit()
+
+    assert mandate.max_trade_risk == Decimal("25.50")
+    assert mandate.max_loss == Decimal("75.00")
+
+
+@pytest.mark.parametrize(
+    "field_name,error_match",
+    [
+        ("allocation_currency", "allocation_currency is required"),
+        ("policy_version_id", "policy_version_id is required"),
+        ("consent_version", "consent_version is required"),
+    ],
+)
+def test_create_copy_mandate_draft_rejects_a_whitespace_only_required_field(db_session, field_name, error_match):
+    """Each of these required-string guards is `if not value or not
+    value.strip(): raise`. A whitespace-only string ("   ") is truthy
+    (`not value` is False) so only the `.strip()` half of the guard can
+    ever catch it -- which means the `or` connecting the two halves must
+    stay an `or`: were it ever weakened to `and`, a whitespace-only value
+    would short-circuit past the guard entirely and a mandate would be
+    drafted with a blank required field."""
+    _seed_membership(db_session)
+    selection, connection = _eligible_selection_and_connection(db_session)
+    kwargs = dict(
+        tenant_id="tenant-a",
+        user_id="user-a",
+        selection_id=selection.selection_id,
+        connection_id=connection.connection_id,
+        allocation_amount="100",
+        allocation_currency="USD",
+        max_trade_risk=None,
+        max_loss=None,
+        start_mode="new_entries_only",
+        policy_version_id="policy-1",
+        consent_version="consent-1",
+    )
+    kwargs[field_name] = "   "
+    with pytest.raises(InvalidCopyMandateError, match=error_match):
+        create_copy_mandate_draft(db_session, **kwargs)
 
 
 def test_cancel_copy_mandate_sets_cancelled_state(db_session):

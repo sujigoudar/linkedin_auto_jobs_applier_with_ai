@@ -9,6 +9,41 @@ detailed per-phase notes (now historical; much has been built since).
 
 ## What's real and tested, most recent first
 
+- **Track 51: mutation-testing pass, copy_mandate/real_account_route
+  (2026-10-01).** Widens Track 39's mutation-testing pass onto the
+  real-money copy-trading authorization and routing boundary:
+  `app/services/copy_mandate.py` (what a customer has actually
+  mandated be copied) and `app/services/real_account_route.py`
+  (INT-033's "shared account cannot gain a second writer" enforcement
+  -- which real brokerage account a copy actually executes against),
+  per the user's instruction that mutation coverage needs to reach
+  every module, highest financial-risk first. Found and closed five
+  real gaps in `copy_mandate.py`: no positive-path test for
+  `get_own_copy_mandate` (only the cross-tenant negative path was
+  covered, so an always-`None` or always-fails-the-owner mutant went
+  undetected); the real cross-tenant-leak finding -- an `or`-to-`and`
+  operator-precedence mutation on the ownership guard let a request
+  naming the wrong tenant but the SAME `user_id` as the true owner
+  read another tenant's mandate, because the existing cross-tenant
+  test used a different `user_id` too and couldn't exercise that
+  path; `max_trade_risk`/`max_loss` parsed but never asserted to
+  actually persist on the row; three required-string guards
+  (`allocation_currency`/`policy_version_id`/`consent_version`)
+  whose `or`-connected whitespace check could be weakened to `and`
+  and silently admit a blank field; and a `<= 0`/`<= 1` off-by-one on
+  the positive-allocation boundary. No production code changed --
+  every survivor was a test gap, closed with a new test, none
+  weakened or deleted. `real_account_route.py` had no gaps at all:
+  its real routing/ownership-transfer logic was already fully
+  covered. Final scores: `copy_mandate.py` 36/49 killed (73.5%,
+  remaining 13: 11 cosmetic exception-message string mutations, 2
+  confirmed equivalent -- a `Decimal | None`/`Decimal & None` local
+  variable annotation swap that's never evaluated at runtime under
+  `from __future__ import annotations`); `real_account_route.py`
+  22/26 killed (84.6%, remaining 4 all the same cosmetic string-
+  message category). Full suite: `1049 passed`; `ruff`/`mypy` both
+  clean.
+
 - **Track 47: mutation-testing pass, PAMM/MAM pooled-account accounting
   (2026-10-01).** Widens Track 39's mutation-testing pass onto
   `app/services/pamm_accounting.py` (PAMM unit/NAV high-water-mark fee)

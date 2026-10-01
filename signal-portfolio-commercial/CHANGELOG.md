@@ -12,6 +12,88 @@ Everything in this file. This is pre-1.0, development-branch software;
 nothing here has shipped to a live production deployment
 (`docs/process/RELEASE.md`).
 
+### 2026-10-01 — Track 51: mutation-testing pass (copy_mandate, real_account_route)
+
+Widens Track 39's mutation-testing pass onto the real-money copy-
+trading authorization and routing boundary, per the user's instruction
+that mutation coverage needs to cover every module, highest financial-
+risk first: `app/services/copy_mandate.py` (what a customer has
+actually mandated be copied -- CU-09/CU-10) and
+`app/services/real_account_route.py` (INT-033's "shared account cannot
+gain a second writer" enforcement -- which real brokerage account a
+copy actually executes against). Same ad hoc approach as Track 39:
+`mutmut run --paths-to-mutate=<module>` scoped to each module's own
+dedicated test file, no persisted `setup.cfg`/`pyproject.toml` config.
+
+#### Added
+- `tests/test_copy_mandate.py`: five real gaps closed, all in
+  `get_own_copy_mandate`/`create_copy_mandate_draft`.
+  1. The existing cross-tenant test only ever exercised the negative
+     path (`None` for a mandate that isn't owned); nothing asserted the
+     positive path -- that a true owner's own fetch actually returns
+     the mandate. Without it, `mandate = session.get(...)` mutating to
+     always `mandate = None`, and the ownership check's `!=` mutating
+     to `==` (making the guard fire even for the true owner), both
+     survived invisibly: they only ever over-block, never leak, so a
+     negative-only test can't catch them. New
+     `test_get_own_copy_mandate_returns_the_mandate_for_its_true_owner`.
+  2. The real cross-tenant-leak finding: the ownership guard is `if
+     mandate is None or tenant_id != tenant_id or user_id != user_id:
+     return None`. A mutant turning the first `or` into `and`
+     (`(mandate is None and tenant mismatch) or user mismatch`, by
+     operator precedence) survived, because the existing cross-tenant
+     test used a *different* `user_id` for the other tenant too --
+     with that mutation, a request naming the WRONG tenant but the
+     SAME `user_id` as the true owner would read straight through and
+     return another tenant's real-money mandate. New
+     `test_get_own_copy_mandate_is_none_for_a_different_tenant_sharing_the_same_user_id`
+     pins exactly that scenario. This is the highest-priority finding
+     in this track: a real cross-tenant disclosure of a customer's
+     copy-trading mandate.
+  3. `max_trade_risk`/`max_loss` -- real-money risk limits a customer
+     sets on their own mandate -- were parsed into
+     `max_trade_risk_decimal`/`max_loss_decimal` but nothing asserted
+     either value actually lands on the persisted row, so a mutant
+     dropping the parsed value (`= None` instead of `= Decimal(...)`)
+     survived on both fields. New
+     `test_create_copy_mandate_draft_persists_the_risk_limits_it_was_given`.
+  4. Three required-string guards (`allocation_currency`,
+     `policy_version_id`, `consent_version`) are each `if not value or
+     not value.strip(): raise`. A whitespace-only string is truthy, so
+     only the `.strip()` half of the guard can ever catch it -- meaning
+     a mutant weakening that `or` to `and` short-circuits past the
+     guard entirely for a whitespace-only value, and survived on all
+     three fields. New, parametrized
+     `test_create_copy_mandate_draft_rejects_a_whitespace_only_required_field`
+     closes all three at once.
+  5. The positive-allocation boundary (`<= 0`) had no test between the
+     rejected `0` and a comfortably-positive `100`, so an off-by-one
+     mutant (`<= 1`) survived by wrongly rejecting a legitimate
+     allocation at or below 1 (e.g. exactly `1`). Lower priority than
+     the above (it only over-blocks, never misdirects), but cheap to
+     close: new
+     `test_create_copy_mandate_draft_accepts_an_allocation_at_or_below_one_but_still_positive`.
+  Mutation score: 36/49 killed (73.5%). Of the 13 remaining survivors,
+  11 are the same cosmetic exception-message string-literal category
+  Track 39/47/48 also left as equivalent/non-load-bearing; the other 2
+  are a confirmed **equivalent mutant** pair -- `Decimal | None`
+  mutated to `Decimal & None` on `max_trade_risk_decimal`'s/
+  `max_loss_decimal`'s own local variable annotations. This module has
+  `from __future__ import annotations`, so these annotations are never
+  evaluated at runtime (stored as strings only); the mutation has no
+  observable effect on any test outcome, by construction, not by a gap
+  in test coverage.
+- `app/services/real_account_route.py`: no test gaps found. First run:
+  22/26 killed (84.6%); all 4 survivors are the same cosmetic
+  exception-message string-literal category above (all four inside
+  `SecondWriterRejectedError`'s own diagnostic message in
+  `register_real_account_route`), already confirmed
+  equivalent/non-load-bearing by the same reasoning Track 39 applied.
+  The module's actual routing/ownership-transfer logic -- the real
+  money-misdirection surface INT-033 exists to close -- was already
+  fully covered by the existing `tests/test_real_account_route.py`
+  before this track; no production code or existing test changed.
+
 ### 2026-10-01 — Track 47: mutation-testing pass (PAMM/MAM pooled-account accounting)
 
 Widens Track 39's mutation-testing pass (originally scoped to
