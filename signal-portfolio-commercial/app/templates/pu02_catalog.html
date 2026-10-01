@@ -11,11 +11,34 @@
     table { width: 100%; border-collapse: collapse; margin: 1rem 0; }
     th, td { text-align: left; padding: 0.5rem 0.75rem; border-bottom: 1px solid #e5e7eb; }
     .empty-state { padding: 2rem; text-align: center; color: #4b5563; border: 1px dashed #d1d5db; border-radius: 0.5rem; }
+    .skip-link {
+      position: absolute;
+      left: -999px;
+      top: auto;
+      width: 1px;
+      height: 1px;
+      overflow: hidden;
+      background: #111827;
+      color: #f9fafb;
+      padding: 0.5rem 1rem;
+      border-radius: 0.25rem;
+      z-index: 100;
+    }
+    .skip-link:focus {
+      left: 0.5rem;
+      top: 0.5rem;
+      width: auto;
+      height: auto;
+      overflow: visible;
+    }
   </style>
 </head>
 <body>
-  <header>Portfolio catalog</header>
-  <main>
+  <a class="skip-link" href="#main-content">Skip to content</a>
+  <header>
+    <nav aria-label="Primary">Portfolio catalog</nav>
+  </header>
+  <main id="main-content" role="main">
     <h1>Published portfolios</h1>
     {% if products %}
     <table>

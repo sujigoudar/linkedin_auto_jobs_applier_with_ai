@@ -3639,3 +3639,72 @@ def test_managed_programs_page_never_shows_a_draft_program_from_another_tenant(d
     assert response.status_code == 200
     assert "Draft Program HTTP" not in response.text
     assert "No approved managed-account program is available to you." in response.text
+
+
+def test_standalone_public_templates_have_skip_link_and_landmark_roles(db_session):
+    """Track 32 accessibility audit finding: Track 28 added a skip-to-content
+    link, a `<nav aria-label="Primary">` landmark and a `role="main"`
+    `#main-content` region to app/templates/_base.html, but 6 of the app's
+    templates are standalone `<!doctype html>` documents with their own
+    `<head>`/styling that do not `{% extends "_base.html" %}, so none of
+    that scaffolding ever reached them. This checks each one's own real
+    rendered HTML now carries the same primitives (fitted into each
+    page's own existing markup rather than forcing them onto the shared
+    dashboard chrome, which would have changed their visual layout)."""
+    client = _client(db_session)
+    headers = _auth_headers()
+
+    # PU-01 home, PU-02 catalog, PU-05 pricing, PU-08 help: public,
+    # unauthenticated GETs.
+    public_routes = ["/", "/portfolios", "/pricing", "/help"]
+    for route in public_routes:
+        response = client.get(route)
+        assert response.status_code == 200, route
+        assert 'class="skip-link" href="#main-content"' in response.text, route
+        assert "<nav aria-label=\"Primary\">" in response.text, route
+        assert 'id="main-content"' in response.text, route
+        assert 'role="main"' in response.text, route
+
+    # PU-03 portfolio detail: needs a real published product to render
+    # (follows test_portfolio_detail_shows_real_facts_for_a_published_product's
+    # own setup).
+    pv_id = _seed_ready_product_for_review(db_session, slug="a11y-detail-http")
+    create_response = client.post(
+        "/ops/products", data={"product_name": "A11y Detail Product", "slug": "a11y-detail-product"}, headers=headers
+    )
+    detail_url = create_response.headers["location"]
+    client.post(
+        detail_url,
+        data={
+            "expected_revision": "1",
+            "product_name": "A11y Detail Product",
+            "portfolio_version_id": pv_id,
+            "cash_bps": "500",
+            "service_modes": ["alerts"],
+            "audience_policy_id": "audience-1",
+        },
+        headers=headers,
+    )
+    from app.models.product import Product, ProductLifecycleState
+
+    product_id = detail_url.rsplit("/", 1)[-1]
+    product = db_session.get(Product, product_id)
+    product.lifecycle_state = ProductLifecycleState.PUBLISHED
+    db_session.commit()
+
+    response = client.get("/portfolios/a11y-detail-product")
+    assert response.status_code == 200
+    assert 'class="skip-link" href="#main-content"' in response.text
+    assert "<nav aria-label=\"Primary\">" in response.text
+    assert 'id="main-content"' in response.text
+    assert 'role="main"' in response.text
+
+    # ID-04 eligibility: requires a CUSTOMER-role membership.
+    _seed_customer_membership(db_session, tenant_id="tenant-a", user_id="user-a")
+    customer_headers = _auth_headers(role=MembershipRole.CUSTOMER)
+    response = client.get("/onboarding/eligibility", headers=customer_headers)
+    assert response.status_code == 200
+    assert 'class="skip-link" href="#main-content"' in response.text
+    assert "<nav aria-label=\"Primary\">" in response.text
+    assert 'id="main-content"' in response.text
+    assert 'role="main"' in response.text

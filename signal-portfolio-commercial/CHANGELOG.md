@@ -79,6 +79,25 @@ nothing here has shipped to a live production deployment
   rendered template source and by a new test
   (`test_base_layout_has_skip_link_and_landmark_roles`) asserting these
   attributes appear in a real rendered page.
+- Track 32: the Track 28 accessibility scaffolding above only ever
+  reached templates that `{% extends "_base.html" %}`. 6 of the app's
+  41 templates are standalone `<!doctype html>` documents with their
+  own `<head>`/styling that do not extend it --
+  `pu01_home.html`, `pu02_catalog.html`, `pu03_portfolio_detail.html`,
+  `pu05_pricing.html`, `pu08_help.html`, `id04_eligibility.html` -- so
+  none of it ever reached these 6 real public/customer routes (`/`,
+  `/portfolios`, `/portfolios/{slug}`, `/pricing`, `/help`,
+  `/onboarding/eligibility`). Rather than forcing these onto the shared
+  dashboard chrome (which would change their deliberately simpler
+  marketing/public layout), added the same skip-to-content link,
+  `<nav aria-label="Primary">` landmark, and `id="main-content"
+  role="main"` region directly into each page's own existing markup,
+  matching `_base.html`'s CSS/behavior exactly. All 6 already had a
+  `<header>` region to wrap in the nav landmark, so no page needed the
+  sub-requirement skipped. Verified with a new test
+  (`test_standalone_public_templates_have_skip_link_and_landmark_roles`)
+  asserting the same attributes now appear in each of the 6 real
+  rendered pages.
 - Portfolio version `version_number` race: a database-level unique
   constraint on `(tenant_id, portfolio_id, version_number)` for
   `portfolio_versions`, plus a catch-and-retry-once around it in
