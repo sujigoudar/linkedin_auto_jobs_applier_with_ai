@@ -2831,6 +2831,79 @@ class SignalStore:
             ).fetchall()
         return [EventEnvelope.model_validate_json(row[0]) for row in rows]
 
+    def list_export_events(
+        self,
+        *,
+        limit: int = 50,
+        source_stream: str | None = None,
+        delivered: bool | None = None,
+    ) -> list[dict]:
+        """Track 33: the one real, live-queryable view of this outbox --
+        same shape/convention as `list_recent_orders`/`list_recent_signals`
+        (newest first, bounded `limit`, optional narrowing filter) so
+        `GET /export-events` (app/main.py) can let an operator actually
+        SEE what's in the outbox without a direct DB connection, rather
+        than only `export_outbox_backlog`'s aggregate count. `delivered`
+        narrows to delivered-only (`True`), undelivered-only (`False`), or
+        both (`None`, the default) -- distinct from `list_undelivered_
+        export_events` above, which is relay-worker-facing (returns real
+        `EventEnvelope`s, oldest first, undelivered only) rather than
+        operator-facing."""
+        clauses: list[str] = []
+        params: list[Any] = []
+        if source_stream is not None:
+            clauses.append("source_stream = ?")
+            params.append(source_stream)
+        if delivered is True:
+            clauses.append("delivered_at IS NOT NULL")
+        elif delivered is False:
+            clauses.append("delivered_at IS NULL")
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        params.append(limit)
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""SELECT event_id, event_type, source_stream, export_sequence, envelope_json,
+                           payload_hash, appended_at, delivered_at
+                    FROM export_events {where}
+                    ORDER BY appended_at DESC, export_sequence DESC LIMIT ?""",
+                params,
+            ).fetchall()
+        return [self._export_event_row_to_dict(row) for row in rows]
+
+    def get_export_event(self, event_id: str) -> dict | None:
+        """One outbox event by its own idempotency key, or `None` if no
+        such event was ever appended -- same "real `None`, never a raw
+        `IndexError`/empty-tuple" convention as `get_source`/`get_connection`."""
+        with self._connect() as conn:
+            row = conn.execute(
+                """SELECT event_id, event_type, source_stream, export_sequence, envelope_json,
+                          payload_hash, appended_at, delivered_at
+                   FROM export_events WHERE event_id = ?""",
+                (event_id,),
+            ).fetchone()
+        return self._export_event_row_to_dict(row) if row else None
+
+    def _export_event_row_to_dict(self, row: tuple) -> dict:
+        envelope = EventEnvelope.model_validate_json(row[4])
+        return {
+            "event_id": row[0],
+            "event_type": row[1],
+            "source_stream": row[2],
+            "export_sequence": row[3],
+            "payload_hash": row[5],
+            "appended_at": row[6],
+            "delivered_at": row[7],
+            # The owner is the same audience `GET /signals`/`GET /orders`
+            # already hand full signal/order content to, and this payload
+            # is the typed signal_platform_contracts payload (subject/
+            # quantities/prices), never a raw credential or secret (those
+            # live only as `credential_reference` env-var NAMES -- see
+            # app/connections.py's own docstring) -- safe to return as-is,
+            # same "forward these exact bytes, never reinterpret" rule
+            # `list_undelivered_export_events` already follows.
+            "payload": envelope.payload,
+        }
+
     def mark_export_events_delivered(self, event_ids: list[str]) -> None:
         """Mark each of `event_ids` as delivered -- idempotent: an
         already-delivered event_id (or one that doesn't exist) is simply
@@ -5342,7 +5415,12 @@ class SignalStore:
         NOT EXISTS` bootstrap here does not declare a real `FOREIGN KEY`
         constraint, matching every other table in this schema's existing
         convention). `connection_id`, if given, must likewise refer to an
-        already-registered `connections` row."""
+        already-registered `connections` row. If `url_or_reference` matches
+        another already-registered, enabled `sources` row's, the returned
+        dict carries a `duplicate_url_warning` key (no hard rejection --
+        duplicate feed registration is sometimes legitimate, e.g. a
+        `research`-purpose route and a `signal_candidate`-purpose route for
+        the same feed; see this method's own body for the full rationale)."""
         validate_source_registration(
             source_id=source_id,
             provider_id=provider_id,
@@ -5360,6 +5438,15 @@ class SignalStore:
                     raise KeyError(f"no connection registered with id={connection_id!r}")
             existing = conn.execute("SELECT created_at FROM sources WHERE id = ?", (source_id,)).fetchone()
             created_at = existing[0] if existing else now
+            duplicate_ids: list[str] = []
+            if url_or_reference:
+                duplicate_ids = [
+                    r[0]
+                    for r in conn.execute(
+                        "SELECT id FROM sources WHERE url_or_reference = ? AND enabled = 1 AND id != ?",
+                        (url_or_reference, source_id),
+                    ).fetchall()
+                ]
             conn.execute(
                 """INSERT INTO sources
                        (id, provider_id, platform, source_type, source_native_id, display_name, url_or_reference,
@@ -5410,7 +5497,27 @@ class SignalStore:
                     now,
                 ),
             )
-        return self.get_source(source_id)  # type: ignore[return-value]
+        result = self.get_source(source_id)
+        assert result is not None
+        if duplicate_ids:
+            # Two (or more) enabled `sources` rows can legitimately point at
+            # the identical `url_or_reference` -- e.g. one `research`-purpose
+            # RSS route and one `signal_candidate`-purpose route for the same
+            # feed, or a PRIMARY/RECONCILIATION pair (see `SourceRole`'s own
+            # docstring in app/provider_catalog.py). A hard uniqueness
+            # constraint would reject that legitimate case, so this is a
+            # non-blocking, surfaced warning -- same "detect and report,
+            # don't silently allow nor silently reject" convention as
+            # `looks_like_raw_credential` (app/connections.py), applied here
+            # as a warning rather than that helper's hard rejection because,
+            # unlike a pasted raw credential, a duplicate feed_url sometimes
+            # IS the operator's deliberate intent.
+            result["duplicate_url_warning"] = (
+                f"url_or_reference {url_or_reference!r} is already registered on enabled source(s) "
+                f"{sorted(duplicate_ids)!r} -- if unintentional, two sources polling the same feed can "
+                "each independently emit a signal for the same real-world item."
+            )
+        return result
 
     def get_source(self, source_id: str) -> dict | None:
         with self._connect() as conn:

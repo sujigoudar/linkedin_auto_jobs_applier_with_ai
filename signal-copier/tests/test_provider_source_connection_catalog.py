@@ -204,6 +204,86 @@ def test_register_get_list_source_requires_existing_provider_and_connection(stor
         store.update_source_health("nope", "healthy")
 
 
+def test_register_source_warns_on_duplicate_feed_url_but_still_registers(store):
+    """Fix (Track 33): two `sources` rows registered against the identical
+    `url_or_reference` (e.g. an RSS feed_url) are NOT silently allowed to
+    proceed invisibly -- the second registration's returned dict carries a
+    `duplicate_url_warning` naming the earlier enabled source(s) sharing
+    that URL. This is a soft, surfaced warning, not a hard rejection --
+    see `register_source`'s own docstring for why (a `research`-purpose
+    route and a `signal_candidate`-purpose route legitimately sharing one
+    feed is a real, intentional use case)."""
+    store.register_provider(provider_id="acme", display_name="Acme")
+
+    first = store.register_source(
+        source_id="acme-rss-research",
+        provider_id="acme",
+        platform="rss",
+        url_or_reference="https://acme.example.com/feed.xml",
+        role="PRIMARY",
+    )
+    assert "duplicate_url_warning" not in first
+
+    second = store.register_source(
+        source_id="acme-rss-candidate",
+        provider_id="acme",
+        platform="rss",
+        url_or_reference="https://acme.example.com/feed.xml",
+        role="SECONDARY",
+    )
+    assert "duplicate_url_warning" in second
+    assert "acme-rss-research" in second["duplicate_url_warning"]
+    assert "https://acme.example.com/feed.xml" in second["duplicate_url_warning"]
+
+    # The duplicate is still registered -- a warning, not a rejection.
+    assert store.get_source("acme-rss-candidate") is not None
+    assert {s["id"] for s in store.list_sources(provider_id="acme")} == {
+        "acme-rss-research",
+        "acme-rss-candidate",
+    }
+
+    # Re-registering (idempotent re-describe) the SAME source id against the
+    # SAME url is not "another" source and must not warn against itself.
+    redescribed = store.register_source(
+        source_id="acme-rss-research",
+        provider_id="acme",
+        platform="rss",
+        url_or_reference="https://acme.example.com/feed.xml",
+        role="PRIMARY",
+        display_name="renamed",
+    )
+    assert "duplicate_url_warning" in redescribed  # the OTHER source still shares this URL
+    assert "acme-rss-candidate" in redescribed["duplicate_url_warning"]
+
+
+def test_register_source_no_warning_for_distinct_feed_urls(store):
+    """The legitimate, common case -- two different sources with two
+    different feed_urls -- must register cleanly with no warning at all."""
+    store.register_provider(provider_id="acme", display_name="Acme")
+
+    first = store.register_source(
+        source_id="acme-rss-a",
+        provider_id="acme",
+        platform="rss",
+        url_or_reference="https://acme.example.com/feed-a.xml",
+    )
+    second = store.register_source(
+        source_id="acme-rss-b",
+        provider_id="acme",
+        platform="rss",
+        url_or_reference="https://acme.example.com/feed-b.xml",
+    )
+    assert "duplicate_url_warning" not in first
+    assert "duplicate_url_warning" not in second
+
+    # A source with no url_or_reference at all (e.g. telegram) never
+    # triggers duplicate detection, even against another NULL one.
+    third = store.register_source(source_id="acme-telegram-1", provider_id="acme", platform="telegram")
+    fourth = store.register_source(source_id="acme-telegram-2", provider_id="acme", platform="telegram")
+    assert "duplicate_url_warning" not in third
+    assert "duplicate_url_warning" not in fourth
+
+
 def test_one_provider_many_sources_across_many_connections(store):
     """The single most important structural change in this track: one
     provider, N sources, each with its own role, across N connections."""

@@ -135,6 +135,54 @@ def test_save_order_result_with_export_envelope_commits_both_in_one_transaction(
     assert len(store.list_undelivered_export_events()) == 1
 
 
+# --- Track 33: list_export_events/get_export_event (the operator-facing
+# read surface GET /export-events builds on) ---------------------------
+
+
+def test_list_export_events_returns_real_rows_newest_first(store):
+    store.append_export_event(_execution_envelope(event_id="evt-1", export_sequence=0))
+    store.append_export_event(_execution_envelope(event_id="evt-2", export_sequence=1))
+    store.append_export_event(_execution_envelope(event_id="evt-3", export_sequence=2))
+
+    listed = store.list_export_events()
+    assert [e["event_id"] for e in listed] == ["evt-3", "evt-2", "evt-1"]
+    assert listed[0]["source_stream"] == "signal-copier:acct1"
+    assert listed[0]["event_type"] == "execution_applied"
+    assert listed[0]["delivered_at"] is None
+    assert listed[0]["payload"]["broker_order_id"] == "paper-1"
+
+
+def test_list_export_events_respects_limit(store):
+    for i in range(5):
+        store.append_export_event(_execution_envelope(event_id=f"evt-{i}", export_sequence=i))
+    assert len(store.list_export_events(limit=2)) == 2
+
+
+def test_list_export_events_filters_by_source_stream_and_delivered(store):
+    store.append_export_event(
+        _execution_envelope(event_id="evt-acct1", export_sequence=0, source_stream="signal-copier:acct1")
+    )
+    store.append_export_event(
+        _execution_envelope(event_id="evt-acct2", export_sequence=0, source_stream="signal-copier:acct2")
+    )
+    store.mark_export_events_delivered(["evt-acct1"])
+
+    assert [e["event_id"] for e in store.list_export_events(source_stream="signal-copier:acct2")] == ["evt-acct2"]
+    assert [e["event_id"] for e in store.list_export_events(delivered=True)] == ["evt-acct1"]
+    assert [e["event_id"] for e in store.list_export_events(delivered=False)] == ["evt-acct2"]
+    assert {e["event_id"] for e in store.list_export_events(delivered=None)} == {"evt-acct1", "evt-acct2"}
+
+
+def test_get_export_event_by_id_and_unknown_id_is_none(store):
+    store.append_export_event(_execution_envelope(event_id="evt-1", export_sequence=0))
+    found = store.get_export_event("evt-1")
+    assert found is not None
+    assert found["event_id"] == "evt-1"
+    assert found["payload"]["broker_order_id"] == "paper-1"
+
+    assert store.get_export_event("does-not-exist") is None
+
+
 def test_a_failed_order_insert_leaves_no_orphaned_export_event(store):
     """The load-bearing property S6 actually asks for: if the order half
     of the same-transaction write fails, the outbox half must not survive
