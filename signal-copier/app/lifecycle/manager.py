@@ -151,6 +151,54 @@ def _compute_reduction_plan(
     )
 
 
+@dataclass
+class _ClosedExitRecord:
+    """TRK-27: recorded once, the instant a managed lifecycle's exit makes
+    it `closed` (see `_apply_exit_fill`) — the identity of the exact "exit
+    episode" that just finished, so a genuinely duplicate exit request for
+    the SAME real-world event (a provider re-sending the same EXIT through
+    a second collector/transport, with a different channel_id/message_id,
+    arriving AFTER the first exit already fully resolved — see the audit
+    finding this closes, docs/adr/0010-managed-exit-duplicate-episode-guard.md)
+    can be recognized and logged instead of silently treated as a
+    brand-new request against a position that's already flat.
+
+    `entry_signal_id` is this episode's stable identity — the SAME value
+    `app/engine.py`'s Track 18 ownership gate already uses as "which
+    provider/episode owns this lifecycle" (see `PositionPlan.
+    entry_signal_id`'s own docstring in app/lifecycle/models.py) — reused
+    here rather than inventing a parallel identity concept, per this
+    codebase's existing convention (see `app/signal_correlation.py` /
+    `get_provider_position_ownership` for the sibling pattern on the entry
+    side). `closed_at` bounds how long this record is honored — see
+    `request_exit`'s own duplicate check and
+    `config.MANAGED_EXIT_DUPLICATE_WINDOW_SECONDS`.
+
+    Scope — read before assuming this covers more than it does: this is
+    an IN-MEMORY, per-process record. It does NOT survive a process
+    restart (consistent with this module's own already-documented "no
+    startup reconciliation" gap — see this module's docstring and
+    docs/design/POSITION_LIFECYCLE.md's "Documented gap" section: a
+    duplicate exit arriving across a restart, within the window, is not
+    caught). It also does NOT, and is not meant to, catch a duplicate
+    that arrives after a NEW position has already been opened for the
+    same (account_id, symbol): a real re-entry replaces this episode's
+    lifecycle in `_lifecycles` before the duplicate arrives, and
+    `request_exit`'s duplicate check only ever fires on the "lifecycle is
+    None or lifecycle.closed" branch — a live, re-entered lifecycle is
+    processed completely normally (never suppressed). Seeing and closing
+    that NEW, genuinely different position when its own real exit comes
+    in is the correct behavior, not a bug this guard is meant to catch;
+    see the regression tests this track added for both the positive
+    (duplicate recognized) and negative (real second exit after a real
+    re-entry NOT suppressed) cases.
+    """
+
+    entry_signal_id: str
+    closed_at: datetime
+    reason: str
+
+
 def _compute_trailing_candidate(
     trailing: TrailingPolicy, current_desired_price: float | None, side: Side, price: float
 ) -> tuple[float, bool]:
@@ -177,6 +225,12 @@ class PositionLifecycleManager:
         self.arbiter = arbiter or CloseArbiter()
         self.store = store  # app.db.SignalStore, optional — enables crash-resumable persistence
         self._lifecycles: dict[tuple[str, str], PositionLifecycle] = {}
+        # TRK-27: the last resolved "exit episode" per (account_id, symbol)
+        # — see `_ClosedExitRecord`'s own docstring for exactly what this
+        # is, its documented scope, and the duplicate-exit audit finding it
+        # closes. In-memory only, by design — see that docstring's "Scope"
+        # section.
+        self._last_closed_exit: dict[tuple[str, str], _ClosedExitRecord] = {}
         # Serializes the ENTIRE fill-application decision in resolve_pending_entry
         # (read the last-applied checkpoint, compute the new delta, apply it) per
         # (account_id, symbol) -- separate from `self.arbiter`'s lock, which only
@@ -214,6 +268,69 @@ class PositionLifecycleManager:
         """Every managed-lifecycle position not yet closed — for monitoring
         (see app/main.py's `/positions`), not for mutation."""
         return [lifecycle for lifecycle in self._lifecycles.values() if not lifecycle.closed]
+
+    def _record_closed_exit_episode(
+        self, account: DestinationAccount, symbol: str, lifecycle: PositionLifecycle, *, reason: str
+    ) -> None:
+        """TRK-27: called once from `_apply_exit_fill`, only the instant
+        `lifecycle.closed` just became True — see `_ClosedExitRecord`'s own
+        docstring for what this is for and its documented scope."""
+        self._last_closed_exit[(account.account_id, symbol)] = _ClosedExitRecord(
+            entry_signal_id=lifecycle.plan.entry_signal_id,
+            closed_at=datetime.now(timezone.utc),
+            reason=reason,
+        )
+
+    def check_duplicate_exit(self, account: DestinationAccount, symbol: str) -> OrderResult | None:
+        """TRK-27: called only from `request_exit`'s "no active lifecycle"
+        branch (`lifecycle is None or lifecycle.closed`) — see that call
+        site and `_ClosedExitRecord`'s own docstring for exactly what this
+        covers and does not. Returns `None` (the caller's generic "no open
+        position to close" rejection applies, unchanged) unless a real
+        closed-exit record exists for this (account_id, symbol) AND it's
+        still within `config.MANAGED_EXIT_DUPLICATE_WINDOW_SECONDS` of that
+        exit's own resolution.
+
+        Deliberately still returns REJECTED — never a fabricated FILLED or
+        a replayed nonzero quantity. `_handle_managed_close`'s own
+        classification (app/engine.py) already treats REJECTED as "nothing
+        applied, nothing outstanding," which is the true, honest state
+        here; reporting FILLED with the original exit's quantity instead
+        would double-count that same execution in every `orders`-table
+        consumer (app/economics.py, app/provider_value.py,
+        app/trade_episode.py) — exactly the failure TR-EPISODE-01 already
+        guards against elsewhere in this module (see
+        `_SELF_PERSISTED_EXIT_KINDS`'s own docstring). The only change from
+        the generic rejection is the message (clearly identifies this as a
+        recognized duplicate, not a bare "no position" error) and an
+        INFO-level log record — the honest way to satisfy "log/record it"
+        without claiming a success this call never produced."""
+        record = self._last_closed_exit.get((account.account_id, symbol))
+        if record is None:
+            return None
+        age_seconds = (datetime.now(timezone.utc) - record.closed_at).total_seconds()
+        if age_seconds < 0 or age_seconds > config.MANAGED_EXIT_DUPLICATE_WINDOW_SECONDS:
+            return None
+        logger.info(
+            "TRK-27: duplicate managed-exit request recognized for account=%s symbol=%s -- this "
+            "position's exit episode (entry_signal_id=%s) already resolved %.1fs ago (reason=%r); "
+            "submitting no new broker order",
+            account.account_id,
+            symbol,
+            record.entry_signal_id,
+            age_seconds,
+            record.reason,
+        )
+        return OrderResult(
+            account_id=account.account_id,
+            status=OrderStatus.REJECTED,
+            signal_id="",
+            message=(
+                "duplicate exit recognized: this position was already fully closed "
+                f"{age_seconds:.1f}s ago (reason={record.reason!r}); no new broker order submitted "
+                "(see TRK-27)"
+            ),
+        )
 
     async def retry_unprotected_positions(self) -> int:
         """Independent of any new fill increment (PRO-04): re-attempt
@@ -1054,6 +1171,15 @@ class PositionLifecycleManager:
         async with self.arbiter.transition(account.account_id, symbol) as tx:
             lifecycle = self._lifecycles.get((account.account_id, symbol))
             if lifecycle is None or lifecycle.closed:
+                # TRK-27: before falling through to the generic rejection,
+                # check whether this is a genuine duplicate of an exit that
+                # already resolved for this exact (account_id, symbol) —
+                # see `check_duplicate_exit`'s own docstring for the
+                # exact, narrow scope this covers (and, just as
+                # importantly, does NOT cover).
+                duplicate = self.check_duplicate_exit(account, symbol)
+                if duplicate is not None:
+                    return duplicate
                 return OrderResult(account_id=account.account_id, status=OrderStatus.REJECTED, signal_id="", message="no active lifecycle for this position")
             if tx.is_halted:
                 return OrderResult(account_id=account.account_id, status=OrderStatus.REJECTED, signal_id="", message=f"halted: {tx.halt_reason}")
@@ -1365,6 +1491,10 @@ class PositionLifecycleManager:
         `_SELF_PERSISTED_EXIT_KINDS`."""
         if lifecycle.closed:
             self._persist_closed_excursion(lifecycle, account, symbol)
+            # TRK-27: record this exit episode's identity the instant it
+            # actually closes -- see `_ClosedExitRecord`'s own docstring and
+            # `request_exit`'s duplicate-request check for what this is for.
+            self._record_closed_exit_episode(account, symbol, lifecycle, reason=reason or exit_kind)
         if self.store is not None and filled_quantity > 0:
             state = None if lifecycle.closed else _lifecycle_to_state(
                 lifecycle, self.arbiter.snapshot(account.account_id, symbol)
@@ -1497,8 +1627,16 @@ class PositionLifecycleManager:
         # exit's own real parameters, not a value a genuine external retry
         # would reliably reproduce; `CloseArbiter`'s own `pending_exit`
         # check (see `request_exit`, just above this call) is what
-        # actually prevents a concurrent duplicate exit for the same
-        # position today. `command_type` distinguishes a dashboard-driven
+        # actually prevents a CONCURRENT duplicate exit for the same
+        # position today. TRK-27: a duplicate arriving AFTER the first
+        # exit has already fully resolved (so `pending_exit` is no longer
+        # in flight, and the replay-by-signal-id guard in app/engine.py's
+        # `_handle_signal` doesn't catch it either, e.g. a genuinely
+        # duplicate EXIT with a different channel_id/message_id) is instead
+        # caught one level up, in `request_exit`'s own "no active lifecycle"
+        # branch — see `check_duplicate_exit`/`_ClosedExitRecord`'s
+        # docstrings for that mechanism and its explicitly documented
+        # scope. `command_type` distinguishes a dashboard-driven
         # flatten from every other exit reason (see app/engine.py's
         # `close_position`, the only caller that passes a "flatten"-tagged
         # `reason`).

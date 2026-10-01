@@ -230,3 +230,99 @@ def test_ccxt_broker_class_itself_has_real_feedback_channel_for_the_gate():
     pytest.importorskip("ccxt")  # optional dependency -- not installed in CI (see requirements.txt)
     broker = CCXTBroker()
     assert broker.has_account_order_position_feedback is True
+
+
+# --- TRK-27 (Finding 2): a route_key can't honestly carry two product_types ---
+#
+# The live-routing gate (app/engine.py's `_UNDECLARED_ROUTE_PRODUCT_TYPE`)
+# identifies a route by (adapter_type, route_key, asset_class) and always
+# checks one fixed product_type -- it has no way to tell apart two real
+# products sharing one account_id/route_key (e.g. spot vs perpetual on the
+# SAME account). `SignalStore.record_route_qualification` now refuses to
+# let an operator record qualification history that way.
+
+
+def test_recording_a_second_product_type_under_the_same_route_key_is_rejected(store):
+    """The documented bad case: an operator tries to track two distinct
+    products (spot and perpetual) under ONE route_key, instead of this
+    codebase's own supported convention of a separate route_key per
+    product (see `test_ccxt_spot_and_perpetual_routes_are_fully_independent`
+    just above)."""
+    store.record_route_qualification(
+        adapter_type="ccxt",
+        route_key="ccxt_binance_main",
+        asset_class="crypto",
+        product_type="spot",
+        state="implemented",
+        supports_feedback=True,
+        recorded_by="owner",
+    )
+
+    with pytest.raises(QualificationError, match="already has qualification history recorded under product_type"):
+        store.record_route_qualification(
+            adapter_type="ccxt",
+            route_key="ccxt_binance_main",
+            asset_class="crypto",
+            product_type="perpetual",
+            state="implemented",
+            supports_feedback=True,
+            recorded_by="owner",
+        )
+
+    # The rejected attempt recorded nothing -- the route's history still
+    # only shows the original "spot" product_type.
+    routes = store.list_route_qualifications(adapter_type="ccxt", route_key="ccxt_binance_main")
+    assert len(routes) == 1
+    assert routes[0]["product_type"] == "spot"
+
+
+def test_re_recording_the_same_product_type_for_a_route_key_still_works(store):
+    """The safeguard must not be so broad it blocks the ordinary,
+    already-supported case: progressing the SAME product_type's own ladder
+    for its own route_key."""
+    route = dict(adapter_type="ccxt", route_key="ccxt_binance_main", asset_class="crypto", product_type="spot")
+    store.record_route_qualification(**route, state="implemented", supports_feedback=True, recorded_by="owner")
+    result = store.record_route_qualification(**route, state="configured", supports_feedback=True, recorded_by="owner")
+    assert result["state"] == "configured"
+
+
+def test_separate_account_ids_per_product_is_the_normal_unaffected_case(store):
+    """The normal, already-supported configuration (separate route_keys
+    per product) must never trigger this safeguard -- mirrors
+    `test_ccxt_spot_and_perpetual_routes_are_fully_independent` but asserts
+    specifically that NEITHER recording raises."""
+    spot = dict(adapter_type="ccxt", route_key="ccxt_binance_spot", asset_class="crypto", product_type="spot")
+    perp = dict(adapter_type="ccxt", route_key="ccxt_binance_perp", asset_class="crypto", product_type="perpetual")
+
+    store.record_route_qualification(**spot, state="implemented", supports_feedback=True, recorded_by="owner")
+    store.record_route_qualification(**perp, state="implemented", supports_feedback=True, recorded_by="owner")
+
+    routes = {r["route_key"]: r for r in store.list_route_qualifications(adapter_type="ccxt")}
+    assert routes["ccxt_binance_spot"]["product_type"] == "spot"
+    assert routes["ccxt_binance_perp"]["product_type"] == "perpetual"
+
+
+def test_different_asset_classes_under_one_route_key_are_unaffected(store):
+    """A route_key legitimately qualified for more than one asset_class
+    (e.g. an account that trades both equities and options) is a different,
+    unrelated configuration -- the safeguard is scoped to (adapter_type,
+    route_key, asset_class), not route_key alone, so this must not trip it."""
+    store.record_route_qualification(
+        adapter_type="alpaca",
+        route_key="alpaca_main",
+        asset_class="equity",
+        product_type="default",
+        state="implemented",
+        supports_feedback=True,
+        recorded_by="owner",
+    )
+    result = store.record_route_qualification(
+        adapter_type="alpaca",
+        route_key="alpaca_main",
+        asset_class="crypto",
+        product_type="default",
+        state="implemented",
+        supports_feedback=True,
+        recorded_by="owner",
+    )
+    assert result["state"] == "implemented"

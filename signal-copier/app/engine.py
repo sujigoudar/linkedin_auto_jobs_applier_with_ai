@@ -198,7 +198,14 @@ _RECONCILIATION_REL_TOLERANCE = 1e-6
 #: specificity that doesn't exist in this schema. FLAGGED FINDING: if an
 #: operator ever needs two distinct products sharing one account_id, this
 #: schema (and this constant) will need a real per-account product_type
-#: field added; nothing here can honestly support that today.
+#: field added; nothing here can honestly support that today. TRK-27:
+#: since nothing here CAN honor two product_types sharing one route_key,
+#: `SignalStore.record_route_qualification` (app/db.py) now refuses to
+#: even let an operator record qualification history that way -- see its
+#: own docstring's point 4 -- so this schema gap can no longer be
+#: silently misconfigured into "an unqualified product riding on a
+#: qualified account's route-qualification state"; it is a loud rejection
+#: at write time instead.
 _UNDECLARED_ROUTE_PRODUCT_TYPE = "default"
 
 
@@ -2748,6 +2755,36 @@ class SignalCopierEngine:
         # own pre-submission rejections use.
         lifecycle = self.lifecycle_manager.get_lifecycle(account.account_id, symbol)
         if lifecycle is None or lifecycle.closed:
+            # TRK-27: before falling through to the generic "nothing to
+            # close" rejection, check whether this CLOSE is a genuine
+            # duplicate of an exit that already resolved for this exact
+            # (account_id, symbol) -- e.g. a provider re-sending the same
+            # real-world exit through a second collector/transport, with a
+            # different channel_id/message_id, arriving after the first
+            # exit already fully resolved. This early-return branch is
+            # exactly where that case used to be silently indistinguishable
+            # from a bare "no open position" rejection -- see
+            # `PositionLifecycleManager.check_duplicate_exit`'s own
+            # docstring for the exact mechanism and its documented scope
+            # (this is a lower-level mirror of the equivalent check inside
+            # `request_exit` itself, needed here too since this method
+            # returns before ever calling `request_exit` in this branch).
+            duplicate = self.lifecycle_manager.check_duplicate_exit(account, symbol)
+            if duplicate is not None:
+                # `check_duplicate_exit` is also called from inside
+                # `request_exit` itself (a manager-internal call site with
+                # no real `Signal` of its own to attribute to -- see its
+                # sibling rejections there), so it always returns
+                # `signal_id=""`. THIS call site's result DOES get
+                # persisted via `save_order_result` (see `_handle_signal`'s
+                # managed-lifecycle branch), whose `orders.signal_id` is a
+                # real foreign key into `signals` (DB-01) -- an empty
+                # string here would fail that constraint, since (unlike
+                # `request_exit`'s other internal rejections) this result
+                # is not a pure in-memory return value. Re-attribute it to
+                # THIS real CLOSE signal's own id, already persisted by
+                # `_handle_signal` before this method ever runs.
+                return _ManagedOrderOutcome(replace(duplicate, signal_id=signal.id), None, None)
             return _ManagedOrderOutcome(
                 OrderResult(
                     account_id=account.account_id,

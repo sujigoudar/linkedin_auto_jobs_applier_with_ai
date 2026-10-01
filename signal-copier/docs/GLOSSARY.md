@@ -191,3 +191,17 @@ qualification (`app/qualification.py`) certifies a broker/exchange
 *route*; management recipe (`app/models.py`'s `ManagementRecipe`)
 declares which safety *product* a specific *account* is opted into.
 Neither implies the other.
+
+### Exit episode (TRK-27, ADR-0010)
+
+One managed lifecycle's entry-to-close lifetime for a given
+`(account_id, symbol)` — identified by its `PositionPlan.entry_signal_id`
+(the same identity Track 18's provider-ownership gate uses). A
+`_ClosedExitRecord` (`app/lifecycle/manager.py`) is kept, in-memory, for
+the most recently finished episode of each `(account_id, symbol)`, so a
+genuinely duplicate exit request arriving soon after that episode
+resolved can be recognized and logged rather than silently re-processed.
+Explicitly bounded: it does not survive a restart, and it never
+suppresses a real exit for a NEW episode after a real re-entry — see
+`PositionLifecycleManager.check_duplicate_exit`'s own docstring and
+ADR-0010 for the full scope.

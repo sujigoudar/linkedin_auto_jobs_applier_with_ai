@@ -542,6 +542,15 @@ different path instead by setting `managed_lifecycle: true` in
   stop -> confirm the cancel -> submit the exit -> observe what actually
   filled -> resize a replacement stop to the true remainder) so a partial
   fill on a target never leaves the stop covering more than what's left.
+  (TRK-27) `CloseArbiter`'s own `pending_exit` guard only protects
+  against a *concurrent* duplicate exit; a genuinely duplicate EXIT for
+  the same real-world event, delivered through a different
+  `channel_id`/`message_id`, arriving AFTER the first exit has already
+  resolved, is instead recognized by
+  `PositionLifecycleManager.check_duplicate_exit` (logged, REJECTED, no
+  new broker order — never a fabricated FILLED replay) — see
+  `docs/adr/0010-managed-exit-duplicate-episode-guard.md` for the exact
+  mechanism and its explicitly bounded scope.
 - **`app/engine.py`**'s `handle_signal` routes a `managed_lifecycle`
   account's BUY/SELL signals into a `PositionPlan` (`stop_loss` becomes
   `initial_stop`; a `take_profit` becomes one logical SELL target for the

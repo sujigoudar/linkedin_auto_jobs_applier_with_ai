@@ -4618,6 +4618,28 @@ class SignalStore:
            `supports_feedback` defaults to nothing -- callers must pass it
            explicitly, so an unknown/unverified adapter fails closed
            rather than silently being allowed through.
+        4. TRK-27 (Finding 2): `route_key` already has qualification
+           history recorded under a DIFFERENT `product_type` for this same
+           (adapter_type, route_key, asset_class) -- e.g. "spot" already
+           recorded, and this call asks to also record "perpetual" under
+           the identical route_key. See `app/engine.py`'s
+           `_UNDECLARED_ROUTE_PRODUCT_TYPE` comment for the gap this
+           closes: the live-routing gate identifies a route purely by
+           (adapter_type, route_key, asset_class) and always checks a
+           single, fixed `product_type` ("default") -- it has no way to
+           tell which of two real products sharing one route_key a given
+           signal is actually for. Letting an operator record qualification
+           history under two different product_types for the same
+           route_key would silently let an unqualified product ride on a
+           qualified account's route-qualification state (whichever
+           product_type the live gate actually checks is the only one that
+           was ever real protection; the other was never enforced at all).
+           This codebase's own existing, supported convention is a
+           DISTINCT route_key per product (see
+           app/qualification.py's module docstring's ccxt_binance_spot /
+           ccxt_binance_perp example) -- fails closed here rather than
+           silently accepting a configuration this system has no way to
+           honor correctly.
 
         Re-recording a state that's already achieved for this route is an
         idempotent update (new recorded_at/recorded_by/notes on the same
@@ -4635,6 +4657,28 @@ class SignalStore:
         when = (recorded_at or datetime.now(timezone.utc)).isoformat()
 
         with self._connect() as conn:
+            existing_product_types = {
+                row[0]
+                for row in conn.execute(
+                    "SELECT DISTINCT product_type FROM route_qualifications "
+                    "WHERE adapter_type = ? AND route_key = ? AND asset_class = ?",
+                    (adapter_type, route_key, asset_class),
+                ).fetchall()
+            }
+            if existing_product_types and product_type not in existing_product_types:
+                raise QualificationError(
+                    f"route ({adapter_type}/{route_key}/{asset_class}) already has qualification "
+                    f"history recorded under product_type(s) {sorted(existing_product_types)} -- "
+                    f"refusing to also record a DIFFERENT product_type ('{product_type}') for the "
+                    "SAME route_key: the live-routing gate (app/engine.py) identifies a route by "
+                    "(adapter_type, route_key, asset_class) and always checks one fixed product_type, "
+                    "so two product_types sharing one route_key can never be correctly distinguished "
+                    "there -- whichever one isn't actually checked would silently ride on the other's "
+                    "qualification state. Use a distinct route_key per product instead (see "
+                    "app/qualification.py's module docstring's ccxt_binance_spot/ccxt_binance_perp "
+                    "convention)."
+                )
+
             achieved = self._achieved_qualification_states(
                 conn, adapter_type=adapter_type, route_key=route_key, asset_class=asset_class, product_type=product_type
             )
