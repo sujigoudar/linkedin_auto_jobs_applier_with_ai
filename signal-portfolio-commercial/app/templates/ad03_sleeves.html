@@ -5,7 +5,7 @@
 <p class="help">Tenant: <strong>{{ tenant_id }}</strong> &middot; Role: <strong>{{ role }}</strong></p>
 
 {% if error %}
-<div class="conflict">{{ error }}</div>
+<div class="conflict" role="alert" aria-live="assertive">{{ error }}</div>
 {% endif %}
 
 <div class="panel">

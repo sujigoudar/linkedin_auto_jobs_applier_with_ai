@@ -28,7 +28,7 @@
   <main>
     <h1>Service eligibility onboarding</h1>
 
-    {% if error %}<div class="conflict">{{ error }}</div>{% endif %}
+    {% if error %}<div class="conflict" role="alert" aria-live="assertive">{{ error }}</div>{% endif %}
 
     {% if not assessment %}
     <div class="empty-state">

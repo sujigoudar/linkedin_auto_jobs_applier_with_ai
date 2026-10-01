@@ -8,7 +8,7 @@
 <p><a href="/ops/research/new">&larr; Portfolio Lab builder</a></p>
 
 {% if error %}
-<div class="conflict">{{ error }}</div>
+<div class="conflict" role="alert" aria-live="assertive">{{ error }}</div>
 {% endif %}
 
 {% if created_portfolio_version_id %}

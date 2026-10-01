@@ -4,7 +4,7 @@
 <p><a href="/app/connections">&larr; Platform connections</a></p>
 <h1>Connection wizard</h1>
 
-{% if error %}<div class="conflict">{{ error }}</div>{% endif %}
+{% if error %}<div class="conflict" role="alert" aria-live="assertive">{{ error }}</div>{% endif %}
 
 <div class="panel">
   <h2>Platform and mode</h2>

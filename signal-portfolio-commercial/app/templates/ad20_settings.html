@@ -3,7 +3,7 @@
 {% block content %}
 <h1>Workspace customization and configuration</h1>
 
-{% if error %}<div class="conflict">{{ error }}</div>{% endif %}
+{% if error %}<div class="conflict" role="alert" aria-live="assertive">{{ error }}</div>{% endif %}
 
 <div class="panel">
   <h2>Current shared default</h2>

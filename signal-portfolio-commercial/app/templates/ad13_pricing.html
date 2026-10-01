@@ -3,7 +3,7 @@
 {% block content %}
 <h1>Pricing, entitlements and billing operations</h1>
 
-{% if error %}<div class="conflict">{{ error }}</div>{% endif %}
+{% if error %}<div class="conflict" role="alert" aria-live="assertive">{{ error }}</div>{% endif %}
 
 <div class="panel">
   <h2>Price catalog</h2>

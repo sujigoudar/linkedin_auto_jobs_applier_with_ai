@@ -3,7 +3,12 @@
 {% block content %}
 <h1>Copy setup and mandate wizard</h1>
 
-{% if error %}<div class="conflict">{{ error }}</div>{% endif %}
+<div class="panel">
+  <h2>Risk and fee notice</h2>
+  <p>Copy trading involves risk of loss. Trades mirrored into your connected account can lose money, up to and including the full allocation amount you set below -- an allocation amount, per-trade risk limit, or loss limit is a constraint on exposure, not a guarantee against loss. Past performance, where shown elsewhere in this app, reflects the exact history basis disclosed on each product page -- never a hypothetical or extrapolated result. Review the mandate document version you select below before authorizing it.</p>
+</div>
+
+{% if error %}<div class="conflict" role="alert" aria-live="assertive">{{ error }}</div>{% endif %}
 
 {% if not selections or not connections %}
 <div class="panel">
