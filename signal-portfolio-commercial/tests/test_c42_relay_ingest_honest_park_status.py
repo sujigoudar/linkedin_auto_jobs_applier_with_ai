@@ -10,10 +10,13 @@ which this track also updated).
 Covers the three distinct ways an event can be reported back:
 `"applied"` (a real ledger projection happened), `"parked"` with a
 NAMED reason (the processing logic itself decided not to apply it --
-here, a `SourceEventKind.TARGET_UPDATE`, the ledger-model-has-no-slot
-case, and an `EventType` with no implemented payload at all), and
-`"parked"` with the UNNAMED sequence-gap reason (covered by Track 40's
-own test, not duplicated here)."""
+here, a `SourceEventKind.EDIT` with no resolvable target (Track 35's
+own `PARKED_REASON_EDIT_WITHOUT_RESOLVABLE_TARGET`; `TARGET_UPDATE`/
+`STOP_UPDATE` are no longer park cases at all as of Track 41 -- see
+their own real-representation coverage in test_integration_inbox.py),
+and an `EventType` with no implemented payload at all), and `"parked"`
+with the UNNAMED sequence-gap reason (covered by Track 40's own test,
+not duplicated here)."""
 from __future__ import annotations
 
 import json
@@ -42,7 +45,7 @@ from app.main import create_app
 from app.models.integration_inbox import InboxEvent
 from app.models.tenancy import Tenant
 from app.services.integration_inbox import (
-    PARKED_REASON_SOURCE_EVENT_KIND_NOT_LEDGER_REPRESENTABLE,
+    PARKED_REASON_EDIT_WITHOUT_RESOLVABLE_TARGET,
     PARKED_REASON_UNIMPLEMENTED_EVENT_TYPE,
     register_export_stream,
 )
@@ -193,26 +196,26 @@ def test_genuinely_applied_event_still_reports_applied(client, db_session):
     assert inbox_event.applied_at is not None
 
 
-def test_structurally_unrepresentable_source_event_kind_reports_parked_with_real_reason(client, db_session):
-    """A `SourceEventKind.TARGET_UPDATE` -- the ledger model has no
-    stop-loss/target columns at all, so this NEVER applies (Track 35's
-    own `PARKED_REASON_SOURCE_EVENT_KIND_NOT_LEDGER_REPRESENTABLE`).
-    Before Track 42, this reported `"applied"` even though `applied_at`
-    stayed `None` -- a fabricated status for a structurally unparkable
-    event."""
+def test_unresolvable_edit_source_event_reports_parked_with_real_reason(client, db_session):
+    """A `SourceEventKind.EDIT` whose `source.original_source_event_id`
+    is unset -- this build can't even attempt to correlate it to the
+    receipt it's meant to revise, so it genuinely never applies (Track
+    35/41's own `PARKED_REASON_EDIT_WITHOUT_RESOLVABLE_TARGET`). Before
+    Track 42, this reported `"applied"` even though `applied_at` stayed
+    `None` -- a fabricated status for an honestly-parked event."""
     _seed_tenant_and_stream(db_session)
-    envelope = _source_event_envelope(event_id="evt-c42-target-update-1", kind="target_update")
+    envelope = _source_event_envelope(event_id="evt-c42-edit-no-target-1", kind="edit")
     response = _signed_post(client, json.dumps({"events": [envelope.model_dump_json()]}).encode())
     assert response.status_code == 200
     assert response.json()["results"] == [
         {
             "status": "parked",
-            "event_id": "evt-c42-target-update-1",
-            "parked_reason": f"{PARKED_REASON_SOURCE_EVENT_KIND_NOT_LEDGER_REPRESENTABLE}:target_update",
+            "event_id": "evt-c42-edit-no-target-1",
+            "parked_reason": f"{PARKED_REASON_EDIT_WITHOUT_RESOLVABLE_TARGET}:missing_original_source_event_id",
         }
     ]
 
-    inbox_event = db_session.get(InboxEvent, "evt-c42-target-update-1")
+    inbox_event = db_session.get(InboxEvent, "evt-c42-edit-no-target-1")
     assert inbox_event is not None
     assert inbox_event.applied_at is None
 
