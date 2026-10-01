@@ -17,6 +17,7 @@ import app.main as main_module
 from app.brokers.alpaca import AlpacaBroker
 from app.brokers.base import BrokerAdapter
 from app.brokers.ccxt_broker import CCXTBroker
+from app.brokers.paper import PaperBroker
 from app.db import SignalStore
 from app.models import AccountBalance, DestinationAccount, OrderResult, Signal
 
@@ -33,6 +34,63 @@ async def test_base_adapter_reports_no_balance_capability_by_default():
     broker = _NoopBroker()
     assert broker.has_balance_capability is False
     assert await broker.get_account_balance(DestinationAccount(account_id="a", broker="noop")) is None
+
+
+def test_broker_adapter_cannot_be_instantiated_without_place_order():
+    """`place_order` is `@abc.abstractmethod` -- a subclass that doesn't
+    implement it (or a bare `BrokerAdapter()`) must fail at instantiation,
+    not silently become usable with no real order-submission path."""
+    with pytest.raises(TypeError):
+        BrokerAdapter()  # type: ignore[abstract]
+
+
+@pytest.mark.asyncio
+async def test_base_adapter_cancel_order_defaults_to_false_not_true():
+    """`cancel_order`'s own docstring: "Return False if cancellation isn't
+    supported or confirmed -- the caller must not assume it worked." A
+    broker that doesn't override this must never report a cancel as
+    having succeeded."""
+    broker = _NoopBroker()
+    assert await broker.cancel_order(DestinationAccount(account_id="a", broker="noop"), "some-order-id") is False
+
+
+@pytest.mark.asyncio
+async def test_base_adapter_replace_stop_quantity_defaults_to_none():
+    broker = _NoopBroker()
+    result = await broker.replace_stop_quantity(
+        DestinationAccount(account_id="a", broker="noop"), "some-order-id", new_quantity=5.0
+    )
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_base_adapter_get_broker_position_defaults_to_none():
+    broker = _NoopBroker()
+    assert await broker.get_broker_position(DestinationAccount(account_id="a", broker="noop"), "AAPL") is None
+
+
+def test_base_adapter_capability_introspection_defaults_false_for_unoverridden_methods():
+    """`has_cancel_capability`/`has_replace_stop_capability`/
+    `has_position_readback_capability` compare the subclass's own method
+    against `BrokerAdapter`'s base no-op -- a broker that overrides none
+    of them must report every one of these as False, not True."""
+    broker = _NoopBroker()
+    assert broker.has_cancel_capability is False
+    assert broker.has_replace_stop_capability is False
+    assert broker.has_position_readback_capability is False
+
+
+def test_paper_broker_capability_introspection_is_true_for_its_real_overrides():
+    """PaperBroker is the reference implementation of every managed-
+    lifecycle capability (see app/brokers/paper.py's own docstring) --
+    each of these must report True, not fall back to the base class's
+    False/None defaults."""
+    broker = PaperBroker()
+    assert broker.has_cancel_capability is True
+    assert broker.has_replace_stop_capability is True
+    assert broker.has_position_readback_capability is True
+    assert broker.has_protective_stop_capability is True
+    assert broker.can_protect_a_managed_position() is True
 
 
 @pytest.mark.asyncio

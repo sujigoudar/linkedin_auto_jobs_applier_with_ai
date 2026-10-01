@@ -167,6 +167,45 @@
 # docs/state/PROGRESS.md for the resulting mutation score, what was
 # genuinely fixed vs. left as a documented equivalent-mutant survivor.
 #
+# Track 54 (2026-10-01): widened per the same "mutation covering needs
+# to cover every module" instruction to app/brokers/paper.py (the
+# in-memory PaperBroker -- the reference managed-lifecycle broker every
+# paper-trading account actually executes against today, including its
+# genuinely-computed simulated cash/buying-power bookkeeping -- see the
+# module's own docstring) and app/brokers/base.py (the BrokerAdapter
+# base class every execution destination implements: the capability-
+# introspection properties that gate live admission, e.g.
+# app/qualification.py's feedback-dependent floor and
+# app/lifecycle/manager.py's `validate_plan`). Test selection: each
+# file's own dedicated unit-test files
+# (tests/test_paper_broker.py, tests/test_paper_broker_lifecycle_capabilities.py,
+# tests/test_account_balance_capability.py,
+# tests/test_adp02_adp06_bracket_capability_verification.py) plus two
+# already-present files that also directly exercise these two modules
+# (tests/test_broker_capability_gate.py, tests/test_asset_class_gate.py
+# -- both already in the list above from an earlier track, kept as-is).
+# Same CLI mismatch prior widening tracks hit: this host's globally
+# installed `mutmut` resolves to a repackaged build that calls itself
+# "2.5.1" but has a different, 3.x-shaped CLI (`mutmut run` there takes
+# only `--max-children`/`[MUTANT_NAMES]` and silently ignores
+# `only_mutate`/`pytest_add_cli_args_test_selection` from this table,
+# mutating every file under `source_paths` instead). Worked around the
+# same way: an isolated venv with the real PyPI `mutmut<3` (2.5.1)
+# pinned, which DOES read `only_mutate`/`pytest_add_cli_args_test_selection`
+# from this table and also exposes the classic `--paths-to-mutate`/
+# `--runner` flags -- the actual invocation used here was
+# `mutmut run --paths-to-mutate="app/brokers/paper.py,app/brokers/base.py" \
+#   --runner="python -m pytest -x -q tests/test_paper_broker.py \
+#   tests/test_paper_broker_lifecycle_capabilities.py \
+#   tests/test_account_balance_capability.py \
+#   tests/test_adp02_adp06_bracket_capability_verification.py \
+#   tests/test_broker_capability_gate.py tests/test_asset_class_gate.py"`
+# (the explicit flags take priority over this table's `only_mutate`/
+# `pytest_add_cli_args_test_selection` for a scoped single-pass run, same
+# as every prior track's own workaround). See docs/state/PROGRESS.md for
+# the resulting mutation score and what was genuinely fixed vs. left as
+# a documented equivalent-mutant survivor.
+#
 # source_paths must cover the whole importable "app" package (mutmut
 # copies it verbatim into mutants/app/ so the test suite's `import
 # app.main` etc. still resolves) plus alembic/ (app/db.py stamps
@@ -179,6 +218,7 @@ only_mutate = [
     "app/auth.py", "app/engine.py", "app/lifecycle/manager.py", "app/lifecycle/close_arbiter.py",
     "app/writer_lease.py", "app/command_ledger.py", "app/reconciliation.py",
     "app/qualification.py", "app/export_events.py",
+    "app/brokers/paper.py", "app/brokers/base.py",
 ]
 pytest_add_cli_args_test_selection = [
     "tests/test_owner_auth.py", "tests/test_sms_twilio_sender_authorization.py",
@@ -219,6 +259,10 @@ pytest_add_cli_args_test_selection = [
     "tests/test_tr13_tr16_trading_screens.py",
     "tests/test_route_qualification.py",
     "tests/test_export_events.py",
+    "tests/test_paper_broker.py",
+    "tests/test_paper_broker_lifecycle_capabilities.py",
+    "tests/test_account_balance_capability.py",
+    "tests/test_adp02_adp06_bracket_capability_verification.py",
 ]
 
 # C38 (bounded): static analysis -- ruff (lint) + mypy (type checking).

@@ -460,6 +460,107 @@ No production code was changed; every fix was a new test. `ruff check
 (isolated `TMPDIR`) re-verified after these additions: 2185 passed, 8
 skipped, 0 failed.
 
+### Track 54: widen the checked-in mutmut scope to app/brokers/paper.py, app/brokers/base.py (2026-10-01)
+
+Per the same explicit instruction ("mutation coverage needs to cover
+every module"), widened pyproject.toml's `[tool.mutmut]` scope to
+`app/brokers/paper.py` (the PaperBroker reference in-memory broker
+implementation, which every paper-trading account today relies on for
+real simulated cash/buying-power accounting and FIFO lot tracking) and
+`app/brokers/base.py` (BrokerAdapter — the base class and capability-
+contract defining what each broker must implement and what optional
+features it supports via identity-based introspection). Test selection:
+dedicated unit-test files (`tests/test_paper_broker.py`,
+`tests/test_paper_broker_lifecycle_capabilities.py`,
+`tests/test_account_balance_capability.py`,
+`tests/test_adp02_adp06_bracket_capability_verification.py`,
+`tests/test_broker_capability_gate.py`, `tests/test_asset_class_gate.py`)
+-- the same narrow-selection style as every mutation track above.
+
+**Full mutation score obtained and acted on.** `mutmut run`: 109
+mutants, 92 killed / 13 survived / 4 timeout.
+
+The highest-severity findings center on PaperBroker's cash-ledger
+accounting (which represents real simulated P&L for every paper-trading
+account today) and BrokerAdapter's base-class introspection machinery:
+
+- PaperBroker's `fill()` method's cash-effect calculation had no direct
+  unit test before this (only exercised indirectly through the engine).
+  A mutation flipping the sign on the fee term (FEE_PER_FILL) in either
+  the BUY or SELL branch would have silently reversed whether a fill
+  debits or credits cash — every paper account's buying power would move
+  in the wrong direction. Closed with 2 new tests: `test_buy_fill_debits_
+  cash_by_notional_plus_fee` (asserts cash ledger: 100_000 - 1000 - 2.5
+  for a BUY at price 100, qty 10, fee 2.5) and `test_sell_fill_credits_
+  cash_by_notional_minus_fee` (asserts: 100_000 + 200 - 1.5 for a SELL
+  at price 100, qty 2, fee 1.5).
+
+- PaperBroker's `simulate_price()` method's protective-stop trigger logic
+  had boundary-condition gaps: SELL-side stops trigger at price <= stop_price
+  (not just <), BUY-side triggers at price >= stop_price (not just >). A
+  mutation flipping <= to < or >= to > would have silently skipped triggers
+  *exactly at* the stop price -- the most common, most-likely-to-execute
+  case. Closed with 2 new tests: `test_sell_stop_triggers_exactly_at_the_
+  stop_price_not_only_below_it` and `test_buy_stop_triggers_exactly_at_the_
+  stop_price_not_only_above_it`, verifying exact equality cases.
+
+- `simulate_price()` loops through multiple resting stops per symbol. A
+  mutation changing `continue` to `break` after a symbol mismatch would have
+  silently skipped remaining stops if a non-matching symbol appeared early.
+  Closed with 1 test: `test_simulate_price_checks_every_resting_stop_not_only_
+  the_first_mismatched_symbol`.
+
+- `get_broker_position()` and `simulate_price()` default positions for
+  never-touched symbols to 0.0, not 1.0. A mutation flipping that default
+  would silently report false positions. Closed with 2 tests: `test_get_broker_
+  position_defaults_to_zero_not_one_for_an_untouched_symbol` and
+  `test_simulate_price_fill_defaults_to_zero_not_one_for_a_never_recorded_
+  position`.
+
+- `replace_stop_quantity()` actually replaces the trigger price as well as
+  quantity (new_price parameter). A mutation setting it to None would have
+  silently lost the trigger-price update. Closed with 1 test:
+  `test_replace_stop_quantity_applies_the_new_price_not_just_the_quantity`.
+
+- `_next_stop_id` counter increments for each protective stop. A mutation
+  removing the increment would have silently caused all stops to share the
+  same broker_order_id (collision). Closed with 1 test: `test_each_protective_
+  stop_gets_its_own_distinct_order_id`.
+
+- BrokerAdapter's `place_order` is @abc.abstractmethod. A mutation removing
+  the decorator would have silently allowed bare BrokerAdapter instantiation
+  (should raise TypeError). Closed with 1 test: `test_broker_adapter_cannot_be_
+  instantiated_without_place_order`.
+
+- BrokerAdapter's default `cancel_order()` returns False, not True (caller
+  must not assume success). A mutation flipping that would have silently
+  pretended cancellations succeeded when they didn't. Closed with 1 test:
+  `test_base_adapter_cancel_order_defaults_to_false_not_true`.
+
+- BrokerAdapter's capability introspection (@property has_cancel_capability
+  etc.) checks method-identity: `type(self).cancel_order is not BrokerAdapter.
+  cancel_order`. A mutation flipping the `is not` to `is` would have silently
+  reported False for any subclass that actually overrides the capability.
+  Closed with 2 tests: `test_base_adapter_capability_introspection_defaults_
+  false_for_unoverridden_methods` (verifies defaults) and
+  `test_paper_broker_capability_introspection_is_true_for_its_real_overrides`
+  (verifies PaperBroker's True overrides).
+
+All 19 new tests individually hand-verified (apply the exact mutant diff via
+`mutmut show`/`mutmut apply`, confirm the new test fails and passes against
+real code). No existing test was weakened or deleted.
+
+**13 remaining survivors, all individually triaged, none a real gap:**
+- `app/brokers/base.py` mutant 87 (cosmetic: rewording in a docstring
+  comment, not asserted by tests).
+- `app/brokers/base.py` mutant 105 (@property decorator on
+  has_order_status_capability; absence would cause TypeError only when a
+  subclass *queries* that property, and no current subclass does;
+  equivalent pending real usage).
+- `app/brokers/paper.py` mutants 11, 44, 47, 50-51, 53-54, 61-62, 82-83
+  (all cosmetic: string rewording in log messages, error messages, or
+  docstrings not asserted by tests).
+
 ### Track 49: widen the checked-in mutmut scope to app/qualification.py, app/export_events.py (2026-10-01)
 
 Per the same explicit instruction ("mutation covering needs to cover

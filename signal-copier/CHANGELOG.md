@@ -7,6 +7,78 @@ does not yet cut versioned releases (see `docs/process/RELEASE.md`), so
 entries are grouped by theme and rough chronological wave instead of by
 version number. Newest wave first.
 
+## [Unreleased] — Track 54: widen mutation-testing scope to app/brokers/paper.py, app/brokers/base.py (2026-10-01)
+
+Per the same explicit instruction ("mutation coverage needs to cover
+every module"), widened pyproject.toml's `[tool.mutmut]` scope to
+`app/brokers/paper.py` (the PaperBroker reference in-memory broker
+implementation, which every paper-trading account today relies on for
+real simulated cash/buying-power accounting) and `app/brokers/base.py`
+(BrokerAdapter — the base class and capability-contract that defines
+what each broker must implement and what optional features it supports
+via identity-based introspection). Test selection: dedicated unit-test
+files (`tests/test_paper_broker.py`,
+`tests/test_paper_broker_lifecycle_capabilities.py`,
+`tests/test_account_balance_capability.py`,
+`tests/test_adp02_adp06_bracket_capability_verification.py`,
+`tests/test_broker_capability_gate.py`, `tests/test_asset_class_gate.py`).
+Full `mutmut run`: 109 mutants, 92 killed / 13 survived / 4 timeout — see
+pyproject.toml's own comment and docs/state/PROGRESS.md for the full
+breakdown.
+
+### Added
+- `tests/test_paper_broker.py`: 6 new direct unit tests for PaperBroker's
+  core cash tracking and order mechanics. Covers: name identity assertion
+  (`name=="paper"`), initial cash balance verification (STARTING_CASH
+  100_000.0 for both cash and buying_power), cash debit calculation for
+  BUY fills (notional + FEE_PER_FILL), cash credit calculation for SELL
+  fills (notional - FEE_PER_FILL), signal price None-case (zero_filled_price
+  without cash movement), and broker_order_id uniqueness via incrementing
+  counter.
+- `tests/test_paper_broker_lifecycle_capabilities.py`: 7 new tests for
+  PaperBroker's protective-stop (managed-lifecycle) implementation. Covers:
+  SELL-side boundary condition (price == stop_price triggers, not just
+  price < stop_price — catches >= to > mutation), BUY-side boundary
+  condition (price == stop_price triggers, not > alone — catches <= to <
+  mutation), symbol-mismatch handling (continue through unrelated stops,
+  don't break; would silently skip remaining stops), untouched-symbol
+  position readback default (0.0 not 1.0), position baseline for never-
+  filled symbols, replace_stop_quantity with new price actually changing
+  trigger level, and _next_stop_id counter uniqueness per stop.
+- `tests/test_account_balance_capability.py`: 6 new tests for BrokerAdapter
+  base class enforcement and capability introspection. Covers: place_order
+  abstract-method enforcement (TypeError on bare instantiation), default
+  cancel_order return (False not True — caller must not assume success),
+  default replace_stop_quantity return (None — unsupported), default
+  get_broker_position return (None), capability introspection defaults
+  (all has_*_capability properties False for unoverridden methods), and
+  PaperBroker capability overrides (all capability properties True, verified
+  via identity checks).
+
+Every new test was individually hand-verified to fail against its exact
+target mutant (hand-applying that mutant's diff via `mutmut show`/
+`mutmut apply` and re-running just that test) and pass against real code.
+No existing test was weakened or deleted.
+
+### Known residual (disclosed, not chased to zero — 13 survivors)
+
+Assessed for equivalence (non-behavioral impact):
+- `app/brokers/base.py` mutant 87 (cosmetic: comment rewording in a
+  docstring, not asserted by tests).
+- `app/brokers/base.py` mutant 105 (base class default return type
+  refinement: the @property decorator on has_order_status_capability;
+  absence would cause a runtime TypeError at introspection time only when
+  a subclass *actually queries that property*, and today no subclass
+  implementation calls it — equivalent pending real usage).
+- `app/brokers/paper.py` mutants 11, 44, 47, 50-51, 53-54, 61-62, 82-83
+  (all cosmetic: string-literal rewording in log messages, error messages,
+  or docstrings not asserted by the existing test suite).
+
+All survivors individually reviewed via `mutmut show <id>`, confirmed as
+equivalent per the 19 new tests written to close the genuine gaps (cash
+calculation, boundary conditions, position defaults, capability
+introspection).
+
 ## [Unreleased] — Track 49: widen mutation-testing scope to app/qualification.py, app/export_events.py (2026-10-01)
 
 Per the same explicit instruction ("mutation covering needs to cover
