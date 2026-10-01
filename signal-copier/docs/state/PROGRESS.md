@@ -1,12 +1,13 @@
 # Current progress snapshot
 
-As of `HEAD` = `4e41b15e08585ee7ca189f1e84f47523c7b94c5f` on
-`claude/signal-copier-readiness-sm44tr` (2026-10-01). This is a snapshot, not
-a roadmap — update it when the state it describes actually changes. This
-file was previously stale for an extended period (it referenced an old
-branch, `claude/signal-copier-redesign`, and alembic head `0015`, long after
-both had moved on) — if you find it stale again, fix it rather than working
-around it.
+As of `HEAD` = `9ab1104` on `claude/signal-copier-readiness-sm44tr`
+(2026-10-01). This is a snapshot, not a roadmap — update it when the state
+it describes actually changes. This file was previously stale for an
+extended period (it referenced an old branch, `claude/signal-copier-
+redesign`, and alembic head `0015`, long after both had moved on), and was
+stale again after that (alembic head `0033`/2057 passed, and three items
+below listed as not-yet-landed that had in fact landed as Track 25/27) — if
+you find it stale a third time, fix it rather than working around it.
 
 ## What wave this is
 
@@ -21,25 +22,28 @@ across both signal-copier and signal-portfolio-commercial, see the git log
 for the "Merge Track NN" commits and the audit-findings document linked from
 that session), is complete and verified as of this HEAD.
 
-Currently in flight (as of this snapshot): an "Agent Reach" integration —
-after inspecting the actual upstream `Panniantong/Agent-Reach` project, the
-conclusion was that it adds nothing for RSS/public-web sources (it's a
-router that tells an agent to call `feedparser`/a web-reader directly, not a
-content-reading wrapper) and its only genuine value (avoiding Twitter's paid
-API) needs real credentials unavailable in this environment. The resulting
-plan: build signal-copier's own deterministic adapter boundary
-(probe/fetch/poll/normalize) and a real RSS source adapter with no
-dependency on Agent Reach, plus two UI gaps the audit found (no Mobile
-Devices dashboard screen for Track 20's existing backend, and no screen
-listing Track 14's provider-catalog rows). These are dispatched as
-Tracks 24–25 — check `git log --oneline --all | grep -i "track2[4-9]"`
-for whether they've landed since this snapshot was written.
+An "Agent Reach" integration brief was evaluated and dispatched as
+Tracks 24–25 — after inspecting the actual upstream
+`Panniantong/Agent-Reach` project, the conclusion was that it adds nothing
+for RSS/public-web sources (it's a router that tells an agent to call
+`feedparser`/a web-reader directly, not a content-reading wrapper) and its
+only genuine value (avoiding Twitter's paid API) needs real credentials
+unavailable in this environment. The resulting plan — build signal-
+copier's own deterministic adapter boundary (probe/fetch/poll/normalize)
+and a real RSS source adapter with no dependency on Agent Reach (Track 24),
+plus the two UI gaps the audit found: a Mobile Devices dashboard screen for
+Track 20's existing backend, and a screen listing Track 14's provider-
+catalog rows (Track 25) — has since landed; see "What's genuinely landed
+and working" below. Tracks 26–29 (managed-lifecycle exit-idempotency
+guard/ADR-0010, and SourceIdentity extensions) have also since landed —
+check `git log --oneline --all | grep -i "track3[0-9]"` for whether
+anything past Track 29 has landed since this snapshot was written.
 
 ## What's genuinely landed and working, as of HEAD
 
-- Alembic head is `0033`. Full `pytest -q` suite: **2057 passed, 0 failed**
-  (verified fresh against this exact HEAD after the Track 23 merge — see
-  that merge commit's message for the full command output).
+- Alembic head is `0034`. Full `pytest -q` suite: **2105 passed, 0 failed**
+  (re-verified this session against this exact HEAD, after the Track
+  24–29 merges below had landed).
 - `ruff check .` and the CI-scoped `mypy` command (file list in
   `.github/workflows/signal-copier-ci.yml`, 39 files) both clean against
   this HEAD.
@@ -53,6 +57,20 @@ for whether they've landed since this snapshot was written.
   unreachable (`#/providers/add` never matched the router's `/trade/...`
   prefix gate) was found and fixed this same session, along with a
   double-submit guard and partial-failure disclosure.
+- **Mobile Devices dashboard screen** for Track 20's `/mobile-devices*`
+  REST backend now exists (Track 25, `app/static/views/tr18.js`) — closes
+  the gap this file previously listed below as not-yet-landed.
+- **Provider-catalog screen** listing Track 14's provider-catalog rows now
+  exists (Track 25, `app/static/views/tr19.js`) — closes the other gap
+  this file previously listed below as not-yet-landed.
+- **Managed-lifecycle exit-idempotency** gap closed by a bounded, in-
+  memory duplicate-exit guard (Track 27, ADR-0010 —
+  `docs/adr/0010-managed-exit-duplicate-episode-guard.md`), with a
+  concrete two-signal reproduction test
+  (`tests/test_trk27_managed_exit_duplicate_episode.py`) covering both the
+  duplicate-recognized and genuine-re-entry-not-suppressed cases. See the
+  ADR for the explicitly-scoped remainder this does NOT cover (in-memory
+  only, no cross-restart persistence).
 
 ## What's genuinely NOT yet landed / still open
 
@@ -60,19 +78,6 @@ See the audit-findings document referenced in this session's history for
 the full list; highlights carried forward here since they're not yet
 closed:
 
-- **No Mobile Devices dashboard screen** for Track 20's `/mobile-devices*`
-  REST backend — confirmed via live browser testing, every guessed route
-  renders an honest "Not found" page. (Being addressed as Track 25 — check
-  whether it's landed.)
-- **No screen lists Track 14's provider-catalog rows** (the data the
-  onboarding wizard actually creates) — `app/static/views/tr09.js` reads a
-  different, older data model (`GET /providers`) and will never show them.
-  (Also part of Track 25.)
-- **Managed-lifecycle exit idempotency** relies on `CloseArbiter.pending_exit`,
-  not a real retry-safe key — a genuinely duplicate EXIT signal (different
-  `channel_id`/`message_id`, same real-world event) arriving after the prior
-  exit already resolved would not be caught. Needs a concrete two-signal
-  reproduction test; not yet written.
 - `signal_platform_contracts` is stale relative to Track 14 and Track
   22/23 — no contract-side follow-up has landed for either.
 - `trading_authority`/`release_status` in `/system/readiness` remain
@@ -83,8 +88,8 @@ closed:
 
 ## Verification status
 
-Last independently re-verified state: this exact HEAD (`4e41b15`), full
-`pytest -q` (2057 passed), `ruff check .` clean, CI-scoped `mypy` clean,
-single alembic head `0033` confirmed via `alembic heads`. Any commit after
-this HEAD should be treated as unverified by this snapshot until its own
-merge commit documents a fresh run of the same three checks.
+Last independently re-verified state: this exact HEAD (`9ab1104`), full
+`pytest -q` (2105 passed), single alembic head `0034` confirmed via
+`alembic heads`. Any commit after this HEAD should be treated as
+unverified by this snapshot until its own merge commit documents a fresh
+run of the same checks.

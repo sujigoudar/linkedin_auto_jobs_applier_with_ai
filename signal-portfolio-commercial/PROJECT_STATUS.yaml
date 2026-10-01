@@ -6,18 +6,17 @@ health:
   typecheck: passing
   tests: passing
 tests:
-  total: 869
-  passing: 869
+  total: 941
+  passing: 941
   failing: 0
 verification:
   ruff: "ruff check . -- All checks passed! (0 findings)"
-  mypy: "mypy app --ignore-missing-imports -- Success: no issues found in 111 source files"
-  pytest: "pytest -q -- 869 passed, 1 warning in 297.05s, against a real disposable local PostgreSQL 16 cluster (tests/conftest.py)"
-  alembic: "alembic upgrade head -- all 37 revisions applied cleanly from empty, against a real disposable PostgreSQL 16 cluster"
+  mypy: "mypy app --ignore-missing-imports -- Success: no issues found in 118 source files"
+  pytest: "pytest -q -- 941 passed, 1693 warnings in 468.36s, against a real disposable local PostgreSQL 16 cluster (tests/conftest.py)"
+  alembic: "alembic upgrade head -- 43 revisions present under alembic/versions/ (ls alembic/versions/*.py | wc -l)"
 notes: >
-  Numbers verified for real on 2026-09-29 in this environment
-  (Postgres 16 binaries at /usr/lib/postgresql/16/bin, run as the
-  `postgres` OS user). tests/conftest.py spins its own disposable
-  cluster per test session; the alembic check used a second, separate
-  disposable cluster. No mocked/skipped database layer was used for
-  either check.
+  Numbers re-verified for real on 2026-10-01 in this environment, against
+  HEAD `9ab1104` (ruff/mypy/pytest run directly; the alembic count is a
+  file-count check rather than a fresh upgrade-from-empty run this pass).
+  tests/conftest.py spins its own disposable cluster per test session. No
+  mocked/skipped database layer was used.

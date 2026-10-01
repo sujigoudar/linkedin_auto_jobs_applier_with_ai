@@ -15,6 +15,28 @@ fixed, `/system/readiness` under-reports what this build can actually
 prove about who holds write authority. See
 `docs/state/PENDING_DECISIONS.md`.
 
+## Phone-escalation's `covered_by_direct_source` is stale, not just incomplete
+
+`app/main.py`'s `_evaluate_phone_escalation_for_event` (the call site at
+`app/main.py:4800`) passes `covered_by_direct_source=False` to
+`evaluate_escalation` unconditionally. Its own surrounding docstring says
+this is a stopgap: Track 12's real cross-transport signal-correlation
+query (`agent-track12-whop-correlation`) had not diverged from this
+function's base commit at the time it was written, so nothing from it
+could be read or imported, and the docstring asks for this call site to
+be "reconcile[d] ... with Track 12's real 'events needing escalation'
+query once it lands." Track 12 landed (`57cb9f9`) and ships a real
+correlation query — `SignalStore.find_correlation_candidates`
+(`app/db.py:2092`) — but this call site was never updated to use it.
+Until it is, `_evaluate_phone_escalation_for_event` always behaves as if
+no other live source has ever already delivered the same signal, which
+is `EscalationCandidate`'s own docstring's point 1
+(`app/phone_escalation.py`) never actually being checked against real
+data — a genuine, currently-accurate gap, not merely a known limitation.
+Wiring it is a separate task: it needs careful review of what
+`find_correlation_candidates` actually returns and how to map that onto
+`covered_by_direct_source`/`direct_source_name`, not a one-line change.
+
 ## `release_status` has no real taxonomy yet
 
 Same endpoint, `release_status` is an honest, currently-accurate
