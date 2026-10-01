@@ -487,6 +487,95 @@ async def test_halted_position_rejects_new_exits(manager, account, broker):
 
 
 @pytest.mark.asyncio
+async def test_second_exit_is_refused_while_a_prior_exits_remainder_is_unresolved(manager, account, broker, monkeypatch):
+    """Track 44 mutation-testing gap: `request_exit`'s own guard --
+    `lifecycle.pending_exit is not None and not lifecycle.pending_exit
+    .remainder_resolved` -- refuses a second broker write while a prior
+    exit's outcome is still unknown ("don't pile up more untracked
+    uncertainty", see request_exit's own docstring). Nothing in the
+    existing suite ever drove a SECOND request_exit call while the first
+    was still PENDING, so a dropped/inverted `not` here (which would let
+    a second exit submit concurrently -- precisely the untracked-overlap
+    risk this guard exists to prevent) went undetected."""
+    await _enter(manager, broker, account, _plan(planned_quantity=62.0), 62.0)
+
+    async def pending_place_order(signal, account, quantity, symbol):
+        return OrderResult(account_id=account.account_id, status=OrderStatus.PENDING, signal_id=signal.id, broker_order_id="exit-order-1")
+
+    monkeypatch.setattr(broker, "place_order", pending_place_order)
+
+    first = await manager.request_exit(account, "AAPL", 20.0, source="target")
+    assert first.status == OrderStatus.PENDING
+    lifecycle = manager.get_lifecycle("acct1", "AAPL")
+    assert lifecycle.pending_exit is not None
+    assert lifecycle.pending_exit.remainder_resolved is False
+
+    second = await manager.request_exit(account, "AAPL", 10.0, source="target")
+
+    assert second.status == OrderStatus.REJECTED
+    assert "hasn't resolved" in second.message
+    # The first exit's own reservation/pending state must be untouched.
+    assert lifecycle.pending_exit.broker_order_id == "exit-order-1"
+
+
+@pytest.mark.asyncio
+async def test_request_exit_for_exactly_zero_quantity_is_refused_not_submitted(manager, account, broker):
+    """Track 44 mutation-testing gap: `_compute_reduction_plan`'s
+    `requested_quantity` boundary (`requested <= 0`) must reject a
+    nothing-to-sell request outright, never fall through to reserve/
+    submit a real broker order for 0 shares."""
+    await _enter(manager, broker, account, _plan(planned_quantity=62.0), 62.0)
+
+    result = await manager.request_exit(account, "AAPL", 0.0, source="target")
+
+    assert result.status == OrderStatus.REJECTED
+    assert "no shares available" in result.message
+    # nothing was reserved or touched
+    assert manager.arbiter.available_to_sell("acct1", "AAPL") == 62.0
+
+
+@pytest.mark.asyncio
+async def test_partial_exit_does_not_attempt_stop_restore_when_there_was_never_a_stop(manager, account, broker, monkeypatch):
+    """Track 44 mutation-testing gap: `request_exit`'s final restore step
+    is gated on `had_stop and lifecycle.stop.desired_price is not None`
+    -- deliberately AND, not OR, since a position whose initial
+    protective-stop placement already failed (had_stop False, but
+    desired_price still recorded from on_entry_fill) is `retry_
+    unprotected_positions`'s job to recover, not every subsequent exit's.
+    An `and` -> `or` flip would make a partial exit on an already-
+    unprotected position attempt a fresh stop placement here too,
+    nothing in the existing suite exercises "had_stop=False, desired_price
+    set, then a partial exit" to tell the two apart."""
+    async def rejected_place_stop(*args, **kwargs):
+        return OrderResult(account_id=account.account_id, status=OrderStatus.REJECTED, signal_id="")
+
+    monkeypatch.setattr(broker, "place_protective_stop", rejected_place_stop)
+
+    await _enter(manager, broker, account, _plan(planned_quantity=62.0, initial_stop=48.50), 62.0)
+    lifecycle = manager.get_lifecycle("acct1", "AAPL")
+    assert lifecycle.stop.status == ProtectionStatus.UNPROTECTED
+    assert lifecycle.stop.broker_order_id is None
+    assert lifecycle.stop.desired_price == 48.50  # still recorded despite the failed placement
+
+    place_stop_calls = []
+    original = broker.place_protective_stop
+
+    async def tracking(*args, **kwargs):
+        place_stop_calls.append(args)
+        return await original(*args, **kwargs)
+
+    monkeypatch.setattr(broker, "place_protective_stop", tracking)
+
+    result = await manager.request_exit(account, "AAPL", 15.0, source="target")
+
+    assert result.status == OrderStatus.FILLED
+    # no fresh stop placement attempt was made by the restore step
+    assert place_stop_calls == []
+    assert lifecycle.stop.status == ProtectionStatus.UNPROTECTED
+    assert lifecycle.stop.broker_order_id is None
+
+
+@pytest.mark.asyncio
 async def test_get_outstanding_possible_fill_reflects_unresolved_entry(manager, account):
     """AUD-01: PositionLifecycleManager.get_outstanding_possible_fill --
     the managed-lifecycle counterpart of SignalStore.get_outstanding_possible_fill

@@ -314,3 +314,87 @@ databases/ports on this shared box): see this file's own verification
 line below once re-run; treat any gap here as this snapshot not yet
 having been updated after that run completed, not as the run having been
 skipped.
+
+### Track 44: mutation-testing scope widened to the position-lifecycle state machine (2026-10-01)
+
+Widened `[tool.mutmut]` further, same ordering principle as Track 43:
+`app/lifecycle/manager.py` (the broker-agnostic managed-position
+lifecycle state machine, ~2350 lines) and `app/lifecycle/close_arbiter.py`
+(the single oversell-prevention authority every exit funnels through,
+~220 lines) -- both flagged in CLAUDE.md's hard rule 1 as having the
+most precise spec available. `only_mutate` now also lists both;
+`pytest_add_cli_args_test_selection` adds the two modules' own direct
+unit-test files plus `tests/test_pro06_stop_amend_on_partial_exit.py`
+and `tests/test_pro02_activation_and_time_exit.py`.
+
+**close_arbiter.py — full mutation score obtained and acted on.**
+120 mutants. Baseline 88 killed / 32 non-killed (23 survived, 9 no
+tests). Added 10 tests to `tests/test_close_arbiter.py`: a `snapshot()`/
+`restore()` round-trip (previously completely untested -- a dict-key
+rename here would silently break every real save/restore round trip,
+with no other safety net given this module's documented "no startup
+reconciliation" gap), `halt()` preserving its real reason, `reserve(0)`'s
+no-op contract, the `_EPSILON` tolerance boundaries on both the reserve
+oversell guard and the reserved-exceeds-owned invariant check, and --
+the most financially meaningful one -- confirming `_check_invariant`'s
+SECOND halt branch (`reserved > owned`, independent of `owned < 0`)
+actually halts rather than silently no-op'ing when a confirmed-owned
+observation drops below an outstanding reservation without going
+negative. Result: 110 killed / 10 non-killed. The remaining 10 are
+documented in CHANGELOG.md as equivalent/unreachable/impractical-float-
+boundary/genuinely-unused-code, not chased further.
+
+**app/lifecycle/manager.py — no full aggregate score; targeted,
+risk-prioritized review instead.** 2432 mutants (far larger than
+close_arbiter.py or even Track 43's app/engine.py). A full clean `mutmut
+run` was attempted twice; both times the shared container's
+`.mutmut-cache`/generated `mutants/` state was lost mid-run before
+completion (once silently reverting all results to "not checked", once
+with an explicit `FileNotFoundError` on a `.meta` file) -- the same class
+of heavy-concurrent-session environment instability Track 43 already
+hit on `app/engine.py` on this box. One run DID complete before the
+first corruption, giving a real baseline: 837 killed / 1021 survived /
+574 no-tests. That baseline was used to prioritize a manual, sampled
+diff-by-diff review of the 7 functions implementing the financially
+dangerous behaviors this track was asked to prioritize -- state-
+transition guards, idempotency keys, double-apply/skip risk on a
+close/reduce: `request_exit`, `resolve_pending_exit`,
+`resolve_pending_entry`, `on_stop_filled`, `check_duplicate_exit`,
+`_apply_exit_fill`, `_restore_stop_coverage` (347 survivors across these
+7 alone -- the full ~1021 was not reviewed one by one). Found and fixed
+3 genuine bugs (added to `tests/test_lifecycle_manager.py`, each
+individually confirmed killed via an isolated `mutmut run <mutant-id>`
+rerun since the aggregate couldn't be re-confirmed):
+1. `request_exit`'s "refuse a second exit while a prior one's remainder
+   is unresolved" guard had a reachable dropped-`not` mutant with no
+   test driving a genuine concurrent-PENDING second `request_exit` call.
+2. `request_exit(quantity=0)` had no test on the `requested <= 0`
+   boundary that must reject outright rather than reserve/submit a real
+   0-share order.
+3. The final stop-restore gate (`had_stop and desired_price is not
+   None`) had no test distinguishing it from an `or` mutation, which
+   would attempt a fresh stop placement on every qualifying exit even
+   for a position whose initial protection already failed (that
+   recovery is `retry_unprotected_positions`'s job, not every exit's).
+
+Two further findings were investigated and confirmed to be already
+covered elsewhere (false negatives of this track's narrower/faster test
+selection, not real gaps): `resolve_pending_entry`'s `has_unresolved_exit`
+dropped-`not` mutant is exercised end-to-end by
+`tests/test_5e91e78_lifecycle_composition.py`'s F02 test, just outside
+this track's selection; `check_duplicate_exit`'s `age_seconds`
+boundary operator mutations (`<`/`<=`, `>`/`>=` against 0 and the
+duplicate-exit window) are real but practically untestable at an exact
+floating-point instant, with negligible real-world impact at that
+precision. The remaining bulk of the ~1021 baseline survivors are
+`OrderResult` field-level mutations on error/rejection branches
+(`account_id=None`, `signal_id="XXXX"`, message wording) that this
+suite correctly only asserts `.status` on, not the full field set --
+not chased here. **No full `app/lifecycle/manager.py` mutation score is
+reported**, for the same honest reason Track 43 reported none for
+`app/engine.py`: none was actually produced end-to-end on this box this
+session. The scope is left committed for a future unloaded-box or CI run
+to complete.
+
+`ruff check .` and the CI-scoped `mypy` command both clean. Full
+`pytest -q` re-verified after these additions.
