@@ -7,6 +7,62 @@ does not yet cut versioned releases (see `docs/process/RELEASE.md`), so
 entries are grouped by theme and rough chronological wave instead of by
 version number. Newest wave first.
 
+## [Unreleased] — Track 42: honest handling of a relay `"parked"` status
+
+signal-portfolio-commercial's `POST /internal/relay/ingest-batch` used
+to report `"applied"` for every event it didn't raise a named error
+for, including a genuinely parked one — `app/relay_worker.py`
+inherited that dishonesty by treating any such status identically.
+Track 42 closed it on both sides; see the commercial repo's own
+CHANGELOG.md for its half.
+
+### Added
+- `app/relay_worker.py`: `classify_parked_reason` — the real
+  transient-vs-structural split over every named `parked_reason` the
+  commercial relay can report (plus the unnamed sequence-gap case,
+  `"sequence_gap_awaiting_predecessor"`). TRANSIENT (`fee_target_not_
+  found`, `routing_outcome_target_not_found`, the sequence-gap case,
+  and an `edit_without_resolvable_target` whose suffix is a real
+  native-identity key): resolves itself, with no code change, once a
+  correlated event arrives and the commercial side's own cascade
+  applies it — left undelivered, polled again next cycle. STRUCTURAL
+  (`unsupported_schema_version`, `unimplemented_event_type`,
+  `source_event_kind_not_ledger_representable`,
+  `manifest_generation_mismatch`/`manifest_metadata_mismatch`,
+  `generation_rollback_detected`/`new_generation_requires_bootstrap`,
+  an `edit_without_resolvable_target:missing_original_source_event_id`,
+  and any reason this worker doesn't recognize): can never resolve by
+  waiting or redelivery, only by a code change — marked terminally
+  parked (new `export_events.terminal_park_reason`/
+  `terminal_parked_at` columns) and excluded from every future poll,
+  but **never** marked `delivered` (that column means "the commercial
+  side genuinely applied this" and a structurally parked event never
+  was).
+- `app/db.py`: `SignalStore.mark_export_events_terminally_parked`,
+  `terminally_parked_export_event_count`; `list_undelivered_export_
+  events` now also excludes terminally-parked rows.
+- `GET /health`: new informational-only `terminally_parked_export_
+  event_count` field, same INT-040 "never gates `status`" treatment as
+  `outbox_backlog_ok`.
+- `RelayIngestResult`: new `transiently_parked_event_ids`/
+  `terminally_parked_event_ids` fields.
+- `tests/test_relay_worker.py`: the full `classify_parked_reason`
+  taxonomy, and `run_once`'s real handling of both a transient and a
+  structural `"parked"` response. `tests/test_export_outbox_ceiling.py`:
+  the new health field.
+- `alembic/versions/0035_add_export_events_terminal_park_columns.py` —
+  new Alembic head `0035`. Caught by
+  `tests/test_e01_alembic_migration_stamping.py`'s own CLI-upgrade-vs-
+  bootstrap parity check: the new `export_events` columns had only
+  been added via `app/db.py`'s `_COLUMN_MIGRATIONS` bootstrap path,
+  with no matching numbered revision — now fixed, both paths produce
+  the identical schema again.
+
+### Fixed
+- `app/relay_worker.py`'s `run_once` no longer treats a `"parked"`
+  status (once the commercial side started reporting it honestly) the
+  same as `"applied"` — it never marks a parked event delivered.
+
 ## [Unreleased] — Track 39: mutation-testing pass
 
 Ran `mutmut` against the existing test suite for the financially

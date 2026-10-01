@@ -480,6 +480,24 @@ CREATE TABLE IF NOT EXISTS export_events (
     payload_hash TEXT NOT NULL,
     appended_at TEXT NOT NULL,
     delivered_at TEXT,
+    -- Track 42: set only for an event the relay reported back as a
+    -- STRUCTURALLY parked status (app/relay_worker.py's own
+    -- `classify_parked_reason` -- a `parked_reason` the relay side can
+    -- never resolve by itself, e.g. `source_event_kind_not_ledger_
+    -- representable`: the ledger model has no column for it at all, so
+    -- no amount of waiting or redelivery ever changes the outcome
+    -- without a code change on the commercial side). Deliberately a
+    -- SEPARATE column from `delivered_at`, never reusing it: this event
+    -- was never economically applied, so marking it "delivered" would
+    -- be exactly the dishonest "delivered == applied" conflation this
+    -- track exists to remove. Excluded from `list_undelivered_export_
+    -- events` once set (see that query's own WHERE clause) so a
+    -- structurally-unparkable event stops being resent forever, but it
+    -- is never deleted/pruned -- same "never discard financial
+    -- evidence" rule INT-040's own standing test enforces for this
+    -- table.
+    terminal_park_reason TEXT,
+    terminal_parked_at TEXT,
     UNIQUE (source_stream, export_sequence)
 );
 
@@ -1896,6 +1914,9 @@ _COLUMN_MIGRATIONS = [
     ("notification_bridge_devices", "blocked_apps", "TEXT NOT NULL DEFAULT '[]'"),
     # Track 24 -- see `sources`' own CREATE TABLE comment above.
     ("sources", "acquisition_checkpoint", "TEXT"),
+    # Track 42 -- see `export_events`' own CREATE TABLE comment above.
+    ("export_events", "terminal_park_reason", "TEXT"),
+    ("export_events", "terminal_parked_at", "TEXT"),
 ]
 
 
@@ -2817,15 +2838,29 @@ class SignalStore:
         return 0 if highest is None else highest + 1
 
     def list_undelivered_export_events(self, *, limit: int = 100) -> list[EventEnvelope]:
-        """Every export event not yet marked delivered, oldest first by
-        (source_stream, export_sequence) -- what a relay worker (a later
-        slice) would poll and forward. Reconstructs the exact
-        `EventEnvelope` that was appended (S6: "the relay never
-        reconstructs or reinterprets it, only forwards these exact
-        bytes"), never a freshly-built one from the row's own columns."""
+        """Every export event not yet marked delivered AND not yet marked
+        terminally parked, oldest first by (source_stream,
+        export_sequence) -- what the relay worker (app/relay_worker.py)
+        polls and forwards. Reconstructs the exact `EventEnvelope` that
+        was appended (S6: "the relay never reconstructs or reinterprets
+        it, only forwards these exact bytes"), never a freshly-built one
+        from the row's own columns.
+
+        Track 42: `terminal_park_reason IS NULL` excludes an event the
+        relay worker has already classified as STRUCTURALLY parked (see
+        `mark_export_events_terminally_parked`) -- redelivering the exact
+        same bytes can never change that outcome (the commercial side's
+        own idempotent dedup returns the already-stored, still-parked
+        row without re-running any projection logic), so resending it
+        forever would be pure noise, never progress. An event parked for
+        a TRANSIENT reason (e.g. `fee_target_not_found`) is deliberately
+        NOT excluded here -- it stays undelivered and is polled again
+        next cycle, same as `unregistered_stream`/`integrity_error`
+        already were before this track."""
         with self._connect() as conn:
             rows = conn.execute(
-                """SELECT envelope_json FROM export_events WHERE delivered_at IS NULL
+                """SELECT envelope_json FROM export_events
+                   WHERE delivered_at IS NULL AND terminal_park_reason IS NULL
                    ORDER BY source_stream, export_sequence LIMIT ?""",
                 (limit,),
             ).fetchall()
@@ -2863,7 +2898,7 @@ class SignalStore:
         with self._connect() as conn:
             rows = conn.execute(
                 f"""SELECT event_id, event_type, source_stream, export_sequence, envelope_json,
-                           payload_hash, appended_at, delivered_at
+                           payload_hash, appended_at, delivered_at, terminal_park_reason, terminal_parked_at
                     FROM export_events {where}
                     ORDER BY appended_at DESC, export_sequence DESC LIMIT ?""",
                 params,
@@ -2877,7 +2912,7 @@ class SignalStore:
         with self._connect() as conn:
             row = conn.execute(
                 """SELECT event_id, event_type, source_stream, export_sequence, envelope_json,
-                          payload_hash, appended_at, delivered_at
+                          payload_hash, appended_at, delivered_at, terminal_park_reason, terminal_parked_at
                    FROM export_events WHERE event_id = ?""",
                 (event_id,),
             ).fetchone()
@@ -2893,6 +2928,14 @@ class SignalStore:
             "payload_hash": row[5],
             "appended_at": row[6],
             "delivered_at": row[7],
+            # Track 42: set only when the relay worker classified this
+            # event's own relay-reported "parked" status as STRUCTURAL
+            # (see `mark_export_events_terminally_parked` and
+            # app/relay_worker.py's `classify_parked_reason`) -- both
+            # NULL for a never-parked event, a still-transiently-parked
+            # one, or a genuinely delivered/applied one.
+            "terminal_park_reason": row[8],
+            "terminal_parked_at": row[9],
             # The owner is the same audience `GET /signals`/`GET /orders`
             # already hand full signal/order content to, and this payload
             # is the typed signal_platform_contracts payload (subject/
@@ -2915,6 +2958,52 @@ class SignalStore:
                 "UPDATE export_events SET delivered_at = ? WHERE event_id = ? AND delivered_at IS NULL",
                 [(datetime.now(timezone.utc).isoformat(), event_id) for event_id in event_ids],
             )
+
+    def mark_export_events_terminally_parked(self, event_ids_and_reasons: list[tuple[str, str]]) -> None:
+        """Track 42: mark each `(event_id, reason)` pair as terminally
+        parked -- a relay-reported `"parked"` status app/relay_worker.py's
+        own `classify_parked_reason` decided is STRUCTURAL (can never
+        resolve without a code change on the commercial side, e.g.
+        `source_event_kind_not_ledger_representable`). Deliberately
+        `delivered_at`-independent and never touches it: this event was
+        never economically applied, so it must never read back as
+        "delivered" to anything (`list_export_events`'s `delivered`
+        filter, dashboards, etc.) -- see `export_events`' own CREATE
+        TABLE comment for why this is its own column.
+
+        Idempotent and non-destructive: an event already terminally
+        parked (for the same or a different reason -- the relay's own
+        classification of the SAME `parked_reason` string never changes
+        between polls) is simply not matched again by the `WHERE
+        terminal_park_reason IS NULL` guard, so the original
+        `terminal_parked_at` timestamp is preserved rather than reset on
+        every subsequent poll of an event this method has already
+        excluded from `list_undelivered_export_events`."""
+        if not event_ids_and_reasons:
+            return
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            conn.executemany(
+                """UPDATE export_events SET terminal_park_reason = ?, terminal_parked_at = ?
+                   WHERE event_id = ? AND terminal_park_reason IS NULL""",
+                [(reason, now, event_id) for event_id, reason in event_ids_and_reasons],
+            )
+
+    def terminally_parked_export_event_count(self) -> int:
+        """Track 42: a real, live count of export events the relay
+        worker has classified as structurally, permanently parked (see
+        `mark_export_events_terminally_parked`) -- surfaced on `GET
+        /health` the same informational-only way INT-040's own
+        `outbox_backlog_*` fields are (app/main.py): a nonzero count
+        means a human should look at WHY (a `terminal_park_reason` this
+        build genuinely cannot resolve on its own), never something
+        this health check gates `status` on, same reasoning as
+        `outbox_backlog_ok`'s own docstring there."""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM export_events WHERE terminal_park_reason IS NOT NULL"
+            ).fetchone()
+        return row[0]
 
     def export_outbox_backlog(self) -> tuple[int, int]:
         """INT-040: a real, live measurement of the undelivered export

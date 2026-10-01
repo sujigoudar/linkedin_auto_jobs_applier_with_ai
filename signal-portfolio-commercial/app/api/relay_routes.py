@@ -138,8 +138,43 @@ async def ingest_batch(
         #: SQLAlchemy's default expire-on-commit refresh, re-running the
         #: SELECT with NO tenant scope set -- fail-closed RLS then makes
         #: that refresh look like the row was deleted.
+        #:
+        #: Track 42 (closing the honesty gap Track 40 flagged, never
+        #: fixed, in docs/KNOWN_ISSUES.md): this used to unconditionally
+        #: report `"applied"` here for every event that reached this
+        #: line without raising one of the named exceptions above --
+        #: including a genuinely PARKED one (`inbox_event.applied_at`
+        #: still `None`: a sequence gap, an unsupported schema version,
+        #: an unimplemented event type, or any other
+        #: `PARKED_REASON_*` from app/services/integration_inbox.py).
+        #: `applied_at` is read HERE, before `commit()`, for the exact
+        #: same expire-on-commit reason the comment above already
+        #: explains -- `inbox_event` is the SAME ORM object
+        #: `ingest_export_event` returned, already reflecting whatever
+        #: `_apply_projection`/`_apply_and_cascade` decided, so no extra
+        #: query is needed to know which case this is.
         applied_event_id = inbox_event.event_id
+        really_applied = inbox_event.applied_at is not None
+        #: A sequence-gap park carries NO named `parked_reason` of its
+        #: own (see app/services/integration_inbox.py's own
+        #: `_next_expected_sequence` docstring and
+        #: app/services/source_coverage.py's own module docstring for
+        #: why -- it is just as genuinely PARKED as a named reason, but
+        #: the cause is "waiting on a lower export_sequence", not
+        #: anything this row's own processing discovered). Reported
+        #: with an explicit, honest reason string instead of `None` --
+        #: a caller (signal-copier's own relay_worker.py) that keys off
+        #: `parked_reason` should never have to special-case "no reason
+        #: given" as a THIRD, undocumented meaning.
+        park_reason: str = (
+            inbox_event.parked_reason or "sequence_gap_awaiting_predecessor" if not really_applied else ""
+        )
         session.commit()
-        results.append({"status": "applied", "event_id": applied_event_id})
+        if really_applied:
+            results.append({"status": "applied", "event_id": applied_event_id})
+        else:
+            results.append(
+                {"status": "parked", "event_id": applied_event_id, "parked_reason": park_reason}
+            )
 
     return {"results": results}

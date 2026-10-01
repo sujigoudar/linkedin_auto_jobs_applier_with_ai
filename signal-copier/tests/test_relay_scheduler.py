@@ -103,3 +103,28 @@ async def test_a_real_pass_calls_run_once_and_records_success(store, monkeypatch
     assert scheduler.last_success_at is not None
     assert calls == ["https://commercial.example/x"]
     assert store.list_undelivered_export_events() == []
+
+
+def test_log_result_logs_distinctly_for_transient_and_terminal_parks(caplog):
+    """Track 42: `_log_result`'s own per-pass summary logging for
+    `RelayIngestResult.transiently_parked_event_ids`/
+    `terminally_parked_event_ids` -- a transient park logs at WARNING
+    (normal, expected to resolve on its own), a terminal one at ERROR
+    (needs real operator attention, see GET /health's own
+    `terminally_parked_export_event_count`)."""
+    from app.relay_worker import RelayIngestResult
+
+    result = RelayIngestResult(
+        delivered_event_ids=[],
+        unregistered_stream_event_ids=[],
+        integrity_error_event_ids=[],
+        transiently_parked_event_ids=["evt-transient-1"],
+        terminally_parked_event_ids=["evt-terminal-1"],
+    )
+    with caplog.at_level("WARNING", logger="app.relay_scheduler"):
+        RelayScheduler._log_result(result)
+
+    warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+    errors = [r for r in caplog.records if r.levelname == "ERROR"]
+    assert any("transiently parked" in r.message for r in warnings)
+    assert any("terminally parked" in r.message for r in errors)

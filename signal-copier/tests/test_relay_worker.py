@@ -20,6 +20,7 @@ from signal_platform_contracts import (
 from app.db import SignalStore
 from app.relay_worker import (
     RelayNotConfiguredError,
+    classify_parked_reason,
     run_once,
     sign_relay_payload,
 )
@@ -154,6 +155,101 @@ def test_run_once_leaves_an_integrity_error_event_undelivered_and_reports_it(sto
     assert result.delivered_event_ids == []
     assert result.integrity_error_event_ids == ["evt-relay-3"]
     assert len(store.list_undelivered_export_events()) == 1
+
+
+@pytest.mark.parametrize(
+    "parked_reason,expected",
+    [
+        ("sequence_gap_awaiting_predecessor", "transient"),
+        ("fee_target_not_found:paper|order-1", "transient"),
+        ("routing_outcome_target_not_found:evt-1", "transient"),
+        ("edit_without_resolvable_target:tenant-a|telegram||src-evt-9", "transient"),
+        ("unsupported_schema_version:9.9", "structural"),
+        ("unimplemented_event_type:cash_movement", "structural"),
+        ("source_event_kind_not_ledger_representable:target_update", "structural"),
+        ("manifest_generation_mismatch:manifest-1", "structural"),
+        ("manifest_metadata_mismatch:manifest-1", "structural"),
+        ("generation_rollback_detected:3", "structural"),
+        ("new_generation_requires_bootstrap:5", "structural"),
+        ("edit_without_resolvable_target:missing_original_source_event_id", "structural"),
+        ("some_future_reason_this_worker_has_never_heard_of", "structural"),
+    ],
+)
+def test_classify_parked_reason_matches_the_documented_taxonomy(parked_reason, expected):
+    assert classify_parked_reason(parked_reason) == expected
+
+
+def test_run_once_leaves_a_transiently_parked_event_undelivered_for_retry(store):
+    envelope = _execution_envelope(event_id="evt-relay-parked-1")
+    store.append_export_event(envelope)
+
+    def fake_post(url, **kwargs):
+        return _FakeResponse(
+            [{"status": "parked", "event_id": "evt-relay-parked-1", "parked_reason": "fee_target_not_found:paper|o-1"}]
+        )
+
+    result = run_once(
+        store, ingress_url="https://commercial.example/x", signing_secret=_SECRET, http_post=fake_post,
+    )
+
+    assert result.delivered_event_ids == []
+    assert result.transiently_parked_event_ids == ["evt-relay-parked-1"]
+    assert result.terminally_parked_event_ids == []
+    # Still undelivered -- the next poll retries it, same as any other
+    # correlation-wait that may resolve once the correlated event arrives
+    # and the commercial side's own cascade applies it.
+    assert len(store.list_undelivered_export_events()) == 1
+    event = store.get_export_event("evt-relay-parked-1")
+    assert event["terminal_park_reason"] is None
+
+
+def test_run_once_terminally_parks_a_structurally_unresolvable_event_and_stops_resending_it(store):
+    envelope = _execution_envelope(event_id="evt-relay-parked-2")
+    store.append_export_event(envelope)
+
+    def fake_post(url, **kwargs):
+        return _FakeResponse(
+            [
+                {
+                    "status": "parked",
+                    "event_id": "evt-relay-parked-2",
+                    "parked_reason": "source_event_kind_not_ledger_representable:target_update",
+                }
+            ]
+        )
+
+    result = run_once(
+        store, ingress_url="https://commercial.example/x", signing_secret=_SECRET, http_post=fake_post,
+    )
+
+    assert result.delivered_event_ids == []
+    assert result.transiently_parked_event_ids == []
+    assert result.terminally_parked_event_ids == ["evt-relay-parked-2"]
+
+    # Never marked delivered -- it was never applied, and `delivered_at`
+    # must never imply that it was.
+    event = store.get_export_event("evt-relay-parked-2")
+    assert event["delivered_at"] is None
+    assert event["terminal_park_reason"] == "source_event_kind_not_ledger_representable:target_update"
+    assert event["terminal_parked_at"] is not None
+
+    # Excluded from future polls -- resending it forever would be pure
+    # noise (the commercial side's own idempotent dedup already short-
+    # circuits any reprocessing, and nothing about the park can resolve
+    # without a code change there).
+    assert store.list_undelivered_export_events() == []
+    assert store.terminally_parked_export_event_count() == 1
+
+    # A second poll with nothing new in the outbox makes no further HTTP
+    # call for this event (it's no longer "undelivered").
+    calls = []
+
+    def fake_post_second(url, **kwargs):
+        calls.append(url)
+        return _FakeResponse([])
+
+    run_once(store, ingress_url="https://commercial.example/x", signing_secret=_SECRET, http_post=fake_post_second)
+    assert calls == []
 
 
 def test_the_signature_a_run_produces_verifies_against_the_documented_scheme(store):

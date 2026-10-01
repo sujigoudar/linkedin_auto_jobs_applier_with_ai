@@ -12,6 +12,50 @@ Everything in this file. This is pre-1.0, development-branch software;
 nothing here has shipped to a live production deployment
 (`docs/process/RELEASE.md`).
 
+### 2026-10-01 — Track 42: honest `"applied"`/`"parked"` relay ingest status
+
+Closes the honesty gap Track 40 found and flagged (never fixed) in
+`docs/KNOWN_ISSUES.md`: `POST /internal/relay/ingest-batch`
+(`app/api/relay_routes.py`'s `ingest_batch`) reported `"status":
+"applied"` for every event in a batch that didn't raise one of the
+route's named exceptions — including a genuinely PARKED event (a
+sequence gap, an unsupported `schema_version`, an unimplemented
+`event_type`, or any other `PARKED_REASON_*` from
+`app/services/integration_inbox.py`).
+
+#### Fixed
+- `app/api/relay_routes.py`: `ingest_batch` now reports the real
+  outcome per event — `{"status": "applied", "event_id": ...}` only
+  when `InboxEvent.applied_at` is genuinely set, otherwise
+  `{"status": "parked", "event_id": ..., "parked_reason": ...}` with
+  the real `parked_reason`, or the explicit
+  `"sequence_gap_awaiting_predecessor"` for the one park case that
+  carries no named reason of its own.
+
+#### Added
+- `tests/test_c42_relay_ingest_honest_park_status.py`: HTTP-level
+  coverage of the real `"applied"` vs `"parked"` contract, including a
+  structurally-unrepresentable `SourceEventKind.TARGET_UPDATE` and an
+  unimplemented `EventType`.
+- Updated
+  `tests/test_c40_relay_ingest_adversarial_payloads.py::test_out_of_order_sequence_in_one_batch_parks_then_resolves_without_500`
+  to assert the real, honest `"parked"` status it used to document as
+  a known gap rather than fix.
+
+#### Cross-repo
+- signal-copier's own `app/relay_worker.py` is the one caller of this
+  endpoint; see its own CHANGELOG.md entry for how it now handles a
+  `"parked"` status (never conflating it with `"applied"`), split by
+  `parked_reason` into transient (retried) and structural
+  (terminally-parked-and-surfaced) cases.
+
+#### Judgment call (recorded per CLAUDE.md rule 3)
+The response shape stays an ad-hoc dict on both sides rather than a
+new `signal_platform_contracts` type — four keys, one real caller,
+already fully specified in this endpoint's own module docstring and
+now in `docs/KNOWN_ISSUES.md`; a shared, versioned contract type would
+be more process than this fix needs.
+
 ### 2026-10-01 — Track 39: mutation-testing pass
 
 Ran `mutmut` against `app/services/trading_authority.py` and

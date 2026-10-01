@@ -100,3 +100,19 @@ class RelayScheduler:
                 "relay pass: %d integrity-error event(s) parked, needs operator investigation: %s",
                 len(result.integrity_error_event_ids), result.integrity_error_event_ids,
             )
+        # Track 42: app/relay_worker.py's own `run_once` already logs a
+        # structured warning/error per individual parked event (event_id
+        # + parked_reason) -- these are the per-PASS summary counts, same
+        # convention as the two blocks above.
+        if result.transiently_parked_event_ids:
+            logger.warning(
+                "relay pass: %d transiently parked event(s), left undelivered for retry: %s",
+                len(result.transiently_parked_event_ids), result.transiently_parked_event_ids,
+            )
+        if result.terminally_parked_event_ids:
+            logger.error(
+                "relay pass: %d event(s) terminally parked (structurally unresolvable without a "
+                "code change on the commercial side), needs operator investigation -- see "
+                "GET /health's terminally_parked_export_event_count: %s",
+                len(result.terminally_parked_event_ids), result.terminally_parked_event_ids,
+            )

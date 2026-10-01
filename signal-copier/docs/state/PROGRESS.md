@@ -187,6 +187,47 @@ rather than fixing -- every gap this pass found had a small, obvious fix
 matching an existing convention already established elsewhere in the
 same file.
 
+## Track 42: honest handling of a relay `"parked"` status
+
+signal-portfolio-commercial's `POST /internal/relay/ingest-batch`
+reported `"applied"` for every event it didn't raise a named error
+for, including a genuinely parked one -- `app/relay_worker.py`
+inherited that dishonesty by never distinguishing a `"parked"` status
+from `"applied"` (it had no branch for it at all before this track).
+Both sides fixed together (see the commercial repo's own
+CHANGELOG.md/docs/KNOWN_ISSUES.md for its half):
+
+- `app/relay_worker.py`'s new `classify_parked_reason` splits every
+  named `parked_reason` (plus the unnamed sequence-gap case) into
+  TRANSIENT (resolves on its own via the commercial side's own
+  cascade once a correlated event arrives -- left undelivered,
+  retried next poll) and STRUCTURAL (never resolves without a code
+  change -- `unsupported_schema_version`, `unimplemented_event_type`,
+  `source_event_kind_not_ledger_representable`, a manifest/generation
+  mismatch, or an `edit_without_resolvable_target` missing its revision
+  chain entirely). An unrecognized future reason defaults to
+  STRUCTURAL -- the safe failure mode, never a silent infinite retry.
+- A structurally-parked event is marked terminally parked (new
+  `export_events.terminal_park_reason`/`terminal_parked_at` columns,
+  `SignalStore.mark_export_events_terminally_parked`) and excluded
+  from every future `list_undelivered_export_events` poll, but
+  **never** marked `delivered` -- that would repeat the exact
+  dishonesty this track closed on the commercial side, one hop later.
+- `GET /health` gained `terminally_parked_export_event_count`, same
+  informational-only treatment (never gates `status`) as INT-040's own
+  `outbox_backlog_*` fields.
+- New `tests/test_relay_worker.py` coverage (the full taxonomy plus
+  `run_once`'s real transient/structural handling) and a new
+  `GET /health` test in `tests/test_export_outbox_ceiling.py`.
+- New Alembic revision `0035_add_export_events_terminal_park_columns.py`
+  (`export_events.terminal_park_reason`/`terminal_parked_at`) -- Alembic
+  head is now `0035`. `tests/test_e01_alembic_migration_stamping.py`'s
+  own CLI-upgrade-vs-bootstrap parity checks (its real load-bearing
+  property) updated to expect `0035`; this is what originally caught
+  the gap (the new columns had been added only via `app/db.py`'s
+  `_COLUMN_MIGRATIONS` bootstrap path, with no matching Alembic
+  revision).
+
 ## Verification status
 
 Last independently re-verified state: this exact HEAD (`4a24d07`), full

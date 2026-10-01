@@ -9,6 +9,18 @@ detailed per-phase notes (now historical; much has been built since).
 
 ## What's real and tested, most recent first
 
+- **Track 42: honest `"applied"`/`"parked"` relay ingest status.**
+  Closes the gap Track 40 found and flagged in `docs/KNOWN_ISSUES.md`:
+  `POST /internal/relay/ingest-batch` now reports `"parked"` with a
+  real `parked_reason` for a genuinely parked event, instead of
+  mislabeling it `"applied"`. New
+  `tests/test_c42_relay_ingest_honest_park_status.py`; updated
+  `tests/test_c40_relay_ingest_adversarial_payloads.py`'s own
+  out-of-order test to assert the real status. Cross-repo: signal-
+  copier's own `app/relay_worker.py` now handles a `"parked"` status
+  for real (transient vs. structural, per its own CHANGELOG.md entry)
+  instead of silently falling through unrecognized.
+
 - **Track 38 property-based/stateful test hardening** -- two new test
   files, both passing against a real disposable Postgres cluster:
   `tests/test_trk38_edit_correlation_hypothesis.py` (60 generated cases

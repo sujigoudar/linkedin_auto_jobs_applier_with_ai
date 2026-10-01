@@ -331,22 +331,13 @@ def test_out_of_order_sequence_in_one_batch_parks_then_resolves_without_500(clie
     never a 500 and never a double-counted/ledger entry for the parked
     event.
 
-    KNOWN GAP this test documents rather than silently fixing (see
-    docs/KNOWN_ISSUES.md): app/api/relay_routes.py's own per-event
-    result dict hardcodes `"status": "applied"` for every event that
-    reaches that line without raising one of the three named exceptions
-    -- it never actually checks `inbox_event.applied_at`. A genuinely
-    PARKED event (this one) is reported back to the caller as
-    `"applied"` even though NO ledger projection happened for it. Left
-    unfixed here because signal-copier's own app/relay_worker.py
-    consumes this exact field (`if status == "applied": delivered.
-    append(...)`) and marks the export event permanently delivered
-    (never retried) on it -- correcting the label without first
-    designing what the relay worker should DO with a genuinely distinct
-    "parked" status (retry forever? never retry, since redelivery alone
-    can't unstick e.g. an unsupported-schema-version park?) is a
-    cross-service wire-contract change, not a same-file bugfix, so it
-    is flagged for a separate, reviewed track instead of guessed at here."""
+    Track 42 (closing the gap Track 40 found and flagged, never fixed,
+    in docs/KNOWN_ISSUES.md): this used to assert the route reported
+    `"applied"` for this genuinely PARKED event -- a fabricated status.
+    It now asserts the real, honest contract: a `"parked"` status with
+    an explicit `parked_reason` (here, the unnamed sequence-gap case,
+    reported as `"sequence_gap_awaiting_predecessor"` rather than a
+    bare `None` -- see app/api/relay_routes.py's own comment)."""
     _seed_tenant_and_stream(db_session)
     seq2 = _execution_envelope(event_id="evt-ooo-2", export_sequence=2, broker_order_id="paper-ooo-2")
 
@@ -354,14 +345,15 @@ def test_out_of_order_sequence_in_one_batch_parks_then_resolves_without_500(clie
     response = _signed_post(client, body)
     assert response.status_code == 200
     results = response.json()["results"]
-    # This assertion documents the known gap above, it is not an
-    # endorsement of it: the route reports "applied" even though the
-    # event below is, provably, NOT applied.
-    assert results[0]["status"] == "applied"
+    assert results[0] == {
+        "status": "parked",
+        "event_id": "evt-ooo-2",
+        "parked_reason": "sequence_gap_awaiting_predecessor",
+    }
 
     inbox_event = db_session.get(InboxEvent, "evt-ooo-2")
     assert inbox_event is not None
-    assert inbox_event.applied_at is None  # genuinely parked -- the "applied" label above is inaccurate for this row
+    assert inbox_event.applied_at is None  # genuinely parked -- now honestly labeled as such
 
     # The real, load-bearing safety property: no ledger entry exists for
     # a genuinely unapplied event, regardless of what the HTTP label says.

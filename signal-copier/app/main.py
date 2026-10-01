@@ -703,6 +703,20 @@ async def health() -> dict:
     except Exception:  # noqa: BLE001 - health check must never raise
         outbox_row_count, outbox_backlog_bytes = None, None
         outbox_backlog_ok = False
+    # Track 42: same "real, live, informational-only" treatment as
+    # `outbox_backlog_*` just above -- a nonzero count here means the
+    # relay worker (app/relay_worker.py's own `classify_parked_reason`)
+    # has already seen at least one export event the commercial relay
+    # reported as STRUCTURALLY parked (will never resolve without a
+    # code change on either side) and stopped resending it. Never gates
+    # overall `status`, same reasoning as every other informational flag
+    # here: a structurally-parked event is a real, standing data/ops
+    # issue worth a human's attention, but it does not itself mean a
+    # live position is unprotected right now.
+    try:
+        terminally_parked_export_event_count = store.terminally_parked_export_event_count()
+    except Exception:  # noqa: BLE001 - health check must never raise
+        terminally_parked_export_event_count = None
     # Cross-process/cross-host fencing (app/writer_lease.py, docs/FAILOVER.md):
     # None for a standby (it never holds a lease -- see `lifespan`); for the
     # active writer, True only if this process's own fencing token is still
@@ -734,6 +748,7 @@ async def health() -> dict:
         "outbox_backlog_bytes": outbox_backlog_bytes,
         "outbox_backlog_row_count": outbox_row_count,
         "outbox_backlog_ceiling_bytes": config.EXPORT_OUTBOX_SIZE_CEILING_BYTES,
+        "terminally_parked_export_event_count": terminally_parked_export_event_count,
         "writer_lease_ok": writer_lease_ok,
     }
 

@@ -218,6 +218,31 @@ async def test_scheduler_logs_a_structured_warning_when_over_ceiling_but_never_d
     assert bytes_after == backlog_bytes
 
 
+# --- Track 42: the terminally-parked-export-event informational signal ---
+
+
+def test_health_reports_a_real_terminally_parked_export_event_count(client, monkeypatch):
+    """Same informational-only treatment as `outbox_backlog_*` above --
+    see app/relay_worker.py's `classify_parked_reason` for how an event
+    gets here, and app/db.py's `terminally_parked_export_event_count` for
+    the real, live measurement this reads."""
+    store, http_client = client
+    store.append_export_event(_envelope("evt-tp-1", 0))
+    with http_client:
+        response = http_client.get("/health")
+    assert response.json()["terminally_parked_export_event_count"] == 0
+
+    store.mark_export_events_terminally_parked([("evt-tp-1", "unsupported_schema_version:9.9")])
+    monkeypatch.setattr(main_module.price_monitor, "last_success_at", dt.datetime.now(dt.timezone.utc))
+    monkeypatch.setattr(main_module.reconciler, "last_success_at", dt.datetime.now(dt.timezone.utc))
+    with http_client:
+        response = http_client.get("/health")
+    body = response.json()
+    assert body["terminally_parked_export_event_count"] == 1
+    # Never folded into the critical status gate, same INT-040 reasoning.
+    assert body["status"] == "ok"
+
+
 def test_no_code_path_anywhere_deletes_or_truncates_export_events(store):
     """Structural, standing check: this codebase must never grow a DELETE/
     TRUNCATE against export_events to relieve storage pressure -- the
