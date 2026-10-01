@@ -147,6 +147,21 @@ engine's data integrity and operational-safety guarantees.
   `c88bb66`).
 
 ### Fixed
+- Track 37: `app/main.py`'s `_evaluate_phone_escalation_for_event`
+  (Track 13's phone-escalation gate) passed `covered_by_direct_source=
+  False` to `evaluate_escalation` unconditionally, a documented stopgap
+  from before Track 12's cross-transport correlation layer landed. It
+  now computes this from Track 12's real correlation query
+  (`SignalStore.find_correlation_candidates` + `app/signal_correlation
+  .classify_candidate`, via the new `_resolve_direct_source_coverage`
+  helper) whenever the escalation-eligible notification event has a
+  parsed `Signal` to fingerprint from — `True` only for a real
+  CORROBORATING candidate from a different transport, `False` when
+  checked and none exists. For the genuinely structural case (no
+  parseable content at all, e.g. a bare pointer notification), this is
+  honestly reported as `None`/`"not_computable"` rather than guessed as
+  `False` — see docs/KNOWN_ISSUES.md for exactly what remains
+  uncomputable and why.
 - Managed-lifecycle fills never built or exported a real `EXECUTION_APPLIED`
   envelope (`signal_platform_contracts.EventEnvelope`/
   `ExecutionAppliedPayload`) to the private export outbox — only

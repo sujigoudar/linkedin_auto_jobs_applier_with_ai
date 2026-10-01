@@ -15,27 +15,44 @@ fixed, `/system/readiness` under-reports what this build can actually
 prove about who holds write authority. See
 `docs/state/PENDING_DECISIONS.md`.
 
-## Phone-escalation's `covered_by_direct_source` is stale, not just incomplete
+## Phone-escalation's `covered_by_direct_source` is uncomputable for a notification with no parseable content
 
-`app/main.py`'s `_evaluate_phone_escalation_for_event` (the call site at
-`app/main.py:4800`) passes `covered_by_direct_source=False` to
-`evaluate_escalation` unconditionally. Its own surrounding docstring says
-this is a stopgap: Track 12's real cross-transport signal-correlation
-query (`agent-track12-whop-correlation`) had not diverged from this
-function's base commit at the time it was written, so nothing from it
-could be read or imported, and the docstring asks for this call site to
-be "reconcile[d] ... with Track 12's real 'events needing escalation'
-query once it lands." Track 12 landed (`57cb9f9`) and ships a real
+Track 37 wired `app/main.py`'s `_evaluate_phone_escalation_for_event`
+(via the new `_resolve_direct_source_coverage` helper) to Track 12's real
 correlation query — `SignalStore.find_correlation_candidates`
-(`app/db.py:2092`) — but this call site was never updated to use it.
-Until it is, `_evaluate_phone_escalation_for_event` always behaves as if
-no other live source has ever already delivered the same signal, which
-is `EscalationCandidate`'s own docstring's point 1
-(`app/phone_escalation.py`) never actually being checked against real
-data — a genuine, currently-accurate gap, not merely a known limitation.
-Wiring it is a separate task: it needs careful review of what
-`find_correlation_candidates` actually returns and how to map that onto
-`covered_by_direct_source`/`direct_source_name`, not a one-line change.
+(`app/db.py:2092`) plus `app/signal_correlation.py`'s `classify_candidate`
+— instead of the `covered_by_direct_source=False` stopgap this call site
+used to pass unconditionally. For a `needs_review_incomplete_content`
+event whose passively-captured text was nonetheless partially parseable
+(e.g. a device-reported `TRUNCATED` notification whose visible text
+still resolved to a real symbol/side/price — this module's own
+`classify_text_signal` disposition still runs even when the completeness
+verdict ends up non-`COMPLETE`), `covered_by_direct_source` is now a
+real, checked `True`/`False`: `True` only when a CORROBORATING candidate
+from a DIFFERENT transport (`channel_id`) exists within Track 12's
+configured price-tolerance/timestamp window; `False` when real identity
+was available and genuinely no such candidate was found.
+
+What remains a genuine, currently-accurate gap — not a vague "stopgap" —
+is the structural case documented in `_resolve_direct_source_coverage`'s
+own docstring: an escalation-eligible notification can have **nothing
+parseable at all** (a bare `POINTER_ONLY`/`TITLE_ONLY` pointer, or a
+`TRUNCATED` fragment that didn't happen to parse) — that is exactly why
+point 2 of `app/phone_escalation.py`'s own docstring flagged it for
+escalation in the first place. Track 12's correlation is a
+content-fingerprint match (`fingerprint_key`) and has no way to compute
+one with no parsed `symbol`/`side`, so there is no real data this call
+site could check. For that case, `_resolve_direct_source_coverage`
+returns `None` ("not computable from this path") rather than guessing
+`False` — surfaced honestly in `_evaluate_phone_escalation_for_event`'s
+own return value as `direct_source_coverage: "not_computable"` (distinct
+from a genuinely checked `"not_covered"`) and logged explicitly. The
+actual gate decision still falls back to the same safe default this
+call site always used (`covered_by_direct_source=False`, i.e. proceed to
+the other escalation gates rather than silently skip evaluation) — see
+that function's own docstring for why treating "unknown" as an
+affirmative "yes, covered" would be the wrong direction to fail closed
+in here.
 
 ## `release_status` has no real taxonomy yet
 

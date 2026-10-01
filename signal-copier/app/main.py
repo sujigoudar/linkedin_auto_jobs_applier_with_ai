@@ -4763,6 +4763,92 @@ def _resolve_phone_control_adapter(config_row: dict | None) -> tuple[Any, Any]:
     return None, None
 
 
+def _resolve_direct_source_coverage(parsed_signal: Signal | None) -> tuple[bool | None, str | None, str]:
+    """Track 37: the real wiring between Track 13's escalation gate and
+    Track 12's cross-transport correlation layer (`app/signal_correlation.py`,
+    `SignalStore.find_correlation_candidates`), reconciling
+    `app.phone_escalation.EscalationCandidate`'s documented expectation
+    with what Track 12 actually shipped.
+
+    Track 12's correlation is a CONTENT-FINGERPRINT match
+    (`app.signal_correlation.fingerprint_key`): it needs a real
+    `symbol`/`side`/`asset_class` and a `channel_id` to even compute a
+    key, and a real `price` on both sides to classify a candidate as
+    CORROBORATING vs CONFLICTING (`classify_candidate`). An
+    escalation-eligible notification event, BY DEFINITION, may have
+    nothing parseable at all (`ContentCompleteness.POINTER_ONLY`/a title
+    with no body) -- that is exactly why point 2 of
+    `app/phone_escalation.py`'s own docstring flagged it for escalation
+    in the first place. So this is a genuine, structural limitation, not
+    a oversight: for such an event there is no parsed `Signal` to compute
+    a fingerprint from, and no amount of extra code here can manufacture
+    one. Returns `(None, None, reason)` in that case -- "not computable
+    from this path" -- rather than guessing `False` (which would silently
+    claim "checked, and no other source has this" when nothing was
+    actually checked).
+
+    When `parsed_signal` IS available (this module's own disposition
+    pipeline still attempts to parse `best_text` even for a
+    `needs_review_incomplete_content` classification -- see the caller's
+    own `disposition = classify_text_signal(...)` above -- so a
+    TRUNCATED/PARTIAL event whose visible text was nonetheless enough to
+    parse a symbol/side/price DOES reach here with one), this calls the
+    exact same primitives Track 12's own consumer
+    (`app.engine.SignalCopierEngine._correlate_cross_transport`) uses --
+    `SignalStore.find_correlation_candidates` + `classify_candidate` --
+    rather than reimplementing the comparison. Returns `(True,
+    candidate_source, reason)` the moment a CORROBORATING candidate from
+    a DIFFERENT transport (`channel_id`) is found within the configured
+    window/tolerance -- a genuine, independent direct-source confirmation.
+    Otherwise `(False, None, reason)`: real identity was available and
+    checked, and no corroborating candidate exists today. A CONFLICTING
+    candidate is deliberately NOT treated as coverage either way (it
+    disagrees on substance -- see `CorrelationOutcome`'s own docstring --
+    so it is neither "confirmed covered" nor grounds to call this event
+    uncovered with extra confidence); it is still recorded as evidence by
+    `app.engine`'s own live-routing path if/when this same signal is
+    later routed, this function only answers the escalation gate's own
+    question."""
+    if parsed_signal is None:
+        return None, None, "no parsed_signal at all for this event -- nothing parseable to fingerprint"
+    if parsed_signal.channel_id is None:
+        return None, None, "parsed_signal has no channel_id -- cannot scope a cross-transport correlation query"
+
+    from app.signal_correlation import CorrelationOutcome, classify_candidate, fingerprint_key
+
+    window = config.SIGNAL_CORRELATION_TIMESTAMP_WINDOW_SECONDS
+    price_tolerance = config.SIGNAL_CORRELATION_PRICE_TOLERANCE_PCT
+    received_at = (
+        parsed_signal.received_at
+        if parsed_signal.received_at.tzinfo
+        else parsed_signal.received_at.replace(tzinfo=timezone.utc)
+    )
+    since = datetime.fromtimestamp(received_at.timestamp() - window, tz=timezone.utc)
+    until = datetime.fromtimestamp(received_at.timestamp() + window, tz=timezone.utc)
+    key = fingerprint_key(parsed_signal)
+    candidates = store.find_correlation_candidates(
+        fingerprint_key=key, exclude_channel_id=parsed_signal.channel_id, since=since, until=until
+    )
+    for candidate in candidates:
+        outcome = classify_candidate(
+            new_price=parsed_signal.price,
+            new_side=parsed_signal.side.value,
+            new_received_at=received_at,
+            candidate_price=candidate["price"],
+            candidate_side=candidate["side"],
+            candidate_received_at=datetime.fromisoformat(candidate["received_at"]),
+            price_tolerance_pct=price_tolerance,
+            window_seconds=window,
+        )
+        if outcome is CorrelationOutcome.CORROBORATING:
+            return (
+                True,
+                candidate["source"],
+                f"corroborating candidate from channel_id={candidate['channel_id']!r} (signal id={candidate['id']})",
+            )
+    return False, None, f"{len(candidates)} fingerprint-matching candidate(s) checked, none corroborating"
+
+
 async def _evaluate_phone_escalation_for_event(
     *,
     device_id: str,
@@ -4770,18 +4856,28 @@ async def _evaluate_phone_escalation_for_event(
     notification_key: str,
     content_hash: str,
     completeness: ContentCompleteness,
+    parsed_signal: Signal | None = None,
 ) -> dict | None:
     """Track 13 hook: called from the `needs_review_incomplete_content`
     path below for a notification whose passively-captured content alone
     was not COMPLETE. Point 1 of app/phone_escalation.py's own docstring
     ("no official direct source already delivered this same signal") is
-    NOT yet checked here against a real Track 12 query --
-    `agent-track12-whop-correlation` had not diverged from this task's
-    own base commit at the time this was written (see
-    `app.phone_escalation.EscalationCandidate`'s own docstring) -- so
-    `covered_by_direct_source=False` is passed unconditionally today;
-    reconcile this call site with Track 12's real "events needing
-    escalation" query once it lands, rather than leaving this hardcoded.
+    now reconciled with Track 12's real correlation query via
+    `_resolve_direct_source_coverage` above, instead of the
+    `covered_by_direct_source=False` stopgap this call site used to pass
+    unconditionally (see docs/KNOWN_ISSUES.md's former entry on this,
+    now narrowed to the genuine remaining gap: a `None` ("not
+    computable") result from `_resolve_direct_source_coverage` is passed
+    to `evaluate_escalation` as `False` -- the same safe default this
+    call site always used -- because `covered_by_direct_source=True` is
+    reserved for an AFFIRMATIVE, checked confirmation; silently treating
+    "we don't know" as "yes, covered" would suppress a genuine escalation
+    candidate, and silently treating it as a checked "no" would overstate
+    what was actually verified. The `None` case is still recorded
+    honestly, never conflated with a real negative -- see the `logger.info`
+    call below and this function's own return value's
+    `direct_source_coverage` key (`"covered"`/`"not_covered"`/
+    `"not_computable"`).
     Always returns the recorded `EscalationAttempt` as a dict (never
     raises for an individual event's own escalation-evaluation outcome,
     same "one bad item doesn't sink the batch" convention as the caller
@@ -4817,6 +4913,27 @@ async def _evaluate_phone_escalation_for_event(
             if app_config_row is not None and not app_config_row["active_retrieval_allowed"]:
                 config_obj = None
 
+    coverage, direct_source_name, coverage_reason = _resolve_direct_source_coverage(parsed_signal)
+    if coverage is None:
+        logger.info(
+            "phone_escalation.direct_source_coverage_not_computable device_id=%s app_package=%s "
+            "notification_key=%s reason=%s -- proceeding as covered_by_direct_source=False (the existing "
+            "safe default), never guessed True",
+            device_id,
+            app_package,
+            notification_key,
+            coverage_reason,
+        )
+    else:
+        logger.info(
+            "phone_escalation.direct_source_coverage=%s device_id=%s app_package=%s notification_key=%s reason=%s",
+            coverage,
+            device_id,
+            app_package,
+            notification_key,
+            coverage_reason,
+        )
+
     adapter, extractor = _resolve_phone_control_adapter(config_row)
     try:
         attempt, extraction = await evaluate_escalation(
@@ -4825,7 +4942,7 @@ async def _evaluate_phone_escalation_for_event(
             notification_key=notification_key,
             content_hash=content_hash,
             completeness=completeness,
-            covered_by_direct_source=False,
+            covered_by_direct_source=bool(coverage),
             config=config_obj,
             adapter=adapter,
             extractor=extractor,
@@ -4868,6 +4985,15 @@ async def _evaluate_phone_escalation_for_event(
         "disposition": attempt.disposition.value,
         "capability_state_at_attempt": attempt.capability_state_at_attempt.value,
         "extraction_status": attempt.extraction_status.value if attempt.extraction_status else None,
+        # Track 37: the real, tri-state answer to point 1 ("did a direct
+        # source already cover this") -- "covered"/"not_covered" are
+        # both a genuinely checked Track 12 correlation result;
+        # "not_computable" is the honest, distinct case where this event
+        # had nothing parseable to correlate from at all (see
+        # `_resolve_direct_source_coverage`'s own docstring) -- never
+        # silently folded into "not_covered".
+        "direct_source_coverage": "covered" if coverage is True else ("not_covered" if coverage is False else "not_computable"),
+        "direct_source_name": direct_source_name,
     }
 
 
@@ -5085,6 +5211,7 @@ async def _process_notification_bridge_event(device: dict, event: NotificationBr
             notification_key=event.notification_key,
             content_hash=new_hash,
             completeness=completeness,
+            parsed_signal=parsed_signal,
         )
 
     store.save_notification_bridge_event(
