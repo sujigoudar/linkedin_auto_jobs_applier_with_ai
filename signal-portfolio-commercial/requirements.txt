@@ -25,5 +25,7 @@ prometheus-client>=0.20  # Track 11's private operational metrics (app/metrics.p
                          # library, same convention, as signal-copier's own app/metrics.py.
 pytest
 pytest-asyncio
+hypothesis>=6.100  # test-only: generated test cases for Track 38's EDIT-correlation property
+                   # test -- same library, same convention, as signal-copier's own C29 usage
 ruff>=0.6      # dev-only: lint (CI)
 mypy>=1.11     # dev-only: type checking (CI)
