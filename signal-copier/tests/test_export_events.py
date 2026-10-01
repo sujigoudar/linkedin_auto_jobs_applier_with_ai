@@ -10,7 +10,12 @@ from datetime import datetime, timezone
 import pytest
 from signal_platform_contracts import EventType, Environment, EvidenceClass
 
-from app.export_events import build_execution_applied_envelope, build_source_event_envelope, build_source_receipt_envelope
+from app.export_events import (
+    build_execution_applied_envelope,
+    build_routing_admission_outcome_envelope,
+    build_source_event_envelope,
+    build_source_receipt_envelope,
+)
 from app.models import AssetClass, DestinationAccount, OrderResult, OrderStatus, ProfitTarget, Side, Signal, SourceEvent, SourceEventKind
 
 
@@ -47,6 +52,7 @@ def test_a_genuinely_filled_result_produces_an_envelope():
     envelope = _build()
     assert envelope is not None
     assert envelope.payload["broker_order_id"] == "paper-1"
+    assert envelope.event_id == "execution-applied:acct1:paper-1"
 
 
 def test_a_pending_result_with_every_field_populated_still_produces_nothing():
@@ -102,6 +108,33 @@ def test_currency_resolves_from_a_slash_pair_symbol():
 def test_currency_defaults_to_usd_for_a_plain_symbol():
     envelope = _build()
     assert envelope.payload["instrument"]["currency"] == "USD"
+
+
+@pytest.mark.parametrize(
+    "asset_class, expected_convention",
+    [
+        (AssetClass.CRYPTO, "units"),
+        (AssetClass.FOREX, "units"),
+        (AssetClass.EQUITY, "shares"),
+        (AssetClass.OPTION, "contracts"),
+        (AssetClass.FUTURE, "contracts"),
+    ],
+)
+def test_quantity_convention_is_correct_per_asset_class(asset_class, expected_convention):
+    """`_QUANTITY_CONVENTION_BY_ASSET_CLASS`'s own real exported value --
+    a wrong literal here would silently mislabel every fill's actual
+    unit of quantity (shares vs. contracts vs. units) in the exported
+    EXECUTION_APPLIED payload."""
+    result = OrderResult(
+        account_id="acct1", status=OrderStatus.FILLED, signal_id="sig-1",
+        broker_order_id="paper-1", filled_quantity=2.0, filled_price=150.0,
+    )
+    envelope = build_execution_applied_envelope(
+        result, account=_account(), symbol="AAPL", side=Side.BUY, asset_class=asset_class,
+        source_stream="signal-copier:acct1", export_sequence=0, producer_id="test-producer",
+        evidence_class=EvidenceClass.INTERNAL_PAPER, environment=Environment.LOCAL_SIM,
+    )
+    assert envelope.payload["instrument"]["quantity_convention"] == expected_convention
 
 
 def _build_receipt(**overrides):
@@ -202,6 +235,40 @@ def test_ordered_targets_and_entry_range_are_carried_through_to_the_payload():
     assert envelope.payload["source"]["parser_version"] == "webhook-json-v1"
 
 
+def test_entry_expiration_is_exported_as_a_json_serializable_string_not_a_raw_datetime():
+    """`SourceReceiptPayload.entry_expiration` is a real `datetime | None`
+    field -- `payload.model_dump(mode="json")` (not "python") is what
+    actually turns it into a JSON-safe string here; a corrupted mode
+    string would leave a raw, non-JSON-serializable `datetime` object
+    silently sitting in the exported payload whenever a source actually
+    supplies an expiration (this repo's own test suite never previously
+    set this field to a real value, so the mode argument looked
+    unexercised)."""
+    expiration = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
+    signal = Signal(source="tradingview", symbol="AAPL", side=Side.BUY, quantity=10.0, entry_expiration=expiration)
+    envelope = build_source_receipt_envelope(
+        signal, source_stream="signal-copier:source:tradingview", export_sequence=0,
+        producer_id="test-producer", evidence_class=EvidenceClass.INTERNAL_PAPER, environment=Environment.LOCAL_SIM,
+    )
+    assert isinstance(envelope.payload["entry_expiration"], str)
+
+
+def test_source_receipt_venue_is_the_literal_unspecified_not_fabricated():
+    """No broker/venue is known yet at SOURCE_RECEIPT time (see this
+    builder's own docstring) -- the real, exported literal must be
+    exactly 'unspecified', not some other placeholder."""
+    envelope, _ = _build_receipt()
+    assert envelope.payload["instrument"]["venue"] == "unspecified"
+
+
+def test_parser_version_defaults_to_the_disclosed_unversioned_literal():
+    """A signal with no real `parser_version` set must fall back to the
+    exact disclosed-default literal `"unversioned"` (see
+    `_UNVERSIONED_PARSER`'s own docstring), not some other placeholder."""
+    envelope, _ = _build_receipt()
+    assert envelope.payload["source"]["parser_version"] == "unversioned"
+
+
 def test_a_signal_with_no_new_fields_produces_the_same_shape_as_before():
     """Backward compatibility: a Signal that never sets any of the new
     fields exports exactly the same envelope a pre-existing producer
@@ -297,10 +364,69 @@ def test_source_event_envelope_for_an_original_message():
         producer_id="test-producer", evidence_class=EvidenceClass.INTERNAL_PAPER, environment=Environment.LOCAL_SIM,
     )
     assert envelope.event_type == EventType.SOURCE_EVENT
+    assert envelope.event_id == f"source-event:{event.id}"
     assert envelope.payload["kind"] == "original"
     assert envelope.payload["source"]["source_channel_id"] == "chan-1"
     assert envelope.payload["source"]["source_event_id"] == "msg-1"
     assert envelope.payload["signal"]["price"] == "65000.0"
+
+
+def test_source_event_envelope_provider_timestamp_is_json_serializable_not_a_raw_datetime():
+    """`SourceEventPayload.provider_timestamp` is a real, required
+    `datetime` field (not `None`-able) -- `model_dump(mode="json")` (not
+    "python") is what actually turns it into a JSON-safe string here;
+    unlike `Money`-typed fields, this field has no field-level serializer
+    of its own, so a corrupted mode argument would leave a raw,
+    non-JSON-serializable `datetime` object silently sitting in every
+    exported SOURCE_EVENT payload."""
+    event = SourceEvent(
+        source="telegram", kind=SourceEventKind.DELETE, channel_id="chan-1", message_id="msg-1",
+        provider_timestamp=datetime.now(timezone.utc),
+    )
+    envelope = build_source_event_envelope(
+        event, source_stream="signal-copier:source:telegram", export_sequence=0,
+        producer_id="test-producer", evidence_class=EvidenceClass.INTERNAL_PAPER, environment=Environment.LOCAL_SIM,
+    )
+    assert isinstance(envelope.payload["provider_timestamp"], str)
+
+
+def test_source_event_envelope_inner_signal_venue_is_the_literal_unspecified():
+    signal = Signal(source="telegram", symbol="BTCUSDT", side=Side.BUY, quantity=1.0, price=65000.0)
+    event = SourceEvent(
+        source="telegram", kind=SourceEventKind.ORIGINAL, channel_id="chan-1", message_id="msg-1",
+        provider_timestamp=datetime.now(timezone.utc), signal=signal,
+    )
+    envelope = build_source_event_envelope(
+        event, source_stream="signal-copier:source:telegram", export_sequence=0,
+        producer_id="test-producer", evidence_class=EvidenceClass.INTERNAL_PAPER, environment=Environment.LOCAL_SIM,
+    )
+    assert envelope.payload["signal"]["instrument"]["venue"] == "unspecified"
+
+
+def test_source_event_envelope_carries_the_inner_signals_own_targets():
+    """The inner `SourceReceiptPayload` built for a SOURCE_EVENT row has
+    its OWN separate `targets=[...]` list comprehension (distinct from
+    `build_source_receipt_envelope`'s own, already-tested one) -- a
+    `quantity`/`fraction` None-check flipped there would silently swap
+    which of a target's quantity/fraction comes through as a real value
+    vs. `None`, specifically on THIS code path."""
+    signal = Signal(
+        source="telegram", symbol="BTCUSDT", side=Side.BUY, quantity=1.0, price=65000.0,
+        targets=[ProfitTarget(price=66000.0, quantity=0.5, label="TP1"), ProfitTarget(price=67000.0, fraction=0.5, label="TP2")],
+    )
+    event = SourceEvent(
+        source="telegram", kind=SourceEventKind.ORIGINAL, channel_id="chan-1", message_id="msg-1",
+        provider_timestamp=datetime.now(timezone.utc), signal=signal,
+    )
+    envelope = build_source_event_envelope(
+        event, source_stream="signal-copier:source:telegram", export_sequence=0,
+        producer_id="test-producer", evidence_class=EvidenceClass.INTERNAL_PAPER, environment=Environment.LOCAL_SIM,
+    )
+    targets = envelope.payload["signal"]["targets"]
+    assert targets[0]["quantity"] == "0.5"
+    assert targets[0]["fraction"] is None
+    assert targets[1]["quantity"] is None
+    assert targets[1]["fraction"] == "0.5"
 
 
 def test_source_event_envelope_for_a_delete_has_no_inner_signal():
@@ -315,6 +441,96 @@ def test_source_event_envelope_for_a_delete_has_no_inner_signal():
     assert envelope.payload["kind"] == "delete"
     assert envelope.payload["signal"] is None
     assert envelope.payload["reason"] == "retracted by analyst"
+
+
+# -- Track 49: build_routing_admission_outcome_envelope had ZERO direct --
+# -- unit tests before this -- only exercised indirectly through the -----
+# -- engine (tests/test_export_events_wiring.py), which a mutation pass ---
+# -- found left every branch of this builder unasserted. ------------------
+
+
+def _build_outcome(**overrides):
+    fields = {
+        "outcome": "admitted_filled",
+        "account": DestinationAccount(account_id="acct1", broker="paper"),
+        "broker": "paper",
+        "order_status": OrderStatus.FILLED,
+        "message": None,
+    }
+    fields.update(overrides)
+    signal = Signal(source="tradingview", symbol="AAPL", side=Side.BUY, quantity=10.0, price=150.0)
+    return build_routing_admission_outcome_envelope(
+        signal,
+        outcome=fields["outcome"],
+        source_stream="signal-copier:source:tradingview",
+        export_sequence=0,
+        producer_id="test-producer",
+        evidence_class=EvidenceClass.INTERNAL_PAPER,
+        environment=Environment.LOCAL_SIM,
+        account=fields["account"],
+        broker=fields["broker"],
+        order_status=fields["order_status"],
+        message=fields["message"],
+    ), signal
+
+
+def test_a_routed_and_filled_outcome_produces_a_real_envelope():
+    """The load-bearing happy path: a `signal.side != Side.CLOSE` signal
+    with a real routing outcome must actually produce an envelope -- an
+    `==`/`!=` flip on the CLOSE guard would make this (the common,
+    non-CLOSE case) silently produce nothing instead."""
+    envelope, signal = _build_outcome()
+    assert envelope is not None
+    assert envelope.event_type == EventType.ROUTING_ADMISSION_OUTCOME
+    assert envelope.payload["outcome"] == "admitted_filled"
+    assert envelope.payload["originating_source_event_id"] == f"source-receipt:{signal.id}"
+
+
+def test_a_close_signal_outcome_produces_nothing():
+    envelope, _ = _build_outcome()
+    signal = Signal(source="tradingview", symbol="AAPL", side=Side.CLOSE)
+    envelope = build_routing_admission_outcome_envelope(
+        signal, outcome="not_routed", source_stream="signal-copier:source:tradingview", export_sequence=0,
+        producer_id="test-producer", evidence_class=EvidenceClass.INTERNAL_PAPER, environment=Environment.LOCAL_SIM,
+    )
+    assert envelope is None
+
+
+def test_outcome_with_a_real_account_carries_account_identity_and_event_id():
+    envelope, signal = _build_outcome()
+    assert envelope.payload["account"]["account_id"] == "acct1"
+    assert envelope.event_id == f"routing-outcome:{signal.id}:acct1"
+    # `build_subject`'s own `source`/`account` cluster-name prefixes --
+    # a renamed subject_clusters key would silently vanish from the
+    # real, exported `subject` dict without raising.
+    assert "source.source_provider_id" in envelope.subject
+    assert envelope.subject["account.account_id"] == "acct1"
+
+
+def test_not_routed_outcome_with_no_account_carries_no_account_identity():
+    """`account=None` (the real `not_routed`/`disabled_by_settings` case)
+    must leave `payload['account']` honestly `None` -- never fabricated --
+    and the event_id must fall back to the literal 'unrouted' suffix."""
+    envelope, signal = _build_outcome(account=None, broker=None, order_status=None)
+    assert envelope.payload["account"] is None
+    assert envelope.event_id == f"routing-outcome:{signal.id}:unrouted"
+
+
+def test_order_status_is_carried_through_when_an_order_was_actually_attempted():
+    envelope, _ = _build_outcome(order_status=OrderStatus.REJECTED)
+    assert envelope.payload["order_status"] == "rejected"
+
+
+def test_order_status_is_honestly_none_when_no_order_was_ever_attempted():
+    """A `not_routed`/`disabled_by_settings` outcome never attempted an
+    order -- `order_status` must stay `None`, never fabricated."""
+    envelope, _ = _build_outcome(order_status=None)
+    assert envelope.payload["order_status"] is None
+
+
+def test_message_is_carried_through_verbatim():
+    envelope, _ = _build_outcome(message="rejected: insufficient buying power")
+    assert envelope.payload["message"] == "rejected: insufficient buying power"
 
 
 def test_source_event_envelope_for_an_edit_links_revision_to_original():
