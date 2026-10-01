@@ -59,6 +59,49 @@ def test_save_eligibility_facts_rejects_an_unknown_requested_service(db_session)
         )
 
 
+def test_save_eligibility_facts_rejects_an_invalid_customer_type(db_session):
+    """`CustomerType(customer_type)` raises `ValueError` for anything
+    outside the real enum -- this must surface as the module's own
+    `InvalidEligibilityFactsError` (a clean 4xx-shaped validation
+    error), never an unhandled `ValueError` crash."""
+    _seed_membership(db_session)
+    with pytest.raises(InvalidEligibilityFactsError):
+        save_eligibility_facts(
+            db_session,
+            tenant_id="tenant-a",
+            user_id="user-a",
+            residence_country="US",
+            tax_residence=[],
+            customer_type="not-a-real-customer-type",
+            requested_service_modes=["alerts"],
+            document_versions=["v1"],
+            facts_confirmed=True,
+        )
+
+
+@pytest.mark.parametrize("service_mode", ["research", "alerts", "copying", "managed_program"])
+def test_save_eligibility_facts_accepts_every_named_valid_service_mode(db_session, service_mode):
+    """`_VALID_SERVICE_MODES` names exactly these four services (ID-04's
+    own field help text) -- each one must be individually accepted, not
+    just "some string that happens to not be `not-a-real-service`."
+    Only `research`/`alerts` were ever exercised here before; `copying`
+    and `managed_program` were never saved by any test, so a typo'd or
+    dropped entry in that frozenset would have gone unnoticed."""
+    _seed_membership(db_session)
+    assessment = save_eligibility_facts(
+        db_session,
+        tenant_id="tenant-a",
+        user_id="user-a",
+        residence_country="US",
+        tax_residence=[],
+        customer_type="individual",
+        requested_service_modes=[service_mode],
+        document_versions=["v1"],
+        facts_confirmed=True,
+    )
+    assert assessment.requested_service_modes == [service_mode]
+
+
 def test_save_then_reload_persists_the_real_submitted_facts(db_session):
     _seed_membership(db_session)
     save_eligibility_facts(

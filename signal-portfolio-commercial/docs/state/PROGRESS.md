@@ -9,6 +9,57 @@ detailed per-phase notes (now historical; much has been built since).
 
 ## What's real and tested, most recent first
 
+- **Track 46: rights/entitlement/eligibility mutation-testing pass
+  (2026-10-01)** — widens Track 39's mutation-testing pass to the
+  rights-grant enforcement, entitlement, and eligibility-gating
+  cluster, per the explicit instruction that mutation coverage needs
+  to reach every module. Ran `mutmut` (pinned to 2.4.4 — the current
+  pip default has a broken CLI) against `app/services/
+  portfolio_rights.py`, `app/services/rights_registry.py`, and
+  `app/services/entitlement.py`, each scoped to its own test file;
+  `app/services/eligibility.py`'s run is genuinely DB-bound (54
+  mutants, each paying for a fresh disposable Postgres cluster) and
+  was capped after 9/54 and finished by a manual read-through instead
+  (the 3 mutants already found before the cap matched the manual read
+  exactly). Found and closed one genuinely dangerous, widen-access gap
+  in `portfolio_rights.py`: the `UNKNOWN_SLEEVE`/denied branch for a
+  sleeve row row-level-security hides from the current tenant (a real
+  sleeve, owned by a DIFFERENT tenant, whose FK is satisfied because
+  the FK is on `sleeve_id` alone, not a composite tenant key) was never
+  exercised by any existing test — a surviving mutant there would have
+  silently GRANTED rights to a cross-tenant sleeve reference the
+  service couldn't even see. Also closed several real, lower-priority
+  (narrow/false-reject-direction) gaps in `rights_registry.py`:
+  `check_rights`'s multi-grant loop had never been tested with more
+  than one grant per source_id, so five `continue`-vs-`break` mutants
+  survived undetected, and two exact-boundary-timestamp mutants
+  (`>`/`<` loosened to `>=`/`<=`) were likewise unverified. Added a
+  parametrized "every named valid service mode" test to
+  `eligibility.py` after finding `copying`/`managed_program` were never
+  actually saved by any existing test (only `research`/`alerts` were),
+  plus a missing-coverage test for the invalid-`customer_type`
+  validation path. No production code changed — every real gap found
+  was a test gap, closed with a new test; a handful of cosmetic/
+  equivalent survivors (dataclass-decorator and type-annotation
+  mutations inert under `from __future__ import annotations`,
+  placeholder string literals never read by any authorization
+  decision) are documented in CHANGELOG.md rather than chased, per
+  Track 39's own precedent. Final scores: portfolio_rights.py 15/19
+  (78.9%), rights_registry.py 33/41 (80.5%), entitlement.py 4/5 (one
+  "survived" mutant confirmed by hand to be a real kill misreported by
+  this mutmut version's exit-code handling — see CHANGELOG.md),
+  eligibility.py's full score not obtained (DB-bound run capped; manual
+  audit found and closed the 2 gaps the partial run had already
+  flagged, no further gap found by hand in the rest). Full suite after
+  these changes: `1027 passed, 0 failed`; `ruff check .`, `mypy app
+  --ignore-missing-imports`, and a from-scratch `alembic upgrade head`
+  against a fresh disposable cluster all clean. A real environment
+  finding recorded in CHANGELOG.md: this host runs several mutation-
+  testing tracks concurrently, which collides on pytest's shared
+  `/tmp/pytest-of-root/` base dir exactly like Track 40's own note
+  already flagged for plain `pytest` — use a dedicated `TMPDIR` for
+  `mutmut` too.
+
 - **Fix: NUL-byte signin/signup crash (2026-10-01).** Closes the gap
   Track 39's fuzzing found and Track 41 flagged (unfixed, outside its
   own scope) in `docs/KNOWN_ISSUES.md`: a signin/signup form body with

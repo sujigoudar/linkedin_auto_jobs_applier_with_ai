@@ -12,6 +12,137 @@ Everything in this file. This is pre-1.0, development-branch software;
 nothing here has shipped to a live production deployment
 (`docs/process/RELEASE.md`).
 
+### 2026-10-01 — Track 46: rights/entitlement/eligibility mutation-testing pass
+
+Widens Track 39's mutation-testing pass (which covered
+`trading_authority.py`/`ledger.py`) to the rights-grant enforcement,
+entitlement, and eligibility-gating cluster, per the user's own
+instruction that mutation coverage needs to reach every module. Ran
+`mutmut` (pinned to 2.4.4 — the current pip default, 3.8.0, has a
+broken CLI that errors before even parsing `--paths-to-mutate`)
+against `app/services/portfolio_rights.py`, `app/services/
+rights_registry.py`, and `app/services/entitlement.py`, each scoped to
+its own dedicated test file. `app/services/eligibility.py`'s run is
+genuinely DB-bound (each of its 54 mutants pays the cost of a fresh
+disposable Postgres cluster, since `evaluate_eligibility`'s tests use
+`db_session`) and was still only 9/54 through after ~25 minutes;
+capped it and fell back to a manual read-through of the module plus
+its test file (same fallback Track 43 used for `engine.py`) — the 3
+survivors `mutmut` had already found by the cap matched the manual
+read exactly, which is good evidence the manual pass for the remaining
+45 untested mutants is sound rather than a guess.
+
+A real environment finding along the way, worth recording for whoever
+runs `mutmut` next on this host: this container runs several other
+mutation-testing tracks' test suites concurrently, and pytest's shared
+`/tmp/pytest-of-root/` base dir collides across sessions (intermittent
+"Permission denied" on `initdb`) — exactly the hazard Track 40's own
+PROGRESS.md note already flagged for plain `pytest`, and it applies
+identically to `mutmut`. Always run with a dedicated `TMPDIR` (e.g.
+`TMPDIR=/tmp/pytest-track46-isolated`). Separately, `mutmut`'s own exit-
+code handling does not recognize pytest's "Interrupted: error during
+collection" exit code — a mutant that raises at import time (e.g.
+`frozenset(...) - {...}` mutated to `+`, or `@dataclass(frozen=True)`
+removed entirely) is reported as SURVIVED even though manually applying
+it and running pytest shows a real, unambiguous collection failure.
+Confirmed this by hand on several such mutants below; they are real
+kills, not real gaps, just a tool limitation of this mutmut version.
+
+#### Added
+- `tests/test_portfolio_rights.py`: added
+  `test_a_cross_tenant_sleeve_reference_hidden_by_rls_is_treated_as_unknown_not_allowed`,
+  a genuine, dangerous-direction gap this pass found. The existing
+  `sleeve is None` / `UNKNOWN_SLEEVE` branch in `check_portfolio_rights`
+  was only ever reached in tests via the FK rejecting a membership row
+  for a sleeve_id that exists nowhere at all — it was never exercised
+  via the real production path: a `PortfolioVersionSleeve` row whose
+  `sleeve_id` FK is satisfied (the sleeve genuinely exists) but belongs
+  to a DIFFERENT tenant, so row-level security hides it from
+  `session.get(Sleeve, ...)` under the current tenant scope (the FK is
+  on `sleeve_id` alone, not a composite `(tenant_id, sleeve_id)` key —
+  see that model's own docstring on this exact point). The surviving
+  mutant flipped that branch to `allowed=True`, i.e. it would have
+  silently GRANTED portfolio rights for a cross-tenant sleeve reference
+  the service couldn't even see — exactly the dangerous widen-access
+  direction. The new test uses the real `tenant_session_factory` +
+  `set_tenant_scope` RLS path (not the superuser `db_session` the rest
+  of the file uses) to exercise this for real. Also added one assertion
+  (`failing_sleeve_id is None` on the no-sleeves case) catching a
+  dataclass-default mutant (`None` → `""`). Mutation score: 15/19
+  killed (78.9%); the 4 remaining survivors are equivalent/cosmetic —
+  toggling or removing `@dataclass(frozen=True)` and corrupting the
+  `str | None` annotation to `str & None` are all inert at runtime
+  because the module has `from __future__ import annotations`
+  (annotations are never evaluated), and the fourth mutates the
+  success-path's cosmetic `"ALL_SLEEVES_GRANTED"` reason string, which
+  no caller branches on.
+- `tests/test_rights_registry.py`: added four tests/assertions closing
+  real gaps. (1) `result.grant_id is None` on the no-grant case and
+  `result.reason == "GRANTED"` on the matching-grant case (dataclass-
+  default and cosmetic-string mutants). (2)
+  `test_an_effective_at_exactly_equal_to_now_is_allowed_not_denied` and
+  its `expires_at` symmetric case, locking in that `check_rights`'s
+  strict `effective_at > now` / `expires_at < now` denial conditions
+  are the INTENDED boundary (a grant becoming effective or expiring at
+  this exact instant must already count as effective / not yet
+  lapsed) — without these, mutants loosening either strict comparison
+  to `>=`/`<=` survived undetected. (3)
+  `test_a_non_matching_grant_does_not_short_circuit_a_later_matching_one`
+  — the real production-logic gap: `check_rights` loops over every
+  GRANTED grant for a `source_id`, and with only ever one grant per
+  existing test, mutating any of the loop's five `continue` statements
+  (on the `use`/window/`channel`/`jurisdiction`/`asset` checks) to
+  `break` was indistinguishable from correct behavior — a `break` gives
+  up on the whole `source_id` the instant the FIRST grant it happens to
+  see fails any one criterion, even when a later grant would otherwise
+  match. Added one grant per failing criterion plus a final matching
+  grant and asserted the matching one is still found; this is the
+  narrow/false-reject direction (same lower priority Track 39 used),
+  but a real gap worth closing since multiple grants per source over
+  time is an entirely normal, expected state. Added an optional
+  `grant_id=` parameter to the file's own `_granted()` test helper
+  (default unchanged) so multiple grants per `source_id` can coexist in
+  one test. Mutation score: 33/41 killed (80.5%); the 8 remaining
+  survivors are equivalent/cosmetic — 3 are the same dataclass-
+  decorator/annotation-under-`from __future__ import annotations` class
+  as above, and 5 are placeholder string literals inside
+  `seed_unknown_source` (`"unknown-{source_id}"`, `""`, three
+  `"unset"` fields) that are never read by any authorization/gating
+  decision, only ever used for owner-review bookkeeping per that
+  function's own docstring.
+- `tests/test_entitlement.py`: no new tests needed — this module's
+  existing parametrization already exercises every `SubscriptionState`
+  against both `authorizes_new_entry` and
+  `authorizes_risk_reducing_management` explicitly, plus a structural
+  import-guard test. Mutation score: 4/5 killed; the 1 "survived"
+  mutant (`frozenset(SubscriptionState) - {...}` mutated to `+`, which
+  does not even type-check as a valid `frozenset` operation) is
+  confirmed by hand to be a real kill misreported by `mutmut`'s exit-
+  code handling (see the tool-limitation note above) — applying it
+  raises `TypeError` at module import, a genuine pytest collection
+  failure, not a surviving behavioral gap.
+- `tests/test_eligibility.py`: added
+  `test_save_eligibility_facts_rejects_an_invalid_customer_type`
+  (the `CustomerType(customer_type)` → `ValueError` →
+  `InvalidEligibilityFactsError` translation path had no test at all —
+  an invalid customer_type string would previously have been exercised
+  only implicitly) and
+  `test_save_eligibility_facts_accepts_every_named_valid_service_mode`,
+  parametrized over all four of `_VALID_SERVICE_MODES`
+  (`research`/`alerts`/`copying`/`managed_program`) — only `research`
+  and `alerts` were ever actually saved by any existing test, so a
+  typo'd or silently-dropped `"copying"`/`"managed_program"` literal in
+  that frozenset would have gone unnoticed; confirmed by hand that
+  corrupting the `"copying"` literal makes the new parametrized case
+  fail. `mutmut`'s own full run on this module is DB-bound and was
+  capped at 9/54 mutants checked (6 killed, 3 survived) before falling
+  back to this manual read-through per the note above — the 3 mutants
+  it had found before the cap (the two now-fixed `_VALID_SERVICE_MODES`
+  literal mutants, plus the same equivalent `@dataclass(frozen=True)`
+  mutant as the other modules) matched the manual read exactly, and no
+  further genuine gap was found by hand in the remaining, unchecked
+  mutation points of `save_eligibility_facts`/`evaluate_eligibility`.
+
 ### 2026-10-01 — Track 42: honest `"applied"`/`"parked"` relay ingest status
 
 Closes the honesty gap Track 40 found and flagged (never fixed) in
