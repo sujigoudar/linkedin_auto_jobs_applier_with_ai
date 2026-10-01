@@ -93,15 +93,18 @@ YAML requiring a restart.
 
 ## Dashboard / screens
 
-A redesigned, tabbed operational-readiness console (`TR-01`..`TR-16`)
+A redesigned, tabbed operational-readiness console (`TR-01`..`TR-19`)
 covering: KPI band and attention-required queue, position/order
 lifecycle with MAE/MFE and result-attribution waterfalls, strategy/
 sleeve portfolio risk (correlation, co-drawdown, contribution), signal
 funnel and routing graph, capability/venue/reconciliation status, policy
 editor (sizing/protection/targets/trailing/deadlines/limits), saved
-filter views, backtest research reports with persisted runs, and real
+filter views, backtest research reports with persisted runs, real
 Chart.js visualizations throughout (equity curves, latency, allocation
-donuts). Built on a shared 3-level design-system token/component
+donuts), a provider-onboarding wizard (`TR-17`), a mobile-devices screen
+over Track 20's `/mobile-devices*` API (`TR-18`), and a provider-catalog
+browser over Track 14/21's provider/source/connection data model
+(`TR-19`). Built on a shared 3-level design-system token/component
 foundation. Legacy dashboard is gated behind `LEGACY_DASHBOARD_ENABLED`
 (default off).
 
