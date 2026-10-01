@@ -17,11 +17,34 @@
     .badge-configured { background: #d1fae5; color: #065f46; }
     .badge-not_configured { background: #f3f4f6; color: #374151; }
     a { color: #1e40af; }
+    .skip-link {
+      position: absolute;
+      left: -999px;
+      top: auto;
+      width: 1px;
+      height: 1px;
+      overflow: hidden;
+      background: #111827;
+      color: #f9fafb;
+      padding: 0.5rem 1rem;
+      border-radius: 0.25rem;
+      z-index: 100;
+    }
+    .skip-link:focus {
+      left: 0.5rem;
+      top: 0.5rem;
+      width: auto;
+      height: auto;
+      overflow: visible;
+    }
   </style>
 </head>
 <body>
-  <header>signal-portfolio-commercial</header>
-  <main>
+  <a class="skip-link" href="#main-content">Skip to content</a>
+  <header>
+    <nav aria-label="Primary">signal-portfolio-commercial</nav>
+  </header>
+  <main id="main-content" role="main">
     <div class="panel">
       <h2>Service description</h2>
       <p>Research-backed portfolio alerts and copy-trading services. Every published product is backed by a real, versioned portfolio and reviewed methodology -- never a manufactured track record.</p>
@@ -75,3 +98,4 @@
   </main>
 </body>
 </html>
+

@@ -21,11 +21,34 @@
     .decision-eligible { color: #166534; }
     .decision-pending { color: #92400e; }
     .decision-unsupported { color: #991b1b; }
+    .skip-link {
+      position: absolute;
+      left: -999px;
+      top: auto;
+      width: 1px;
+      height: 1px;
+      overflow: hidden;
+      background: #111827;
+      color: #f9fafb;
+      padding: 0.5rem 1rem;
+      border-radius: 0.25rem;
+      z-index: 100;
+    }
+    .skip-link:focus {
+      left: 0.5rem;
+      top: 0.5rem;
+      width: auto;
+      height: auto;
+      overflow: visible;
+    }
   </style>
 </head>
 <body>
-  <header><a href="/">signal-portfolio-commercial</a></header>
-  <main>
+  <a class="skip-link" href="#main-content">Skip to content</a>
+  <header>
+    <nav aria-label="Primary"><a href="/">signal-portfolio-commercial</a></nav>
+  </header>
+  <main id="main-content" role="main">
     <h1>Service eligibility onboarding</h1>
 
     {% if error %}<div class="conflict" role="alert" aria-live="assertive">{{ error }}</div>{% endif %}
