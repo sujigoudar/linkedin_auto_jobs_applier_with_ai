@@ -64,6 +64,14 @@ def test_a_non_positive_dealing_price_is_rejected():
         units_for_cashflow(Decimal("1000"), Decimal("-5"))
 
 
+def test_a_dealing_price_at_or_below_one_but_still_positive_is_accepted():
+    """The validity boundary is strictly "positive" (> 0), not "> 1" --
+    a dealing NAV per unit of exactly 1, or a fraction below 1, is a
+    perfectly ordinary price and must not be rejected."""
+    assert units_for_cashflow(Decimal("1000"), Decimal("1")) == Decimal("1000")
+    assert units_for_cashflow(Decimal("1000"), Decimal("0.5")) == Decimal("2000")
+
+
 def test_fee_is_quantized_to_cents_instead_of_an_unrounded_long_decimal():
     """A rate/NAV combination that produces a repeating decimal
     expansion without rounding (here, a rate of exactly 1/3 against a

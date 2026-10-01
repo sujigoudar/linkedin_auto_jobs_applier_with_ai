@@ -12,6 +12,77 @@ Everything in this file. This is pre-1.0, development-branch software;
 nothing here has shipped to a live production deployment
 (`docs/process/RELEASE.md`).
 
+### 2026-10-01 — Track 47: mutation-testing pass (PAMM/MAM pooled-account accounting)
+
+Widens Track 39's mutation-testing pass (originally scoped to
+`trading_authority.py`/`ledger.py`) onto the PAMM/MAM pooled-account
+allocation and accounting modules, per the user's instruction that
+mutation coverage needs to cover every module, highest financial-risk
+first: `app/services/pamm_accounting.py` (PAMM unit/NAV high-water-mark
+fee math) and `app/services/mam_allocation.py` (MAM largest-remainder
+fair order allocation). Ran `mutmut` against each module, scoped to
+its own dedicated test file, same ad hoc CLI pattern as Track 39 (no
+persisted `setup.cfg`/`pyproject.toml` config).
+
+#### Added
+- `tests/test_pamm_accounting.py`: `units_for_cashflow`'s positive-
+  dealing-price validation was only ever tested at a clean price
+  (`10`) and at the rejected boundary (`0`, `-5`) -- a real mutant
+  (`dealing_nav_per_unit <= 1` instead of `<= 0`) survived because
+  nothing exercised a VALID price at or below 1 (e.g. a dealing price
+  of exactly `1`, or a fractional price like `0.5`). This is exactly
+  the kind of off-by-one on a financial validity boundary that would
+  silently reject legitimate low-priced-unit cashflows. New
+  `test_a_dealing_price_at_or_below_one_but_still_positive_is_accepted`
+  closes it. Mutation score: 8/12 killed (66.7%); the 4 remaining
+  survivors are all cosmetic string-literal mutations (exception
+  message text, an unused `Decimal("0.01")` string-padding mutation
+  never asserted against) -- same category Track 39 also left as
+  equivalent/non-load-bearing.
+- `tests/test_mam_allocation.py`: four real gaps closed.
+  1. `allocate_fills`'s negative-fillable-units guard (`< 0`) had no
+     test at the `0` boundary, so two off-by-one mutants (`<= 0` and
+     `< 1`) both survived by wrongly rejecting the legitimate "zero
+     units to allocate" case. New
+     `test_zero_fillable_units_is_valid_not_an_error`.
+  2. The positive-total-weight guard (`<= 0`) had no test with a
+     weight sum that is positive but less than 1 (account weights are
+     relative, never required to sum to 1), so a `<= 1` mutant
+     survived. New
+     `test_a_fractional_total_weight_below_one_is_still_a_positive_weight`.
+  3. The real money-misallocation finding: in the largest-remainder
+     redistribution loop, the per-account cap check's `continue` (skip
+     this capped account, keep trying the next one in priority order)
+     mutated to `break` (abandon redistributing the remainder
+     entirely) survived -- meaning the existing cap test never put a
+     *capped* account *first* in priority order while units still
+     remained to distribute. New
+     `test_a_capped_account_first_in_priority_order_is_skipped_not_a_stop`
+     constructs exactly that scenario (three equal-weight accounts,
+     account `"a"` -- first by the ascending tie-break -- already at
+     its cap) and asserts the remainder correctly flows to `"b"`
+     instead of being stranded as `unallocated_units`.
+  4. `MamAllocationResult`'s `frozen=True` (immutability, since an
+     allocation result is meant to be an immutable audit artifact) and
+     its `remainders` field's `default_factory=dict` (vs. `None`, were
+     a future caller ever to construct the dataclass directly without
+     passing `remainders`) were asserted nowhere. New
+     `test_mam_allocation_result_is_immutable` and
+     `test_mam_allocation_result_remainders_defaults_to_an_empty_dict`.
+  Mutation score: 42/45 killed (93.3%). Of the 3 remaining survivors,
+  2 are the same cosmetic string-literal category as above
+  (`ValueError` message text); the third -- the loop-exit mutant
+  `if remaining <= 0: break` mutated to `continue` -- is a confirmed
+  **equivalent mutant**: once `remaining` reaches 0 it never changes
+  again inside that branch, so every subsequent loop iteration just
+  re-triggers the same `continue` with no side effect, producing an
+  identical final `allocations`/`unallocated_units` to `break`; only
+  the (unobservable) iteration count differs.
+
+No production code changed in either module -- every real survivor
+was a genuine test gap, closed with a new, targeted test; no existing
+test was weakened or deleted.
+
 ### 2026-10-01 — Track 42: honest `"applied"`/`"parked"` relay ingest status
 
 Closes the honesty gap Track 40 found and flagged (never fixed) in

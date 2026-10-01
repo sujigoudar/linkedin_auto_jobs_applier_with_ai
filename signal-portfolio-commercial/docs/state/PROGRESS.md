@@ -9,6 +9,32 @@ detailed per-phase notes (now historical; much has been built since).
 
 ## What's real and tested, most recent first
 
+- **Track 47: mutation-testing pass, PAMM/MAM pooled-account accounting
+  (2026-10-01).** Widens Track 39's mutation-testing pass onto
+  `app/services/pamm_accounting.py` (PAMM unit/NAV high-water-mark fee)
+  and `app/services/mam_allocation.py` (MAM largest-remainder fair
+  order allocation), per the user's instruction that mutation coverage
+  needs to reach every module, highest financial-risk first. Found and
+  closed real survivors: `pamm_accounting`'s dealing-price validity
+  boundary had only the rejected side (`<= 0`) tested, letting an
+  `<= 1` off-by-one mutant survive; `mam_allocation`'s zero-fillable-
+  units and sub-1 total-weight boundaries had the same gap on two more
+  mutants, and -- the most significant finding -- the per-account cap
+  check inside the largest-remainder redistribution loop had its
+  `continue` (skip a capped account, keep handing the remainder to the
+  next one) survive a mutation to `break` (abandon redistributing
+  entirely), because no existing test put a capped account FIRST in
+  priority order while units still remained; a wrong allocation here
+  would be a real money-misallocation risk once PAMM/MAM wiring goes
+  live. No production code changed -- every survivor was a test gap,
+  closed with a new test, none weakened or deleted. Final scores:
+  `pamm_accounting.py` 8/12 (66.7%, remaining 4 all cosmetic exception-
+  message string mutations); `mam_allocation.py` 42/45 (93.3%,
+  remaining 3: 2 cosmetic string mutations, 1 confirmed equivalent --
+  a loop-exit `break`/`continue` swap that produces an identical final
+  result once `remaining` reaches 0, since nothing thereafter changes
+  it).
+
 - **Fix: NUL-byte signin/signup crash (2026-10-01).** Closes the gap
   Track 39's fuzzing found and Track 41 flagged (unfixed, outside its
   own scope) in `docs/KNOWN_ISSUES.md`: a signin/signup form body with
