@@ -1444,7 +1444,21 @@ CREATE TABLE IF NOT EXISTS sources (
     last_success_at TEXT,
     last_error_at TEXT,
     created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
+    updated_at TEXT NOT NULL,
+    -- Track 24: an opaque, adapter-owned poll checkpoint (JSON-encoded
+    -- scalar, same "opaque to this table, meaningful only to the
+    -- adapter that wrote it" convention as `collectors.checkpoint`) --
+    -- see app/sources/rss_source.py's own module docstring for why a
+    -- new column here, rather than a new `collectors` row, is this
+    -- adapter's checkpoint home: `register_collector`/`advance_
+    -- collector_checkpoint` enforce a CLOSED `CollectorKind` enum
+    -- (telegram/pull/email/website) -- widening that enum for an
+    -- adjacent, source-observation-pipeline adapter this track does not
+    -- wire into the pre-existing collector registries would be a wider,
+    -- unrelated blast radius than this one nullable column. `sources`
+    -- already has exactly one row per transport (Track 14) -- a bounded,
+    -- source-scoped checkpoint fits that shape directly.
+    acquisition_checkpoint TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_sources_provider_id ON sources (provider_id);
@@ -1666,6 +1680,83 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_parser_profiles_provider_active
     ON parser_profiles (provider_id)
     WHERE status = 'active';
 
+-- Track 24: `source_observations` -- the transport-agnostic adapter-
+-- boundary record (see app/sources/adapter_contract.py's own module
+-- docstring for the full design). Generalizes app/notification_bridge.py's
+-- `notification_bridge_events` shape (`content_completeness`/
+-- `content_hash`/`revision_seq`) from one specific transport (Android
+-- notification capture) into a shape any `probe`/`fetch`/`poll`/
+-- `normalize` adapter can write to, regardless of backend (RSS today;
+-- any future adapter built against the same contract later).
+--
+-- `connection_id`/`provider_id`/`source_id` are application-enforced
+-- references into `connections`/`providers`/`sources` (same "no real
+-- DB-level FOREIGN KEY, caller validates existence" convention as every
+-- other table in this schema -- see `sources`' own comment above) --
+-- `provider_id`/`source_id` are nullable because a `fetch`/`poll` call
+-- can genuinely happen against a `connection` before it has been wired
+-- to a registered `sources` row (e.g. a one-off `probe`/`fetch` during
+-- setup) -- never fabricated to a placeholder id.
+--
+-- `observation_kind` is 'created'|'edited'|'deleted'|'retrieved' (an
+-- adapter's own report of what KIND of observation this is -- most RSS
+-- entries are 'retrieved', since a public feed gives no reliable way to
+-- distinguish a genuinely new item from a republished/edited one beyond
+-- `revision_identifier`/`content_hash` changing).
+--
+-- `completeness` reuses app.notification_bridge.ContentCompleteness's
+-- exact five states verbatim (COMPLETE/PARTIAL/POINTER_ONLY/TRUNCATED/
+-- UNKNOWN) -- never a new vocabulary invented for this table, per the
+-- Track 24 brief's own instruction. `content_hash`/`revision_seq`
+-- mirror `notification_bridge_events`' own dedup/revision columns
+-- field-for-field.
+--
+-- `purpose` ('research'|'backfill'|'signal_candidate') and
+-- `eligibility_state` are this table's OWN disposition gate -- an
+-- observation becomes eligible to ever become a real `Signal` ONLY when
+-- an adapter explicitly classifies it `signal_candidate` AND the
+-- `sources` row that produced it was explicitly operator-configured for
+-- that (see `app.sources.rss_source.RssSourceAdapter`'s own docstring).
+-- `rejection_reason` is nullable and populated ONLY when `eligibility_
+-- state` is a rejected state -- never fabricated for an eligible row.
+CREATE TABLE IF NOT EXISTS source_observations (
+    id TEXT PRIMARY KEY,
+    connection_id TEXT,
+    provider_id TEXT,
+    source_id TEXT,
+    platform TEXT NOT NULL,
+    source_namespace TEXT,
+    original_item_id TEXT NOT NULL,
+    canonical_url TEXT,
+    revision_identifier TEXT,
+    observation_kind TEXT NOT NULL,
+    content_hash TEXT,
+    revision_seq INTEGER NOT NULL DEFAULT 1,
+    source_authored_at TEXT,
+    source_updated_at TEXT,
+    first_observed_at TEXT NOT NULL,
+    retrieved_at TEXT NOT NULL,
+    timestamp_origin TEXT,
+    timestamp_uncertain INTEGER NOT NULL DEFAULT 0,
+    completeness TEXT NOT NULL,
+    extracted_text TEXT,
+    attachment_refs TEXT NOT NULL DEFAULT '[]',
+    adapter_name TEXT NOT NULL,
+    backend TEXT,
+    parser_version TEXT,
+    retrieval_method TEXT,
+    correlation_id TEXT,
+    acquisition_run_id TEXT,
+    purpose TEXT NOT NULL DEFAULT 'research',
+    eligibility_state TEXT NOT NULL DEFAULT 'not_eligible',
+    rejection_reason TEXT,
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_source_observations_source_id ON source_observations (source_id, retrieved_at);
+CREATE INDEX IF NOT EXISTS idx_source_observations_connection_id ON source_observations (connection_id);
+CREATE INDEX IF NOT EXISTS idx_source_observations_eligibility ON source_observations (eligibility_state);
+
 CREATE INDEX IF NOT EXISTS idx_orders_executed_at ON orders (executed_at);
 CREATE INDEX IF NOT EXISTS idx_orders_account_id ON orders (account_id);
 CREATE INDEX IF NOT EXISTS idx_orders_signal_id ON orders (signal_id);
@@ -1803,7 +1894,20 @@ _COLUMN_MIGRATIONS = [
     ("notification_bridge_devices", "ai_agent_capability", "INTEGER"),
     ("notification_bridge_devices", "allowed_apps", "TEXT NOT NULL DEFAULT '[]'"),
     ("notification_bridge_devices", "blocked_apps", "TEXT NOT NULL DEFAULT '[]'"),
+    # Track 24 -- see `sources`' own CREATE TABLE comment above.
+    ("sources", "acquisition_checkpoint", "TEXT"),
 ]
+
+
+#: Track 24: `source_observations.observation_kind`'s closed vocabulary --
+#: see that table's own CREATE TABLE comment.
+_SOURCE_OBSERVATION_KINDS = ("created", "edited", "deleted", "retrieved")
+
+#: Track 24: `source_observations.purpose`'s closed vocabulary -- see
+#: that table's own CREATE TABLE comment and
+#: app/sources/rss_source.py's module docstring for how this gates
+#: whether an observation may ever become a real `Signal`.
+_SOURCE_OBSERVATION_PURPOSES = ("research", "backfill", "signal_candidate")
 
 
 class SignalStore:
@@ -5132,7 +5236,7 @@ class SignalStore:
         "id, provider_id, platform, source_type, source_native_id, display_name, url_or_reference, enabled, "
         "priority, role, capture_method, connection_id, parser_profile, asset_classes, strategy_types, "
         "freshness_policy, dedup_policy, execution_eligibility, health_state, last_event_at, last_success_at, "
-        "last_error_at, created_at, updated_at"
+        "last_error_at, created_at, updated_at, acquisition_checkpoint"
     )
 
     def _source_row_to_dict(self, row: tuple) -> dict:
@@ -5161,6 +5265,7 @@ class SignalStore:
             "last_error_at": row[21],
             "created_at": row[22],
             "updated_at": row[23],
+            "acquisition_checkpoint": json.loads(row[24]) if row[24] else None,
         }
 
     def register_source(
@@ -5317,6 +5422,212 @@ class SignalStore:
             )
             if cur.rowcount == 0:
                 raise KeyError(f"no source registered with id={source_id!r}")
+
+    def update_source_checkpoint(self, source_id: str, checkpoint: Any) -> None:
+        """Track 24: persists a `sources` row's own poll checkpoint --
+        see that table's own CREATE TABLE comment for why this lives
+        here rather than on `collectors`. `checkpoint` is an opaque,
+        adapter-owned JSON-serializable value (this method does not
+        interpret or enforce monotonicity on it -- the calling adapter,
+        e.g. `app.sources.rss_source.RssSourceAdapter.poll`, is solely
+        responsible for only ever proposing a genuinely newer value)."""
+        now = now_utc().isoformat()
+        with self._connect() as conn:
+            cur = conn.execute(
+                "UPDATE sources SET acquisition_checkpoint = ?, updated_at = ? WHERE id = ?",
+                (json.dumps(checkpoint), now, source_id),
+            )
+            if cur.rowcount == 0:
+                raise KeyError(f"no source registered with id={source_id!r}")
+
+    # -- Track 24: `source_observations` -- see that table's own CREATE
+    # TABLE comment and app/sources/adapter_contract.py's module
+    # docstring for the full design this generalizes from
+    # `notification_bridge_events`.
+
+    _SOURCE_OBSERVATION_COLUMNS = (
+        "id, connection_id, provider_id, source_id, platform, source_namespace, original_item_id, canonical_url, "
+        "revision_identifier, observation_kind, content_hash, revision_seq, source_authored_at, source_updated_at, "
+        "first_observed_at, retrieved_at, timestamp_origin, timestamp_uncertain, completeness, extracted_text, "
+        "attachment_refs, adapter_name, backend, parser_version, retrieval_method, correlation_id, "
+        "acquisition_run_id, purpose, eligibility_state, rejection_reason, created_at"
+    )
+
+    def _source_observation_row_to_dict(self, row: tuple) -> dict:
+        return {
+            "id": row[0],
+            "connection_id": row[1],
+            "provider_id": row[2],
+            "source_id": row[3],
+            "platform": row[4],
+            "source_namespace": row[5],
+            "original_item_id": row[6],
+            "canonical_url": row[7],
+            "revision_identifier": row[8],
+            "observation_kind": row[9],
+            "content_hash": row[10],
+            "revision_seq": row[11],
+            "source_authored_at": row[12],
+            "source_updated_at": row[13],
+            "first_observed_at": row[14],
+            "retrieved_at": row[15],
+            "timestamp_origin": row[16],
+            "timestamp_uncertain": bool(row[17]),
+            "completeness": row[18],
+            "extracted_text": row[19],
+            "attachment_refs": json.loads(row[20]) if row[20] else [],
+            "adapter_name": row[21],
+            "backend": row[22],
+            "parser_version": row[23],
+            "retrieval_method": row[24],
+            "correlation_id": row[25],
+            "acquisition_run_id": row[26],
+            "purpose": row[27],
+            "eligibility_state": row[28],
+            "rejection_reason": row[29],
+            "created_at": row[30],
+        }
+
+    def record_source_observation(
+        self,
+        *,
+        platform: str,
+        original_item_id: str,
+        observation_kind: str,
+        completeness: str,
+        adapter_name: str,
+        first_observed_at: datetime,
+        retrieved_at: datetime,
+        connection_id: str | None = None,
+        provider_id: str | None = None,
+        source_id: str | None = None,
+        source_namespace: str | None = None,
+        canonical_url: str | None = None,
+        revision_identifier: str | None = None,
+        content_hash: str | None = None,
+        revision_seq: int = 1,
+        source_authored_at: datetime | None = None,
+        source_updated_at: datetime | None = None,
+        timestamp_origin: str | None = None,
+        timestamp_uncertain: bool = False,
+        extracted_text: str | None = None,
+        attachment_refs: list[dict] | None = None,
+        backend: str | None = None,
+        parser_version: str | None = None,
+        retrieval_method: str | None = None,
+        correlation_id: str | None = None,
+        acquisition_run_id: str | None = None,
+        purpose: str = "research",
+        eligibility_state: str = "not_eligible",
+        rejection_reason: str | None = None,
+    ) -> dict:
+        """Appends one row to the append-only `source_observations`
+        ledger (same "audit ledger, only ever appended to" convention as
+        `connection_cost_events`/`notification_bridge_events`). Validates
+        `observation_kind`/`completeness` against this codebase's own
+        closed vocabularies (the latter reusing
+        `app.notification_bridge.ContentCompleteness`'s five states
+        verbatim) -- an unrecognized value raises rather than being
+        silently persisted, same "never a guessed/invented state" rule
+        as every other registry in this file. `connection_id`/
+        `provider_id`/`source_id`, when given, must refer to already-
+        registered rows (application-enforced, same convention as
+        `register_source`'s own FK-style checks) -- `None` is honestly
+        allowed for any of the three (see this table's own CREATE TABLE
+        comment)."""
+        from app.notification_bridge import ContentCompleteness
+
+        if observation_kind not in _SOURCE_OBSERVATION_KINDS:
+            raise ValueError(f"observation_kind must be one of {_SOURCE_OBSERVATION_KINDS}, got {observation_kind!r}")
+        try:
+            ContentCompleteness(completeness)
+        except ValueError as exc:
+            raise ValueError(
+                f"completeness must be one of {[c.value for c in ContentCompleteness]}, got {completeness!r}"
+            ) from exc
+        if purpose not in _SOURCE_OBSERVATION_PURPOSES:
+            raise ValueError(f"purpose must be one of {_SOURCE_OBSERVATION_PURPOSES}, got {purpose!r}")
+        if not original_item_id or not original_item_id.strip():
+            raise ValueError("original_item_id is required")
+        if not platform or not platform.strip():
+            raise ValueError("platform is required")
+        if not adapter_name or not adapter_name.strip():
+            raise ValueError("adapter_name is required")
+
+        with self._connect() as conn:
+            if connection_id is not None:
+                if conn.execute("SELECT 1 FROM connections WHERE id = ?", (connection_id,)).fetchone() is None:
+                    raise KeyError(f"no connection registered with id={connection_id!r}")
+            if provider_id is not None:
+                if conn.execute("SELECT 1 FROM providers WHERE id = ?", (provider_id,)).fetchone() is None:
+                    raise KeyError(f"no provider registered with id={provider_id!r}")
+            if source_id is not None:
+                if conn.execute("SELECT 1 FROM sources WHERE id = ?", (source_id,)).fetchone() is None:
+                    raise KeyError(f"no source registered with id={source_id!r}")
+
+            observation_id = f"sobs_{uuid.uuid4().hex}"
+            now = now_utc().isoformat()
+            conn.execute(
+                f"""INSERT INTO source_observations ({self._SOURCE_OBSERVATION_COLUMNS})
+                   VALUES ({", ".join(["?"] * 31)})""",
+                (
+                    observation_id,
+                    connection_id,
+                    provider_id,
+                    source_id,
+                    platform,
+                    source_namespace,
+                    original_item_id,
+                    canonical_url,
+                    revision_identifier,
+                    observation_kind,
+                    content_hash,
+                    revision_seq,
+                    source_authored_at.isoformat() if source_authored_at else None,
+                    source_updated_at.isoformat() if source_updated_at else None,
+                    first_observed_at.isoformat(),
+                    retrieved_at.isoformat(),
+                    timestamp_origin,
+                    1 if timestamp_uncertain else 0,
+                    completeness,
+                    extracted_text,
+                    json.dumps(attachment_refs or []),
+                    adapter_name,
+                    backend,
+                    parser_version,
+                    retrieval_method,
+                    correlation_id,
+                    acquisition_run_id,
+                    purpose,
+                    eligibility_state,
+                    rejection_reason,
+                    now,
+                ),
+            )
+            row = conn.execute(
+                f"SELECT {self._SOURCE_OBSERVATION_COLUMNS} FROM source_observations WHERE id = ?",
+                (observation_id,),
+            ).fetchone()
+        return self._source_observation_row_to_dict(row)  # type: ignore[arg-type]
+
+    def get_source_observations_for_source(self, source_id: str, *, limit: int | None = None) -> list[dict]:
+        """Newest-first read of every `source_observations` row recorded
+        for one `sources` row -- the real, persisted audit trail a
+        dashboard or the next phase's dedup/revision logic reads from."""
+        with self._connect() as conn:
+            if limit is not None:
+                rows = conn.execute(
+                    f"SELECT {self._SOURCE_OBSERVATION_COLUMNS} FROM source_observations "
+                    "WHERE source_id = ? ORDER BY retrieved_at DESC LIMIT ?",
+                    (source_id, limit),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    f"SELECT {self._SOURCE_OBSERVATION_COLUMNS} FROM source_observations "
+                    "WHERE source_id = ? ORDER BY retrieved_at DESC",
+                    (source_id,),
+                ).fetchall()
+        return [self._source_observation_row_to_dict(r) for r in rows]
 
     _CONNECTION_COLUMNS = (
         "id, connection_type, display_name, credential_reference, authentication_type, account_identity, "

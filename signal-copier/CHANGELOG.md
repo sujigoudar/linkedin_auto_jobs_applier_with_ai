@@ -36,6 +36,33 @@ engine's data integrity and operational-safety guarantees.
   `phone_escalation_attempts` tables, migration `0026`). No real device
   backend is wired yet — see ADR-0009 and `AdbPhoneControlAdapter`'s own
   docstring for the documented, not-yet-implemented ADB-based design.
+- Track 24: a generic, transport-agnostic adapter boundary
+  (`app/sources/adapter_contract.py` — `probe`/`fetch`/`poll`/`normalize`,
+  `Observation`/`ProbeResult`/`PollBounds` dataclasses, a bounded
+  retry-with-backoff helper) and the new `source_observations` table
+  (migration `0034`, `SignalStore.record_source_observation`/
+  `get_source_observations_for_source`), generalizing
+  `notification_bridge_events`'s `content_completeness`/`content_hash`/
+  `revision_seq` shape across transports. Wired to ONE real, testable
+  example: `app/sources/rss_source.py`'s `RssSourceAdapter`, a direct
+  `feedparser`-based RSS/Atom adapter with no dependency on Agent Reach
+  or any external account/credential (X/Twitter is explicitly out of
+  scope — it needs real cookies this environment doesn't have). Defaults
+  every new RSS source to `purpose="research"` (never emits a `Signal`)
+  unless explicitly marked a `signal_candidate` route, reusing the
+  pre-existing `app.sources.article_classifier` pipeline (never a second,
+  parallel trade-parsing grammar) only for an eligible, `COMPLETE`
+  observation. Adds `sources.acquisition_checkpoint` for this adapter's
+  own poll checkpoint (deliberately not a new `collectors` row — see that
+  column's own comment in `app/db.py`). New `app/sources/url_safety.py`
+  SSRF guard (`validate_public_fetch_url`, mirroring the approach the
+  upstream Agent-Reach project's own `agent_reach/utils/url.py` takes,
+  written independently) applied to any linked-article URL found inside
+  a feed entry — never to the operator-configured feed URL itself. The
+  pre-existing `"rss"` connection-catalog entry was confirmed to already
+  be backed by a real adapter (`app.sources.website.WebsiteSource`'s FEED
+  mode, not a placeholder) — no catalog change was needed; a new test
+  exercises the TR-17 wizard's full three-call sequence against it.
 
 ### Changed
 - Capital allocator: fail-closed sizing on a missing price, an
