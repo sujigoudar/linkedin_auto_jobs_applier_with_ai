@@ -32,6 +32,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models.portfolio_version import PortfolioVersion, PortfolioVersionSleeve
@@ -58,6 +59,18 @@ class CandidateNotFoundError(Exception):
 
 class InvalidCandidateDraftError(Exception):
     pass
+
+
+class PortfolioVersionNumberConflictError(Exception):
+    """Two concurrent draft-creation calls for the same
+    `(tenant_id, portfolio_id)` both computed the same `version_number`
+    and lost the resulting database-level unique-constraint race twice
+    in a row (see alembic/versions/a2c7e4f91b35_portfolio_versions_version_number_unique.py).
+    This is a genuine, persistent conflict -- NOT swallowed -- and means
+    something is still inserting into this exact
+    `(tenant_id, portfolio_id)` lineage fast enough that the one retry
+    below didn't clear it; the caller should surface this rather than
+    silently retry forever."""
 
 
 @dataclass
@@ -234,33 +247,62 @@ def create_portfolio_version_draft_from_candidate(
         )
     allocation = equal_weight_recipe(sleeve_ids)
 
-    existing_max = session.scalars(
-        select(PortfolioVersion.version_number).where(
-            PortfolioVersion.tenant_id == tenant_id, PortfolioVersion.portfolio_id == portfolio_id
-        )
-    ).all()
-    version_number = (max(existing_max) if existing_max else 0) + 1
-
-    version = PortfolioVersion(
-        tenant_id=tenant_id,
-        portfolio_id=portfolio_id,
-        version_number=version_number,
-        cash_weight=allocation.cash,
-        research_cutoff=datetime.now(timezone.utc),
-        max_subscriber_capacity=max_subscriber_capacity,
-        consent_disclosure_version=consent_disclosure_version,
-    )
-    session.add(version)
-    session.flush()
-
-    for sleeve_id, weight in allocation.weights.items():
-        session.add(
-            PortfolioVersionSleeve(
-                portfolio_version_id=version.portfolio_version_id,
-                sleeve_id=sleeve_id,
-                weight=weight,
-                tenant_id=version.tenant_id,
+    #: The database-level unique constraint on
+    #: (tenant_id, portfolio_id, version_number) -- not this `max()+1`
+    #: computation -- is what actually prevents two concurrent calls
+    #: from claiming the same version_number; this loop runs the
+    #: compute-then-insert attempt at most twice (one real attempt, one
+    #: retry after losing a genuine race) rather than trusting the
+    #: read-then-write to be race-free on its own. Each attempt's INSERT
+    #: runs inside a SAVEPOINT (`session.begin_nested()`), so losing the
+    #: race only unwinds that one attempt -- never the caller's own
+    #: outer transaction/tenant-scope `set_config(..., true)` GUC, which
+    #: a full `session.rollback()` here would also discard.
+    max_attempts = 2
+    last_integrity_error: IntegrityError | None = None
+    for _attempt in range(max_attempts):
+        existing_max = session.scalars(
+            select(PortfolioVersion.version_number).where(
+                PortfolioVersion.tenant_id == tenant_id, PortfolioVersion.portfolio_id == portfolio_id
             )
+        ).all()
+        version_number = (max(existing_max) if existing_max else 0) + 1
+
+        version = PortfolioVersion(
+            tenant_id=tenant_id,
+            portfolio_id=portfolio_id,
+            version_number=version_number,
+            cash_weight=allocation.cash,
+            research_cutoff=datetime.now(timezone.utc),
+            max_subscriber_capacity=max_subscriber_capacity,
+            consent_disclosure_version=consent_disclosure_version,
         )
-    session.flush()
-    return version
+        try:
+            with session.begin_nested():
+                session.add(version)
+                session.flush()
+        except IntegrityError as exc:
+            # Another concurrent call already took this exact
+            # (tenant_id, portfolio_id, version_number) slot -- the
+            # SAVEPOINT rollback above already undid just this attempt's
+            # failed INSERT; if an attempt remains, re-query the
+            # now-updated max() and retry once.
+            last_integrity_error = exc
+            continue
+
+        for sleeve_id, weight in allocation.weights.items():
+            session.add(
+                PortfolioVersionSleeve(
+                    portfolio_version_id=version.portfolio_version_id,
+                    sleeve_id=sleeve_id,
+                    weight=weight,
+                    tenant_id=version.tenant_id,
+                )
+            )
+        session.flush()
+        return version
+
+    raise PortfolioVersionNumberConflictError(
+        f"portfolio {portfolio_id!r} (tenant {tenant_id!r}): version_number still collided after "
+        f"{max_attempts} attempts -- a genuine, persistent concurrent-write conflict, not retried further"
+    ) from last_integrity_error

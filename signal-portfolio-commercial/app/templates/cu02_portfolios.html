@@ -13,7 +13,7 @@
     <tbody>
       {% for s in selections %}
       <tr>
-        <td>{{ s.product_id }}</td>
+        <td>{{ product_names.get(s.product_id, s.product_id) }}</td>
         <td>{{ s.state.value }}</td>
         <td>
           {% if s.state.value == "active" %}

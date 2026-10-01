@@ -2928,13 +2928,24 @@ def portfolio_selections_page(
     _require_portfolio_selections(scope)
     set_tenant_scope(session, scope.tenant_id)
     selections = list_own_portfolio_selections(session, tenant_id=scope.tenant_id, user_id=scope.user_id)
-    selectable_products = [
-        p for p in list_products(session, tenant_id=scope.tenant_id) if p.lifecycle_state == ProductLifecycleState.PUBLISHED
-    ]
+    products = list_products(session, tenant_id=scope.tenant_id)
+    selectable_products = [p for p in products if p.lifecycle_state == ProductLifecycleState.PUBLISHED]
+    #: Looked up by the exact same `product_id` the "Select a portfolio"
+    #: dropdown and the catalog/portfolio-detail pages already display
+    #: `product_name` for -- "My selections" previously rendered the raw
+    #: UUID instead. Built from `products` (not just `selectable_products`)
+    #: so a selection against a product that has since left PUBLISHED
+    #: still shows its real name, not just a UUID.
+    product_names = {p.product_id: p.product_name for p in products}
     return templates.TemplateResponse(
         request,
         "cu02_portfolios.html",
-        {"selections": selections, "selectable_products": selectable_products, "error": error},
+        {
+            "selections": selections,
+            "selectable_products": selectable_products,
+            "product_names": product_names,
+            "error": error,
+        },
     )
 
 
@@ -2952,15 +2963,18 @@ def create_portfolio_selection_page(
     except InvalidPortfolioSelectionError as exc:
         session.rollback()
         selections = list_own_portfolio_selections(session, tenant_id=scope.tenant_id, user_id=scope.user_id)
-        selectable_products = [
-            p
-            for p in list_products(session, tenant_id=scope.tenant_id)
-            if p.lifecycle_state == ProductLifecycleState.PUBLISHED
-        ]
+        products = list_products(session, tenant_id=scope.tenant_id)
+        selectable_products = [p for p in products if p.lifecycle_state == ProductLifecycleState.PUBLISHED]
+        product_names = {p.product_id: p.product_name for p in products}
         return templates.TemplateResponse(
             request,
             "cu02_portfolios.html",
-            {"selections": selections, "selectable_products": selectable_products, "error": str(exc)},
+            {
+                "selections": selections,
+                "selectable_products": selectable_products,
+                "product_names": product_names,
+                "error": str(exc),
+            },
             status_code=400,
         )
     session.commit()

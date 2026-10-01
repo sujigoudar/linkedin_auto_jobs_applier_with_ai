@@ -62,3 +62,17 @@ def test_a_non_positive_dealing_price_is_rejected():
         units_for_cashflow(Decimal("1000"), Decimal("0"))
     with pytest.raises(InvalidDealingPriceError):
         units_for_cashflow(Decimal("1000"), Decimal("-5"))
+
+
+def test_fee_is_quantized_to_cents_instead_of_an_unrounded_long_decimal():
+    """A rate/NAV combination that produces a repeating decimal
+    expansion without rounding (here, a rate of exactly 1/3 against a
+    positive part of 100, i.e. 33.333... repeating) must come back
+    quantized to 2 decimal places -- proving `.quantize()` actually does
+    something, not just that clean fixture values happen to look
+    unaffected by it."""
+    rate = Decimal(1) / Decimal(3)
+    fee = compute_simple_hwm_fee(Decimal("200"), Decimal("100"), rate, had_cashflow=False)
+    assert fee == Decimal("33.33")
+    # Exactly 2 decimal places, not merely numerically equal to one.
+    assert fee.as_tuple().exponent == -2

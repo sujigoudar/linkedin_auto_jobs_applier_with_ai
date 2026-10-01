@@ -12,6 +12,28 @@ Everything in this file. This is pre-1.0, development-branch software;
 nothing here has shipped to a live production deployment
 (`docs/process/RELEASE.md`).
 
+### 2026-10-01
+
+#### Fixed
+- Portfolio version `version_number` race: a database-level unique
+  constraint on `(tenant_id, portfolio_id, version_number)` for
+  `portfolio_versions`, plus a catch-and-retry-once around it in
+  `create_portfolio_version_draft_from_candidate` -- two concurrent
+  draft-creation calls for the same portfolio can no longer both claim
+  the same version_number; a persistent conflict now raises a clear
+  `PortfolioVersionNumberConflictError` instead of leaking a raw DB
+  error.
+- Startup guard refusing to boot with `ENVIRONMENT=COMMERCIAL_LIVE`
+  while any of `LOCAL_JWT_SECRET`, `RELAY_SIGNING_SECRET`,
+  `CATALOG_FIT_SIM_SIGNING_SECRET`, or `STRIPE_WEBHOOK_SECRET` is still
+  at its repo-committed placeholder default, naming exactly which
+  secret(s) are still unrotated.
+- HWM fee calculation (`compute_simple_hwm_fee`) now quantizes to 2
+  decimal places (cents, `ROUND_HALF_EVEN`) instead of returning an
+  unrounded Decimal with arbitrary precision.
+- CU-02 "My portfolios" now shows the real product name instead of the
+  raw product UUID in the "My selections" table.
+
 ### 2026-09-29
 
 #### Added
