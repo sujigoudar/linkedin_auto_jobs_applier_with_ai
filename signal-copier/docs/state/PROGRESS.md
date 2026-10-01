@@ -1,82 +1,90 @@
 # Current progress snapshot
 
-As of `HEAD` = `cdfee8b1dc4d5daea58e178ce679aff37adecba8` on
-`claude/signal-copier-redesign` (2026-09-29). This is a snapshot, not a
-roadmap — update it when the state it describes actually changes.
+As of `HEAD` = `4e41b15e08585ee7ca189f1e84f47523c7b94c5f` on
+`claude/signal-copier-readiness-sm44tr` (2026-10-01). This is a snapshot, not
+a roadmap — update it when the state it describes actually changes. This
+file was previously stale for an extended period (it referenced an old
+branch, `claude/signal-copier-redesign`, and alembic head `0015`, long after
+both had moved on) — if you find it stale again, fix it rather than working
+around it.
 
 ## What wave this is
 
-The branch is in the middle of the **P0 audit-response foundation wave**:
-a sequence of fixes responding to an external release-readiness audit,
-landing in roughly this order (oldest first):
+The branch completed a long sequence of numbered "Tracks" (1 through 23)
+building out the Provider/Source/Connection data model, a 10-source signal
+ingestion architecture (webhook, Telegram, Slack, Twitter/X, email, website,
+Android notification bridge, Whop, SMS, WhatsApp), an onboarding wizard, and
+the AUD-01 distinct-field quantity model across both plain-account and
+managed-lifecycle order paths. That work, plus a full end-to-end audit wave
+(financial/tenant-isolation/UX review agents + two live Playwright runs
+across both signal-copier and signal-portfolio-commercial, see the git log
+for the "Merge Track NN" commits and the audit-findings document linked from
+that session), is complete and verified as of this HEAD.
 
-1. `d363e79` — P0-9: fail-closed sweep (genuine-zero-collapses-to-None
-   bugs in `app/brokers/ibkr.py`, `app/sources/rithmic.py`)
-2. `c6e4e7b` — P0-3: capital allocator fail-closed sizing, unresolved-
-   exposure block, owner-wide + risk-basis gates
-3. `c88bb66` — AUD-01: distinct-field quantity model replacing optimistic
-   PENDING-order accounting
-4. `a5d5aec` — per-exact-route live qualification ladder
-5. `9d9e5a6`, `230d399`, `fe6dd76` — CI fix, `exclusive_writer_qualified`
-   docs, plain-account CLOSE reconciliation
-6. `9d22b32` — P0-8: readiness split into 6 independent dimensions, with
-   honest `trading_authority`/`release_status` placeholders
-7. `00665ce` — CI fix (guard ccxt-dependent tests)
-8. `ae6a016` — P0-2: `command_ledger`, a durable pre-effect ledger for
-   every broker command
-9. `55976eb` — P0-6: cross-process fencing + manual-only writer-lease
-   failover
-10. `cdfee8b` (current HEAD) — rebase-time fix: renumbered the
-    writer_lease migration from `0014` to `0015` after `command_ledger`
-    claimed `0014` first (see `docs/process/GIT.md`)
-
-Before this wave, the branch went through a long sequence of per-screen
-redesign work (the TR-0X/CU-0X/AD-0X trading/customer/admin screens, a
-shared design-system foundation, broker-adapter additions, real
-Chart.js analytics) — that work is stable and not what's currently
-in flight. See `docs/history/ENGINEERING_LOG.md` for the fuller
-narrative and `CHANGELOG.md` for the itemized list.
+Currently in flight (as of this snapshot): an "Agent Reach" integration —
+after inspecting the actual upstream `Panniantong/Agent-Reach` project, the
+conclusion was that it adds nothing for RSS/public-web sources (it's a
+router that tells an agent to call `feedparser`/a web-reader directly, not a
+content-reading wrapper) and its only genuine value (avoiding Twitter's paid
+API) needs real credentials unavailable in this environment. The resulting
+plan: build signal-copier's own deterministic adapter boundary
+(probe/fetch/poll/normalize) and a real RSS source adapter with no
+dependency on Agent Reach, plus two UI gaps the audit found (no Mobile
+Devices dashboard screen for Track 20's existing backend, and no screen
+listing Track 14's provider-catalog rows). These are dispatched as
+Tracks 24–25 — check `git log --oneline --all | grep -i "track2[4-9]"`
+for whether they've landed since this snapshot was written.
 
 ## What's genuinely landed and working, as of HEAD
 
-- Fail-closed fixes across the broker/source fill-data path and the
-  capital allocator (items 1–3 above).
-- A durable, pre-effect command ledger for every broker command
-  (`app/command_ledger.py`), verified load-bearing against a simulated
-  mid-call crash.
-- A real cross-process writer-lease fencing mechanism
-  (`app/writer_lease.py`, `app/promote_cli.py`) — a second site can no
-  longer become an active writer while an existing lease is valid, and a
-  fenced-out process is refused on its very next command check, not just
-  once its lease looks expired. See `docs/FAILOVER.md`.
-- A 6-dimension `/system/readiness` endpoint (`app/main.py`) that can no
-  longer let one dimension (e.g. `liveness=up`) mask another being
-  unknown or degraded.
-- Alembic head is `0015` (`alembic/versions/0015_add_writer_lease_table.py`).
+- Alembic head is `0033`. Full `pytest -q` suite: **2057 passed, 0 failed**
+  (verified fresh against this exact HEAD after the Track 23 merge — see
+  that merge commit's message for the full command output).
+- `ruff check .` and the CI-scoped `mypy` command (file list in
+  `.github/workflows/signal-copier-ci.yml`, 39 files) both clean against
+  this HEAD.
+- Managed-lifecycle fills now populate the AUD-01 quantity fields
+  internally (Track 22) **and** export a real `EXECUTION_APPLIED` contract
+  event (Track 23) — previously, per Track 22's own changelog entry, this
+  was "the majority of real trading activity" silently invisible to
+  signal-portfolio-commercial's platform ledger.
+- The Track 21 onboarding wizard (`app/static/views/tr17.js`) is reachable
+  and working end-to-end — a routing bug that made it completely
+  unreachable (`#/providers/add` never matched the router's `/trade/...`
+  prefix gate) was found and fixed this same session, along with a
+  double-submit guard and partial-failure disclosure.
 
 ## What's genuinely NOT yet landed / still open
 
-- **`trading_authority` in `/system/readiness` is not wired to the P0-6
-  writer lease that landed in `55976eb`.** `app/main.py` still contains
-  the placeholder branch and its `FOLLOW-UP: integrate the P0-6
-  fencing/lease work once it lands` comment, even though P0-6 has since
-  landed on this same branch. This is a real, currently-stale gap — see
-  `docs/state/tasks.json` and `docs/state/PENDING_DECISIONS.md`.
-- **`release_status` is still an honest `not_tracked` placeholder** —
-  P0-7 (a qualification/release-approval taxonomy) has not landed yet.
-  See `docs/state/PENDING_DECISIONS.md`.
-- No formal release process exists (`docs/process/RELEASE.md`) — this
-  remains pre-1.0, development-branch software.
+See the audit-findings document referenced in this session's history for
+the full list; highlights carried forward here since they're not yet
+closed:
+
+- **No Mobile Devices dashboard screen** for Track 20's `/mobile-devices*`
+  REST backend — confirmed via live browser testing, every guessed route
+  renders an honest "Not found" page. (Being addressed as Track 25 — check
+  whether it's landed.)
+- **No screen lists Track 14's provider-catalog rows** (the data the
+  onboarding wizard actually creates) — `app/static/views/tr09.js` reads a
+  different, older data model (`GET /providers`) and will never show them.
+  (Also part of Track 25.)
+- **Managed-lifecycle exit idempotency** relies on `CloseArbiter.pending_exit`,
+  not a real retry-safe key — a genuinely duplicate EXIT signal (different
+  `channel_id`/`message_id`, same real-world event) arriving after the prior
+  exit already resolved would not be caught. Needs a concrete two-signal
+  reproduction test; not yet written.
+- `signal_platform_contracts` is stale relative to Track 14 and Track
+  22/23 — no contract-side follow-up has landed for either.
+- `trading_authority`/`release_status` in `/system/readiness` remain
+  honest, pre-existing placeholders (P0-6/P0-7 qualification/release-
+  taxonomy work, never built) — out of scope for the Provider/Source/
+  Connection and ingestion-architecture work this branch has otherwise
+  been doing; not a regression, just still genuinely unbuilt.
 
 ## Verification status
 
-Last known-verified state, per this task's own read of the repository
-(not re-run in this documentation-only pass — see
-`docs/agents/VERIFICATION.md` on why that distinction matters): HEAD's
-own commit message (`cdfee8b`) is a mechanical migration rename with no
-accompanying re-run described in the commit body; the prior substantive
-commit (`55976eb`) documents its own load-bearing verification in full
-(quoted in `docs/process/DEFINITION_OF_DONE.md`). A fresh
-ruff/mypy/pytest run against current HEAD has not been captured by this
-documentation pass and should be treated as **not yet independently
-re-verified** — see `docs/state/BLOCKERS.md`.
+Last independently re-verified state: this exact HEAD (`4e41b15`), full
+`pytest -q` (2057 passed), `ruff check .` clean, CI-scoped `mypy` clean,
+single alembic head `0033` confirmed via `alembic heads`. Any commit after
+this HEAD should be treated as unverified by this snapshot until its own
+merge commit documents a fresh run of the same three checks.
