@@ -954,7 +954,7 @@ async def system_readiness(_owner: dict = Depends(require_owner_read)) -> dict:
         ),
     }
 
-    # --- trading_authority (placeholder pending P0-6 fencing/lease integration) ---
+    # --- trading_authority (P0-6: writer-lease fencing integration) ---
     trading_authority: dict[str, Any]
     if config.STANDBY_MODE:
         trading_authority = {
@@ -963,15 +963,20 @@ async def system_readiness(_owner: dict = Depends(require_owner_read)) -> dict:
             "fencing_token": None,
         }
     else:
-        trading_authority = {
-            "status": "not_tracked",
-            "reason": (
-                "This build has no writer-lease/fencing-token mechanism yet -- only STANDBY_MODE (a static config flag) distinguishes role. "
-                "This instance is configured as the active writer, but that is a config assertion, not a live, fenced lease. "
-                "FOLLOW-UP: integrate the P0-6 fencing/lease work once it lands so this can report a real 'held' state instead."
-            ),
-            "fencing_token": None,
-        }
+        # Active mode: report real writer-lease/fencing-token state (P0-6)
+        if writer_lease_guard.fencing_token is not None:
+            trading_authority = {
+                "status": "held",
+                "reason": "This process holds the current writer-lease fencing token and is authorized to execute trade-affecting commands (see app/writer_lease.py, docs/FAILOVER.md).",
+                "fencing_token": writer_lease_guard.fencing_token,
+            }
+        else:
+            # No token acquired yet (startup race, or not yet acquired)
+            trading_authority = {
+                "status": "not_held",
+                "reason": "Active mode configured, but no writer-lease fencing token acquired yet. This should be transient during startup.",
+                "fencing_token": None,
+            }
 
     # --- market_data_readiness ---
     price_last_success = price_monitor.last_success_at

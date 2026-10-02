@@ -18,7 +18,7 @@ class DailyLossLimiter:
     def __init__(self, store: SignalStore):
         self.store = store
 
-    def check_daily_loss_limit(
+    async def check_daily_loss_limit(
         self, account: DestinationAccount, daily_loss_limit_percent: Optional[float]
     ) -> Optional[str]:
         """Check if account has exceeded daily loss limit.
@@ -48,7 +48,7 @@ class DailyLossLimiter:
 
         broker = self.store._broker_adapters[account.broker]
         try:
-            balance = broker.get_account_balance(account)
+            balance = await broker.get_account_balance(account)
             if balance is None or balance.equity is None:
                 return "Daily loss limit check failed: cannot determine account equity"
 
@@ -64,7 +64,7 @@ class DailyLossLimiter:
 
         return None
 
-    def halt_trading_if_limit_exceeded(
+    async def halt_trading_if_limit_exceeded(
         self, account: DestinationAccount, daily_loss_limit_percent: Optional[float]
     ) -> bool:
         """Check if trading should be halted due to daily loss limit.
@@ -76,9 +76,9 @@ class DailyLossLimiter:
         Returns:
             True if trading is halted (daily loss limit exceeded)
         """
-        return self.check_daily_loss_limit(account, daily_loss_limit_percent) is not None
+        return await self.check_daily_loss_limit(account, daily_loss_limit_percent) is not None
 
-    def check_min_equity_threshold(
+    async def check_min_equity_threshold(
         self, account: DestinationAccount, min_equity_threshold: Optional[float]
     ) -> Optional[str]:
         """Check if account equity meets minimum threshold.
@@ -105,7 +105,7 @@ class DailyLossLimiter:
 
         broker = self.store._broker_adapters[account.broker]
         try:
-            balance = broker.get_account_balance(account)
+            balance = await broker.get_account_balance(account)
             if balance is None or balance.equity is None:
                 return "Min equity check failed: cannot determine current account equity"
 

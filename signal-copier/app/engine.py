@@ -689,7 +689,7 @@ class SignalCopierEngine:
             # signals bypass this to allow closing/hedging after loss limits hit.
             if signal.side != Side.CLOSE:
                 daily_loss_limit_percent = account.daily_loss_limit_percent or config.DEFAULT_DAILY_LOSS_LIMIT_PERCENT
-                daily_loss_error = self.daily_loss_limiter.check_daily_loss_limit(account, daily_loss_limit_percent)
+                daily_loss_error = await self.daily_loss_limiter.check_daily_loss_limit(account, daily_loss_limit_percent)
                 if daily_loss_error is not None:
                     result = OrderResult(
                         account_id=account.account_id,
@@ -762,7 +762,7 @@ class SignalCopierEngine:
             if signal.side != Side.CLOSE:
                 min_equity_threshold = account.min_equity_threshold
                 if min_equity_threshold is not None:
-                    liquidation_error = self.daily_loss_limiter.check_min_equity_threshold(
+                    liquidation_error = await self.daily_loss_limiter.check_min_equity_threshold(
                         account, min_equity_threshold
                     )
                     if liquidation_error is not None:
