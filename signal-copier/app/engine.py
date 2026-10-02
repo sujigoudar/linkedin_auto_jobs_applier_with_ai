@@ -779,14 +779,81 @@ class SignalCopierEngine:
             # hasn't integrated margin state reporting yet. Only check for entry
             # signals; CLOSE signals are allowed through to permit hedging.
             if signal.side != Side.CLOSE:
-                # TODO: integrate broker.get_margin_state() calls to populate
-                # these values from live broker data. For now, these may be None
-                # if not explicitly provided by the broker adapter.
+                # Check for unresolved margin call alerts first. If any exist,
+                # block new entries to prevent trading on a margin-call account.
+                unresolved_alerts = self.margin_call_detector.get_unresolved_margin_calls(
+                    account.account_id
+                )
+                if unresolved_alerts:
+                    alert_ids = [a["id"] for a in unresolved_alerts]
+                    result = OrderResult(
+                        account_id=account.account_id,
+                        status=OrderStatus.REJECTED,
+                        signal_id=signal.id,
+                        message=f"Cannot trade: account has {len(unresolved_alerts)} unresolved margin call alert(s) "
+                        f"(ids: {alert_ids}). Resolve margin call(s) before entering new positions.",
+                    )
+                    self.store.save_order_result(
+                        result,
+                        broker=account.broker,
+                        purpose=order_purpose,
+                        family_id=order_family_id,
+                    )
+                    results.append(result)
+                    self._export_routing_outcome(
+                        signal,
+                        outcome=_OUTCOME_BY_ORDER_STATUS[result.status],
+                        account=account,
+                        order_status=result.status,
+                        message=result.message,
+                    )
+                    continue
+
+                # Feed balance.equity and balance.maintenance_margin from get_account_balance
+                # into the detector. Fail closed when a margin account reports equity but no
+                # maintenance figure.
+                balance = await broker.get_account_balance(account)
+                current_equity = None
+                maintenance_requirement = None
+
+                if balance is not None:
+                    current_equity = balance.equity
+                    maintenance_requirement = balance.maintenance_margin
+
+                    # Fail-closed: if account reports equity but no maintenance_margin,
+                    # we cannot safely determine margin state for a margin account.
+                    # This is a configuration/adapter problem that needs attention.
+                    if current_equity is not None and maintenance_requirement is None:
+                        result = OrderResult(
+                            account_id=account.account_id,
+                            status=OrderStatus.REJECTED,
+                            signal_id=signal.id,
+                            message=f"Cannot determine margin state for account '{account.account_id}': "
+                            f"broker reports equity ({current_equity:.2f}) but no maintenance requirement. "
+                            f"Broker adapter may not support margin reporting for this account type.",
+                        )
+                        self.store.save_order_result(
+                            result,
+                            broker=account.broker,
+                            purpose=order_purpose,
+                            family_id=order_family_id,
+                        )
+                        results.append(result)
+                        self._export_routing_outcome(
+                            signal,
+                            outcome=_OUTCOME_BY_ORDER_STATUS[result.status],
+                            account=account,
+                            order_status=result.status,
+                            message=result.message,
+                        )
+                        continue
+
+                # Check margin state with the detector.
                 margin_error = self.margin_call_detector.check_and_persist_margin_call(
                     account=account,
-                    current_equity=None,
-                    maintenance_requirement=None,
-                    excess_margin=None,
+                    current_equity=current_equity,
+                    maintenance_requirement=maintenance_requirement,
+                    excess_margin=None,  # Detector will calculate if needed
                     broker=account.broker,
                 )
                 if margin_error is not None:
