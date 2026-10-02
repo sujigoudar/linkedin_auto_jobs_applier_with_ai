@@ -87,7 +87,7 @@ _REJECTED_STATUSES = {"cancelled", "rejected", "expired"}
 
 class TastytradeBroker(BrokerAdapter):
     name = "tastytrade"
-    supported_asset_classes = frozenset({AssetClass.EQUITY, AssetClass.OPTION})
+    supported_asset_classes = frozenset({AssetClass.EQUITY})
 
     def __init__(self, timeout: float = 10.0):
         self._client = httpx.AsyncClient(timeout=timeout)

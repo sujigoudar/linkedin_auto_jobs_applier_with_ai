@@ -79,7 +79,7 @@ _REJECTED_CODES = {"rej", "can", "exp", "out"}
 
 class TradeStationBroker(BrokerAdapter):
     name = "tradestation"
-    supported_asset_classes = frozenset({AssetClass.EQUITY, AssetClass.OPTION, AssetClass.FUTURE})
+    supported_asset_classes = frozenset({AssetClass.EQUITY, AssetClass.FUTURE})
 
     def __init__(self, timeout: float = 10.0):
         self._client = httpx.AsyncClient(timeout=timeout)

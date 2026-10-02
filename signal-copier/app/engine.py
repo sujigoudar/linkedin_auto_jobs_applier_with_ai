@@ -960,6 +960,32 @@ class SignalCopierEngine:
                 )
                 continue
 
+            # C-01: Reject LIMIT/STOP entries for adapters that don't support them
+            # (fail-closed). Until an adapter implements and declares limit/stop
+            # support, every entry must be MARKET (the default when unspecified).
+            if signal.side != Side.CLOSE and not broker.can_trade_entry_order_type(signal.entry_order_type):
+                result = OrderResult(
+                    account_id=account.account_id,
+                    status=OrderStatus.REJECTED,
+                    signal_id=signal.id,
+                    message=(
+                        f"broker '{account.broker}' does not support entry_order_type="
+                        f"'{signal.entry_order_type.value if signal.entry_order_type else 'market'}' — refusing to route this signal here"
+                    ),
+                )
+                self.store.save_order_result(
+                    result, broker=account.broker, purpose=order_purpose, family_id=order_family_id
+                )
+                results.append(result)
+                self._export_routing_outcome(
+                    signal,
+                    outcome=_OUTCOME_BY_ORDER_STATUS[result.status],
+                    account=account,
+                    order_status=result.status,
+                    message=result.message,
+                )
+                continue
+
             symbol = symbol_for_account(signal, account)
 
             # D-07/F-01: for CLOSE signals, determine the exit path by

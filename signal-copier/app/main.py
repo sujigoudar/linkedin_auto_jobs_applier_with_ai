@@ -2175,6 +2175,7 @@ async def list_broker_capabilities(_owner: dict = Depends(require_owner_read)) -
                 "has_last_price_capability": broker.has_last_price_capability,
                 "has_balance_capability": broker.has_balance_capability,
                 "can_protect_a_managed_position": broker.can_protect_a_managed_position(),
+                "entries_admissible": broker.entries_admissible(),
                 "supported_asset_classes": (
                     sorted(a.value for a in broker.supported_asset_classes)
                     if broker.supported_asset_classes is not None

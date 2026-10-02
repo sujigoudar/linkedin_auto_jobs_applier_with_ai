@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import abc
 
-from app.models import AccountBalance, AssetClass, DestinationAccount, OrderResult, Side, Signal
+from app.models import AccountBalance, AssetClass, DestinationAccount, EntryOrderType, OrderResult, Side, Signal
 
 
 class BrokerAdapter(abc.ABC):
@@ -37,6 +37,17 @@ class BrokerAdapter(abc.ABC):
         if self.supported_asset_classes is None:
             return True
         return asset_class in self.supported_asset_classes
+
+    def can_trade_entry_order_type(self, entry_order_type: EntryOrderType | None) -> bool:
+        """Check if this adapter can handle the given entry_order_type.
+
+        Only MARKET orders are universally supported; LIMIT/STOP orders are
+        adapter-specific. `None` (unspecified) is treated as MARKET.
+        """
+        if entry_order_type is None or entry_order_type == EntryOrderType.MARKET:
+            return True
+        # LIMIT/STOP orders require explicit per-adapter support
+        return False
 
     @abc.abstractmethod
     async def place_order(
@@ -238,3 +249,24 @@ class BrokerAdapter(abc.ABC):
         broker with neither must not be admitted into managed-lifecycle
         live trading — see app/lifecycle/manager.py's `validate_plan`."""
         return self.has_protective_stop_capability
+
+    def entries_admissible(self) -> bool:
+        """C-10: Whether live ENTRY signals can be admitted to this adapter's
+        routes at all.
+
+        An adapter without `has_account_order_position_feedback` (i.e., no
+        order-status confirmation, position readback, or balance readback)
+        can never reach `release_approved` qualification state, even after a
+        human sign-off -- the qualification ladder's account_entitled rung
+        and everything above it require some feedback channel to verify
+        that an order was actually executed. Five adapters cannot provide
+        this feedback: ninjatrader (fire-and-forget webhook relay),
+        rithmic (fire-and-forget relay with no status polling),
+        signalstack (webhook relay with no venue feedback), MT4/MT5 (no
+        real order tracking after restart), and MetaApi (partial fill
+        unpollable, no quantity on FILLED).
+
+        Affected adapters can still route CLOSE signals to close externally-
+        opened positions (see _check_route_qualified's logic), but live
+        entries are structurally impossible and fail-closed here."""
+        return self.has_account_order_position_feedback
