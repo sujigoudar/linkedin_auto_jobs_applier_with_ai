@@ -187,7 +187,7 @@ class BrokerAdapter(abc.ABC):
 
     @property
     def has_balance_capability(self) -> bool:
-        return type(self).get_account_balance is  BrokerAdapter.get_account_balance
+        return type(self).get_account_balance is not BrokerAdapter.get_account_balance
 
     @property
     def has_account_order_position_feedback(self) -> bool:
