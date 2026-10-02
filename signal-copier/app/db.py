@@ -2064,6 +2064,13 @@ _COLUMN_MIGRATIONS = [
     # WP-08 (B-14): per-account short-selling permission gate -- see
     # DestinationAccount.allow_short's own docstring.
     ("config_accounts", "allow_short", "INTEGER NOT NULL DEFAULT 0"),
+    # E-07 (WP-27): real fill timestamp tracking -- see E-07's own
+    # docstring in docs/audit/raw/E_FINDINGS.md. executed_at is now the
+    # broker's actual fill timestamp (populated by adapters from broker
+    # response, or defaulting to NULL). confirmed_at tracks when the fill
+    # was confirmed by reconciliation polling, distinct from the actual
+    # execution time. Both TEXT (ISO 8601), NULL when not yet confirmed.
+    ("orders", "confirmed_at", "TEXT"),
 ]
 
 
@@ -2963,6 +2970,10 @@ class SignalStore:
         account economics and performance analytics.
         """
         stored_filled_quantity = applied_quantity if applied_quantity is not None else result.filled_quantity
+        # E-07: For PENDING orders without a broker-reported fill time, use the current time
+        # as a placeholder (which will be preserved by _update_order_status_locked). Adapters
+        # should set executed_at to the broker's actual fill time for FILLED orders.
+        stored_executed_at = (result.executed_at or datetime.now(timezone.utc)).isoformat()
         with self._connect() as conn:
             cursor = conn.execute(
                 """INSERT INTO orders
@@ -2984,7 +2995,7 @@ class SignalStore:
                     stored_filled_quantity,
                     result.filled_price,
                     result.message,
-                    result.executed_at.isoformat(),
+                    stored_executed_at,
                     reserved_notional,
                     submitted_at.isoformat() if submitted_at else None,
                     protection_confirmed_at.isoformat() if protection_confirmed_at else None,
@@ -3516,14 +3527,44 @@ class SignalStore:
         defaulting to `None`: an ordinary status/price/message update (the
         original, pre-AUD-01 shape of this method) must never silently
         blank out a quantity column a previous, more-informative call
-        already set."""
-        columns = ["status = ?", "filled_quantity = ?", "filled_price = ?", "message = ?", "executed_at = ?"]
+        already set.
+
+        E-07 (WP-27): executed_at is now preserved from the broker's actual
+        fill timestamp. When transitioning from PENDING to FILLED, use the
+        result's executed_at (broker's actual timestamp) if provided and the
+        current value is just a placeholder (current time). Otherwise, preserve
+        the existing value. confirmed_at tracks the poll time when the fill is
+        reconciled."""
+        # E-07: Fetch current executed_at and status to preserve broker's original timestamp
+        current_row = conn.execute(
+            "SELECT executed_at, status FROM orders WHERE id = ?", (order_row_id,)
+        ).fetchone()
+        current_executed_at = current_row[0] if current_row else None
+        current_status = current_row[1] if current_row else None
+
+        # Determine what executed_at should be: when transitioning PENDING->FILLED with
+        # a broker-reported fill time, use that time. Otherwise preserve the current value.
+        new_executed_at: str | None
+        if (current_status == "pending" and
+            result.status.value == "filled" and
+            result.executed_at is not None):
+            # Transitioning to FILLED with broker's actual timestamp
+            new_executed_at = result.executed_at.isoformat()
+        else:
+            # Preserve existing value (could be NULL, or a previously-set broker time)
+            new_executed_at = current_executed_at  # type: ignore[assignment]
+
+        # confirmed_at is the current reconciliation poll time (when broker confirmed the fill)
+        confirmed_at = datetime.now(timezone.utc).isoformat()
+
+        columns = ["status = ?", "filled_quantity = ?", "filled_price = ?", "message = ?", "executed_at = ?", "confirmed_at = ?"]
         params: list[object] = [
             result.status.value,
             result.filled_quantity,
             result.filled_price,
             result.message,
-            result.executed_at.isoformat(),
+            new_executed_at,
+            confirmed_at,
         ]
         for column_name, value in (
             ("confirmed_cumulative_fill", confirmed_cumulative_fill),
@@ -9096,10 +9137,16 @@ class SignalStore:
         may be `None` for a given row (a rejection before submission, a
         non-managed_lifecycle account, or a managed entry whose stop was
         never confirmed) -- that module's own docstring says exactly which
-        stages this schema does and doesn't separately track."""
+        stages this schema does and doesn't separately track.
+
+        E-08 (WP-27): excludes synthetic lifecycle signals (stop_exit,
+        target_exit, time_exit) from latency calculations so that managed
+        exit latency doesn't dilute provider-signal latency metrics."""
         query = """SELECT o.symbol, o.executed_at, s.received_at, o.submitted_at, o.protection_confirmed_at
                    FROM orders o JOIN signals s ON o.signal_id = s.id
                    WHERE o.account_id = ? AND (o.status = 'filled' OR o.filled_quantity > 0)
+                   AND (o.purpose IS NULL OR o.purpose NOT IN ('stop_exit', 'target_exit', 'time_exit'))
+                   AND s.source != 'lifecycle_manager'
                    ORDER BY o.executed_at ASC"""
         with self._connect() as conn:
             rows = conn.execute(query, (account_id,)).fetchall()
