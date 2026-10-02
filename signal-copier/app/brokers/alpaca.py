@@ -194,12 +194,24 @@ class AlpacaBroker(BrokerAdapter):
             )
 
         order = response.json()
+        child_order_ids: dict[str, str] = {}
+        # D-01: Extract bracket child leg IDs from Alpaca response
+        if "legs" in order:
+            for leg in order["legs"]:
+                leg_id = leg.get("id")
+                if leg_id:
+                    # Identify leg type from the order payload
+                    if leg.get("order_class") == "stop_loss" or "stop_price" in leg:
+                        child_order_ids["stop"] = _coerce_broker_order_id(leg_id) or str(leg_id)
+                    elif leg.get("order_class") == "take_profit" or "limit_price" in leg:
+                        child_order_ids["take_profit"] = _coerce_broker_order_id(leg_id) or str(leg_id)
         return OrderResult(
             account_id=account.account_id,
             status=OrderStatus.PENDING,
             signal_id=signal.id,
             broker_order_id=_coerce_broker_order_id(order.get("id")),
             message=f"submitted to Alpaca (status: {order.get('status')})",
+            child_order_ids=child_order_ids,
         )
 
     def normalize_quantity(self, account: DestinationAccount, symbol: str, quantity: float) -> float | None:

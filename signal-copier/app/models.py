@@ -424,6 +424,10 @@ class OrderResult:
     #: for the account's base currency (distinct from each order's individual
     #: price currency).
     price_currency: Optional[str] = None
+    #: D-01: Bracket child leg order IDs, keyed by type ('stop', 'take_profit').
+    #: Populated by adapters that support native bracket orders. Used to track
+    #: and poll child legs for plain accounts.
+    child_order_ids: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass

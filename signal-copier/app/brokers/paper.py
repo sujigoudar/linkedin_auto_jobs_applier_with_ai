@@ -33,6 +33,7 @@ class _StopOrder:
 
 class PaperBroker(BrokerAdapter):
     name = "paper"
+    supports_native_bracket = True
 
     #: DB-0X (bounded, scoped to this broker only): PaperBroker's whole
     #: state is internal to this process -- unlike every other adapter in
@@ -55,6 +56,8 @@ class PaperBroker(BrokerAdapter):
         self.positions: dict[str, dict[str, float]] = {}
         self.fills: list[OrderResult] = []
         self._stop_orders: dict[str, _StopOrder] = {}
+        self._filled_stop_orders: dict[str, OrderResult] = {}  # Track filled orders for status polling
+        self._target_exit_orders: dict[str, str] = {}  # D-01: Track take-profit (target exit) orders by order_id
         self._next_stop_id = 1
         #: account_id -> real, genuinely-computed simulated cash balance,
         #: seeded at STARTING_CASH the first time an account is touched
@@ -122,6 +125,7 @@ class PaperBroker(BrokerAdapter):
             # a real path this cash tracking needs to cover.
             book[symbol] = 0.0
 
+<<<<<<< HEAD
         # WP-38 (G-C-24): Use persistent per-account sequence for order IDs.
         # The engine initializes _order_id_sequence from the database and
         # updates it after each order. Defaults to 1 if not yet set.
@@ -129,6 +133,34 @@ class PaperBroker(BrokerAdapter):
         seq = self._order_id_sequence.get(account_id, 1)
         self._order_id_sequence[account_id] = seq + 1
         order_id = f"paper-{seq}"
+=======
+        # D-01: Create simulated child stop orders for bracket entries
+        child_order_ids: dict[str, str] = {}
+        if signal.side.value in ("buy", "sell") and (signal.stop_loss or signal.take_profit):
+            # Determine the exit side for stop/TP (opposite of entry)
+            exit_side = Side.SELL if signal.side == Side.BUY else Side.BUY
+
+            if signal.stop_loss:
+                stop_order_id = f"paper-stop-{self._next_stop_id}"
+                self._next_stop_id += 1
+                self._stop_orders[stop_order_id] = _StopOrder(
+                    order_id=stop_order_id,
+                    account_id=account.account_id,
+                    symbol=symbol,
+                    side=exit_side,
+                    quantity=quantity,
+                    stop_price=signal.stop_loss,
+                )
+                child_order_ids["stop"] = stop_order_id
+
+            if signal.take_profit:
+                # Take-profit is a limit order at the target price (opposite side)
+                # D-01: Track the order ID so it can be cancelled if a sibling (stop) fills
+                tp_order_id = f"paper-tp-{self._next_stop_id}"
+                self._next_stop_id += 1
+                self._target_exit_orders[tp_order_id] = tp_order_id
+                child_order_ids["take_profit"] = tp_order_id
+>>>>>>> 21bf5fe (WP-18 (D-01, C-07): Track bracket child legs as reconcilable orders)
 
         result = OrderResult(
             account_id=account.account_id,
@@ -141,6 +173,7 @@ class PaperBroker(BrokerAdapter):
             fee=self.fee_per_fill,
             fee_currency="USD",  # Paper broker uses USD convention
             slippage=0.0,  # Paper broker fills exactly at signal price when available
+            child_order_ids=child_order_ids,
         )
         self.fills.append(result)
         return result
@@ -188,7 +221,10 @@ class PaperBroker(BrokerAdapter):
         )
 
     async def cancel_order(self, account: DestinationAccount, broker_order_id: str) -> bool:
-        return self._stop_orders.pop(broker_order_id, None) is not None
+        # D-01: Handle both stop orders and take-profit (target exit) orders
+        stop_found = self._stop_orders.pop(broker_order_id, None) is not None
+        target_found = self._target_exit_orders.pop(broker_order_id, None) is not None
+        return stop_found or target_found
 
     async def replace_stop_quantity(
         self,
@@ -214,6 +250,7 @@ class PaperBroker(BrokerAdapter):
     async def get_broker_position(self, account: DestinationAccount, symbol: str) -> float | None:
         return self.positions.setdefault(account.account_id, {}).get(symbol, 0.0)
 
+<<<<<<< HEAD
     def set_order_id_sequence(self, account_id: str, sequence: int) -> None:
         """Initialize the order ID sequence for an account (WP-38, G-C-24).
         Called by the engine at startup to restore the persisted sequence
@@ -226,6 +263,24 @@ class PaperBroker(BrokerAdapter):
         Called by the engine after a fill to persist the updated sequence
         back to the database."""
         return self._order_id_sequence.get(account_id, 1)
+=======
+    async def get_order_status(
+        self, account: DestinationAccount, broker_order_id: str
+    ) -> OrderResult | None:
+        """Poll the status of a resting stop order. Returns None if still
+        pending, or an OrderResult with FILLED/REJECTED/ERROR if terminal."""
+        # Check if this is a filled stop order
+        if broker_order_id in self._filled_stop_orders:
+            return self._filled_stop_orders[broker_order_id]
+
+        # Check if this order_id is still resting
+        if broker_order_id in self._stop_orders:
+            # Still pending - return None to keep polling it later
+            return None
+
+        # Unknown order - return None
+        return None
+>>>>>>> 21bf5fe (WP-18 (D-01, C-07): Track bracket child legs as reconcilable orders)
 
     def simulate_price(self, symbol: str, price: float) -> list[OrderResult]:
         """Test/simulation hook: check every resting stop order on `symbol`
@@ -265,6 +320,7 @@ class PaperBroker(BrokerAdapter):
                 message=f"paper stop filled at simulated price {price}",
             )
             self.fills.append(result)
+            self._filled_stop_orders[order_id] = result  # Track filled orders for get_order_status
             results.append(result)
 
         return results

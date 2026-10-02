@@ -3228,6 +3228,53 @@ class SignalStore:
             assert cursor.lastrowid is not None
             return cursor.lastrowid
 
+    def save_child_order_result(
+        self,
+        account_id: str,
+        broker: str,
+        symbol: str,
+        quantity: float,
+        broker_order_id: str,
+        purpose: str,  # 'stop_exit' or 'target_exit'
+        family_id: str,  # the parent entry's signal id
+    ) -> int:
+        """D-01: Persist a bracket child leg order row.
+
+        Child orders (stop and take-profit legs from native bracket entries)
+        are tracked in the same `orders` table but with a distinct purpose
+        ('stop_exit' or 'target_exit') and the parent entry's signal_id as
+        their family_id. This allows the reconciliation pass to poll them
+        alongside regular orders and detect when they fill. Signal_id is set
+        to family_id for foreign key constraint compliance while purpose
+        distinguishes child orders from regular ones.
+        """
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """INSERT INTO orders
+                   (account_id, broker, symbol, side, requested_quantity, signal_id, status,
+                    broker_order_id, filled_quantity, filled_price, message, executed_at,
+                    purpose, family_id)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    account_id,
+                    broker,
+                    symbol,
+                    None,  # side: child orders don't track a side
+                    quantity,
+                    family_id,  # signal_id: set to family_id for FK constraint compliance
+                    "pending",  # status: always PENDING for a newly created child order
+                    broker_order_id,
+                    None,  # filled_quantity: not known yet
+                    None,  # filled_price: not known yet
+                    f"bracket {purpose} leg",
+                    datetime.now(timezone.utc).isoformat(),
+                    purpose,
+                    family_id,
+                ),
+            )
+            assert cursor.lastrowid is not None
+            return cursor.lastrowid
+
     def _insert_export_event(self, conn: sqlite3.Connection, envelope: EventEnvelope) -> None:
         """The actual outbox INSERT, taking an ALREADY-OPEN connection so a
         caller (like `save_order_result` above) can include it in its own
@@ -3670,14 +3717,19 @@ class SignalStore:
         can build one too: `signal_id`/`asset_class`/`analyst` are exactly
         what `build_execution_applied_envelope` needs beyond what this
         table already carries. `orders.signal_id` is `NOT NULL REFERENCES
-        signals(id)`, so this JOIN never drops a row."""
+        signals(id)`, so this JOIN never drops a row.
+
+        D-01: Excludes bracket child leg orders (purpose='stop_exit' or
+        'target_exit') -- those are handled separately via
+        `list_pending_child_orders()` and `_reconcile_pending_child_orders()`."""
         with self._connect() as conn:
             rows = conn.execute(
                 """SELECT o.id, o.account_id, o.broker, o.symbol, o.side, o.requested_quantity,
                           o.filled_quantity, o.broker_order_id, o.reserved_notional,
                           o.signal_id, s.asset_class, s.analyst
                    FROM orders o JOIN signals s ON o.signal_id = s.id
-                   WHERE o.status = 'pending' AND o.broker_order_id IS NOT NULL"""
+                   WHERE o.status = 'pending' AND o.broker_order_id IS NOT NULL
+                         AND (o.purpose IS NULL OR o.purpose NOT IN ('stop_exit', 'target_exit'))"""
             ).fetchall()
         return [
             {
@@ -3693,6 +3745,38 @@ class SignalStore:
                 "signal_id": r[9],
                 "asset_class": r[10],
                 "analyst": r[11],
+            }
+            for r in rows
+        ]
+
+    def list_pending_child_orders(self) -> list[dict]:
+        """Pending child bracket orders (purpose='stop_exit' or 'target_exit').
+
+        Unlike list_pending_orders, child orders are linked to signals via
+        family_id. Returns child orders with status='pending' and a
+        broker_order_id to poll, including the entry side so the reconciler
+        can determine the correct exit side."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT o.id, o.account_id, o.broker, o.symbol, o.requested_quantity,
+                          o.filled_quantity, o.broker_order_id, o.purpose, o.family_id,
+                          s.side
+                   FROM orders o JOIN signals s ON o.family_id = s.id
+                   WHERE o.status = 'pending' AND o.broker_order_id IS NOT NULL
+                         AND o.purpose IN ('stop_exit', 'target_exit')"""
+            ).fetchall()
+        return [
+            {
+                "id": r[0],
+                "account_id": r[1],
+                "broker": r[2],
+                "symbol": r[3],
+                "requested_quantity": r[4],
+                "filled_quantity": r[5],
+                "broker_order_id": r[6],
+                "purpose": r[7],
+                "family_id": r[8],
+                "entry_side": r[9],
             }
             for r in rows
         ]

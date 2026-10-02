@@ -225,6 +225,8 @@ class OrderReconciler:
                     self._export_lifecycle_resolved_fill(order, account, export_side, lifecycle.plan.asset_class, result)
             corrected += 1
 
+        # D-01: Poll bracket child leg orders (stop/take-profit exits)
+        corrected += await self._reconcile_pending_child_orders()
         corrected += await self._reconcile_pending_exits()
         corrected += await self._reconcile_pending_entries()
         corrected += await self._reconcile_unknown_submissions()
@@ -246,6 +248,92 @@ class OrderReconciler:
             # pending order was ever involved -- only asking the broker
             # for its own current position can.
             corrected += await self._reconcile_broker_positions()
+        return corrected
+
+    async def _reconcile_pending_child_orders(self) -> int:
+        """D-01: Poll bracket child leg orders (stop/take_profit) for
+        plain accounts. When a child order fills, apply the exit to
+        positions and potentially cancel the sibling if still open."""
+        corrected = 0
+        for child_order in self.store.list_pending_child_orders():
+
+            broker = self.brokers.get(child_order["broker"])
+            if broker is None:
+                continue
+
+            account = DestinationAccount(
+                account_id=child_order["account_id"], broker=child_order["broker"]
+            )
+            try:
+                result = await broker.get_order_status(account, child_order["broker_order_id"])
+            except Exception:  # noqa: BLE001 - one broker's failure must not block the rest
+                logger.exception(
+                    "get_order_status failed for child order account=%s order=%s",
+                    child_order["account_id"],
+                    child_order["id"],
+                )
+                continue
+
+            if result is None or result.status == OrderStatus.PENDING:
+                # Still open on the broker's side
+                continue
+
+            # Child order reached a terminal status -- update the row
+            # and handle fills by applying to positions
+            self.store.update_order_status(child_order["id"], result)
+
+            if result.status == OrderStatus.FILLED:
+                # Apply the child exit fill to positions
+                # Child orders are exits (opposite side of the entry)
+                # Get the quantity from the child order's requested_quantity
+                filled_quantity = result.filled_quantity or child_order["requested_quantity"]
+
+                # Determine the exit side (opposite of the entry side)
+                entry_side = Side(child_order["entry_side"])
+                exit_side = Side.SELL if entry_side == Side.BUY else Side.BUY
+
+                # Record the fill to correct positions
+                self.store.record_fill(
+                    child_order["account_id"],
+                    child_order["symbol"],
+                    exit_side,
+                    filled_quantity,
+                )
+
+                # Find and potentially cancel the sibling child order
+                # (e.g., if stop filled, cancel the take-profit)
+                sibling_purpose = (
+                    "target_exit" if child_order["purpose"] == "stop_exit" else "stop_exit"
+                )
+                with self.store._connect() as conn:
+                    sibling_orders = conn.execute(
+                        """SELECT id, broker_order_id FROM orders
+                           WHERE family_id = ? AND purpose = ? AND status = 'pending'""",
+                        (child_order["family_id"], sibling_purpose),
+                    ).fetchall()
+
+                for sibling in sibling_orders:
+                    try:
+                        cancel_success = await broker.cancel_order(account, sibling[1])
+                        if cancel_success:
+                            # Update the sibling status to rejected
+                            cancel_result = OrderResult(
+                                account_id=child_order["account_id"],
+                                status=OrderStatus.REJECTED,
+                                signal_id="",
+                                broker_order_id=sibling[1],
+                                message="cancelled because sibling child order filled",
+                            )
+                            self.store.update_order_status(sibling[0], cancel_result)
+                    except Exception:  # noqa: BLE001 - one broker's failure must not block the rest
+                        logger.exception(
+                            "cancel_order failed for sibling order account=%s order=%s",
+                            child_order["account_id"],
+                            sibling[1],
+                        )
+
+            corrected += 1
+
         return corrected
 
     async def _reconcile_broker_positions(self) -> int:

@@ -1580,6 +1580,25 @@ class SignalCopierEngine:
                 purpose=order_purpose,
                 family_id=order_family_id,
             )
+            # D-01: Save bracket child leg orders (stop and take-profit)
+            # as separate orders rows so they can be polled in reconciliation
+            if result.status == OrderStatus.FILLED and result.child_order_ids and order_purpose == "entry":
+                for child_type, child_broker_order_id in result.child_order_ids.items():
+                    if child_type == "stop":
+                        child_purpose = "stop_exit"
+                    elif child_type == "take_profit":
+                        child_purpose = "target_exit"
+                    else:
+                        continue  # Unknown child type, skip
+                    self.store.save_child_order_result(
+                        account_id=account.account_id,
+                        broker=account.broker,
+                        symbol=symbol,
+                        quantity=quantity,
+                        broker_order_id=child_broker_order_id,
+                        purpose=child_purpose,
+                        family_id=signal.id,  # use the original signal id as family
+                    )
             results.append(result)
             self._export_routing_outcome(
                 signal,
