@@ -317,18 +317,22 @@ async def test_dry_run_places_no_order_and_records_traces(store):
     # Call handle_signal with dry_run=True
     results = await engine.handle_signal(signal, dry_run=True)
 
-    # Should return a FILLED result (simulated)
-    filled_results = [r for r in results if r.status == OrderStatus.FILLED]
-    assert len(filled_results) >= 1, f"dry_run should simulate a fill, got {len(filled_results)} fills"
+    # WC-33: Honest dry_run should return PENDING status (not fabricated FILLED)
+    pending_results = [r for r in results if r.status == OrderStatus.PENDING]
+    assert len(pending_results) >= 1, f"dry_run should return PENDING (planned, not dispatched), got {len(pending_results)} pending"
 
     # Verify the broker did NOT actually place an order
     broker_positions = broker.positions.get("a1", {}).get("AAPL", 0.0)
     assert broker_positions == 0.0, f"dry_run should not place actual orders on broker, got {broker_positions} shares"
 
-    # The result message should indicate it's a simulation
-    filled_result = filled_results[0]
-    assert "dry_run" in filled_result.message or "simulation" in filled_result.message, \
-        f"dry_run result message should mention dry_run/simulation, got '{filled_result.message}'"
+    # The result message should be the honest dry_run message
+    pending_result = pending_results[0]
+    assert pending_result.message == "dry_run: planned, not dispatched", \
+        f"dry_run result message should be exact, got '{pending_result.message}'"
+
+    # Verify filled_quantity and filled_price are None (not fabricated)
+    assert pending_result.filled_quantity is None, "dry_run should not have filled_quantity"
+    assert pending_result.filled_price is None, "dry_run should not have filled_price"
 
 
 @pytest.mark.asyncio

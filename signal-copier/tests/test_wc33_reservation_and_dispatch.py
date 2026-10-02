@@ -26,7 +26,7 @@ from app.models import (
     Side,
     AssetClass,
 )
-from app.routing import RoutingConfig
+from app.routing import RoutingConfig, RoutingRule
 from app.workflow.budget import (
     UNLIMITED_CENTS,
     BudgetScope,
@@ -64,9 +64,12 @@ def routing_config() -> RoutingConfig:
         broker="paper",
         multiplier=1,
         enabled=True,
-        owner="alice",
     )
-    return RoutingConfig(accounts={"test_account": account})
+    rule = RoutingRule(
+        source="test_source",
+        destinations=["test_account"],
+    )
+    return RoutingConfig(rules=[rule], accounts={"test_account": account})
 
 
 @pytest.fixture
@@ -110,7 +113,7 @@ class TestI04Ordering:
         assert result.status == OrderStatus.FILLED
 
         # Verify order_intents row exists
-        intent = tmp_store.get_order_intent(result.signal_id)
+        intent = tmp_store.get_order_intent_for_opportunity(result.signal_id)
         assert intent is not None
         assert intent.opportunity_id == signal.id
 
@@ -132,8 +135,8 @@ class TestBudgetEnforcement:
     @pytest.mark.asyncio
     async def test_budget_enforcement_equal_limit(self, engine, tmp_store):
         """Entry needing exactly the limit admits; entry needing limit+1 is rejected."""
-        # Set owner limit
-        tmp_store.set_owner_limit("alice", max_notional_cents=100000)  # $1000
+        # Set owner limit (using "owner" which matches engine's BudgetScope)
+        tmp_store.set_owner_limit("owner", max_notional_cents=100000)  # $1000
 
         # Create a signal needing exactly $1000
         signal = Signal(

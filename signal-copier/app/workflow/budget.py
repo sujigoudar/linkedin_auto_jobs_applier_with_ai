@@ -344,11 +344,14 @@ class HierarchicalBudget:
             ReservationState.HELD: [
                 ReservationState.COMMITTED_TO_PENDING_ORDER,
                 ReservationState.UNKNOWN_HELD,
+                ReservationState.RELEASED,  # For dry_run or pre-submission rejection
             ],
             ReservationState.COMMITTED_TO_PENDING_ORDER: [
                 ReservationState.PART_FILLED,
                 ReservationState.FILLED_EXPOSURE,
                 ReservationState.UNKNOWN_HELD,
+                ReservationState.RELEASE_PENDING,  # For broker rejection (may go through RELEASE_PENDING)
+                ReservationState.RELEASED,  # Direct path for broker rejection
             ],
             ReservationState.PART_FILLED: [
                 ReservationState.HELD_REMAINDER,

@@ -2020,11 +2020,14 @@ class SignalCopierEngine:
                 continue
 
             # WC-33 STEP C: Durable intent before dispatch
+            # Get contract multiplier value for policy hash
+            mult, _, _ = _get_contract_multiplier(order_signal)
+
             # Build OrderIntent with policy hash from sizing inputs
             policy_input = {
                 "side": order_signal.side.value,
                 "quantity": quantity,
-                "multiplier": contract_multiplier,
+                "multiplier": mult,
                 "price": order_signal.price,
             }
             policy_hash = hashlib.sha256(json.dumps(policy_input, sort_keys=True).encode()).hexdigest()
@@ -2211,10 +2214,48 @@ class SignalCopierEngine:
                 )
                 continue
 
+            # WC-33 STEP C: After outbox claim (durable intent persisted), transition to COMMITTED_TO_PENDING_ORDER
+            # This marks the submission as committed before broker call
+            if reservation_id is not None:
+                try:
+                    self.hierarchical_budget.transition(
+                        reservation_id,
+                        ReservationState.COMMITTED_TO_PENDING_ORDER,
+                        evidence={"outbox_intent_id": intent.intent_id},
+                    )
+                except Exception as e:
+                    logger.exception("failed to transition to COMMITTED_TO_PENDING_ORDER signal=%s", signal.id)
+                    # Release reservations and capital on transition failure
+                    self.capital_allocator.release(account.account_id, notional, signal_id=signal.id)
+                    result = OrderResult(
+                        account_id=account.account_id,
+                        status=OrderStatus.ERROR,
+                        signal_id=signal.id,
+                        message=f"reservation transition failed: {str(e)}",
+                    )
+                    self.store.save_order_result(
+                        result,
+                        broker=account.broker,
+                        symbol=symbol,
+                        side=order_signal.side,
+                        requested_quantity=quantity,
+                        purpose=order_purpose,
+                        family_id=order_family_id,
+                    )
+                    results.append(result)
+                    self._export_routing_outcome(
+                        signal,
+                        outcome=_OUTCOME_BY_ORDER_STATUS[result.status],
+                        account=account,
+                        order_status=result.status,
+                        message=result.message,
+                    )
+                    continue
+
             try:
                 order_signal.client_order_id = ledger_key
                 result = await broker.place_order(order_signal, account, quantity, symbol)
-                # WC-33 STEP C & D: Record response in outbox and transition reservation
+                # WC-33 STEP D: Record response in outbox and transition reservation based on result status
                 outbox_response = {
                     "status": result.status.value,
                     "broker_order_id": result.broker_order_id,
@@ -2224,18 +2265,17 @@ class SignalCopierEngine:
                 # WC-33 STEP D: Transition reservation based on result status
                 if reservation_id is not None:
                     if result.status == OrderStatus.FILLED:
+                        # Filled: go from COMMITTED_TO_PENDING_ORDER → FILLED_EXPOSURE
                         self.hierarchical_budget.transition(
                             reservation_id,
                             ReservationState.FILLED_EXPOSURE,
                             evidence={"broker_order_id": result.broker_order_id, "filled_quantity": result.filled_quantity},
                         )
                     elif result.status == OrderStatus.PENDING:
-                        self.hierarchical_budget.transition(
-                            reservation_id,
-                            ReservationState.COMMITTED_TO_PENDING_ORDER,
-                            evidence={"broker_order_id": result.broker_order_id},
-                        )
+                        # Already in COMMITTED_TO_PENDING_ORDER, no further transition needed
+                        pass
                     elif result.status == OrderStatus.REJECTED:
+                        # Rejected: go from COMMITTED_TO_PENDING_ORDER → RELEASED
                         self.hierarchical_budget.transition(
                             reservation_id,
                             ReservationState.RELEASED,
@@ -2250,7 +2290,7 @@ class SignalCopierEngine:
                     message=str(exc),
                 )
                 ambiguous_submission = True
-                # WC-33 STEP C & D: Record response and transition to UNKNOWN_HELD on exception
+                # WC-33 STEP D: Record response and transition to UNKNOWN_HELD on exception
                 try:
                     outbox_response = {
                         "exception": str(exc),
