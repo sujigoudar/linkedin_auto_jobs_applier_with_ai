@@ -349,7 +349,7 @@ class SignalCopierEngine:
         # Daily loss limit enforcement (see app/daily_loss_limiter.py): circuit
         # breaker that rejects new entries if daily loss exceeds threshold.
         # Fail-closed: any error determining equity/loss leaves trading halted.
-        self.daily_loss_limiter = DailyLossLimiter(store=store)
+        self.daily_loss_limiter = DailyLossLimiter(store=store, brokers=brokers)
         # Margin call detection and persistence (E04 bounded): monitors account
         # maintenance requirements and persists alerts when equity approaches
         # broker thresholds. Fail-closed: inability to determine margin state

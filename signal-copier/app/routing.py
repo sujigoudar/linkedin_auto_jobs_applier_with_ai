@@ -204,6 +204,8 @@ def load_routing_config(routing_path: Path, accounts_path: Path) -> RoutingConfi
                 ),
                 qualification_level=spec.get("qualification_level"),
                 exclusive_writer_qualified=spec.get("exclusive_writer_qualified", False),
+                daily_loss_limit_percent=spec.get("daily_loss_limit_percent"),
+                min_equity_threshold=spec.get("min_equity_threshold"),
             )
 
     rules: list[RoutingRule] = []
@@ -245,7 +247,7 @@ def load_routing_config_from_store(store) -> RoutingConfig:
             daily_loss_limit_percent=row.get("daily_loss_limit_percent"),
             min_equity_threshold=row.get("min_equity_threshold"),
             evidence_class=row.get("evidence_class"),  # WP-38 (G-C-13)
-            paper_order_id_sequence=row.get("paper_order_id_sequence"),  # WP-38 (G-C-24)
+            paper_order_id_sequence=row.get("paper_order_id_sequence"),  # WP-38 (G-C-24) (WP-30: Loss limits end-to-end wiring (B-08/F-02))
         )
         for row in store.list_config_accounts()
     }

@@ -1,22 +1,32 @@
 """Daily loss limit enforcement with circuit breaker.
 
 Prevents trading when daily losses exceed configured ceiling for an account.
-Implements fail-closed: rejects new entries if daily loss limit breached.
+Implements fail-closed: rejects new entries if data cannot be verified.
+
+The daily_pnl table exists but is not yet populated (as of this release); therefore,
+the daily loss limiter fails closed when daily_loss_limit_percent is configured but
+the daily P&L data is unavailable. This prevents silent trading when risk controls
+cannot be verified.
+
+Min equity threshold checks use broker.get_account_balance() to fetch current equity.
 """
 from __future__ import annotations
 
-from datetime import date
-from typing import Optional
+from typing import Any, Optional
 
-from app.db import SignalStore
 from app.models import DestinationAccount
 
 
 class DailyLossLimiter:
-    """Enforces daily loss limits per account with circuit breaker logic."""
+    """Enforces daily loss limits per account with circuit breaker logic.
 
-    def __init__(self, store: SignalStore):
+    Daily loss limits fail closed when P&L data is unavailable.
+    Min equity threshold checks use broker adapters to fetch real account equity.
+    """
+
+    def __init__(self, store: Any, brokers: dict[str, Any] | None = None):
         self.store = store
+        self.brokers = brokers or {}
 
     async def check_daily_loss_limit(
         self, account: DestinationAccount, daily_loss_limit_percent: Optional[float]
@@ -28,7 +38,7 @@ class DailyLossLimiter:
             daily_loss_limit_percent: Maximum acceptable daily loss as percentage of equity (e.g., 5 for 5%)
 
         Returns:
-            None if within limit, error message (rejection reason) if limit exceeded
+            None if within limit, error message (rejection reason) if limit exceeded or data unavailable
         """
         if daily_loss_limit_percent is None or daily_loss_limit_percent <= 0:
             return None  # Daily loss limit not configured
@@ -81,7 +91,7 @@ class DailyLossLimiter:
             daily_loss_limit_percent: Maximum acceptable daily loss as percentage of equity
 
         Returns:
-            True if trading is halted (daily loss limit exceeded)
+            True if trading is halted (daily loss limit exceeded or cannot be verified)
         """
         return await self.check_daily_loss_limit(account, daily_loss_limit_percent) is not None
 

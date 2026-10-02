@@ -2082,6 +2082,11 @@ _COLUMN_MIGRATIONS = [
     # approved only for the environment it was qualified in. Include the
     # resolved environment (base URL/env/sandbox flag) in the route tuple.
     ("route_qualifications", "environment", "TEXT NOT NULL DEFAULT 'unknown'"),
+    # WP-30 (B-08/F-02): Daily loss limit and minimum equity threshold for
+    # account-level circuit breakers. See app/daily_loss_limiter.py and
+    # app/models.py's DestinationAccount for the full circuit breaker design.
+    ("config_accounts", "daily_loss_limit_percent", "DECIMAL(5, 2)"),
+    ("config_accounts", "min_equity_threshold", "DECIMAL(18, 8)"),
 ]
 
 
@@ -4512,7 +4517,8 @@ class SignalStore:
             rows = conn.execute(
                 """SELECT account_id, broker, multiplier, fixed_quantity, symbol_map, enabled,
                           managed_lifecycle, max_notional_exposure, risk_percent_of_equity,
-                          management_recipe, qualification_level, exclusive_writer_qualified
+                          management_recipe, qualification_level, exclusive_writer_qualified,
+                          daily_loss_limit_percent, min_equity_threshold
                    FROM config_accounts ORDER BY account_id"""
             ).fetchall()
         return [
@@ -4535,6 +4541,8 @@ class SignalStore:
                 "management_recipe": r[9] or ("full_managed_lifecycle" if r[6] else "plain_unmanaged"),
                 "qualification_level": r[10],
                 "exclusive_writer_qualified": bool(r[11]),
+                "daily_loss_limit_percent": r[12],
+                "min_equity_threshold": r[13],
             }
             for r in rows
         ]
@@ -4553,14 +4561,16 @@ class SignalStore:
         management_recipe: str | None = None,
         qualification_level: str | None = None,
         exclusive_writer_qualified: bool = False,
+        daily_loss_limit_percent: float | None = None,
+        min_equity_threshold: float | None = None,
     ) -> None:
         with self._connect() as conn:
             conn.execute(
                 """INSERT INTO config_accounts
                    (account_id, broker, multiplier, fixed_quantity, symbol_map, enabled, managed_lifecycle,
                     max_notional_exposure, risk_percent_of_equity, management_recipe, qualification_level,
-                    exclusive_writer_qualified)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    exclusive_writer_qualified, daily_loss_limit_percent, min_equity_threshold)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT (account_id) DO UPDATE SET
                      broker = excluded.broker, multiplier = excluded.multiplier,
                      fixed_quantity = excluded.fixed_quantity, symbol_map = excluded.symbol_map,
@@ -4569,7 +4579,9 @@ class SignalStore:
                      risk_percent_of_equity = excluded.risk_percent_of_equity,
                      management_recipe = excluded.management_recipe,
                      qualification_level = excluded.qualification_level,
-                     exclusive_writer_qualified = excluded.exclusive_writer_qualified""",
+                     exclusive_writer_qualified = excluded.exclusive_writer_qualified,
+                     daily_loss_limit_percent = excluded.daily_loss_limit_percent,
+                     min_equity_threshold = excluded.min_equity_threshold""",
                 (
                     account_id,
                     broker,
@@ -4588,6 +4600,8 @@ class SignalStore:
                     management_recipe or ("full_managed_lifecycle" if managed_lifecycle else "plain_unmanaged"),
                     qualification_level,
                     int(exclusive_writer_qualified),
+                    daily_loss_limit_percent,
+                    min_equity_threshold,
                 ),
             )
 
