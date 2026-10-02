@@ -15,31 +15,34 @@ and convert to Cents only after rounding is explicitly specified.
 """
 
 
-def to_cents(value: Union[Decimal, str, int, float]) -> Cents:
+def to_cents(value: Union[Decimal, str, int]) -> Cents:
     """Convert a value to exact integer cents.
 
     Args:
-        value: A Decimal, str, int or float representing money.
+        value: A Decimal, str, or int representing money.
 
     Returns:
         Integer cents rounded down (floor).
 
     Raises:
-        TypeError: If value is not convertible to Decimal.
-        ValueError: If value is NaN or Infinity.
+        TypeError: If value is not one of the accepted types.
+        ValueError: If value does not convert to exact cents.
     """
     if isinstance(value, int):
         return value
 
-    if isinstance(value, float):
-        # Convert float to string to avoid binary representation issues
-        d = Decimal(str(value))
+    if isinstance(value, str):
+        d = Decimal(value)
+    elif isinstance(value, Decimal):
+        d = value
     else:
-        d = Decimal(value) if not isinstance(value, Decimal) else value
+        raise TypeError(f"Expected Decimal, str, or int, got {type(value).__name__}")
 
-    # Check for NaN or Infinity
-    if not d.is_finite():
-        raise ValueError(f"Money value must be finite, got {value}")
-
-    # Floor to integer cents
-    return int(d)
+    # Convert to cents (multiply by 100)
+    cents_decimal = d * 100
+    if cents_decimal % 1 != 0:
+        raise ValueError(
+            f"Value {value} does not convert to exact cents; "
+            f"got fractional cent {cents_decimal}"
+        )
+    return int(cents_decimal)
