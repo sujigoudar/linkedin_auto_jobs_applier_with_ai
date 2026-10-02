@@ -2021,49 +2021,53 @@ class SignalCopierEngine:
         broker-reported `buying_power`, wherever the broker can report
         one.
 
-        Deliberately NOT conditioned on `account.max_notional_exposure`/
-        `risk_percent_of_equity` being configured -- broker buying power
-        is a real, hard constraint on what CAN be submitted regardless of
-        whether the operator opted into either of this service's own
-        ceilings, so this runs for every entry, on every account. It is
-        independent of, and never a substitute for, `account.
-        max_notional_exposure`/`risk_percent_of_equity`/the owner-wide
-        ceiling below -- passing this check proves nothing about those,
-        and a broker reporting ample buying power never overrides or
-        loosens them.
+        WP-32: Fail closed for accounts whose adapter reports no
+        buying-power figure AND have no ceiling (max_notional_exposure or
+        risk_percent_of_equity). If an account has a ceiling, skip the
+        check and rely on that ceiling instead. Paper broker reports
+        buying_power=cash, so it always has a reportable figure.
 
-        Mirrors `_check_risk_basis`'s fail-closed-everywhere-verifiable
-        pattern, with one deliberate difference driven by this check
-        being unconditional rather than opt-in: it fails OPEN (admits,
-        logs that the check was skipped) wherever buying power genuinely
-        can't be verified for this signal/account/broker --
-        - no broker registered, or `broker.has_balance_capability` is
-          `False` (no real `get_account_balance` override at all, e.g.
-          CCXTBroker on a spot market -- see `AccountBalance.
-          buying_power`'s own docstring on why that's not a universal
-          concept).
-        - `get_account_balance` returns `None`, or a real `AccountBalance`
-          whose `buying_power` is itself `None` (broker reachable, this
-          particular figure genuinely not reported for this account).
-        - the signal carries no resolvable finite positive `price` --
-          notional can't be computed. Unlike `_try_reserve_capital`'s own
-          price checks (which REJECT because those gates are something
-          the operator explicitly opted into for this account), this
-          check applies unconditionally, so a priceless signal that would
-          have sailed through with zero gates configured before this
-          existed must not newly be rejected by a check nobody asked for.
-        Every other case -- a real, current `buying_power` figure IS
-        available -- fails CLOSED: `notional > buying_power` is refused,
-        exactly like `_check_risk_basis` refuses when risk-to-stop would
-        exceed its ceiling."""
+        - Broker has no balance capability AND no ceiling: FAIL CLOSED
+          (reject the entry).
+        - Broker has no balance capability BUT has ceiling: SKIP (rely
+          on ceiling).
+        - Broker reports no buying_power AND no ceiling: FAIL CLOSED
+          (reject the entry).
+        - Broker reports no buying_power BUT has ceiling: SKIP (rely
+          on ceiling).
+        - Broker reports buying_power AND price is resolvable: FAIL
+          CLOSED if notional > buying_power.
+        - Signal has no resolvable price: SKIP (notional can't be
+          computed; unlike _try_reserve_capital's opt-in gates, this
+          check applies unconditionally and a priceless signal must not
+          newly be rejected by a check nobody asked for)."""
+        # Check if account has any ceiling configured
+        has_ceiling = (
+            account.max_notional_exposure is not None
+            or account.risk_percent_of_equity is not None
+        )
+
         broker = self.brokers.get(account.broker)
         if broker is None or not broker.has_balance_capability:
-            logger.info(
-                "buying_power_check_skipped account=%s broker=%s reason=no_verified_balance_capability",
-                account.account_id,
-                account.broker,
-            )
-            return True, None
+            if has_ceiling:
+                # Has ceiling: skip check, rely on ceiling
+                logger.info(
+                    "buying_power_check_skipped account=%s broker=%s reason=no_verified_balance_capability ceiling_configured",
+                    account.account_id,
+                    account.broker,
+                )
+                return True, None
+            else:
+                # No ceiling: fail closed
+                return False, self._reject(
+                    account,
+                    order_signal,
+                    f"account '{account.account_id}' adapter '{account.broker}' has no verified balance capability "
+                    "and no capital ceiling is configured (max_notional_exposure or risk_percent_of_equity) -- "
+                    "refusing entry for risk safety; either configure a ceiling or use an adapter that reports "
+                    "account balance",
+                )
+
         if order_signal.price is None or not math.isfinite(order_signal.price) or order_signal.price <= 0:
             logger.info(
                 "buying_power_check_skipped account=%s broker=%s reason=no_resolvable_price",
@@ -2071,14 +2075,28 @@ class SignalCopierEngine:
                 account.broker,
             )
             return True, None
+
         balance = await broker.get_account_balance(account)
         if balance is None or balance.buying_power is None:
-            logger.info(
-                "buying_power_check_skipped account=%s broker=%s reason=buying_power_not_reported",
-                account.account_id,
-                account.broker,
-            )
-            return True, None
+            if has_ceiling:
+                # Has ceiling: skip check, rely on ceiling
+                logger.info(
+                    "buying_power_check_skipped account=%s broker=%s reason=buying_power_not_reported ceiling_configured",
+                    account.account_id,
+                    account.broker,
+                )
+                return True, None
+            else:
+                # No ceiling: fail closed
+                return False, self._reject(
+                    account,
+                    order_signal,
+                    f"account '{account.account_id}' broker '{account.broker}' does not report a buying_power "
+                    "figure and no capital ceiling is configured (max_notional_exposure or risk_percent_of_equity) -- "
+                    "refusing entry for risk safety; either configure a ceiling or use an adapter/account that "
+                    "reports buying power",
+                )
+
         # B-03: apply contract multiplier to buying power check
         contract_multiplier, spec_error = _get_contract_multiplier(order_signal)
         if spec_error is not None:

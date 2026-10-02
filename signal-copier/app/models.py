@@ -737,6 +737,13 @@ class DestinationAccount:
     #: for each individual order's price currency (distinct from the account
     #: base currency).
     currency: Optional[str] = None
+    #: B-11: an opt-in maximum gross leverage ceiling for this account
+    #: (e.g., 1.0 = no leverage, 1.25 = 25% leverage allowed, 2.0 = 200%
+    #: leverage allowed). When set, the sum of confirmed, pending, and new
+    #: notional exposure is refused if it would exceed
+    #: max_gross_leverage × (equity − maintenance_margin). `None` (the
+    #: default) means no leverage limit is enforced. See app/capital_allocator.py.
+    max_gross_leverage: Optional[float] = None
 
     def __post_init__(self) -> None:
         if self.management_recipe is None:

@@ -326,7 +326,11 @@ CREATE TABLE IF NOT EXISTS config_accounts (
     -- ISO 4217 code (e.g., 'USD', 'EUR', 'JPY'). NULL means not declared;
     -- assume USD for backward compatibility only when reading existing
     -- configurations. Never fabricated/defaulted server-side for new accounts.
-    currency TEXT
+    currency TEXT,
+    -- B-11: maximum gross leverage ceiling (e.g., 1.0 = no leverage,
+    -- 1.25 = 25% leverage allowed). When set, exposure is refused if it
+    -- would exceed max_gross_leverage × (equity − maintenance_margin).
+    max_gross_leverage DECIMAL(5, 2)
 );
 
 CREATE TABLE IF NOT EXISTS config_routing_rules (
@@ -2019,6 +2023,11 @@ _COLUMN_MIGRATIONS = [
     # this specific order.
     ("config_accounts", "currency", "TEXT"),
     ("orders", "price_currency", "TEXT"),
+    # E04 (bounded): daily loss limit and minimum equity threshold for risk control
+    ("config_accounts", "daily_loss_limit_percent", "DECIMAL(5, 2)"),
+    ("config_accounts", "min_equity_threshold", "DECIMAL(18, 8)"),
+    # B-11: maximum gross leverage ceiling
+    ("config_accounts", "max_gross_leverage", "DECIMAL(5, 2)"),
 ]
 
 
