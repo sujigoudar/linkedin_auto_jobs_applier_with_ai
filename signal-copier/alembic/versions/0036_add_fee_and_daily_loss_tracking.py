@@ -24,8 +24,8 @@ def upgrade() -> None:
         batch_op.add_column(sa.Column("fee_currency", sa.String(3), nullable=True, comment="Currency of fee (ISO 4217 code, e.g., USD)"))
         batch_op.add_column(sa.Column("slippage", sa.Numeric(precision=18, scale=8), nullable=True, comment="Difference between expected and actual fill price (* quantity)"))
 
-    # Add daily loss limit to accounts table
-    with op.batch_alter_table("accounts", schema=None) as batch_op:
+    # Add daily loss limit to config_accounts table
+    with op.batch_alter_table("config_accounts", schema=None) as batch_op:
         batch_op.add_column(
             sa.Column("daily_loss_limit_percent", sa.Numeric(precision=5, scale=2), nullable=True, comment="Maximum acceptable daily loss as percentage of equity (e.g., 5 for 5%; NULL=disabled)")
         )
@@ -71,7 +71,7 @@ def downgrade() -> None:
     op.drop_table("margin_call_alerts")
     op.drop_table("daily_pnl")
 
-    with op.batch_alter_table("accounts", schema=None) as batch_op:
+    with op.batch_alter_table("config_accounts", schema=None) as batch_op:
         batch_op.drop_column("daily_loss_limit_percent")
         batch_op.drop_column("min_equity_threshold")
 
