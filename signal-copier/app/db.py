@@ -9965,3 +9965,72 @@ class SignalStore:
 
         return self.get_margin_regime(physical_account_id)
 
+    def get_binding_for_config_account(self, config_account_id: str) -> dict | None:
+        """Get the binding and physical account for a config account (WC-20 step 1).
+
+        Spec I02: Multiple credentials or matching route rules do not duplicate
+        capital or execution. Multiple AccountBindings to the same broker account
+        are collapsed to one PhysicalAccount during queries.
+
+        Args:
+            config_account_id: DestinationAccount.account_id from config.
+
+        Returns:
+            Dict with binding_id, physical_account_id, config_account_id, version, revoked,
+            or None if not found.
+        """
+        with self._connect() as conn:
+            row = conn.execute(
+                """SELECT binding_id, physical_account_id, config_account_id, version, revoked
+                   FROM account_bindings
+                   WHERE config_account_id = ? AND revoked = 0
+                   ORDER BY version DESC LIMIT 1""",
+                (config_account_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "binding_id": row[0],
+            "physical_account_id": row[1],
+            "config_account_id": row[2],
+            "version": row[3],
+            "revoked": row[4],
+        }
+
+    def insert_decision_trace(
+        self,
+        signal_id: str,
+        physical_account_id: str,
+        candidate_rank: int,
+        feasible: bool,
+        reason: str,
+        selected: bool,
+    ) -> str:
+        """Persist a decision trace row for WC-20 candidate evaluation.
+
+        Spec §5.2: Persist every candidate's inclusion/exclusion reason per
+        candidate. Trace records: candidate_rank (lower better), feasible (0/1),
+        reason (inclusion/exclusion reason string), selected (0/1 for picked).
+
+        Args:
+            signal_id: Signal being processed.
+            physical_account_id: Physical account candidate.
+            candidate_rank: Ranking order (lower is better).
+            feasible: Whether this candidate can execute (True/False).
+            reason: Inclusion or exclusion reason (string from ADMISSION_BLOCKING_ORDER or sizing).
+            selected: Whether this candidate was selected (True/False).
+
+        Returns:
+            The inserted trace ID.
+        """
+        import uuid
+        trace_id = str(uuid.uuid4())
+        with self._connect() as conn:
+            conn.execute(
+                """INSERT INTO decision_traces
+                   (id, signal_id, physical_account_id, candidate_rank, feasible, reason, selected)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (trace_id, signal_id, physical_account_id, candidate_rank, int(feasible), reason, int(selected)),
+            )
+        return trace_id
+

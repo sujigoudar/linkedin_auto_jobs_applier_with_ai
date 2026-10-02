@@ -656,6 +656,48 @@ class SignalCopierEngine:
             pool = self.routing.pool_for(signal.source, signal.symbol, include_disabled=False)
             single_candidates = pool.single
             replicate_candidates = [a for a in pool.replicate if a.account_id not in {c.account_id for c in single_candidates}]
+
+            # WC-20 step 1: Identity collapse (I02) + decision traces
+            # For entry intents, collapse duplicate bindings to the same physical account
+            if single_candidates and signal.side != Side.CLOSE:
+                # Build mapping: physical_account_id -> first config_account
+                physical_to_config: dict[str, DestinationAccount] = {}
+                all_candidates = []  # For decision_traces
+
+                for config_account in sorted(single_candidates, key=lambda a: a.account_id):
+                    # Look up binding for this config account
+                    binding = self.store.get_binding_for_config_account(config_account.account_id)
+                    if binding is not None:
+                        physical_account_id = binding["physical_account_id"]
+                    else:
+                        # No binding row: config account is its own physical account
+                        physical_account_id = config_account.account_id
+
+                    all_candidates.append({
+                        "config_account": config_account,
+                        "physical_account_id": physical_account_id,
+                    })
+
+                    # Keep first by stable order
+                    if physical_account_id not in physical_to_config:
+                        physical_to_config[physical_account_id] = config_account
+
+                # Persist decision_traces for all candidates (even duplicates)
+                for rank, candidate in enumerate(all_candidates):
+                    is_selected = candidate["physical_account_id"] in physical_to_config and \
+                                  physical_to_config[candidate["physical_account_id"]].account_id == candidate["config_account"].account_id
+                    self.store.insert_decision_trace(
+                        signal_id=signal.id,
+                        physical_account_id=candidate["physical_account_id"],
+                        candidate_rank=rank,
+                        feasible=True,  # Initial; will be updated after sizing
+                        reason="initial_candidate",
+                        selected=is_selected,
+                    )
+
+                # Replace single_candidates with deduplicated list (keep first by account_id)
+                single_candidates = [physical_to_config[pid] for pid in sorted(physical_to_config.keys())]
+
             if single_candidates:
                 allocation_intent = self.store.claim_allocation_intent(
                     signal.id,
