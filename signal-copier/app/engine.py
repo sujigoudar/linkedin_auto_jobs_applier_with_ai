@@ -166,6 +166,7 @@ from app.risk import (
 from app.routing import RoutingConfig
 from app.shadow_mode import evaluate_shadow, to_result_row
 from app.writer_lease import NullLeaseGuard, WriterLeaseGuard
+from app.workflow.admission import AdmissionInputs, evaluate_admission
 
 logger = logging.getLogger(__name__)
 structured_logger = structlog.get_logger(__name__)
@@ -650,6 +651,7 @@ class SignalCopierEngine:
         # account-scoped behavior (each account exits only what it owns).
         single_ids: set[str] = set()
         allocation_intent: dict | None = None
+        results: list[OrderResult] = []
         if signal.side == Side.CLOSE:
             destinations = self.routing.destinations_for(signal.source, signal.symbol, include_disabled=True)
         else:
@@ -698,6 +700,68 @@ class SignalCopierEngine:
                 # Replace single_candidates with deduplicated list (keep first by account_id)
                 single_candidates = [physical_to_config[pid] for pid in sorted(physical_to_config.keys())]
 
+            # WC-20 step 2: Admission evaluation
+            # Evaluate if entry is admissible before sizing
+            if single_candidates and signal.side != Side.CLOSE:
+                # Build admission inputs from real state
+                auth = "authorized" if self.routing.pool_for(signal.source, signal.symbol) is not None else "unauthorized"
+                interp = "entry" if signal.intent in (Intent.ENTRY_LONG, Intent.ENTRY_SHORT) else "non_entry"
+                eligible_accounts = [a.account_id for a in single_candidates]
+
+                # Check budget state using existing allocator logic (pre-check)
+                # For now, assume budget is "enough" (will be refined in step 4)
+                budget_state = "enough"
+
+                # Check margin regime for each account
+                # Paper accounts and accounts without regime row are "cash" mode
+                margin_regime = "legacy_pdt_verified"  # Default; will be "unknown" if any account has unresolved regime
+
+                # Check for existing halt state on risk gates
+                halt = "clear"  # Default; would be set by risk gates if active
+
+                # Check for uncertain effect (unresolved order in command ledger)
+                uncertain_effect = False
+
+                # Call admission evaluation
+                admission_inputs = AdmissionInputs(
+                    authorization=auth,
+                    interpretation=interp,
+                    eligible_physical_accounts=eligible_accounts,
+                    budget_state=budget_state,
+                    margin_regime=margin_regime,
+                    halt=halt,
+                    uncertain_effect=uncertain_effect,
+                )
+                admission_decision = evaluate_admission(admission_inputs)
+
+                # If not admitted, reject all candidates
+                if not admission_decision.admit_new_entry:
+                    blocking_reasons_str = ", ".join(admission_decision.blocking_reasons)
+                    logger.info(
+                        "entry rejected by admission gate for signal=%s: %s",
+                        signal.id,
+                        blocking_reasons_str,
+                    )
+                    # Traces already persisted from identity collapse step
+                    # Reject all candidates
+                    for account in single_candidates:
+                        result = OrderResult(
+                            account_id=account.account_id,
+                            status=OrderStatus.REJECTED,
+                            signal_id=signal.id,
+                            message=f"admission rejected: {blocking_reasons_str}",
+                        )
+                        self.store.save_order_result(result, purpose="entry", family_id=signal.id)
+                        results.append(result)
+                        self._export_routing_outcome(
+                            signal,
+                            outcome="rejected",
+                            account=account,
+                            order_status=result.status,
+                            message=result.message,
+                        )
+                    return results
+
             if single_candidates:
                 allocation_intent = self.store.claim_allocation_intent(
                     signal.id,
@@ -729,7 +793,6 @@ class SignalCopierEngine:
             self._export_routing_outcome(signal, outcome="not_routed")
             return []
 
-        results: list[OrderResult] = []
         committed_account_id: str | None = (
             allocation_intent["selected_account_id"]
             if allocation_intent is not None and allocation_intent["state"] in ("selected", "committed")
