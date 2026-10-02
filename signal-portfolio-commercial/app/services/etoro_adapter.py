@@ -22,7 +22,7 @@ from __future__ import annotations
 
 from decimal import Decimal, InvalidOperation
 
-from app.models.publication import PublicationAction, PublicationIntent, QuantityBasis
+from app.models.publication import PublicationAction, PublicationIntent, PublicationSide, QuantityBasis
 
 
 class UnsupportedAccountModeError(Exception):
@@ -89,9 +89,10 @@ def _build_open_request(intent: PublicationIntent, *, instrument_symbol: str) ->
     amount = _resolved_units(intent)
     if amount <= 0:
         raise UnsupportedQuantityError(f"an OPEN/ADD amount must be positive, got {amount}")
+    direction = "SELL" if intent.side is PublicationSide.SELL else "BUY"
     return {
         "instrument": instrument_symbol,
-        "direction": "BUY",
+        "direction": direction,
         "amount": str(amount),
     }
 

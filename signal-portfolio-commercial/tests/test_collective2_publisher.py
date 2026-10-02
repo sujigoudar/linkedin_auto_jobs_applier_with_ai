@@ -9,6 +9,7 @@ from app.models.publication import (
     Environment,
     PublicationAction,
     PublicationIntent,
+    PublicationSide,
     QuantityBasis,
 )
 from app.services.collective2_publisher import (
@@ -30,6 +31,7 @@ def _intent(**overrides) -> PublicationIntent:
         episode_id="ep-1",
         revision=1,
         action=PublicationAction.OPEN,
+        side=PublicationSide.BUY,
         channel="collective2",
         external_strategy_id="strategy-1",
         instrument_id="AAPL",
@@ -63,7 +65,7 @@ def test_an_add_also_builds_a_buy_order():
 
 
 def test_a_reduce_builds_a_sell_order():
-    order = build_order(_intent(action=PublicationAction.REDUCE), c2_symbol="AAPL")
+    order = build_order(_intent(action=PublicationAction.REDUCE, side=PublicationSide.SELL), c2_symbol="AAPL")
     assert order["Side1"] == int(Side.SELL)
 
 
