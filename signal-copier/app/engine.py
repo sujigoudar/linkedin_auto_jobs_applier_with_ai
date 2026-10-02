@@ -127,6 +127,7 @@ from app.brokers.base import BrokerAdapter
 from app.brokers.paper import PaperBroker
 from app.capital_allocator import CapitalAllocator, confirmed_open_notional, owner_wide_exposure
 from app.daily_loss_limiter import DailyLossLimiter
+from app.margin_call_detector import MarginCallDetector
 from app.db import SignalStore
 from app.export_events import (
 build_execution_applied_envelope,
@@ -316,6 +317,11 @@ class SignalCopierEngine:
         # breaker that rejects new entries if daily loss exceeds threshold.
         # Fail-closed: any error determining equity/loss leaves trading halted.
         self.daily_loss_limiter = DailyLossLimiter(store=store)
+        # Margin call detection and persistence (E04 bounded): monitors account
+        # maintenance requirements and persists alerts when equity approaches
+        # broker thresholds. Fail-closed: inability to determine margin state
+        # prevents trading to avoid silent failures.
+        self.margin_call_detector = MarginCallDetector(store=store)
         # Wired in after construction (app/lifecycle/manager.py's own
         # __init__ can't take this: main.py often constructs a
         # PositionLifecycleManager before this Engine, and so before this
@@ -690,6 +696,50 @@ class SignalCopierEngine:
                         status=OrderStatus.REJECTED,
                         signal_id=signal.id,
                         message=daily_loss_error,
+                    )
+                    self.store.save_order_result(
+                        result,
+                        broker=account.broker,
+                        purpose=order_purpose,
+                        family_id=order_family_id,
+                    )
+                    results.append(result)
+                    self._export_routing_outcome(
+                        signal,
+                        outcome=_OUTCOME_BY_ORDER_STATUS[result.status],
+                        account=account,
+                        order_status=result.status,
+                        message=result.message,
+                    )
+                    continue
+
+            # E04 (bounded): margin call detection and alert persistence. Check if
+            # account has breached maintenance requirements, and record alert if so.
+            # This is a fail-closed gate: if margin state cannot be determined, we
+            # must reject the signal rather than allow trading blind. Only check for
+            # entry signals; CLOSE signals are allowed through to permit hedging after
+            # margin calls. Broker adapters must supply current_equity, maintenance_
+            # requirement, or both can be derived from account state.
+            if signal.side != Side.CLOSE:
+                # Attempt to read margin state from broker. The broker adapter should
+                # provide these values; if not available, the detector will return an
+                # error message and we reject the signal.
+                # TODO: integrate broker.get_margin_state() calls to populate these
+                # values from live broker data. For now, these may be None if not
+                # explicitly provided by the broker adapter.
+                margin_error = self.margin_call_detector.check_and_persist_margin_call(
+                    account=account,
+                    current_equity=None,  # TODO: get from broker
+                    maintenance_requirement=None,  # TODO: get from broker
+                    excess_margin=None,  # TODO: get from broker
+                    broker=account.broker,
+                )
+                if margin_error is not None:
+                    result = OrderResult(
+                        account_id=account.account_id,
+                        status=OrderStatus.REJECTED,
+                        signal_id=signal.id,
+                        message=margin_error,
                     )
                     self.store.save_order_result(
                         result,

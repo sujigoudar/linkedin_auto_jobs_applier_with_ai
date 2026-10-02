@@ -8742,3 +8742,58 @@ class SignalStore:
                    VALUES (?, ?, ?, ?)""",
                 (idempotency_key, json.dumps(response), datetime.now(timezone.utc).isoformat(), fingerprint),
             )
+
+    def persist_margin_call_alert(
+        self,
+        account_id: str,
+        current_equity: float,
+        maintenance_requirement: float,
+        excess_margin: float,
+        broker: str,
+    ) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """INSERT INTO margin_call_alerts
+                   (account_id, current_equity, maintenance_requirement, excess_margin, broker, alert_time, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    account_id,
+                    current_equity,
+                    maintenance_requirement,
+                    excess_margin,
+                    broker,
+                    datetime.now(timezone.utc).isoformat(),
+                    datetime.now(timezone.utc).isoformat(),
+                ),
+            )
+
+    def get_unresolved_margin_calls(self, account_id: str) -> list[dict]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT id, account_id, current_equity, maintenance_requirement, excess_margin, broker, alert_time
+                   FROM margin_call_alerts
+                   WHERE account_id = ? AND resolved = 0
+                   ORDER BY alert_time DESC""",
+                (account_id,),
+            ).fetchall()
+        return [
+            {
+                "id": r[0],
+                "account_id": r[1],
+                "current_equity": r[2],
+                "maintenance_requirement": r[3],
+                "excess_margin": r[4],
+                "broker": r[5],
+                "alert_time": r[6],
+            }
+            for r in rows
+        ]
+
+    def resolve_margin_call_alert(self, alert_id: int) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """UPDATE margin_call_alerts
+                   SET resolved = 1, resolved_at = ?
+                   WHERE id = ?""",
+                (datetime.now(timezone.utc).isoformat(), alert_id),
+            )
