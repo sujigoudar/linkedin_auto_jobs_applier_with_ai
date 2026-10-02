@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Any, Callable, Literal
 
 import httpx
-from fastapi import Cookie, Depends, FastAPI, Form, Header, HTTPException, Query, Request, Response
+from fastapi import Body, Cookie, Depends, FastAPI, Form, Header, HTTPException, Query, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
@@ -6632,6 +6632,105 @@ async def acknowledge_alert(alert_id: str, _owner: dict = Depends(require_owner)
     """
     acknowledged = store.acknowledge_alert(alert_id)
     return {"acknowledged": acknowledged, "id": alert_id}
+
+
+# WC-09: Margin regime endpoints
+@app.get("/physical-accounts/{physical_account_id}/margin-regime")
+async def get_margin_regime(
+    physical_account_id: str, _owner: dict = Depends(require_owner_read)
+) -> dict:
+    """Get the margin regime for a physical account (WC-09).
+
+    Spec §9: Per-account regime (legacy_pdt_verified | new_intraday_verified |
+    unknown) with broker evidence and verification date. Unknown regime blocks
+    affected new exposure (I17).
+
+    Args:
+        physical_account_id: Physical account identifier.
+
+    Returns:
+    {
+        "physical_account_id": "...",
+        "regime": "legacy_pdt_verified" | "new_intraday_verified" | "unknown",
+        "evidence": "...",  # Broker evidence/description
+        "verified_at": "2026-10-02T...",  # UTC timestamp
+    }
+
+    404 if account not found or no regime record exists.
+    """
+    regime_record = store.get_margin_regime(physical_account_id)
+    if regime_record is None:
+        raise HTTPException(status_code=404, detail=f"No margin regime found for account {physical_account_id}")
+    return {
+        "physical_account_id": regime_record["physical_account_id"],
+        "regime": regime_record["regime"],
+        "evidence": regime_record["evidence"],
+        "verified_at": regime_record["verified_at"].isoformat() if isinstance(regime_record["verified_at"], datetime) else regime_record["verified_at"],
+    }
+
+
+@app.put("/physical-accounts/{physical_account_id}/margin-regime")
+async def set_margin_regime(
+    physical_account_id: str,
+    body: dict = Body(...),
+    _owner: dict = Depends(require_owner),
+) -> dict:
+    """Set or update the margin regime for a physical account (WC-09, owner only).
+
+    Spec §9: Owner declares regime with evidence (≥3 chars). Unknown regime blocks
+    affected new exposure (I17). FINRA replacement intraday-margin standards
+    effective 2026-06-04, phase-in through 2027-10-20 per account/evidence.
+
+    Args:
+        physical_account_id: Physical account identifier.
+        body: {
+            "regime": "legacy_pdt_verified" | "new_intraday_verified" | "unknown",
+            "evidence": "Broker evidence/description (≥3 chars)"
+        }
+
+    Returns:
+    {
+        "physical_account_id": "...",
+        "regime": "...",
+        "evidence": "...",
+        "verified_at": "2026-10-02T...",  # UTC timestamp
+    }
+
+    400 if regime invalid or evidence < 3 chars.
+    404 if account not found.
+    """
+    regime = body.get("regime")
+    evidence = body.get("evidence", "").strip()
+
+    # Validate regime
+    from app.workflow.margin import is_valid_regime, MarginRegime
+    if not regime or not is_valid_regime(regime):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid regime; must be one of: {', '.join(r.value for r in MarginRegime)}"
+        )
+
+    # Validate evidence (≥3 chars required)
+    if len(evidence) < 3:
+        raise HTTPException(status_code=400, detail="Evidence must be at least 3 characters")
+
+    # Update the regime
+    from app.workflow.margin import current_utc
+    updated = store.set_margin_regime(
+        physical_account_id=physical_account_id,
+        regime=regime,
+        evidence=evidence,
+        verified_at=current_utc(),
+    )
+    if updated is None:
+        raise HTTPException(status_code=404, detail=f"Account {physical_account_id} not found")
+
+    return {
+        "physical_account_id": updated["physical_account_id"],
+        "regime": updated["regime"],
+        "evidence": updated["evidence"],
+        "verified_at": updated["verified_at"].isoformat() if isinstance(updated["verified_at"], datetime) else updated["verified_at"],
+    }
 
 
 def _orders_response(signal_id: str, results) -> dict:

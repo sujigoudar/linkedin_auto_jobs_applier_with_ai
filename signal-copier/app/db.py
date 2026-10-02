@@ -2022,6 +2022,30 @@ CREATE TABLE IF NOT EXISTS decision_traces (
 );
 CREATE INDEX IF NOT EXISTS ix_decision_traces_signal_id ON decision_traces(signal_id);
 CREATE INDEX IF NOT EXISTS ix_decision_traces_account_id ON decision_traces(physical_account_id);
+-- WC-09: Canonical physical accounts and margin regime tracking
+CREATE TABLE IF NOT EXISTS physical_accounts (
+    physical_account_id TEXT PRIMARY KEY,
+    broker TEXT NOT NULL,
+    broker_account_id TEXT,
+    environment TEXT,
+    base_currency TEXT NOT NULL,
+    margin_type TEXT,
+    restriction_state TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_physical_accounts_broker ON physical_accounts(broker);
+-- WC-09: Per-account margin regime (legacy_pdt_verified | new_intraday_verified | unknown)
+-- Unknown regime blocks affected new exposure (spec I17, §9, §22 S02/S03).
+-- FINRA replacement intraday-margin standards effective 2026-06-04, phase-in through 2027-10-20.
+CREATE TABLE IF NOT EXISTS margin_regimes (
+    physical_account_id TEXT PRIMARY KEY,
+    regime TEXT NOT NULL,
+    evidence TEXT NOT NULL,
+    verified_at TIMESTAMP NOT NULL,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    FOREIGN KEY (physical_account_id) REFERENCES physical_accounts(physical_account_id)
+);
+CREATE INDEX IF NOT EXISTS ix_margin_regimes_regime ON margin_regimes(regime);
 """
 
 
@@ -9663,4 +9687,77 @@ class SignalStore:
                 (now, alert_id),
             )
         return cur.rowcount > 0
+
+    def get_margin_regime(self, physical_account_id: str) -> dict | None:
+        """Get the margin regime for a physical account (WC-09).
+
+        Spec §9: Store per-account regime (legacy_pdt_verified | new_intraday_verified |
+        unknown) with evidence and verification date. Unknown blocks new exposure (I17).
+
+        Args:
+            physical_account_id: Physical account identifier.
+
+        Returns:
+            Dict with keys physical_account_id, regime, evidence, verified_at,
+            or None if not found.
+        """
+        with self._connect() as conn:
+            row = conn.execute(
+                """SELECT physical_account_id, regime, evidence, verified_at
+                   FROM margin_regimes WHERE physical_account_id = ?""",
+                (physical_account_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "physical_account_id": row[0],
+            "regime": row[1],
+            "evidence": row[2],
+            "verified_at": row[3],
+        }
+
+    def set_margin_regime(
+        self,
+        physical_account_id: str,
+        regime: str,
+        evidence: str,
+        verified_at: datetime,
+    ) -> dict | None:
+        """Set or update margin regime for a physical account (WC-09, owner only).
+
+        Spec §9: Owner declares regime with evidence (≥3 chars). Validation
+        (regime enum, evidence length) is done by caller. Unknown regime blocks
+        affected new exposure (I17).
+
+        Args:
+            physical_account_id: Physical account identifier.
+            regime: One of legacy_pdt_verified, new_intraday_verified, unknown.
+            evidence: Broker evidence or description (≥3 chars).
+            verified_at: Timestamp when regime was verified (UTC).
+
+        Returns:
+            Updated record dict on success, None if physical_account_id not found.
+        """
+        # Ensure the physical account exists
+        with self._connect() as conn:
+            exists = conn.execute(
+                "SELECT 1 FROM physical_accounts WHERE physical_account_id = ?",
+                (physical_account_id,),
+            ).fetchone()
+        if exists is None:
+            return None
+
+        # Insert or replace the regime record
+        verified_at_iso = verified_at.isoformat() if isinstance(verified_at, datetime) else verified_at
+        with self._connect() as conn:
+            conn.execute(
+                """INSERT INTO margin_regimes (physical_account_id, regime, evidence, verified_at)
+                   VALUES (?, ?, ?, ?)
+                   ON CONFLICT(physical_account_id) DO UPDATE SET
+                     regime = ?, evidence = ?, verified_at = ?, updated_at = CURRENT_TIMESTAMP
+                """,
+                (physical_account_id, regime, evidence, verified_at_iso, regime, evidence, verified_at_iso),
+            )
+
+        return self.get_margin_regime(physical_account_id)
 
