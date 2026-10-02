@@ -265,29 +265,6 @@ class PositionLifecycleManager:
     def get_lifecycle(self, account_id: str, symbol: str) -> PositionLifecycle | None:
         return self._lifecycles.get((account_id, symbol))
 
-    async def update_stop_price(self, account_id: str, symbol: str, new_price: float) -> None:
-        """WP-11 (A-02): Public wrapper to update a managed lifecycle's stop price.
-        
-        Used by the engine's edit-handling path to amend an existing stop price
-        when a signal edits the original entry message.
-        """
-        lifecycle = self.get_lifecycle(account_id, symbol)
-        if lifecycle is None:
-            logger.warning(
-                "cannot update stop price for %s/%s: no managed lifecycle exists",
-                account_id,
-                symbol,
-            )
-            return
-        # Set the desired price on the lifecycle's stop
-        lifecycle.stop.desired_price = new_price
-        logger.info(
-            "stop price update requested for %s/%s to %.8f",
-            account_id,
-            symbol,
-            new_price,
-        )
-
     def list_open_lifecycles(self) -> list[PositionLifecycle]:
         """Every managed-lifecycle position not yet closed — for monitoring
         (see app/main.py's `/positions`), not for mutation."""

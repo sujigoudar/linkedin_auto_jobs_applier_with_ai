@@ -257,7 +257,6 @@ class OrderReconciler:
             corrected += await self._reconcile_broker_positions()
         return corrected
 
-<<<<<<< HEAD
     async def _reconcile_pending_child_orders(self) -> int:
         """D-01: Poll bracket child leg orders (stop/take_profit) for
         plain accounts. When a child order fills, apply the exit to
@@ -343,7 +342,6 @@ class OrderReconciler:
             corrected += 1
 
         return corrected
-=======
     async def _resolve_lost_entries(self) -> int:
         """WP-23 D-14: resolve pending entries that have no order ID, no broker
         ownership, and have exceeded the grace period (LOST_ENTRY_GRACE_SECONDS).
@@ -419,7 +417,6 @@ class OrderReconciler:
                 continue
 
         return resolved
->>>>>>> ece696e (WP-23: recovery edges for lost entries, venue adoption, and partial coverage)
 
     async def _reconcile_broker_positions(self) -> int:
         assert self.lifecycle_manager is not None  # only caller (reconcile_once) checks this first
@@ -531,7 +528,6 @@ class OrderReconciler:
                 continue
 
             if deficit <= 1e-9:
-<<<<<<< HEAD
                 continue  # matches (or the venue reports MORE than tracked -- a different, unmodeled anomaly)
 
             # WP-19: Poll the stop before attributing a deficit to a stop fill.
@@ -564,11 +560,6 @@ class OrderReconciler:
                 await self.lifecycle_manager.resize_stop_to_owned(account, lifecycle.plan.symbol, broker_owned_abs)
 
             # Apply the correction (if no stop to resize, or after resizing/cancelling)
-=======
-                continue  # matches
-
-            # deficit > 0: venue owns less than tracked, apply as a stop fill
->>>>>>> ece696e (WP-23: recovery edges for lost entries, venue adoption, and partial coverage)
             await self.lifecycle_manager.on_stop_filled(account, lifecycle.plan.symbol, filled_quantity=deficit)
             corrected += 1
         return corrected

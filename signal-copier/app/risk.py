@@ -1,13 +1,9 @@
 """Position sizing and symbol translation applied per destination account."""
 from __future__ import annotations
 
-<<<<<<< HEAD
 import math
 
 from app.models import AssetClass, DestinationAccount, Signal
-=======
-from app.models import DestinationAccount, Signal, AssetClass
->>>>>>> fc28d4f (WP-15b: FX unit sizes and capital allocator notional multiplication)
 
 
 class UnsizedEntryError(ValueError):
@@ -94,26 +90,16 @@ def symbol_for_account(signal: Signal, account: DestinationAccount) -> str:
 def contract_multiplier(signal: Signal) -> tuple[float, str | None, str | None]:
     """Extract the contract multiplier from a Signal based on its asset class and spec.
 
-<<<<<<< HEAD
     Returns (multiplier, error_message, note_message). error_message is non-None only when
     a required contract spec is missing (rejection case). note_message is non-None only when
     providing informational context (e.g., FX with no spec: "fx unit assumed: units").
-=======
-    Returns (multiplier, note_message). note_message is non-None only when:
-    - A required contract spec is missing (error case, e.g., OPTION without OptionContractSpec)
-    - FOREX with no spec: note_message = "fx unit assumed: units" (non-error, admission case)
->>>>>>> fc28d4f (WP-15b: FX unit sizes and capital allocator notional multiplication)
 
     - CRYPTO/EQUITY: multiplier = 1.0 (no spec required)
     - OPTION: multiplier = signal.option.multiplier (default 100.0, spec required)
     - FUTURE: multiplier = signal.future.multiplier (spec required)
     - FOREX with spec: multiplier derived from unit ("standard_lot_100000"→100000,
                        "mini_lot_10000"→10000, "micro_lot_1000"→1000, "units"→1)
-<<<<<<< HEAD
     - FOREX without spec: multiplier = 1.0, note_message = "fx unit assumed: units" (non-error)
-=======
-    - FOREX without spec: multiplier = 1.0, note_message = "fx unit assumed: units"
->>>>>>> fc28d4f (WP-15b: FX unit sizes and capital allocator notional multiplication)
     """
     if signal.asset_class == AssetClass.OPTION:
         if signal.option is None:

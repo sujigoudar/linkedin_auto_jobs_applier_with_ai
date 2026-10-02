@@ -4802,13 +4802,8 @@ class SignalStore:
                 """SELECT account_id, broker, multiplier, fixed_quantity, symbol_map, enabled,
                           managed_lifecycle, max_notional_exposure, risk_percent_of_equity,
                           management_recipe, qualification_level, exclusive_writer_qualified,
-                          daily_loss_limit_percent, min_equity_threshold
-                          allow_short, currency, max_gross_leverage, daily_loss_limit_percent, min_equity_threshold
                           daily_loss_limit_percent, min_equity_threshold, currency, max_gross_leverage,
                           allow_short, sizing_mode, risk_fraction
-                          management_recipe, qualification_level, exclusive_writer_qualified, allow_short
-                          daily_loss_limit_percent, min_equity_threshold, currency, max_gross_leverage, allow_short
-                          management_recipe, qualification_level, exclusive_writer_qualified, max_gross_leverage
                    FROM config_accounts ORDER BY account_id"""
             ).fetchall()
         return [
@@ -4833,21 +4828,11 @@ class SignalStore:
                 "exclusive_writer_qualified": bool(r[11]),
                 "daily_loss_limit_percent": r[12],
                 "min_equity_threshold": r[13],
-                "allow_short": bool(r[12]),
-                "currency": r[13],
-                "max_gross_leverage": r[14],
-                "daily_loss_limit_percent": r[15],
-                "min_equity_threshold": r[16],
                 "currency": r[14],
                 "max_gross_leverage": r[15],
                 "allow_short": bool(r[16]),
                 "sizing_mode": r[17] or "multiplier",
                 "risk_fraction": r[18],
-                "allow_short": bool(r[12]),
-                "currency": r[14],
-                "max_gross_leverage": r[15],
-                "allow_short": bool(r[16]),
-                "max_gross_leverage": r[12],
             }
             for r in rows
         ]
@@ -4868,44 +4853,20 @@ class SignalStore:
         exclusive_writer_qualified: bool = False,
         daily_loss_limit_percent: float | None = None,
         min_equity_threshold: float | None = None,
+        currency: str | None = None,
+        max_gross_leverage: float | None = None,
         allow_short: bool | None = None,
-        currency: str | None = None,
-        max_gross_leverage: float | None = None,
-        daily_loss_limit_percent: float | None = None,
-        min_equity_threshold: float | None = None,
-        sizing_mode: str | None = None,  # WP-16: forward-compatible, not stored yet
-        risk_fraction: float | None = None,  # WP-16: forward-compatible, not stored yet
-        currency: str | None = None,
-        max_gross_leverage: float | None = None,
-        allow_short: bool = False,
-        sizing_mode: str = "multiplier",
+        sizing_mode: str | None = None,
         risk_fraction: float | None = None,
-        allow_short: bool = False,  # WP-08: allow_short setting
-        currency: str | None = None,
-        max_gross_leverage: float | None = None,
-        allow_short: bool = False,
-        max_gross_leverage: float | None = None,
     ) -> None:
         with self._connect() as conn:
             conn.execute(
                 """INSERT INTO config_accounts
                    (account_id, broker, multiplier, fixed_quantity, symbol_map, enabled, managed_lifecycle,
                     max_notional_exposure, risk_percent_of_equity, management_recipe, qualification_level,
-                    exclusive_writer_qualified, daily_loss_limit_percent, min_equity_threshold)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    exclusive_writer_qualified, allow_short, currency, max_gross_leverage,
-                    daily_loss_limit_percent, min_equity_threshold)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     exclusive_writer_qualified, daily_loss_limit_percent, min_equity_threshold, currency,
                     max_gross_leverage, allow_short, sizing_mode, risk_fraction)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    exclusive_writer_qualified, allow_short)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    exclusive_writer_qualified, daily_loss_limit_percent, min_equity_threshold, currency,
-                    max_gross_leverage, allow_short)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    exclusive_writer_qualified, max_gross_leverage)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT (account_id) DO UPDATE SET
                      broker = excluded.broker, multiplier = excluded.multiplier,
                      fixed_quantity = excluded.fixed_quantity, symbol_map = excluded.symbol_map,
@@ -4915,11 +4876,6 @@ class SignalStore:
                      management_recipe = excluded.management_recipe,
                      qualification_level = excluded.qualification_level,
                      exclusive_writer_qualified = excluded.exclusive_writer_qualified,
-                     allow_short = excluded.allow_short,
-                     currency = excluded.currency,
-                     max_gross_leverage = excluded.max_gross_leverage,
-                     daily_loss_limit_percent = excluded.daily_loss_limit_percent,
-                     min_equity_threshold = excluded.min_equity_threshold""",
                      daily_loss_limit_percent = excluded.daily_loss_limit_percent,
                      min_equity_threshold = excluded.min_equity_threshold,
                      currency = excluded.currency,
@@ -4927,8 +4883,6 @@ class SignalStore:
                      allow_short = excluded.allow_short,
                      sizing_mode = excluded.sizing_mode,
                      risk_fraction = excluded.risk_fraction""",
-                     allow_short = excluded.allow_short""",
-                     max_gross_leverage = excluded.max_gross_leverage""",
                 (
                     account_id,
                     broker,
@@ -4947,24 +4901,15 @@ class SignalStore:
                     management_recipe or ("full_managed_lifecycle" if managed_lifecycle else "plain_unmanaged"),
                     qualification_level,
                     int(exclusive_writer_qualified),
-                    int(allow_short) if allow_short is not None else 0,
-                    currency,
-                    max_gross_leverage,
-                    daily_loss_limit_percent,
-                    min_equity_threshold,
                     daily_loss_limit_percent,
                     min_equity_threshold,
                     currency,
                     max_gross_leverage,
-                    int(allow_short),
-                    sizing_mode,
+                    int(bool(allow_short)),
+                    sizing_mode or "multiplier",
                     risk_fraction,
-                    int(allow_short),
-                    max_gross_leverage,
                 ),
             )
-            # Note: sizing_mode and risk_fraction are forward-compatible fields accepted
-            # from requests but not stored yet -- WP-16 will add persistence for these
 
     def update_account_paper_order_id_sequence(self, account_id: str, sequence: int) -> None:
         """WP-38 (G-C-24): update the persistent paper order ID sequence for an

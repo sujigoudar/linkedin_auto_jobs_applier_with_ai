@@ -1,6 +1,6 @@
 """WP-15b: Add contract_multiplier column to orders for notional calculations.
 
-Revision ID: 0044
+Revision ID: 0051
 Revises: 0043
 Create Date: 2026-10-02 00:00:00.000000
 
@@ -10,8 +10,8 @@ from __future__ import annotations
 import sqlalchemy as sa
 from alembic import op
 
-revision = "0044"
-down_revision = "0043"
+revision = "0051"
+down_revision = "0050"
 branch_labels = None
 depends_on = None
 

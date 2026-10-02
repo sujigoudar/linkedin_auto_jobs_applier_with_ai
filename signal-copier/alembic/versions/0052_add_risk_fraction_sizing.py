@@ -1,6 +1,6 @@
 """WP-16: Add risk_fraction sizing mode for dynamic position sizing.
 
-Revision ID: 0045
+Revision ID: 0052
 Revises: 0044
 Create Date: 2026-10-02 00:00:00.000000
 
@@ -10,8 +10,8 @@ from __future__ import annotations
 import sqlalchemy as sa
 from alembic import op
 
-revision = "0045"
-down_revision = "0044"
+revision = "0052"
+down_revision = "0051"
 branch_labels = None
 depends_on = None
 

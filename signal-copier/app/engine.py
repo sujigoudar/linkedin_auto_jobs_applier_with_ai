@@ -822,9 +822,6 @@ class SignalCopierEngine:
                 )
                 continue
 
-<<<<<<< HEAD
-            if working_signal.side != Side.CLOSE:
-=======
             # WP-13: Handle STOP_UPDATE and TARGET_UPDATE intents before entry/close routing
             if signal.intent == Intent.STOP_UPDATE or signal.intent == Intent.TARGET_UPDATE:
                 symbol = symbol_for_account(signal, account)
@@ -887,8 +884,7 @@ class SignalCopierEngine:
                     )
                     continue
 
-            if signal.side != Side.CLOSE:
->>>>>>> 4735f9c (WP-13: Implement STOP_UPDATE and TARGET_UPDATE intent handlers)
+            if working_signal.side != Side.CLOSE:
                 # Track 1b: refuse a live ENTRY before anything else broker/
                 # asset-class-specific is even checked -- see
                 # `_check_route_qualified`'s own docstring for exactly what

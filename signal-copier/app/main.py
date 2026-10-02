@@ -2707,54 +2707,27 @@ class AccountRequest(BaseModel):
     #: P0-5: off by default -- see DestinationAccount.exclusive_writer_qualified's
     #: own docstring for exactly what setting this True asserts and allows.
     exclusive_writer_qualified: bool = False
-    #: B-14: whether this account is allowed to open short positions
+    #: WP-08/B-14: whether this account is allowed to open short positions
     allow_short: bool = False
-    #: E-11/B-10: account base currency (ISO 4217 code)
+    #: WP-28/E-11: account base currency (ISO 4217 code)
     currency: str | None = None
-    #: B-11: maximum gross leverage ceiling
+    #: WP-32/B-11: maximum gross leverage ceiling
     max_gross_leverage: float | None = Field(default=None, gt=0)
-    #: B-08/F-02: daily loss limit as percentage of equity
-    daily_loss_limit_percent: float | None = Field(default=None, gt=0)
-    #: B-08/F-02: minimum equity threshold
+    #: WP-30/B-08: daily loss limit as a percentage of equity (e.g., 5 for 5%)
+    daily_loss_limit_percent: float | None = Field(default=None, gt=0, le=100)
+    #: WP-30/B-08: minimum equity threshold (in account currency)
     min_equity_threshold: float | None = Field(default=None, gt=0)
-    #: WP-16: position sizing mode (accept for forward compatibility; storage in WP-16)
-    sizing_mode: str | None = None
-    #: WP-16: risk fraction for sizing (accept for forward compatibility; storage in WP-16)
-    daily_loss_limit_percent: float | None = Field(default=None, ge=0, le=100)
-    min_equity_threshold: float | None = Field(default=None, gt=0)
-    currency: str | None = None
-    max_gross_leverage: float | None = Field(default=None, gt=0)
-    allow_short: bool = False
-    #: B-01: sizing strategy for this account: "multiplier" (default),
+    #: WP-16/B-01: sizing strategy for this account: "multiplier" (default),
     #: "fixed", or "risk_fraction".
     sizing_mode: str = Field(default="multiplier", pattern="^(multiplier|fixed|risk_fraction)$")
-    #: B-01: for sizing_mode="risk_fraction", the fraction of equity to risk
+    #: WP-16/B-01: for sizing_mode="risk_fraction", the fraction of equity to risk
     #: per trade (e.g., 0.01 for 1%). Must be between 0 and 1.
     risk_fraction: float | None = Field(default=None, gt=0, le=1)
-    #: WP-08/B-14: whether this account is allowed to open short positions
-    #: WP-30: daily loss limit as a percentage (e.g., 5 for 5%)
-    daily_loss_limit_percent: float | None = Field(default=None, gt=0, le=100)
-    #: WP-30: minimum equity threshold (in account currency)
-    min_equity_threshold: float | None = Field(default=None, gt=0)
-    #: WP-28: account base currency (ISO 4217 code)
-    currency: str | None = None
-    #: WP-32: maximum gross leverage ceiling
-    max_gross_leverage: float | None = Field(default=None, gt=0)
-    #: WP-09: whether this account is allowed to open short positions
-    allow_short: bool = False
 
     _reject_bool_multiplier = field_validator(
         "multiplier", "fixed_quantity", "max_notional_exposure", "risk_percent_of_equity",
-        "max_gross_leverage", "daily_loss_limit_percent", "min_equity_threshold", "risk_fraction", mode="before"
-        "daily_loss_limit_percent", "min_equity_threshold", "max_gross_leverage", "risk_fraction",
+        "max_gross_leverage", "daily_loss_limit_percent", "min_equity_threshold", "risk_fraction",
         mode="before"
-    #: B-11: maximum gross leverage ceiling (e.g., 1.0 = no leverage,
-    #: 1.25 = 25% leverage allowed). When set, exposure is refused if it
-    #: would exceed max_gross_leverage × (equity − maintenance_margin).
-    max_gross_leverage: float | None = Field(default=None, gt=0)
-
-    _reject_bool_multiplier = field_validator(
-        "multiplier", "fixed_quantity", "max_notional_exposure", "risk_percent_of_equity", "max_gross_leverage", mode="before"
     )(_reject_bool_scaling_value)
 
     @field_validator("management_recipe")
@@ -2796,54 +2769,25 @@ class AccountPatchRequest(BaseModel):
     management_recipe: str | None = None
     qualification_level: str | None = None
     exclusive_writer_qualified: bool | None = None
-    #: B-14: whether this account is allowed to open short positions
+    #: WP-08/B-14: whether this account is allowed to open short positions
     allow_short: bool | None = None
-    #: E-11/B-10: account base currency (ISO 4217 code)
+    #: WP-28/E-11: account base currency (ISO 4217 code)
     currency: str | None = None
-    #: B-11: maximum gross leverage ceiling
+    #: WP-32/B-11: maximum gross leverage ceiling
     max_gross_leverage: float | None = Field(default=None, gt=0)
-    #: B-08/F-02: daily loss limit as percentage of equity
-    daily_loss_limit_percent: float | None = Field(default=None, gt=0)
-    #: B-08/F-02: minimum equity threshold
-    min_equity_threshold: float | None = Field(default=None, gt=0)
-    #: WP-16: position sizing mode (accept for forward compatibility; storage in WP-16)
-    sizing_mode: str | None = None
-    #: WP-16: risk fraction for sizing (accept for forward compatibility; storage in WP-16)
-    daily_loss_limit_percent: float | None = Field(default=None, ge=0, le=100)
-    min_equity_threshold: float | None = Field(default=None, gt=0)
-    currency: str | None = None
-    max_gross_leverage: float | None = Field(default=None, gt=0)
-    allow_short: bool | None = None
-    #: B-01: sizing strategy for this account: "multiplier" (default),
-    #: "fixed", or "risk_fraction".
-    sizing_mode: str | None = Field(default=None, pattern="^(multiplier|fixed|risk_fraction)$")
-    #: B-01: for sizing_mode="risk_fraction", the fraction of equity to risk
-    #: per trade (e.g., 0.01 for 1%). Must be between 0 and 1.
-    risk_fraction: float | None = Field(default=None, gt=0, le=1)
-    allow_short: bool | None = None  #: WP-08/B-14: whether this account is allowed to open short positions
-    #: WP-30: daily loss limit as a percentage (e.g., 5 for 5%)
+    #: WP-30/B-08: daily loss limit as a percentage of equity (e.g., 5 for 5%)
     daily_loss_limit_percent: float | None = Field(default=None, gt=0, le=100)
-    #: WP-30: minimum equity threshold (in account currency)
+    #: WP-30/B-08: minimum equity threshold (in account currency)
     min_equity_threshold: float | None = Field(default=None, gt=0)
-    #: WP-28: account base currency (ISO 4217 code)
-    currency: str | None = None
-    #: WP-32: maximum gross leverage ceiling
-    max_gross_leverage: float | None = Field(default=None, gt=0)
-    #: WP-09: whether this account is allowed to open short positions
-    allow_short: bool | None = None
+    #: WP-16/B-01: sizing strategy: "multiplier", "fixed", or "risk_fraction"
+    sizing_mode: str | None = Field(default=None, pattern="^(multiplier|fixed|risk_fraction)$")
+    #: WP-16/B-01: for sizing_mode="risk_fraction", the fraction of equity to risk per trade
+    risk_fraction: float | None = Field(default=None, gt=0, le=1)
 
     _reject_bool_multiplier = field_validator(
         "multiplier", "fixed_quantity", "max_notional_exposure", "risk_percent_of_equity",
-        "max_gross_leverage", "daily_loss_limit_percent", "min_equity_threshold", "risk_fraction", mode="before"
-        "daily_loss_limit_percent", "min_equity_threshold", "max_gross_leverage", "risk_fraction",
+        "max_gross_leverage", "daily_loss_limit_percent", "min_equity_threshold", "risk_fraction",
         mode="before"
-    #: B-11: maximum gross leverage ceiling (e.g., 1.0 = no leverage,
-    #: 1.25 = 25% leverage allowed). When set, exposure is refused if it
-    #: would exceed max_gross_leverage × (equity − maintenance_margin).
-    max_gross_leverage: float | None = Field(default=None, gt=0)
-
-    _reject_bool_multiplier = field_validator(
-        "multiplier", "fixed_quantity", "max_notional_exposure", "risk_percent_of_equity", "max_gross_leverage", mode="before"
     )(_reject_bool_scaling_value)
 
     @field_validator("management_recipe")
@@ -2921,12 +2865,6 @@ async def create_or_update_account(request: AccountRequest, _owner: dict = Depen
         min_equity_threshold=request.min_equity_threshold,
         sizing_mode=request.sizing_mode,
         risk_fraction=request.risk_fraction,
-        daily_loss_limit_percent=request.daily_loss_limit_percent,
-        min_equity_threshold=request.min_equity_threshold,
-        currency=request.currency,
-        max_gross_leverage=request.max_gross_leverage,
-        allow_short=request.allow_short,
-        max_gross_leverage=request.max_gross_leverage,
     )
     _reload_routing_config()
     return {"account_id": request.account_id, "status": "saved"}
@@ -3042,13 +2980,6 @@ async def patch_account(account_id: str, request: AccountPatchRequest, _owner: d
         min_equity_threshold=merged.get("min_equity_threshold"),
         sizing_mode=merged.get("sizing_mode"),
         risk_fraction=merged.get("risk_fraction"),
-        allow_short=merged["allow_short"],
-        daily_loss_limit_percent=merged.get("daily_loss_limit_percent"),
-        min_equity_threshold=merged.get("min_equity_threshold"),
-        currency=merged.get("currency"),
-        max_gross_leverage=merged.get("max_gross_leverage"),
-        allow_short=merged.get("allow_short", False),
-        max_gross_leverage=merged.get("max_gross_leverage"),
     )
     _reload_routing_config()
     return {"account_id": account_id, "status": "patched"}

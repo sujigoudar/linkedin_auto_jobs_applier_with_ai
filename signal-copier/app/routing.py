@@ -211,8 +211,6 @@ def load_routing_config(routing_path: Path, accounts_path: Path) -> RoutingConfi
                 allow_short=spec.get("allow_short", False),
                 sizing_mode=spec.get("sizing_mode", "multiplier"),
                 risk_fraction=spec.get("risk_fraction"),
-                allow_short=spec.get("allow_short", False),  # WP-08: allow_short setting
-                max_gross_leverage=spec.get("max_gross_leverage"),
             )
 
     rules: list[RoutingRule] = []
@@ -260,8 +258,6 @@ def load_routing_config_from_store(store) -> RoutingConfig:
             allow_short=bool(row.get("allow_short", False)),
             sizing_mode=row.get("sizing_mode", "multiplier"),
             risk_fraction=row.get("risk_fraction"),
-            allow_short=bool(row.get("allow_short", False)),  # WP-08: allow_short setting
-            max_gross_leverage=row.get("max_gross_leverage"),
         )
         for row in store.list_config_accounts()
     }

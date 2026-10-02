@@ -68,23 +68,14 @@ class PaperBroker(BrokerAdapter):
         #: `_apply_fill_to_cash`, at the exact same call sites that already
         #: adjust `self.positions` for a real fill.
         self._cash: dict[str, float] = {}
-<<<<<<< HEAD
-<<<<<<< HEAD
-=======
->>>>>>> 94d04df (WP-13: Default target sizing with equal-split fractions)
         #: account_id -> next order ID sequence number (WP-38, G-C-24).
         #: Persisted via the DestinationAccount.paper_order_id_sequence field
         #: in the database so order IDs remain unique across restarts.
         #: The engine initializes this from the store at startup and updates
         #: it after each fill.
         self._order_id_sequence: dict[str, int] = {}
-<<<<<<< HEAD
-=======
         #: account_id -> symbol -> last known price (used to compute equity)
         self._last_prices: dict[str, dict[str, float]] = {}
->>>>>>> c659a00 (WP-32b: Enforce max_gross_leverage cap and implement paper broker margin/equity)
-=======
->>>>>>> 94d04df (WP-13: Default target sizing with equal-split fractions)
         #: Read-only exposure of `fee_per_fill` -- see class docstring.
         self.fee_per_fill = self.FEE_PER_FILL
         #: WP-25: Track last simulated price per symbol to use for managed exits
@@ -188,11 +179,6 @@ class PaperBroker(BrokerAdapter):
             # a real path this cash tracking needs to cover.
             book[symbol] = 0.0
 
-<<<<<<< HEAD
-<<<<<<< HEAD
-<<<<<<< HEAD
-=======
->>>>>>> 94d04df (WP-13: Default target sizing with equal-split fractions)
         # WP-38 (G-C-24): Use persistent per-account sequence for order IDs.
         # The engine initializes _order_id_sequence from the database and
         # updates it after each order. Defaults to 1 if not yet set.
@@ -200,8 +186,6 @@ class PaperBroker(BrokerAdapter):
         seq = self._order_id_sequence.get(account_id, 1)
         self._order_id_sequence[account_id] = seq + 1
         order_id = f"paper-{seq}"
-<<<<<<< HEAD
-=======
         # D-01: Create simulated child stop orders for bracket entries
         child_order_ids: dict[str, str] = {}
         if signal.side.value in ("buy", "sell") and (signal.stop_loss or signal.take_profit):
@@ -228,15 +212,10 @@ class PaperBroker(BrokerAdapter):
                 self._next_stop_id += 1
                 self._target_exit_orders[tp_order_id] = tp_order_id
                 child_order_ids["take_profit"] = tp_order_id
->>>>>>> 21bf5fe (WP-18 (D-01, C-07): Track bracket child legs as reconcilable orders)
-=======
         # Track the last price for this symbol (used for equity calculation)
         if price:
             prices_for_account = self._last_prices.setdefault(account.account_id, {})
             prices_for_account[symbol] = price
->>>>>>> c659a00 (WP-32b: Enforce max_gross_leverage cap and implement paper broker margin/equity)
-=======
->>>>>>> 94d04df (WP-13: Default target sizing with equal-split fractions)
 
         result = OrderResult(
             account_id=account.account_id,
@@ -250,11 +229,7 @@ class PaperBroker(BrokerAdapter):
             fee=self.fee_per_fill,
             fee_currency="USD",  # Paper broker uses USD convention
             slippage=0.0,  # Paper broker fills exactly at signal price when available
-<<<<<<< HEAD
             child_order_ids=child_order_ids,
-=======
-            executed_at=datetime.now(timezone.utc),
->>>>>>> 94d04df (WP-13: Default target sizing with equal-split fractions)
         )
         self.fills.append(result)
         return result
@@ -324,18 +299,13 @@ class PaperBroker(BrokerAdapter):
             message=f"paper stop resting: {quantity} @ {stop_price}",
         )
 
-<<<<<<< HEAD
-    async def cancel_order(self, account: DestinationAccount, broker_order_id: str) -> bool:
+    async def cancel_order(
+        self, account: DestinationAccount, broker_order_id: str, symbol: str | None = None
+    ) -> bool:
         # D-01: Handle both stop orders and take-profit (target exit) orders
         stop_found = self._stop_orders.pop(broker_order_id, None) is not None
         target_found = self._target_exit_orders.pop(broker_order_id, None) is not None
         return stop_found or target_found
-=======
-    async def cancel_order(
-        self, account: DestinationAccount, broker_order_id: str, symbol: str | None = None
-    ) -> bool:
-        return self._stop_orders.pop(broker_order_id, None) is not None
->>>>>>> ece696e (WP-23: recovery edges for lost entries, venue adoption, and partial coverage)
 
     async def replace_stop_quantity(
         self,
@@ -362,10 +332,6 @@ class PaperBroker(BrokerAdapter):
     async def get_broker_position(self, account: DestinationAccount, symbol: str) -> float | None:
         return self.positions.setdefault(account.account_id, {}).get(symbol, 0.0)
 
-<<<<<<< HEAD
-<<<<<<< HEAD
-=======
->>>>>>> 94d04df (WP-13: Default target sizing with equal-split fractions)
     def set_order_id_sequence(self, account_id: str, sequence: int) -> None:
         """Initialize the order ID sequence for an account (WP-38, G-C-24).
         Called by the engine at startup to restore the persisted sequence
@@ -378,8 +344,6 @@ class PaperBroker(BrokerAdapter):
         Called by the engine after a fill to persist the updated sequence
         back to the database."""
         return self._order_id_sequence.get(account_id, 1)
-<<<<<<< HEAD
-=======
     async def get_order_status(
         self, account: DestinationAccount, broker_order_id: str
     ) -> OrderResult | None:
@@ -396,9 +360,6 @@ class PaperBroker(BrokerAdapter):
 
         # Unknown order - return None
         return None
->>>>>>> 21bf5fe (WP-18 (D-01, C-07): Track bracket child legs as reconcilable orders)
-=======
->>>>>>> 94d04df (WP-13: Default target sizing with equal-split fractions)
 
     def simulate_price(self, symbol: str, price: float) -> list[OrderResult]:
         """Test/simulation hook: check every resting stop order on `symbol`

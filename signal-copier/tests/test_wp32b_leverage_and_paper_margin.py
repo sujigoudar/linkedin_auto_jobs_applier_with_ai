@@ -13,7 +13,7 @@ Paper broker simulator rules (per app/brokers/paper.py docstring):
 import pytest
 from pathlib import Path
 
-from app.models import Signal, DestinationAccount, OrderResult, Side, OrderStatus
+from app.models import Signal, DestinationAccount, Side, OrderStatus
 from app.engine import SignalCopierEngine as Engine
 from app.brokers.paper import PaperBroker
 from app.db import SignalStore
