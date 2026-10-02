@@ -19,9 +19,10 @@ from __future__ import annotations
 import enum
 import re
 from dataclasses import dataclass
+from typing import Any
 
 from app.errors import SignalValidationError
-from app.models import AssetClass, ProfitTarget, Signal, Side
+from app.models import AssetClass, OptionContractSpec, ProfitTarget, Signal, Side  # noqa: F401
 
 #: This parser's own exact interpretation implementation -- see
 #: `Signal.parser_version`'s own docstring. Bump whenever this grammar's
@@ -36,6 +37,11 @@ _SIDE_ALIASES = {
     "short": Side.SELL,
     "close": Side.CLOSE,
     "exit": Side.CLOSE,
+}
+
+#: Symbols that are stop-words and should never be treated as an instrument
+_SYMBOL_STOP_WORDS = {
+    "TO", "HALF", "ALL", "AT", "THE", "A", "AND", "OPEN", "CLOSE", "NOW"
 }
 
 #: SIG-XX (this pass): a bare `-?\d+(?:\.\d+)?` stops matching at the first
@@ -126,6 +132,100 @@ def _merge_split_option_symbols(text: str) -> str:
     return _OPTION_FRAGMENT_AFTER_SYMBOL.sub(lambda m: f"{m.group('sym')}{m.group('optfrag')}", text)
 
 
+def _is_valid_symbol(symbol: str) -> bool:
+    """WP-12: validate that a symbol is not purely numeric or a stop-word."""
+    if symbol.isdigit():
+        return False
+    if symbol.upper() in _SYMBOL_STOP_WORDS:
+        return False
+    return True
+
+
+def _try_parse_option_contract(symbol: str, text_after_symbol: str) -> tuple[str, str, float, str] | None:
+    """WP-12: try to parse an option contract from symbol and following text.
+
+    Returns (underlying, expiry_str, strike) if successful, None otherwise.
+    Handles patterns like:
+    - "AAPL 150C 1/17" -> ("AAPL", "2026-01-17", 150.0)
+    - "AAPL 150C" -> (None - incomplete)
+    - "AAPL 150call 1/17" -> ("AAPL", "2026-01-17", 150.0)
+    """
+    # Extract any existing OCC-style notation from symbol (e.g., "AAPL260118C00150000")
+    if _OPTION_SYMBOL_PATTERN.match(symbol):
+        # Already OCC format, don't re-parse
+        return None
+
+    # Check if symbol is a plain ticker (letters only)
+    if not symbol.replace("/", "").replace("-", "").isalpha():
+        return None
+
+    underlying = symbol
+
+    # Look for strike + call/put + expiry in the following text
+    # Pattern: number(optional decimal) followed by C or P (case-insensitive), then call/put word
+    strike_pattern = r"(?P<strike>\d+(?:\.\d+)?)\s*(?P<right>[CP]|call|put)\b"
+    strike_match = re.search(strike_pattern, text_after_symbol, re.IGNORECASE)
+
+    if not strike_match:
+        return None
+
+    try:
+        strike = float(strike_match.group("strike"))
+    except (ValueError, AttributeError):
+        return None
+
+    right_str = strike_match.group("right").lower()
+    if right_str not in ("c", "call", "p", "put"):
+        return None
+    right = "call" if right_str in ("c", "call") else "put"
+
+    # Look for expiry after the strike pattern
+    # Try to find M/D, M/D/YY, or ISO date formats
+    text_after_strike = text_after_symbol[strike_match.end():]
+
+    # Common patterns: M/D, M/D/YY, ISO date
+    expiry_patterns = [
+        (r"(\d{1,2})/(\d{1,2})/(\d{2,4})", "mdy"),  # M/D/YY or M/D/YYYY
+        (r"(\d{1,2})/(\d{1,2})(?:\D|$)", "md"),      # M/D (with lookahead to ensure not followed by digit)
+        (r"(\d{4})-(\d{2})-(\d{2})", "iso"),         # ISO format
+    ]
+
+    expiry_str = None
+    for pattern, fmt in expiry_patterns:
+        m = re.search(pattern, text_after_strike)
+        if m:
+            if fmt == "mdy":
+                month, day, year = m.groups()
+                year_int = int(year)
+                # Handle 2-digit year: 00-99 -> 2000-2099
+                if year_int < 100:
+                    year_int += 2000
+                expiry_str = f"{year_int:04d}-{int(month):02d}-{int(day):02d}"
+            elif fmt == "md":
+                month, day = m.groups()
+                # Assume current or next year
+                import datetime
+                today = datetime.date.today()
+                year = today.year
+                try:
+                    test_date = datetime.date(year, int(month), int(day))
+                    if test_date < today:
+                        year += 1
+                    expiry_str = f"{year:04d}-{int(month):02d}-{int(day):02d}"
+                except ValueError:
+                    continue
+            elif fmt == "iso":
+                year, month, day = m.groups()
+                expiry_str = f"{year}-{month}-{day}"
+            break
+
+    if expiry_str is None:
+        # No expiry found
+        return None
+
+    return (underlying, expiry_str, strike, right)
+
+
 # SIG-03: every text source defaults to (or is configured with) ONE fixed
 # asset_class for every message it ever produces -- fine for a genuinely
 # single-market channel, wrong for a "mixed" one where different analysts
@@ -155,10 +255,12 @@ _CRYPTO_BASE_HINTS = {
 
 def _infer_asset_class(symbol: str) -> AssetClass | None:
     """Best-effort instrument classification from the symbol's shape alone.
-    Returns None when the shape doesn't confidently match any known
-    convention (e.g. a bare 3-letter string could be a stock ticker or half
-    of a currency pair) -- the caller must not guess further in that case,
-    only fall back to whatever asset_class it already trusted."""
+    WP-12: Never infers FUTURE or CRYPTO from shape alone; keeps the source-
+    declared class when uncertain. Returns None when the shape doesn't
+    confidently match any known convention (e.g. a bare 3-letter string could
+    be a stock ticker or half of a currency pair) -- the caller must not
+    guess further in that case, only fall back to whatever asset_class it
+    already trusted."""
     bare = symbol.replace("/", "").upper()
 
     if _OPTION_SYMBOL_PATTERN.match(bare):
@@ -172,13 +274,14 @@ def _infer_asset_class(symbol: str) -> AssetClass | None:
     ):
         return AssetClass.FOREX
 
-    if bare.endswith(_CRYPTO_QUOTE_SUFFIXES):
-        for suffix in _CRYPTO_QUOTE_SUFFIXES:
-            if bare.endswith(suffix) and len(bare) > len(suffix):
-                return AssetClass.CRYPTO
-    for base in _CRYPTO_BASE_HINTS:
-        if bare.startswith(base) and bare[len(base):] in ("USD", "EUR", "GBP", "BTC", "ETH"):
-            return AssetClass.CRYPTO
+    # WP-12: Never infer CRYPTO from symbol shape alone
+    # if bare.endswith(_CRYPTO_QUOTE_SUFFIXES):
+    #     for suffix in _CRYPTO_QUOTE_SUFFIXES:
+    #         if bare.endswith(suffix) and len(bare) > len(suffix):
+    #             return AssetClass.CRYPTO
+    # for base in _CRYPTO_BASE_HINTS:
+    #     if bare.startswith(base) and bare[len(base):] in ("USD", "EUR", "GBP", "BTC", "ETH"):
+    #         return AssetClass.CRYPTO
 
     if bare.isalpha() and 1 <= len(bare) <= 5:
         return AssetClass.EQUITY
@@ -348,10 +451,43 @@ def classify_text_signal(
     side = _SIDE_ALIASES[match.group("side").lower()]
     symbol = match.group("symbol").upper()
 
-    inferred_asset_class = _infer_asset_class(symbol)
-    resolved_asset_class = (
-        inferred_asset_class if inferred_asset_class is not None else asset_class
-    )
+    # WP-12: Validate symbol - reject stop-words and purely numeric symbols
+    if not _is_valid_symbol(symbol):
+        return MessageDisposition(
+            text=text,
+            outcome=DispositionOutcome.MISSING_DATA,
+            detail=f"symbol '{symbol}' is not a valid instrument (stop-word or purely numeric)",
+        )
+
+    # WP-12: Try to parse option contracts
+    text_after_symbol = stripped[match.end("symbol"):]
+    option_parse_result = _try_parse_option_contract(symbol, text_after_symbol)
+    option_contract = None
+    if option_parse_result is not None:
+        underlying, expiry_str, strike, right = option_parse_result
+        option_contract = OptionContractSpec(
+            underlying=underlying,
+            expiry=expiry_str,
+            strike=strike,
+            right=right,
+        )
+        resolved_asset_class = AssetClass.OPTION
+    else:
+        # Check if the symbol looks like an incomplete option
+        strike_pattern = r"\d+(?:\.\d+)?\s*[CP](?:\s|$)"
+        if re.search(strike_pattern, text_after_symbol, re.IGNORECASE):
+            # Found strike+C/P but no expiry
+            return MessageDisposition(
+                text=text,
+                outcome=DispositionOutcome.MISSING_DATA,
+                detail="option contract incomplete (missing expiry date)",
+            )
+
+        # Standard asset class inference
+        inferred_asset_class = _infer_asset_class(symbol)
+        resolved_asset_class = (
+            inferred_asset_class if inferred_asset_class is not None else asset_class
+        )
 
     # Only a GENUINE multi-target message (2+ cleanly-numbered TP levels)
     # populates `targets` -- a single TP mention keeps this parser's
@@ -362,6 +498,13 @@ def classify_text_signal(
         if len(targets_raw) > 1
         else []
     )
+
+    # WP-12: Mark if asset class was inferred from symbol shape
+    raw_data: dict[str, Any] = {"text": text}
+    was_inferred = False
+    if option_contract is None and inferred_asset_class is not None:
+        was_inferred = inferred_asset_class != asset_class
+        raw_data["asset_class_inferred"] = was_inferred
 
     signal = Signal(
         source=source,
@@ -374,8 +517,9 @@ def classify_text_signal(
         stop_loss=_optional_float(match.group("sl")),
         take_profit=_optional_float(take_profit_raw),
         targets=targets,
+        option=option_contract,
         parser_version=PARSER_VERSION,
-        raw={"text": text},
+        raw=raw_data,
     )
     return MessageDisposition(text=text, outcome=DispositionOutcome.PARSED, signal=signal)
 
