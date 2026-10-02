@@ -2166,8 +2166,8 @@ class SignalStore:
                    (id, source, symbol, side, asset_class, quantity, price, stop_loss, take_profit,
                     analyst, received_at, raw, import_batch, channel_id, message_id, revision_id,
                     correlation_fingerprint, source_created_at, source_modified_at, first_observed_at,
-                    parsed_at, decision_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    parsed_at, decision_at, intent, reduce_fraction)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     signal.id,
                     signal.source,
@@ -2191,6 +2191,8 @@ class SignalStore:
                     signal.first_observed_at.isoformat() if signal.first_observed_at else None,
                     signal.parsed_at.isoformat() if signal.parsed_at else None,
                     signal.decision_at.isoformat() if signal.decision_at else None,
+                    signal.intent.value if signal.intent is not None else None,
+                    signal.reduce_fraction,
                 ),
             )
 
@@ -2479,7 +2481,7 @@ class SignalStore:
                 """SELECT id, source, symbol, side, asset_class, quantity, price, stop_loss, take_profit,
                           analyst, received_at, import_batch, channel_id, message_id, revision_id,
                           correlation_fingerprint, source_created_at, source_modified_at, first_observed_at,
-                          parsed_at, decision_at
+                          parsed_at, decision_at, intent, reduce_fraction
                    FROM signals WHERE id = ?""",
                 (signal_id,),
             ).fetchone()
@@ -2507,6 +2509,8 @@ class SignalStore:
             "first_observed_at": row[18],
             "parsed_at": row[19],
             "decision_at": row[20],
+            "intent": row[21],
+            "reduce_fraction": row[22],
         }
 
     def get_signal_lifecycle(self, signal_id: str) -> dict | None:

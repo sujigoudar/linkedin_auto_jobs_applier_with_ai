@@ -28,9 +28,16 @@ def upgrade() -> None:
                 comment="B-14: Whether this account is allowed to open short positions (0=false, 1=true)",
             )
         )
+    # WP-08 (A-01): explicit instruction model on the signal row.
+    with op.batch_alter_table("signals", schema=None) as batch_op:
+        batch_op.add_column(sa.Column("intent", sa.Text, nullable=True))
+        batch_op.add_column(sa.Column("reduce_fraction", sa.Float, nullable=True))
 
 
 def downgrade() -> None:
     """Remove allow_short column from config_accounts table."""
     with op.batch_alter_table("config_accounts", schema=None) as batch_op:
         batch_op.drop_column("allow_short")
+    with op.batch_alter_table("signals", schema=None) as batch_op:
+        batch_op.drop_column("reduce_fraction")
+        batch_op.drop_column("intent")
