@@ -1895,6 +1895,47 @@ CREATE TABLE IF NOT EXISTS alerts (
 );
 CREATE INDEX IF NOT EXISTS ix_alerts_account_id ON alerts(account_id);
 CREATE INDEX IF NOT EXISTS ix_alerts_unacknowledged ON alerts(acknowledged_at) WHERE acknowledged_at IS NULL;
+-- WC-02: Canonical identities -- physical accounts, bindings, and capabilities
+-- Physical accounts: immutable, deduplicated broker accounts (one per real account)
+CREATE TABLE IF NOT EXISTS physical_accounts (
+    physical_account_id TEXT PRIMARY KEY,
+    broker TEXT NOT NULL,
+    broker_account_id TEXT NOT NULL,
+    environment TEXT NOT NULL,  -- 'paper', 'live', 'sandbox', 'unknown'
+    base_currency TEXT NOT NULL,  -- ISO 4217 code
+    margin_type TEXT NOT NULL,  -- 'cash', 'margin', 'retirement', 'unknown'
+    restriction_state TEXT NOT NULL,  -- 'none', 'pdt_restricted', 'closing_only', 'unknown'
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    UNIQUE(broker, broker_account_id, environment)
+);
+-- Account bindings: credentials/integrations reaching physical accounts
+CREATE TABLE IF NOT EXISTS account_bindings (
+    binding_id TEXT PRIMARY KEY,
+    physical_account_id TEXT NOT NULL,
+    config_account_id TEXT NOT NULL,
+    version INTEGER NOT NULL DEFAULT 1,
+    revoked INTEGER NOT NULL DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    FOREIGN KEY (physical_account_id) REFERENCES physical_accounts(physical_account_id),
+    FOREIGN KEY (config_account_id) REFERENCES config_accounts(account_id)
+);
+CREATE INDEX IF NOT EXISTS ix_account_bindings_physical_account_id ON account_bindings(physical_account_id);
+CREATE INDEX IF NOT EXISTS ix_account_bindings_config_account_id ON account_bindings(config_account_id);
+-- Capability profiles: exact instrument/operation support with evidence tier
+CREATE TABLE IF NOT EXISTS capability_profiles (
+    capability_id TEXT PRIMARY KEY,
+    physical_account_id TEXT NOT NULL,
+    instrument_family TEXT NOT NULL,  -- 'stock', 'option', 'future', 'fx', 'crypto', etc.
+    session TEXT NOT NULL,  -- 'regular', 'pre', 'after', etc.
+    operation TEXT NOT NULL,  -- 'entry_long', 'entry_short', 'exit', 'stop', 'target', etc.
+    order_recipe TEXT NOT NULL,  -- 'limit', 'market', 'stop_limit', 'algo', etc.
+    evidence_tier TEXT NOT NULL,  -- 'unknown', 'declared', 'simulator', 'paper', 'live'
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    FOREIGN KEY (physical_account_id) REFERENCES physical_accounts(physical_account_id),
+    UNIQUE(physical_account_id, instrument_family, session, operation)
+);
+CREATE INDEX IF NOT EXISTS ix_capability_profiles_physical_account_id ON capability_profiles(physical_account_id);
+CREATE INDEX IF NOT EXISTS ix_capability_profiles_evidence_tier ON capability_profiles(evidence_tier);
 """
 
 
