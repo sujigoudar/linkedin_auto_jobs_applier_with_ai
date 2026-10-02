@@ -2952,6 +2952,19 @@ class SignalCopierEngine:
         # B-06: Resolve price using broker quote capability when available
         price_source = None
         broker = self.brokers.get(account.broker)
+
+        # First, check if signal has a price that is not a finite positive number
+        if order_signal.price is not None and (not math.isfinite(order_signal.price) or order_signal.price <= 0):
+            # Signal price exists but is not valid (0, negative, NaN, inf)
+            return False, 0.0, self._reject(
+                account,
+                order_signal,
+                f"account '{account.account_id}' has a capital/risk exposure gate configured "
+                "(max_notional_exposure, risk_percent_of_equity, and/or an owner-wide ceiling) but this "
+                "signal carries a price that is not a finite positive number ({order_signal.price}) -- "
+                "admission is refused rather than silently skipping the check (see app/capital_allocator.py)",
+            )
+
         if broker is not None:
             price, price_source = await self._resolve_price_for_gating(broker, order_signal)
         else:
@@ -2968,7 +2981,7 @@ class SignalCopierEngine:
                 order_signal,
                 f"account '{account.account_id}' has a capital/risk exposure gate configured "
                 "(max_notional_exposure, risk_percent_of_equity, and/or an owner-wide ceiling) but this "
-                "signal carries no resolvable price -- neither broker quote (if capability available) nor message "
+                "signal carries no price -- neither broker quote (if capability available) nor message "
                 "price can be resolved, so notional can't be computed; admission is refused rather than "
                 "silently skipping the check (see app/capital_allocator.py)",
             )
@@ -4399,6 +4412,18 @@ class SignalCopierEngine:
         # gate above (a binary allow/reject, not a proportional cap -- see
         # that block's own comment for why).
         result = await self.lifecycle_manager.request_exit(account, symbol, exit_quantity, source=source)
+        # TRK-23: Ensure the result has the correct signal_id for this CLOSE signal,
+        # since request_exit doesn't know about the signal context (it only knows
+        # account/symbol/quantity). This is essential for the export envelope and
+        # order journal to correctly attribute the close to this signal.
+        result = replace(result, signal_id=signal.id)
+
+        # Also ensure filled_price is set from the original signal price if available.
+        # The internal exit_signal created by _submit_exit_order has no price, so
+        # filled_price would be None; we need to use the price from the original
+        # CLOSE signal to ensure economics calculations work correctly.
+        if result.status == OrderStatus.FILLED and result.filled_price is None and signal.price is not None:
+            result = replace(result, filled_price=signal.price)
 
         # TRK-22: AUD-01's distinct-field quantity model for this managed
         # close -- see this method's own docstring for why `request_exit`'s
@@ -4543,6 +4568,16 @@ class SignalCopierEngine:
             # above) -- always attribute the row to it rather than trust
             # whatever id happened to come back from deeper in the call.
             result = replace(result, signal_id=close_signal.id)
+
+            # Also ensure filled_price is set for a filled close order.
+            # The internal exit_signal created by _submit_exit_order has no price, so
+            # filled_price would be None; use the entry price if available to ensure
+            # economics calculations work correctly.
+            if result.status == OrderStatus.FILLED and result.filled_price is None:
+                # Try to get the entry price from the lifecycle
+                if lifecycle_before_close is not None and lifecycle_before_close.entry_price is not None:
+                    result = replace(result, filled_price=lifecycle_before_close.entry_price)
+
             # DB-0X: real family link back to this position's own entry
             # (see app/lifecycle/models.py's `PositionPlan.entry_signal_id`)
             # -- already fetched above as `lifecycle_before_close`. None
