@@ -110,7 +110,6 @@ def build_traceability(
 ) -> dict[str, Any]:
     """Merge scenarios and traceability map into unified output."""
     result_scenarios = []
-    missing_ids = []
 
     for scenario_id, scenario_data in scenarios.items():
         # Get traceability info from map, or initialize as NOT_IMPLEMENTED
@@ -209,7 +208,7 @@ def main():
         json.dump(result, f, indent=2)
 
     print(f"✓ Wrote {output_path}")
-    print(f"\nStatus Summary:")
+    print("\nStatus Summary:")
     for status, count in sorted(result["status_counts"].items()):
         print(f"  {status}: {count}")
 

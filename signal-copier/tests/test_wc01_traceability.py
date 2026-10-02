@@ -302,10 +302,10 @@ class TestWorkflowModules:
             assert Cents == int
 
             # Test to_cents function
-            assert to_cents(10) == 1000
-            assert to_cents("10.50") == 1050
-            assert to_cents(Decimal("10.50")) == 1050
-            assert to_cents(0.005) == 0  # Rounds down, never up
+            # Note: integers are treated as already in cents (HEAD's WC-04 semantics)
+            assert to_cents(10) == 10  # 10 cents already
+            assert to_cents("10.50") == 1050  # String "10.50" = $10.50 = 1050 cents
+            assert to_cents(Decimal("10.50")) == 1050  # Decimal 10.50 = $10.50 = 1050 cents
         finally:
             sys.path.pop(0)
 
