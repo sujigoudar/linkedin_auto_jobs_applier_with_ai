@@ -248,6 +248,9 @@ only_mutate = [
     "app/brokers/paper.py", "app/brokers/base.py",
     "app/routing.py", "app/capital_allocator.py", "app/risk.py", "app/quantity.py",
     "app/statistics.py", "app/signal_correlation.py",
+    "app/telegram_collectors.py", "app/unified_collectors.py", "app/provider_catalog.py",
+    "app/provider_scout.py", "app/certification_scorecard.py", "app/shadow_mode.py",
+    "app/phone_escalation.py", "app/execution_quality.py", "app/metrics.py", "app/equity_history.py",
 ]
 pytest_add_cli_args_test_selection = [
     "tests/test_owner_auth.py", "tests/test_sms_twilio_sender_authorization.py",
@@ -299,6 +302,10 @@ pytest_add_cli_args_test_selection = [
     "tests/test_paper_broker_lifecycle_capabilities.py",
     "tests/test_account_balance_capability.py",
     "tests/test_adp02_adp06_bracket_capability_verification.py",
+    "tests/test_telegram_collectors_registry.py", "tests/test_provider_source_connection_catalog.py",
+    "tests/test_provider_scout.py", "tests/test_e05_execution_quality.py",
+    "tests/test_c23_metrics_endpoint.py", "tests/test_equity_history_endpoint.py",
+    "tests/test_t13_phone_escalation.py", "tests/test_track37_phone_escalation_correlation_wiring.py",
 ]
 
 # C38 (bounded): static analysis -- ruff (lint) + mypy (type checking).
