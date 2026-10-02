@@ -332,7 +332,15 @@ CREATE TABLE IF NOT EXISTS config_accounts (
     -- would exceed max_gross_leverage × (equity − maintenance_margin).
     max_gross_leverage DECIMAL(5, 2),
     -- B-14: whether this account is allowed to open short positions
-    allow_short INTEGER NOT NULL DEFAULT 0
+    allow_short INTEGER NOT NULL DEFAULT 0,
+    -- WP-38 (G-C-13): the EvidenceClass value (e.g., "INTERNAL_PAPER",
+    -- "OBSERVED_OWNER_LIVE") to export for this account's events.
+    -- NULL means use the global config.RELAY_EVIDENCE_CLASS as fallback.
+    evidence_class TEXT,
+    -- WP-38 (G-C-24): monotonic counter for paper broker order IDs,
+    -- persisted per account to remain unique across restarts.
+    -- Only used when broker='paper'; NULL/unused for other brokers.
+    paper_order_id_sequence INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS config_routing_rules (
@@ -4415,6 +4423,16 @@ class SignalStore:
                     qualification_level,
                     int(exclusive_writer_qualified),
                 ),
+            )
+
+    def update_account_paper_order_id_sequence(self, account_id: str, sequence: int) -> None:
+        """WP-38 (G-C-24): update the persistent paper order ID sequence for an
+        account without changing other account fields. Called after a paper
+        broker fill to persist the updated sequence."""
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE config_accounts SET paper_order_id_sequence = ? WHERE account_id = ?",
+                (sequence, account_id),
             )
 
     def delete_config_account(self, account_id: str) -> None:

@@ -790,6 +790,14 @@ class DestinationAccount:
     #: as a close/reduce-only against the tracked long position. When True,
     #: a SELL entry behaves as a new short-side entry (the legacy behavior).
     allow_short: bool = False
+    #: WP-38 (G-C-13): the EvidenceClass value (e.g., "INTERNAL_PAPER",
+    #: "OBSERVED_OWNER_LIVE") to export for this account's events.
+    #: `None` (the default) means use the global config.RELAY_EVIDENCE_CLASS.
+    evidence_class: Optional[str] = None
+    #: WP-38 (G-C-24): monotonic counter for paper broker order IDs,
+    #: persisted per account to remain unique across restarts.
+    #: Only used when broker='paper'; None/unused for other brokers.
+    paper_order_id_sequence: Optional[int] = None
 
     def __post_init__(self) -> None:
         if self.management_recipe is None:

@@ -362,6 +362,26 @@ class SignalCopierEngine:
         # terminal. See PendingEntry's docstring for why.
         self.lifecycle_manager.capital_allocator = self.capital_allocator
 
+        # WP-38 (G-C-24): initialize paper broker's persistent order ID sequences
+        # from the stored account configs (see PaperBroker._order_id_sequence).
+        paper_broker = brokers.get("paper")
+        if paper_broker is not None:
+            from app.brokers.paper import PaperBroker
+            if isinstance(paper_broker, PaperBroker):
+                for account in routing.accounts.values():
+                    if account.broker == "paper" and account.paper_order_id_sequence is not None:
+                        paper_broker.set_order_id_sequence(account.account_id, account.paper_order_id_sequence)
+
+    def _persist_paper_order_id_sequence(self, result: OrderResult, account: DestinationAccount) -> None:
+        """WP-38 (G-C-24): persist the updated paper broker order ID sequence
+        after a fill. Only called for paper broker accounts."""
+        paper_broker = self.brokers.get("paper")
+        if paper_broker is not None:
+            from app.brokers.paper import PaperBroker
+            if isinstance(paper_broker, PaperBroker):
+                seq = paper_broker.get_order_id_sequence(account.account_id)
+                self.store.update_account_paper_order_id_sequence(account.account_id, seq)
+
     def _build_export_envelope(
         self,
         result: OrderResult,
@@ -383,6 +403,8 @@ class SignalCopierEngine:
         still pass `export_envelope=None` to `save_order_result` in that
         case, which is exactly what omitting the keyword already does."""
         source_stream = f"signal-copier:{account.account_id}"
+        # WP-38 (G-C-13): use per-account evidence class, fall back to global config
+        evidence_class_str = account.evidence_class or config.RELAY_EVIDENCE_CLASS
         return build_execution_applied_envelope(
             result,
             account=account,
@@ -392,7 +414,7 @@ class SignalCopierEngine:
             source_stream=source_stream,
             export_sequence=self.store.next_export_sequence(source_stream),
             producer_id=config.RELAY_PRODUCER_ID,
-            evidence_class=EvidenceClass[config.RELAY_EVIDENCE_CLASS],
+            evidence_class=EvidenceClass[evidence_class_str],
             environment=Environment[config.RELAY_ENVIRONMENT],
             originating_source_event_id=originating_source_event_id,
             originating_analyst_id=originating_analyst_id,
@@ -468,13 +490,15 @@ class SignalCopierEngine:
         appended) for a `Side.CLOSE` signal -- see the builder's own
         docstring for why."""
         source_stream = f"signal-copier:source:{signal.source}"
+        # WP-38 (G-C-13): use per-account evidence class when available, fall back to global
+        evidence_class_str = (account.evidence_class if account is not None else None) or config.RELAY_EVIDENCE_CLASS
         envelope = build_routing_admission_outcome_envelope(
             signal,
             outcome=outcome,
             source_stream=source_stream,
             export_sequence=self.store.next_export_sequence(source_stream),
             producer_id=config.RELAY_PRODUCER_ID,
-            evidence_class=EvidenceClass[config.RELAY_EVIDENCE_CLASS],
+            evidence_class=EvidenceClass[evidence_class_str],
             environment=Environment[config.RELAY_ENVIRONMENT],
             account=account,
             broker=account.broker if account is not None else None,
@@ -1444,6 +1468,10 @@ class SignalCopierEngine:
             if applied_quantity is not None:
                 self.store.record_fill(account.account_id, symbol, order_signal.side, applied_quantity)
             applied_execution_delta = applied_quantity if applied_quantity is not None else 0.0
+
+            # WP-38 (G-C-24): persist paper broker order ID sequence after a FILLED result
+            if result.status == OrderStatus.FILLED and account.broker == "paper":
+                self._persist_paper_order_id_sequence(result, account)
 
             export_envelope = self._build_export_envelope(
                 result,
@@ -2479,6 +2507,11 @@ class SignalCopierEngine:
         # change for it; only a real, broker-reported quantity (FILLED, or
         # a genuine partial-fill progress report alongside PENDING -- EXE-04:
         # explicit 0.0 is real progress too) is applied.
+        # WP-38 (G-C-24): persist paper broker order ID sequence after a FILLED result
+        # (this is _submit_order, called from plain close and managed entry paths)
+        if result.status == OrderStatus.FILLED and account.broker == "paper":
+            self._persist_paper_order_id_sequence(result, account)
+
         applied_quantity: float | None = None
         confirmed_cumulative_fill: float | None = None
         outstanding_possible_fill = 0.0
@@ -3125,6 +3158,9 @@ class SignalCopierEngine:
             self.capital_allocator.release(account.account_id, notional, signal_id=signal.id)
             filled_quantity = result.filled_quantity if result.filled_quantity is not None else quantity
             self.store.record_fill(account.account_id, symbol, signal.side, filled_quantity)
+            # WP-38 (G-C-24): Persist paper broker order ID sequence after fills
+            if account.broker == "paper":
+                self._persist_paper_order_id_sequence(result, account)
             # TRK-22: `filled_quantity` above is exactly what was just
             # applied via `record_fill` -- same FILLED convention
             # `_submit_order` uses (a broker-confirmed FILLED with no

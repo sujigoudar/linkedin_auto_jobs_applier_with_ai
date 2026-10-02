@@ -64,6 +64,12 @@ class PaperBroker(BrokerAdapter):
         #: `_apply_fill_to_cash`, at the exact same call sites that already
         #: adjust `self.positions` for a real fill.
         self._cash: dict[str, float] = {}
+        #: account_id -> next order ID sequence number (WP-38, G-C-24).
+        #: Persisted via the DestinationAccount.paper_order_id_sequence field
+        #: in the database so order IDs remain unique across restarts.
+        #: The engine initializes this from the store at startup and updates
+        #: it after each fill.
+        self._order_id_sequence: dict[str, int] = {}
         #: Read-only exposure of `fee_per_fill` -- see class docstring.
         self.fee_per_fill = self.FEE_PER_FILL
 
@@ -112,11 +118,19 @@ class PaperBroker(BrokerAdapter):
             # a real path this cash tracking needs to cover.
             book[symbol] = 0.0
 
+        # WP-38 (G-C-24): Use persistent per-account sequence for order IDs.
+        # The engine initializes _order_id_sequence from the database and
+        # updates it after each order. Defaults to 1 if not yet set.
+        account_id = account.account_id
+        seq = self._order_id_sequence.get(account_id, 1)
+        self._order_id_sequence[account_id] = seq + 1
+        order_id = f"paper-{seq}"
+
         result = OrderResult(
             account_id=account.account_id,
             status=OrderStatus.FILLED,
             signal_id=signal.id,
-            broker_order_id=f"paper-{len(self.fills) + 1}",
+            broker_order_id=order_id,
             filled_quantity=quantity,
             filled_price=price,
             message="filled by paper broker",
@@ -188,6 +202,19 @@ class PaperBroker(BrokerAdapter):
 
     async def get_broker_position(self, account: DestinationAccount, symbol: str) -> float | None:
         return self.positions.setdefault(account.account_id, {}).get(symbol, 0.0)
+
+    def set_order_id_sequence(self, account_id: str, sequence: int) -> None:
+        """Initialize the order ID sequence for an account (WP-38, G-C-24).
+        Called by the engine at startup to restore the persisted sequence
+        from the database."""
+        if sequence is not None:
+            self._order_id_sequence[account_id] = sequence
+
+    def get_order_id_sequence(self, account_id: str) -> int:
+        """Get the current order ID sequence for an account (WP-38, G-C-24).
+        Called by the engine after a fill to persist the updated sequence
+        back to the database."""
+        return self._order_id_sequence.get(account_id, 1)
 
     def simulate_price(self, symbol: str, price: float) -> list[OrderResult]:
         """Test/simulation hook: check every resting stop order on `symbol`

@@ -242,6 +242,10 @@ def load_routing_config_from_store(store) -> RoutingConfig:
             management_recipe=ManagementRecipe(row["management_recipe"]) if row.get("management_recipe") else None,
             qualification_level=row.get("qualification_level"),
             exclusive_writer_qualified=bool(row.get("exclusive_writer_qualified", False)),
+            daily_loss_limit_percent=row.get("daily_loss_limit_percent"),
+            min_equity_threshold=row.get("min_equity_threshold"),
+            evidence_class=row.get("evidence_class"),  # WP-38 (G-C-13)
+            paper_order_id_sequence=row.get("paper_order_id_sequence"),  # WP-38 (G-C-24)
         )
         for row in store.list_config_accounts()
     }
