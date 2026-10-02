@@ -1,5 +1,5 @@
 from app.sources.text_parser import classify_text_signal
-from app.parser_tooling import classify_message_type, extract_fields
+from app.parser_tooling import classify_message_type
 from app.models import AssetClass
 
 msgs = [
