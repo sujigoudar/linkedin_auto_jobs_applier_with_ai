@@ -155,6 +155,24 @@ class AlpacaBroker(BrokerAdapter):
                 json=order_payload,
             )
             response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            # Definite 4xx validation rejections (400, 403, 422, etc.) -> REJECTED (can't fix by retrying).
+            # Ambiguous 4xx (408, 429) and 5xx -> ERROR (might succeed on retry).
+            status_code = exc.response.status_code
+            if 400 <= status_code < 500 and status_code not in (408, 429):
+                return OrderResult(
+                    account_id=account.account_id,
+                    status=OrderStatus.REJECTED,
+                    signal_id=signal.id,
+                    message=f"Alpaca order rejected (HTTP {status_code}): {exc.response.text}",
+                )
+            else:
+                return OrderResult(
+                    account_id=account.account_id,
+                    status=OrderStatus.ERROR,
+                    signal_id=signal.id,
+                    message=f"Alpaca order request failed (HTTP {status_code}): {exc}",
+                )
         except httpx.HTTPError as exc:
             return OrderResult(
                 account_id=account.account_id,

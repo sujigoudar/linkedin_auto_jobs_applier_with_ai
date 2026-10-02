@@ -183,12 +183,24 @@ class CCXTBroker(BrokerAdapter):
                 params=params,
             )
         except Exception as exc:  # noqa: BLE001 - surface any ccxt/network error as a failed order
-            return OrderResult(
-                account_id=account.account_id,
-                status=OrderStatus.ERROR,
-                signal_id=signal.id,
-                message=str(exc),
-            )
+            # Definite rejections (validation failures, insufficient funds) are ccxt's
+            # subclasses of InvalidOrder and InsufficientFunds. Ambiguous errors
+            # (network, rate limits, timeouts) are other exceptions.
+            exc_type_name = type(exc).__name__
+            if exc_type_name in ("InvalidOrder", "InsufficientFunds", "BadRequest", "AuthenticationError"):
+                return OrderResult(
+                    account_id=account.account_id,
+                    status=OrderStatus.REJECTED,
+                    signal_id=signal.id,
+                    message=f"ccxt order rejected ({exc_type_name}): {exc}",
+                )
+            else:
+                return OrderResult(
+                    account_id=account.account_id,
+                    status=OrderStatus.ERROR,
+                    signal_id=signal.id,
+                    message=f"ccxt order request failed ({exc_type_name}): {exc}",
+                )
 
         # A "market" order type is not a guarantee of a synchronous fill --
         # ccxt's unified order carries its own status ('open'/'closed'/

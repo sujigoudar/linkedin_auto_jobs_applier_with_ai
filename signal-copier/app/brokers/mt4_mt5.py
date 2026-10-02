@@ -51,6 +51,16 @@ from app.models import DestinationAccount, OrderResult, OrderStatus, Signal
 #: that varies by installed package version.
 _TRADE_RETCODE_DONE_PARTIAL = 10010
 
+#: Ambiguous/transient retcodes that should be classified as ERROR, not REJECTED.
+#: These indicate temporary issues (requote, timeout, connection failure) that
+#: might succeed on retry, not definite rejections.
+_TRADE_RETCODE_AMBIGUOUS = {
+    10004,  # TRADE_RETCODE_REQUOTE - re-quote of the price
+    10012,  # TRADE_RETCODE_TIMEOUT - operation timeout
+    10013,  # TRADE_RETCODE_INVALID_PRICE - invalid price
+    10031,  # TRADE_RETCODE_CONNECTION - connection failed
+}
+
 
 class MT5Broker(BrokerAdapter):
     name = "mt4_mt5"
@@ -168,12 +178,22 @@ class MT5Broker(BrokerAdapter):
         # account actually holds -- nothing downstream (lifecycle tracking,
         # protective stops) would ever learn about it.
         if result["retcode"] not in (self._mt5.TRADE_RETCODE_DONE, _TRADE_RETCODE_DONE_PARTIAL):
-            return OrderResult(
-                account_id=account.account_id,
-                status=OrderStatus.REJECTED,
-                signal_id=signal.id,
-                message=f"MT5 rejected order: retcode={result['retcode']} ({result['comment']})",
-            )
+            # Ambiguous retcodes (timeout, requote, connection) -> ERROR (might succeed on retry).
+            # Definite rejections -> REJECTED (can't fix by retrying).
+            if result["retcode"] in _TRADE_RETCODE_AMBIGUOUS:
+                return OrderResult(
+                    account_id=account.account_id,
+                    status=OrderStatus.ERROR,
+                    signal_id=signal.id,
+                    message=f"MT5 order failed (ambiguous): retcode={result['retcode']} ({result['comment']})",
+                )
+            else:
+                return OrderResult(
+                    account_id=account.account_id,
+                    status=OrderStatus.REJECTED,
+                    signal_id=signal.id,
+                    message=f"MT5 rejected order: retcode={result['retcode']} ({result['comment']})",
+                )
 
         message = "filled by MT5" if result["retcode"] == self._mt5.TRADE_RETCODE_DONE else "partially filled by MT5"
         return OrderResult(
