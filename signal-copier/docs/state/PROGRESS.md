@@ -1,7 +1,7 @@
 # Current progress snapshot
 
-As of `HEAD` after Track 63: comprehensive mutation testing for backtest/simulation
-modules on `agent-track63-backtest-utils-mutation` (2026-10-02). This is a
+As of `HEAD` after Track 66: comprehensive mutation testing for utility modules
+on `agent-track66-utils-mutation` (2026-10-02). This is a
 snapshot, not a roadmap — update it when the state it describes actually
 changes. This file was previously stale for an extended period (it referenced
 an old branch, `claude/signal-copier-redesign`, and alembic head `0015`, long
@@ -42,11 +42,12 @@ anything past Track 29 has landed since this snapshot was written.
 
 ## What's genuinely landed and working, as of HEAD
 
-- Alembic head is `0034`. Full `pytest -q` suite: **2206 passed, 0 failed**
-  (after Track 63's 36 new comprehensive tests for backtest simulator plus
-  Track 61's 19 mutation regression tests for broker adapters covering order
-  ID coercion, bracket/OTO selection, fill-status parsing, cancellation
-  verification, and position-defaulting across all 13 broker adapters).
+- Alembic head is `0034`. Full `pytest -q` suite: **2282 passed, 0 failed**
+  (after Track 66's 76 new mutation-regression tests for utility modules
+  covering app/collector_registry.py, app/errors.py, app/config.py, and
+  key patterns from app/main.py, plus Track 63's 36 comprehensive tests
+  for backtest simulator and Track 61's 19 mutation regression tests for
+  broker adapters).
 - `ruff check .` and the CI-scoped `mypy` command (file list in
   `.github/workflows/signal-copier-ci.yml`, 39 files) both clean against
   this HEAD.

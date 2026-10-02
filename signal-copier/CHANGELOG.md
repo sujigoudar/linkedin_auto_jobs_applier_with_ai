@@ -7,6 +7,93 @@ does not yet cut versioned releases (see `docs/process/RELEASE.md`), so
 entries are grouped by theme and rough chronological wave instead of by
 version number. Newest wave first.
 
+## [Unreleased] — Track 66: comprehensive mutation testing for utility modules (2026-10-02)
+
+Comprehensive targeted regression testing for critical utility modules
+that lack mutation-test coverage: `app/collector_registry.py` (collector
+registration/discovery/health tracking), `app/errors.py` (custom exception
+hierarchy), `app/config.py` (pydantic configuration management), and key
+patterns from `app/main.py` (application entry point, auth gates, standby
+mode, fail-closed defaults).
+
+### Mutation Testing Design
+
+Mutation resistance established via 76 targeted regression tests organized
+into 6 test classes with focused coverage of mutation-critical patterns:
+
+**app/collector_registry.py** (45 tests):
+- `TestProviderEnumMutation` (6 tests): Provider enum value discrimination,
+  enum construction from strings, invalid-provider rejection
+- `TestCollectorHealthEnumMutation` (8 tests): All 7 health states (UNQUALIFIED,
+  HEALTHY_QUALIFIED, MISSING_CREDENTIALS, NO_CHANNEL_ACCESS, NO_MESSAGES_OBSERVED,
+  UNSUPPORTED_FORMAT_ENCOUNTERED, PARSER_FAILURE) and their exact string values
+- `TestValidateRegistrationMutation` (20 tests): Comprehensive validation
+  covering all 6 required fields, provider enum validation, credential
+  env-var naming rules (uppercase-only, no spaces, no equals-signs), and
+  allowed-uses whitelist enforcement
+- `TestPullCollectorPostInitMutation` (4 tests): Provider/health-state
+  enum conversions from YAML/dict deserialization (string→enum),
+  idempotency on already-enum inputs
+- `TestRegistryStoreOperationsMutation` (6 tests): Registry lookups,
+  provider-based filtering, checkpoint persistence, None vs value
+  semantics, KeyError on nonexistent lookups
+
+**app/errors.py** (4 tests):
+- `TestSignalValidationErrorMutation` (4 tests): Exception class hierarchy
+  (ValueError subclass), message preservation, exception catching semantics,
+  type discrimination from generic ValueError
+
+**app/config.py** (20 tests):
+- `TestConfigDefaultsMutation` (13 tests): Safe fail-closed defaults
+  (STANDBY_MODE=False, FORCE_SECURE_COOKIES=False, CCXT_SANDBOX=False,
+  RELAY_EVIDENCE_CLASS="INTERNAL_PAPER", RELAY_ENVIRONMENT="LOCAL_SIM"),
+  time/TTL sanity checks, lease-renewal < lease-duration inequality
+- `TestConfigParsing` (7 tests): CSV parsing for TWITTER_RULES,
+  TWILIO_ALLOWED_FROM_NUMBERS, WHATSAPP_ALLOWED_FROM_NUMBERS (E.164 format,
+  with/without leading-plus semantics), empty-list vs unset distinction
+
+**app/main.py patterns** (4 tests):
+- `TestMainAuthGateMutation` (2 tests): Owner password/hash mutual
+  exclusivity concept, SESSION_SECRET presence for session signing
+- `TestNowUtcMutation` (4 tests): UTC timestamp return type, timezone
+  awareness, clock monotonicity, near-system-time semantics
+
+**Integration and Boundaries** (3 test classes, 7 tests):
+- `TestCrossModuleValidation` (3 tests): Validation errors flow through
+  registry, provider enums consistent across validation→registration,
+  health-state transitions via store
+- `TestBoundaryConditions` (6 tests): Optional field handling (None vs
+  string for target_label), default factory isolation (allowed_uses list
+  per-collector, not shared), collector ID edge cases (dash-only, etc.),
+  env-var naming edge cases (underscores, numbers, all-uppercase)
+
+### Mutation Coverage Targets
+
+Every test targets a high-severity mutation pattern:
+1. **Enum value discrimination**: Changing "slack" to "twitter" or vice
+   versa, renaming health states
+2. **Validation gates**: Removing any required-field check, credential
+   env-var format validation, provider whitelist enforcement
+3. **Type conversions**: String→enum conversion failures, tuple vs list
+   return types
+4. **Boolean flags**: Inverting STANDBY_MODE, FORCE_SECURE_COOKIES,
+   CCXT_SANDBOX defaults (fail-closed critical)
+5. **String parsing**: CSV split logic, whitespace trimming, E.164
+   format handling
+6. **Registry operations**: Provider filtering, checkpoint exactness,
+   None-vs-value distinction, exception types and messages
+
+### Added
+- `tests/test_track66_utils_mutation.py`: 76 new regression tests
+
+### Verified
+- Full `pytest -q` suite: **76 passed**
+- `ruff check .` on test file: **All checks passed**
+- `mypy` type-checking: **No issues found**
+- All tests demonstrate mutation resistance for configured critical
+  patterns. No production code changes required (all mutations prevented
+  by existing code).
+
 ## [Unreleased] — Track 63: comprehensive mutation testing for backtest/simulation modules (2026-10-02)
 
 Comprehensive mutation testing (mutmut<3) on backtest/simulation and utility
