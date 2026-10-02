@@ -1,7 +1,7 @@
 """Add canonical identity tables for WC-02 (PhysicalAccount, AccountBinding, CapabilityProfile).
 
-Revision ID: 0045
-Revises: 0044
+Revision ID: 0047
+Revises: 0046
 Create Date: 2026-10-02 00:00:00.000000
 
 """
@@ -10,8 +10,8 @@ from __future__ import annotations
 import sqlalchemy as sa
 from alembic import op
 
-revision = "0045"
-down_revision = "0044"
+revision = "0047"
+down_revision = "0046"
 branch_labels = None
 depends_on = None
 
