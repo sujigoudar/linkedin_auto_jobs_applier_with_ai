@@ -4776,6 +4776,7 @@ class SignalStore:
                           allow_short, sizing_mode, risk_fraction
                           management_recipe, qualification_level, exclusive_writer_qualified, allow_short
                           daily_loss_limit_percent, min_equity_threshold, currency, max_gross_leverage, allow_short
+                          management_recipe, qualification_level, exclusive_writer_qualified, max_gross_leverage
                    FROM config_accounts ORDER BY account_id"""
             ).fetchall()
         return [
@@ -4814,6 +4815,7 @@ class SignalStore:
                 "currency": r[14],
                 "max_gross_leverage": r[15],
                 "allow_short": bool(r[16]),
+                "max_gross_leverage": r[12],
             }
             for r in rows
         ]
@@ -4850,6 +4852,7 @@ class SignalStore:
         currency: str | None = None,
         max_gross_leverage: float | None = None,
         allow_short: bool = False,
+        max_gross_leverage: float | None = None,
     ) -> None:
         with self._connect() as conn:
             conn.execute(
@@ -4869,6 +4872,8 @@ class SignalStore:
                     exclusive_writer_qualified, daily_loss_limit_percent, min_equity_threshold, currency,
                     max_gross_leverage, allow_short)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    exclusive_writer_qualified, max_gross_leverage)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT (account_id) DO UPDATE SET
                      broker = excluded.broker, multiplier = excluded.multiplier,
                      fixed_quantity = excluded.fixed_quantity, symbol_map = excluded.symbol_map,
@@ -4891,6 +4896,7 @@ class SignalStore:
                      sizing_mode = excluded.sizing_mode,
                      risk_fraction = excluded.risk_fraction""",
                      allow_short = excluded.allow_short""",
+                     max_gross_leverage = excluded.max_gross_leverage""",
                 (
                     account_id,
                     broker,
@@ -4922,6 +4928,7 @@ class SignalStore:
                     sizing_mode,
                     risk_fraction,
                     int(allow_short),
+                    max_gross_leverage,
                 ),
             )
             # Note: sizing_mode and risk_fraction are forward-compatible fields accepted

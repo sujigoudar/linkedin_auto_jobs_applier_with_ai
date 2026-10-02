@@ -67,12 +67,17 @@ class PaperBroker(BrokerAdapter):
         #: `_apply_fill_to_cash`, at the exact same call sites that already
         #: adjust `self.positions` for a real fill.
         self._cash: dict[str, float] = {}
+<<<<<<< HEAD
         #: account_id -> next order ID sequence number (WP-38, G-C-24).
         #: Persisted via the DestinationAccount.paper_order_id_sequence field
         #: in the database so order IDs remain unique across restarts.
         #: The engine initializes this from the store at startup and updates
         #: it after each fill.
         self._order_id_sequence: dict[str, int] = {}
+=======
+        #: account_id -> symbol -> last known price (used to compute equity)
+        self._last_prices: dict[str, dict[str, float]] = {}
+>>>>>>> c659a00 (WP-32b: Enforce max_gross_leverage cap and implement paper broker margin/equity)
         #: Read-only exposure of `fee_per_fill` -- see class docstring.
         self.fee_per_fill = self.FEE_PER_FILL
 
@@ -108,9 +113,34 @@ class PaperBroker(BrokerAdapter):
         price = signal.price
 
         if signal.side.value == "buy":
+            # BUY: check if we have enough cash
+            notional = quantity * (price or 0.0)
+            cash = self._cash_for(account.account_id)
+            if notional > cash:
+                # Return a rejection result instead of allowing negative cash
+                return OrderResult(
+                    account_id=account.account_id,
+                    status=OrderStatus.REJECTED,
+                    signal_id=signal.id,
+                    message=f"insufficient paper cash: required {notional:.2f}, available {cash:.2f}",
+                )
             book[symbol] = current + quantity
             self._apply_fill_to_cash(account.account_id, Side.BUY, quantity, price or 0.0)
         elif signal.side.value == "sell":
+            # SELL: check if it's a short (selling more than owned)
+            if quantity > current:
+                # Short: requires margin equal to notional
+                short_quantity = quantity - current
+                short_notional = short_quantity * (price or 0.0)
+                cash = self._cash_for(account.account_id)
+                if short_notional > cash:
+                    # Insufficient cash for margin
+                    return OrderResult(
+                        account_id=account.account_id,
+                        status=OrderStatus.REJECTED,
+                        signal_id=signal.id,
+                        message=f"insufficient cash for short margin: required {short_notional:.2f}, available {cash:.2f}",
+                    )
             book[symbol] = current - quantity
             self._apply_fill_to_cash(account.account_id, Side.SELL, quantity, price or 0.0)
         else:  # close
@@ -125,6 +155,7 @@ class PaperBroker(BrokerAdapter):
             # a real path this cash tracking needs to cover.
             book[symbol] = 0.0
 
+<<<<<<< HEAD
 <<<<<<< HEAD
         # WP-38 (G-C-24): Use persistent per-account sequence for order IDs.
         # The engine initializes _order_id_sequence from the database and
@@ -161,6 +192,12 @@ class PaperBroker(BrokerAdapter):
                 self._target_exit_orders[tp_order_id] = tp_order_id
                 child_order_ids["take_profit"] = tp_order_id
 >>>>>>> 21bf5fe (WP-18 (D-01, C-07): Track bracket child legs as reconcilable orders)
+=======
+        # Track the last price for this symbol (used for equity calculation)
+        if price:
+            prices_for_account = self._last_prices.setdefault(account.account_id, {})
+            prices_for_account[symbol] = price
+>>>>>>> c659a00 (WP-32b: Enforce max_gross_leverage cap and implement paper broker margin/equity)
 
         result = OrderResult(
             account_id=account.account_id,
@@ -168,7 +205,7 @@ class PaperBroker(BrokerAdapter):
             signal_id=signal.id,
             broker_order_id=order_id,
             filled_quantity=quantity,
-            filled_price=price,
+            filled_price=price or 0.0,
             message="filled by paper broker",
             fee=self.fee_per_fill,
             fee_currency="USD",  # Paper broker uses USD convention
@@ -190,14 +227,37 @@ class PaperBroker(BrokerAdapter):
         see this class's own docstring for why that's honest here
         specifically (a fully-controlled, internal-to-this-process
         broker) where it would be fabrication for a real external broker
-        adapter. `equity`/`maintenance_margin` stay `None` (never
-        fabricated): this broker tracks no live mark for open positions
-        (no continuous price feed, only fill prices and whatever
-        `simulate_price` is explicitly called with), so there is no real
-        current position value to add to cash for an `equity` figure, and
-        it models no margin concept at all."""
+        adapter.
+
+        Simulator rules:
+        - equity = cash + Σ (position × last simulated or last fill price)
+        - maintenance_margin = 0.5 × |short notional| (0.5 = 50% short margin requirement)
+        """
         cash = self._cash_for(account.account_id)
-        return AccountBalance(account_id=account.account_id, cash=cash, buying_power=cash)
+        positions = self.positions.get(account.account_id, {})
+        prices = self._last_prices.get(account.account_id, {})
+
+        # Compute equity: cash + market value of positions
+        position_value = 0.0
+        short_notional = 0.0
+        for symbol, quantity in positions.items():
+            if quantity != 0.0:
+                price = prices.get(symbol, 0.0)
+                position_value += quantity * price
+                # Track short notional for maintenance margin
+                if quantity < 0:
+                    short_notional += abs(quantity) * price
+
+        equity = cash + position_value
+        maintenance_margin = 0.5 * short_notional if short_notional > 0 else 0.0
+
+        return AccountBalance(
+            account_id=account.account_id,
+            cash=cash,
+            equity=equity,
+            buying_power=cash,
+            maintenance_margin=maintenance_margin if maintenance_margin > 0 else 0.0,
+        )
 
     async def place_protective_stop(
         self, account: DestinationAccount, symbol: str, quantity: float, stop_price: float, exit_side: Side
@@ -317,6 +377,10 @@ class PaperBroker(BrokerAdapter):
             # position it protects) -- exactly the real BUY/SELL cash
             # effect this fill has, same call as `place_order`'s.
             self._apply_fill_to_cash(stop.account_id, stop.side, stop.quantity, price)
+
+            # Track the simulated price for equity calculations
+            prices_for_account = self._last_prices.setdefault(stop.account_id, {})
+            prices_for_account[symbol] = price
 
             result = OrderResult(
                 account_id=stop.account_id,

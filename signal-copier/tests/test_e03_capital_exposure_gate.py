@@ -497,18 +497,41 @@ async def test_risk_basis_rejects_when_no_stop_loss_on_signal(tmp_path):
 
 @pytest.mark.asyncio
 async def test_risk_basis_rejects_when_broker_cannot_report_equity(tmp_path):
-    """PaperBroker's real get_account_balance always reports equity=None --
+    """When a broker reports balance but no equity figure (equity=None),
     a genuine 'broker reachable but this figure unavailable' case, not a
     stub. Must fail closed, not admit with an unverified risk figure.
     managed_lifecycle=True here purely so a real stop_loss is accepted at
     all (a plain account with a non-bracket-capable broker refuses any
     stop_loss outright, unrelated to this gate -- see EXE-08)."""
+    from app.brokers.base import BrokerAdapter
+
+    class NoEquityBroker(BrokerAdapter):
+        """Mock broker that reports balance but no equity."""
+        @property
+        def has_balance_capability(self) -> bool:
+            return True
+
+        async def place_order(self, account, signal, quantity):
+            return None
+
+        async def place_protective_stop(self, account, symbol, quantity, stop_price, exit_side):
+            return None
+
+        async def get_account_balance(self, account):
+            # Reports cash/buying_power but no equity
+            return AccountBalance(account_id=account.account_id, cash=100_000.0, buying_power=100_000.0, equity=None)
+
     store = SignalStore(tmp_path / "test.db")
-    broker = PaperBroker()
+    broker = NoEquityBroker()
     account = DestinationAccount(
-        account_id="acct1", broker="paper", managed_lifecycle=True, risk_percent_of_equity=0.02
+        account_id="acct1", broker="no_equity", managed_lifecycle=True, risk_percent_of_equity=0.02
     )
-    engine = _engine(store, account, broker)
+    engine = SignalCopierEngine(
+        routing=RoutingConfig(rules=[RoutingRule(source=SOURCE, destinations=["acct1"])], accounts={"acct1": account}),
+        brokers={"no_equity": broker},
+        store=store,
+        lifecycle_manager=PositionLifecycleManager(brokers={"no_equity": broker}, store=store)
+    )
 
     signal = Signal(source=SOURCE, symbol=SYMBOL, side=Side.BUY, quantity=10.0, price=100.0, stop_loss=90.0)
     results = await engine.handle_signal(signal)

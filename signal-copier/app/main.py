@@ -2748,6 +2748,13 @@ class AccountRequest(BaseModel):
         "max_gross_leverage", "daily_loss_limit_percent", "min_equity_threshold", "risk_fraction", mode="before"
         "daily_loss_limit_percent", "min_equity_threshold", "max_gross_leverage", "risk_fraction",
         mode="before"
+    #: B-11: maximum gross leverage ceiling (e.g., 1.0 = no leverage,
+    #: 1.25 = 25% leverage allowed). When set, exposure is refused if it
+    #: would exceed max_gross_leverage × (equity − maintenance_margin).
+    max_gross_leverage: float | None = Field(default=None, gt=0)
+
+    _reject_bool_multiplier = field_validator(
+        "multiplier", "fixed_quantity", "max_notional_exposure", "risk_percent_of_equity", "max_gross_leverage", mode="before"
     )(_reject_bool_scaling_value)
 
     @field_validator("management_recipe")
@@ -2830,6 +2837,13 @@ class AccountPatchRequest(BaseModel):
         "max_gross_leverage", "daily_loss_limit_percent", "min_equity_threshold", "risk_fraction", mode="before"
         "daily_loss_limit_percent", "min_equity_threshold", "max_gross_leverage", "risk_fraction",
         mode="before"
+    #: B-11: maximum gross leverage ceiling (e.g., 1.0 = no leverage,
+    #: 1.25 = 25% leverage allowed). When set, exposure is refused if it
+    #: would exceed max_gross_leverage × (equity − maintenance_margin).
+    max_gross_leverage: float | None = Field(default=None, gt=0)
+
+    _reject_bool_multiplier = field_validator(
+        "multiplier", "fixed_quantity", "max_notional_exposure", "risk_percent_of_equity", "max_gross_leverage", mode="before"
     )(_reject_bool_scaling_value)
 
     @field_validator("management_recipe")
@@ -2912,6 +2926,7 @@ async def create_or_update_account(request: AccountRequest, _owner: dict = Depen
         currency=request.currency,
         max_gross_leverage=request.max_gross_leverage,
         allow_short=request.allow_short,
+        max_gross_leverage=request.max_gross_leverage,
     )
     _reload_routing_config()
     return {"account_id": request.account_id, "status": "saved"}
@@ -2984,6 +2999,8 @@ async def patch_account(account_id: str, request: AccountPatchRequest, _owner: d
         merged["sizing_mode"] = request.sizing_mode
     if request.risk_fraction is not None:
         merged["risk_fraction"] = request.risk_fraction
+    if request.max_gross_leverage is not None:
+        merged["max_gross_leverage"] = request.max_gross_leverage
 
     # Apply exposure guards: broker change or managed_lifecycle change
     if merged["broker"] != stored["broker"] and _account_has_exposure(account_id):
@@ -3031,6 +3048,7 @@ async def patch_account(account_id: str, request: AccountPatchRequest, _owner: d
         currency=merged.get("currency"),
         max_gross_leverage=merged.get("max_gross_leverage"),
         allow_short=merged.get("allow_short", False),
+        max_gross_leverage=merged.get("max_gross_leverage"),
     )
     _reload_routing_config()
     return {"account_id": account_id, "status": "patched"}

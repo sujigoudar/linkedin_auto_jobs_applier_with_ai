@@ -2400,6 +2400,7 @@ class SignalCopierEngine:
             or account.risk_percent_of_equity is not None
             or self.max_owner_notional_exposure is not None
             or strategy_ceiling is not None
+            or account.max_gross_leverage is not None
         )
         if not has_gate:
             return True, 0.0, None
@@ -2464,6 +2465,40 @@ class SignalCopierEngine:
                             f"({account.max_notional_exposure}) would be exceeded by this entry "
                             f"(confirmed={exposure.notional:.2f}, pending={pending:.2f}, "
                             f"requested={notional:.2f}) -- refusing",
+                        )
+
+                if account.max_gross_leverage is not None:
+                    # B-11: enforce leverage cap
+                    broker = self.brokers.get(account.broker)
+                    if broker is None:
+                        return False, notional, self._reject(
+                            account,
+                            order_signal,
+                            f"account '{account.account_id}' broker '{account.broker}' not found",
+                        )
+                    balance = await broker.get_account_balance(account)
+                    if balance is None or balance.equity is None:
+                        return False, notional, self._reject(
+                            account,
+                            order_signal,
+                            f"max_gross_leverage is set but the adapter reports no equity for "
+                            f"account '{account.account_id}' -- refusing",
+                        )
+
+                    maint = balance.maintenance_margin or 0.0
+                    pending = self.capital_allocator.pending_reservation(account.account_id)
+                    max_allowed_notional = account.max_gross_leverage * (balance.equity - maint)
+                    total_notional = exposure.notional + pending + notional
+
+                    if total_notional > max_allowed_notional:
+                        return False, notional, self._reject(
+                            account,
+                            order_signal,
+                            f"account '{account.account_id}' gross leverage ceiling would be exceeded by this entry: "
+                            f"confirmed={exposure.notional:.2f}, pending={pending:.2f}, requested={notional:.2f}, "
+                            f"total={total_notional:.2f} exceeds max allowed={max_allowed_notional:.2f} "
+                            f"(leverage={account.max_gross_leverage}, equity={balance.equity:.2f}, "
+                            f"maintenance_margin={maint:.2f}) -- refusing",
                         )
 
                 if account.risk_percent_of_equity is not None:
