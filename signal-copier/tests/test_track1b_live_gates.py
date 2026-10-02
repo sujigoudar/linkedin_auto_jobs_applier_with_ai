@@ -52,6 +52,7 @@ class _FillsEverythingBroker(BrokerAdapter):
         self.fills: list[OrderResult] = []
 
     async def place_order(self, signal, account, quantity, symbol) -> OrderResult:
+        from datetime import datetime, timezone
         result = OrderResult(
             account_id=account.account_id,
             status=OrderStatus.FILLED,
@@ -60,6 +61,7 @@ class _FillsEverythingBroker(BrokerAdapter):
             filled_quantity=quantity,
             filled_price=signal.price or 0.0,
             message="filled by fake real broker",
+            executed_at=datetime.now(timezone.utc),
         )
         self.fills.append(result)
         return result
@@ -121,7 +123,9 @@ async def test_live_entry_rejected_when_route_has_no_qualification_record(tmp_pa
 async def test_live_entry_admitted_once_release_approved_is_recorded_for_the_exact_route(tmp_path):
     store = SignalStore(tmp_path / "test.db")
     broker = _FillsEverythingBroker()
-    account = DestinationAccount(account_id="acct1", broker="alpaca")
+    # WP-32: account needs capital ceiling since alpaca adapter is not fully
+    # initialized in test context, so buying power gate needs a fallback
+    account = DestinationAccount(account_id="acct1", broker="alpaca", max_notional_exposure=100_000.0)
     engine = _engine(store, account, broker)
 
     _record_release_approved(store, adapter_type="alpaca", route_key="acct1", asset_class="equity")
