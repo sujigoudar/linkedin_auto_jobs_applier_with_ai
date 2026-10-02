@@ -21,7 +21,6 @@ never a library-test comparison. Pattern mirrors Track 59/61 approach.
 from __future__ import annotations
 
 from datetime import datetime, timezone, timedelta
-from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -52,7 +51,7 @@ from app.certification_evidence import (
 )
 from app.signal_correlation import fingerprint_key
 from app.db import SignalStore
-from app.models import AssetClass, Signal, Side, DestinationAccount, OrderResult, OrderStatus
+from app.models import Signal, Side, OrderResult, OrderStatus
 
 
 @pytest.fixture
@@ -348,13 +347,13 @@ class TestConnectionCheckMutations:
 
     def test_connection_pass_requires_connected_state_and_positive_health(self):
         """Mutation: missing health_score > 0 check (only state checked)."""
-        store = MagicMock()
-        store.get_source.return_value = {"connection_id": "conn1"}
-        store.get_connection.return_value = {
+        mock_store = MagicMock()
+        mock_store.get_source.return_value = {"connection_id": "conn1"}
+        mock_store.get_connection.return_value = {
             "connection_state": "connected",
             "health_score": 0.85,
         }
-        result = connection_check(store, source_id="src1")
+        result = connection_check(mock_store, source_id="src1")
         assert result.status == CheckStatus.PASS
         assert result.evidence["health_score"] == 0.85
 
@@ -443,7 +442,7 @@ class TestHistoricalRetrievalCheckMutations:
             status="onboarding",
             certification_state="uncertified",
         )
-        source = store.register_source(
+        store.register_source(
             source_id="src1",
             provider_id=provider_id,
             platform="telegram",
@@ -571,8 +570,8 @@ class TestDuplicateHandlingCheckMutations:
         # Add signals and record correlation
         sig1 = Signal(source=provider_id, symbol="BTC", side=Side.BUY)
         sig2 = Signal(source=provider_id, symbol="BTC", side=Side.BUY)
-        sig1_id = store.save_signal(sig1)
-        sig2_id = store.save_signal(sig2)
+        store.save_signal(sig1)
+        store.save_signal(sig2)
         now = datetime.now(timezone.utc)
         store.record_signal_correlation_evidence(
             canonical_signal_id=sig1.id,
@@ -713,7 +712,7 @@ class TestPaperExecutionCheckMutations:
             status="onboarding",
             certification_state="uncertified",
         )
-        source = store.register_source(
+        store.register_source(
             source_id="src1",
             provider_id=provider_id,
             platform="telegram",
