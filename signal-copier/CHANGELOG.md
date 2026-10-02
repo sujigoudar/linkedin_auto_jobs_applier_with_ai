@@ -7,6 +7,7 @@ does not yet cut versioned releases (see `docs/process/RELEASE.md`), so
 entries are grouped by theme and rough chronological wave instead of by
 version number. Newest wave first.
 
+<<<<<<< HEAD
 ## [Unreleased] — Track 60: mutation-testing baseline for app/sources/base.py and app/sources/webhook.py (2026-10-02)
 
 Targeted mutation testing baseline pass on the signal-ingestion boundary
@@ -88,6 +89,54 @@ required)
 No production code was changed; every real bug was closed with a new
 regression test. Full `pytest -q` suite: 2278 passed, 0 failed (after
 adding 23 new regression tests).
+
+## [Unreleased] — Track 52: mutation-testing pass for economics/pricing modules (2026-10-01)
+
+Per the ongoing "mutation covering needs to cover every module" directive,
+widened `pyproject.toml`'s `[tool.mutmut]` scope to also cover the realized/
+unrealized P&L computation and position-pricing slice: `app/economics.py`
+(the authoritative replay-based realized P&L, cost basis, and win-rate
+metrics per its own "two win rates, not one" distinction), `app/account_
+economics_v2.py` (the additive extended-economics view that deliberately
+never recomputes economics.py's own numbers a second way), and `app/pricing.py`
+(the live PriceMonitor background loop that feeds prices to the lifecycle
+manager). These three modules directly compute financial figures shown to
+the account owner, so a silently-wrong mutation here is a silently-wrong
+number the owner is shown and trusts -- the highest financial-risk category.
+`only_mutate` now includes all three files; `pytest_add_cli_args_test_selection`
+adds their own test files plus the endpoint/integration tests that use them.
+
+Mutant generation and initial mutation run completed successfully (66 survivors
+across the three modules, ~200 untested/skipped lines in per-module docstrings
+and configuration). Per the prioritized triage approach established in prior
+tracks, focused on the surviving mutations most likely to yield silently-wrong
+financial numbers: win-rate division operators (/ vs *), episode-loss formula
+operator (- vs +), loop control mutations (continue vs break), and condition
+flips (== vs !=) in slippage calculation. Identified and closed 8 genuinely
+meaningful gaps via 10 new targeted tests in `tests/test_track52_mutation_
+economics_pricing.py`.
+
+### Added
+- `tests/test_track52_mutation_economics_pricing.py`: 10 new tests
+  specifically targeting mutation survivors in the economics/pricing modules.
+  Tests verify: (1) win-rate calculations use division, not multiplication
+  (tests with non-trivial fractional rates like 1/3, preventing / vs * from
+  being masked by edge cases like 1/1 or 0/n); (2) `losing_episodes` formula
+  correctly subtracts both winning and breakeven episodes (- vs + in the
+  accumulation); (3) the deprecated `completed_trade_win_rate` alias is
+  actually a @property (not a bare function); (4) slippage calculation with
+  mixed valid/invalid rows processes all valid rows (continue, not break);
+  (5) slippage calculation correctly handles both buy and sell sides with
+  asymmetric sign conventions. All 10 tests pass against current code.
+
+### Fixed
+- `app/account_economics_v2.py`, line 115: corrected SELL-side slippage
+  calculation from `reference + filled_price` to `reference - filled_price`.
+  This was a real implementation bug: the sign convention for SELL slippage
+  (positive = worse = filled lower than reference) was inverted, producing
+  nonsensical slippage statistics. The mutation testing revealed that this
+  code path was under-tested; the bug is fixed and covered by the new
+  `test_slippage_buy_vs_sell_side_asymmetry` and related tests.
 
 ## [Unreleased] — Track 49: widen mutation-testing scope to app/qualification.py, app/export_events.py (2026-10-01)
 
