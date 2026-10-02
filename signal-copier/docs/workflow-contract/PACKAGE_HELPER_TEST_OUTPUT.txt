@@ -1,0 +1,20 @@
+test_bool_money_invalid (test_package_helpers.PackageHelperTests.test_bool_money_invalid) ... ok
+test_catalog_has_292_not_run_cases (test_package_helpers.PackageHelperTests.test_catalog_has_292_not_run_cases) ... ok
+test_distributed_evidence_cannot_pass (test_package_helpers.PackageHelperTests.test_distributed_evidence_cannot_pass) ... ok
+test_duplicate_binding_does_not_add_account (test_package_helpers.PackageHelperTests.test_duplicate_binding_does_not_add_account) ... ok
+test_every_size_obeys_all_three_restricted_caps (test_package_helpers.PackageHelperTests.test_every_size_obeys_all_three_restricted_caps) ... ok
+test_exact_suite_counts (test_package_helpers.PackageHelperTests.test_exact_suite_counts) ... ok
+test_kelly_example_and_cap (test_package_helpers.PackageHelperTests.test_kelly_example_and_cap) ... ok
+test_linear_reference_example (test_package_helpers.PackageHelperTests.test_linear_reference_example) ... ok
+test_manifest_files_and_count (test_package_helpers.PackageHelperTests.test_manifest_files_and_count) ... ok
+test_missing_actual_fields_fail (test_package_helpers.PackageHelperTests.test_missing_actual_fields_fail) ... ok
+test_pyramid_distinct_risk_measures (test_package_helpers.PackageHelperTests.test_pyramid_distinct_risk_measures) ... ok
+test_risk_cap_reduction_cannot_increase_quantity (test_package_helpers.PackageHelperTests.test_risk_cap_reduction_cannot_increase_quantity) ... ok
+test_single_destination_all_admitted_cases (test_package_helpers.PackageHelperTests.test_single_destination_all_admitted_cases) ... ok
+test_unique_generated_ids (test_package_helpers.PackageHelperTests.test_unique_generated_ids) ... ok
+test_unknown_effect_blocks_entry (test_package_helpers.PackageHelperTests.test_unknown_effect_blocks_entry) ... ok
+
+----------------------------------------------------------------------
+Ran 15 tests in 0.153s
+
+OK
