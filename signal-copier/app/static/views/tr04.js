@@ -553,6 +553,7 @@
       orderResultCell(ordersForSignal),
       interpretSignal(s),
       rejectionReasonCell(ordersForSignal),
+      `<a href="#/trade/signals/${encodeURIComponent(s.id)}" class="badge">Decision</a>`,
     ];
   }
 
@@ -712,6 +713,7 @@
               "Order result",
               "Interpreted as",
               "Rejection reason",
+              "Decision",
             ],
             rows,
             "No authorized signals have been received."

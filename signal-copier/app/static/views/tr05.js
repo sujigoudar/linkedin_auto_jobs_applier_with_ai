@@ -64,7 +64,10 @@
   }
 
   async function load(ctx) {
-    const eventId = ctx.params.event_id;
+    // Handle both :event_id (evidence view) and :id (decision traces view)
+    const eventId = ctx.params.event_id || ctx.params.id;
+    const isDecisionView = !!ctx.params.id && !ctx.params.event_id;
+
     const els = {
       original: ctx.container.querySelector("#tr05-p01 .tr-panel-body"),
       parsed: ctx.container.querySelector("#tr05-p02 .tr-panel-body"),
@@ -96,6 +99,82 @@
           nextRoute: "/trade/signals",
           nextLabel: "Incoming signal stream (TR-04)",
         });
+      }
+      return;
+    }
+
+    // --- For decision view, fetch decision data and render decision traces ---
+    if (isDecisionView) {
+      const decisionRes = await ctx.fetchJSON(`/signals/${encodeURIComponent(eventId)}/decision`);
+      if (decisionRes.ok && decisionRes.data) {
+        const decision = decisionRes.data;
+
+        // Decision traces table
+        const traceRows = (decision.traces || []).map(t => [
+          t.candidate_rank.toString(),
+          escapeHtml(t.physical_account_id),
+          t.feasible ? "✓" : "✗",
+          escapeHtml(t.reason),
+          t.selected ? '<span class="badge" style="background:#4caf50;">selected</span>' : "—",
+        ]);
+        StateMatrix.render(els.original, {
+          state: "ready",
+          html: table(
+            ["Rank", "Account", "Feasible", "Reason", "Selected"],
+            traceRows,
+            "No candidates evaluated for this signal."
+          ),
+        });
+
+        // Reservation card
+        const reservationHtml = decision.reservation
+          ? `<div class="econ-stats">
+               <div><span class="muted">State</span><br><span class="mono">${escapeHtml(decision.reservation.state)}</span></div>
+               <div><span class="muted">Cash needed</span><br><span class="num">${fmtCents(decision.reservation.needed_cash_cents)}</span></div>
+               <div><span class="muted">Margin needed</span><br><span class="num">${fmtCents(decision.reservation.needed_margin_cents)}</span></div>
+               <div><span class="muted">Notional</span><br><span class="num">${fmtCents(decision.reservation.needed_notional_cents)}</span></div>
+               <div><span class="muted">Planned risk</span><br><span class="num">${fmtCents(decision.reservation.needed_planned_risk_cents)}</span></div>
+             </div>`
+          : '<p class="section-note">No reservation recorded for this signal.</p>';
+        StateMatrix.render(els.parsed, {
+          state: "ready",
+          html: reservationHtml,
+        });
+
+        // Intent/outbox card
+        const intentHtml = decision.intent
+          ? `<div class="econ-stats">
+               <div><span class="muted">Intent ID</span><br><span class="mono" style="font-size:0.85em;">${escapeHtml(decision.intent.intent_id.substring(0, 8))}</span></div>
+               ${decision.outbox ? `<div><span class="muted">Outbox state</span><br><span class="mono">${escapeHtml(decision.outbox.state)}</span></div>
+               <div><span class="muted">Claimed by</span><br><span class="mono">${escapeHtml(decision.outbox.claimed_by || "(none)")}</span></div>
+               <div><span class="muted">Response at</span><br><span class="mono" style="font-size:0.85em;">${escapeHtml(decision.outbox.response_recorded_at || "(none)")}</span></div>` : ''}
+             </div>`
+          : '<p class="section-note">No intent recorded for this signal.</p>';
+        StateMatrix.render(els.instrument, {
+          state: "ready",
+          html: intentHtml,
+        });
+
+        // Protection card
+        const protectionHtml = decision.protection
+          ? `<div class="econ-stats">
+               <div><span class="muted">Protection state</span><br><span class="mono">${escapeHtml(decision.protection.state)}</span></div>
+               ${decision.protection.reason ? `<div><span class="muted">Reason</span><br><span>${escapeHtml(decision.protection.reason)}</span></div>` : ''}
+             </div>`
+          : '<p class="section-note">No protection tracked.</p>';
+        StateMatrix.render(els.plan, {
+          state: "ready",
+          html: protectionHtml,
+        });
+
+        // Clear remaining panels
+        StateMatrix.render(els.routing, { state: "empty", emptyMessage: "Not shown in decision view." });
+        StateMatrix.render(els.execution, { state: "empty", emptyMessage: "Not shown in decision view." });
+        StateMatrix.render(els.actions, { state: "empty", emptyMessage: "Not shown in decision view." });
+      } else {
+        for (const el of Object.values(els)) {
+          StateMatrix.render(el, { state: "error", message: "Could not load decision data." });
+        }
       }
       return;
     }
@@ -348,15 +427,17 @@
 
   window.Views = window.Views || {};
   window.Views.tr05 = {
-    title: "Signal evidence and plan preview",
+    title: "Signal detail",
     breadcrumb: "Trade / Signals / Detail",
     scope: "private_owner",
     origin: "private_execution",
     async render(ctx) {
       ctx.container.innerHTML = shell();
       await load(ctx);
-      ctx.registerPoll(`tr05:${ctx.params.event_id}`, 10000, () => load(ctx));
+      const signalId = ctx.params.event_id || ctx.params.id;
+      ctx.registerPoll(`tr05:${signalId}`, 10000, () => load(ctx));
     },
   };
   Router.register("/trade/signals/:event_id", "tr05");
+  Router.register("/trade/signals/:id", "tr05");
 })();

@@ -26,6 +26,7 @@
       <section class="tr-panel" id="tr20-halts"><h2>Risk halts</h2><div class="tr-panel-body"></div></section>
       <section class="tr-panel" id="tr20-commands"><h2>Unresolved commands</h2><div class="tr-panel-body"></div></section>
       <section class="tr-panel" id="tr20-intents"><h2>Allocation intents & budgets</h2><div class="tr-panel-body"></div></section>
+      <section class="tr-panel" id="tr20-reservations-intents"><h2>Reservations & intents</h2><div class="tr-panel-body"></div></section>
     `;
   }
 
@@ -215,15 +216,79 @@
     }
   }
 
+  async function loadReservationsIntents(ctx) {
+    const el = ctx.container.querySelector("#tr20-reservations-intents .tr-panel-body");
+    StateMatrix.render(el, { state: "loading" });
+
+    try {
+      const [reservationRes, intentRes] = await Promise.all([
+        ctx.fetchJSON("/operations/reservation-health").catch(() => null),
+        ctx.fetchJSON("/operations/intent-health").catch(() => null),
+      ]);
+
+      const reservationHealth = reservationRes && reservationRes.ok ? reservationRes.data : null;
+      const intentHealth = intentRes && intentRes.ok ? intentRes.data : null;
+
+      if (!reservationHealth && !intentHealth) {
+        StateMatrix.render(el, { state: "error", errorMessage: "Could not load reservation or intent health." });
+        return { reservations: 0, intents: 0 };
+      }
+
+      const staleUnknownHeld = (reservationHealth && reservationHealth.stale_unknown_held) || 0;
+      const dispatchingWithoutResponse = (intentHealth && intentHealth.dispatching_without_response) || 0;
+      const totalHeld = (reservationHealth && reservationHealth.total_held) || 0;
+      const totalDispatched = (intentHealth && intentHealth.total_dispatched) || 0;
+
+      const html = `
+        <div class="econ-stats">
+          <div>
+            <span class="muted">Budget reservations</span><br>
+            <span class="badge" style="background:${staleUnknownHeld > 0 ? '#f44336' : '#4caf50'};">${staleUnknownHeld > 0 ? 'DEGRADED' : 'CURRENT'}</span>
+          </div>
+          <div>
+            <span class="muted">Held</span><br>
+            <span class="num">${totalHeld}</span>
+          </div>
+          <div>
+            <span class="muted">Stale unknown</span><br>
+            <span class="num" style="color:${staleUnknownHeld > 0 ? '#f44336' : 'inherit'};">${staleUnknownHeld}</span>
+          </div>
+        </div>
+        <div class="econ-stats">
+          <div>
+            <span class="muted">Execution intents</span><br>
+            <span class="badge" style="background:${dispatchingWithoutResponse > 0 ? '#f44336' : '#4caf50'};">${dispatchingWithoutResponse > 0 ? 'DEGRADED' : 'CURRENT'}</span>
+          </div>
+          <div>
+            <span class="muted">Dispatched</span><br>
+            <span class="num">${totalDispatched}</span>
+          </div>
+          <div>
+            <span class="muted">Without response</span><br>
+            <span class="num" style="color:${dispatchingWithoutResponse > 0 ? '#f44336' : 'inherit'};">${dispatchingWithoutResponse}</span>
+          </div>
+        </div>
+      `;
+
+      el.innerHTML = html;
+      StateMatrix.render(el, { state: "ready" });
+      return { reservations: staleUnknownHeld, intents: dispatchingWithoutResponse };
+    } catch (err) {
+      StateMatrix.render(el, { state: "error", errorMessage: err.message });
+      return { reservations: 0, intents: 0 };
+    }
+  }
+
   async function load(ctx) {
-    const [alerts, halts, commands] = await Promise.all([
+    const [alerts, halts, commands, reservationIntents] = await Promise.all([
       loadAlerts(ctx),
       loadHalts(ctx),
       loadCommands(ctx),
+      loadReservationsIntents(ctx),
     ]);
     await loadIntents(ctx);
 
-    const badgeCount = alerts.length + halts.length + commands.length;
+    const badgeCount = alerts.length + halts.length + commands.length + (reservationIntents.reservations || 0) + (reservationIntents.intents || 0);
     updateBadge(badgeCount);
   }
 

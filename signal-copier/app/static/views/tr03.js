@@ -1172,6 +1172,7 @@
       <section class="tr-panel" id="tr03-header-panel"><div id="tr03-header"></div></section>
       <section class="tr-panel" id="tr03-p-timeline"><h2>Position timeline</h2><div class="tr-panel-body" id="tr03-timeline-body"></div></section>
       <section class="tr-panel" id="tr03-p01"><h2>Identity and plan</h2><div class="tr-panel-body"></div></section>
+      <section class="tr-panel" id="tr03-p-admission"><h2>Admission and reservation</h2><div class="tr-panel-body"></div></section>
       <section class="tr-panel" id="tr03-p-chart">
         <h2>Price chart -- entries, stops, targets, exits</h2>
         <div class="tr-panel-body" id="tr03-chart-body"></div>
@@ -1325,6 +1326,7 @@
       header: ctx.container.querySelector("#tr03-header"),
       timeline: ctx.container.querySelector("#tr03-timeline-body"),
       identity: ctx.container.querySelector("#tr03-p01 .tr-panel-body"),
+      admission: ctx.container.querySelector("#tr03-p-admission .tr-panel-body"),
       chart: ctx.container.querySelector("#tr03-chart-body"),
       chartGaps: ctx.container.querySelector("#tr03-chart-gaps"),
       ledger: ctx.container.querySelector("#tr03-p02 .tr-panel-body"),
@@ -1334,19 +1336,19 @@
       transfer: ctx.container.querySelector("#tr03-p05 .tr-panel-body"),
       controls: ctx.container.querySelector("#tr03-p06 .tr-panel-body"),
     };
-    for (const el of [els.timeline, els.identity, els.chart, els.ledger, els.maeMfe, els.orders, els.attribution, els.transfer, els.controls]) {
+    for (const el of [els.timeline, els.identity, els.admission, els.chart, els.ledger, els.maeMfe, els.orders, els.attribution, els.transfer, els.controls]) {
       StateMatrix.render(el, { state: "loading" });
     }
 
     const positionsRes = await ctx.fetchJSON("/positions");
     if (positionsRes.status === 401 || positionsRes.status === 403) {
-      for (const el of [els.timeline, els.identity, els.chart, els.ledger, els.maeMfe, els.orders, els.attribution, els.transfer, els.controls]) {
+      for (const el of [els.timeline, els.identity, els.admission, els.chart, els.ledger, els.maeMfe, els.orders, els.attribution, els.transfer, els.controls]) {
         StateMatrix.render(el, { state: "denied", deniedCode: positionsRes.status });
       }
       return;
     }
     if (!positionsRes.ok) {
-      for (const el of [els.timeline, els.identity, els.chart, els.ledger, els.maeMfe, els.orders, els.attribution, els.transfer, els.controls]) {
+      for (const el of [els.timeline, els.identity, els.admission, els.chart, els.ledger, els.maeMfe, els.orders, els.attribution, els.transfer, els.controls]) {
         StateMatrix.render(el, { state: "error", message: "Could not load this allocation." });
       }
       return;
@@ -1358,7 +1360,7 @@
     const lifecycle = lifecycles.find((l) => l.account_id === accountId && l.symbol === symbol);
 
     if (!position && !lifecycle) {
-      for (const el of [els.timeline, els.identity, els.chart, els.ledger, els.maeMfe, els.orders, els.attribution, els.transfer, els.controls]) {
+      for (const el of [els.timeline, els.identity, els.admission, els.chart, els.ledger, els.maeMfe, els.orders, els.attribution, els.transfer, els.controls]) {
         StateMatrix.render(el, {
           state: "empty",
           emptyMessage: "No verified allocation is available for this reference.",
@@ -1475,6 +1477,47 @@
       status: "not_tracked",
       reason: "No 'portfolio' concept exists in this codebase -- an account is the only grouping unit this schema tracks.",
     });
+
+    // --- Admission and reservation ---
+    // Find the entry signal ID from the orders (look for entry purpose) or lifecycle
+    let entrySignalId = null;
+    const entryOrder = symbolOrders.find((o) => o.purpose === "entry");
+    if (entryOrder) {
+      // Use family_id if available (the originating entry signal), otherwise signal_id
+      entrySignalId = entryOrder.family_id || entryOrder.signal_id;
+    }
+
+    if (!entrySignalId) {
+      StateMatrix.render(els.admission, {
+        state: "empty",
+        emptyMessage: "No entry signal recorded for this allocation.",
+      });
+    } else {
+      const decisionRes = await ctx.fetchJSON(`/signals/${encodeURIComponent(entrySignalId)}/decision`);
+      if (decisionRes.ok && decisionRes.data) {
+        const decision = decisionRes.data;
+
+        // Render reservation card
+        const reservationHtml = decision.reservation
+          ? `<div class="econ-stats">
+               <div><span class="muted">State</span><br><span class="mono">${escapeHtml(decision.reservation.state)}</span></div>
+               <div><span class="muted">Cash needed</span><br><span class="num">${fmtCents(decision.reservation.needed_cash_cents)}</span></div>
+               <div><span class="muted">Margin needed</span><br><span class="num">${fmtCents(decision.reservation.needed_margin_cents)}</span></div>
+               <div><span class="muted">Notional</span><br><span class="num">${fmtCents(decision.reservation.needed_notional_cents)}</span></div>
+               <div><span class="muted">Planned risk</span><br><span class="num">${fmtCents(decision.reservation.needed_planned_risk_cents)}</span></div>
+             </div>`
+          : '<p class="section-note">No reservation recorded for this signal.</p>';
+        StateMatrix.render(els.admission, {
+          state: "ready",
+          html: reservationHtml,
+        });
+      } else {
+        StateMatrix.render(els.admission, {
+          state: "error",
+          message: "Could not load entry signal decision data.",
+        });
+      }
+    }
 
     // --- Centerpiece price chart ---
     let stopEvents = [];

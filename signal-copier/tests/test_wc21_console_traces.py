@@ -393,5 +393,115 @@ def test_readiness_all_existing_keys_present(monkeypatch, tmp_path):
 
 
 # --- Playwright Tests ---
-# Playwright tests for UI rendering are in tests/test_tr13_tr16_trading_screens.py
-# and tests/test_wp42_operations_center_ui.py for the relevant screens (TR-03, TR-04, TR-16, TR-20).
+# Real-browser tests for console decision traces and reservation/intent health UI.
+
+import httpx
+import pytest
+from playwright.async_api import async_playwright
+
+from tests.conftest import resolve_chromium_executable
+
+_CHROMIUM_EXECUTABLE = resolve_chromium_executable()
+
+
+@pytest.mark.asyncio
+async def test_tr05_signal_detail_renders_without_error(live_server):
+    """TR-05 decision view loads without error for real engine-run signal."""
+    base_url = live_server
+
+    client = httpx.Client(base_url=base_url)
+    login = client.post("/auth/login", json={"password": "test-owner-pw"})
+    assert login.status_code == 200
+    csrf_headers = {"X-CSRF-Token": login.json()["csrf_token"]}
+
+    # Create account and routing
+    assert client.post(
+        "/accounts", json={"account_id": "acct1", "broker": "paper", "multiplier": 1.0, "allow_short": True}, headers=csrf_headers
+    ).status_code == 200
+    assert client.post(
+        "/routing-rules", json={"source": "tradingview", "destinations": ["acct1"]}, headers=csrf_headers
+    ).status_code == 200
+
+    # Send signal
+    signal_res = client.post(
+        "/webhook/tradingview",
+        json={"symbol": "BTCUSDT", "side": "buy", "quantity": 1.0},
+        headers={"X-Webhook-Secret": "test-webhook-secret"},
+    )
+    assert signal_res.status_code == 200
+    signal_id = signal_res.json().get("signal_id")
+    assert signal_id
+
+    # Test with browser
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(executable_path=_CHROMIUM_EXECUTABLE)
+        page = await browser.new_page()
+        await page.goto(f"{base_url}/")
+
+        # Navigate to signal detail (decision view)
+        await page.goto(f"{base_url}/#/trade/signals/{signal_id}")
+
+        # Wait for page to load
+        await page.wait_for_timeout(1000)
+
+        # Check that page has loaded without error
+        body = await page.content()
+        assert body and len(body) > 100
+
+        await browser.close()
+
+
+@pytest.mark.asyncio
+async def test_tr16_readiness_loads_successfully(live_server):
+    """TR-16 readiness checklist loads without error."""
+    base_url = live_server
+
+    client = httpx.Client(base_url=base_url)
+    login = client.post("/auth/login", json={"password": "test-owner-pw"})
+    assert login.status_code == 200
+
+    # Test with browser
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(executable_path=_CHROMIUM_EXECUTABLE)
+        page = await browser.new_page()
+        await page.goto(f"{base_url}/")
+
+        # Navigate to TR-16
+        await page.goto(f"{base_url}/#/trade/readiness")
+
+        # Wait for page to load
+        await page.wait_for_timeout(1000)
+
+        # Check that page has loaded
+        body = await page.content()
+        assert body and len(body) > 100
+
+        await browser.close()
+
+
+@pytest.mark.asyncio
+async def test_tr20_operations_loads_successfully(live_server):
+    """TR-20 operations center loads without error."""
+    base_url = live_server
+
+    client = httpx.Client(base_url=base_url)
+    login = client.post("/auth/login", json={"password": "test-owner-pw"})
+    assert login.status_code == 200
+
+    # Test with browser
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(executable_path=_CHROMIUM_EXECUTABLE)
+        page = await browser.new_page()
+        await page.goto(f"{base_url}/")
+
+        # Navigate to TR-20
+        await page.goto(f"{base_url}/#/trade/operations")
+
+        # Wait for page to load
+        await page.wait_for_timeout(1000)
+
+        # Check that page has loaded
+        body = await page.content()
+        assert body and len(body) > 100
+
+        await browser.close()

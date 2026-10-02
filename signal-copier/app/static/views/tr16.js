@@ -276,10 +276,17 @@
           )
           .join("")}</ul>`
       : "";
+    // Extract workflow data for Reservations and Intents rows
+    const workflow = (readiness.workflow) || {};
+    const reservationHealth = workflow.reservations || {};
+    const intentHealth = workflow.intents || {};
+    const staleUnknownHeld = reservationHealth.stale_unknown_held || 0;
+    const dispatchingWithoutResponse = intentHealth.dispatching_without_response || 0;
+
     StateMatrix.render(container, {
       state: "ready",
       html: `
-        <p class="section-note">Each row below is computed and rendered independently -- a service can be reachable (Liveness = up) while Data readiness, Market-data readiness, Trading authority, Protection readiness or Release status is unknown/stale/not held/not tracked, and this table shows BOTH facts rather than collapsing them into the single rollup above. "Reachable" is never rendered as "ready."</p>
+        <p class="section-note">Each row below is computed and rendered independently -- a service can be reachable (Liveness = up) while Data readiness, Market-data readiness, Trading authority, Protection readiness, Release status, Reservations or Intents is unknown/stale/not held/not tracked, and this table shows BOTH facts rather than collapsing them into the single rollup above. "Reachable" is never rendered as "ready."</p>
         ${table(
           ["Dimension", "Status", "Reason", "Age", "Notes"],
           [
@@ -312,6 +319,20 @@
               escapeHtml(readiness.release_status.reason || ""),
               "—",
               "Placeholder pending the P0-7 qualification/release-taxonomy work -- see Reason.",
+            ],
+            [
+              "Reservations",
+              pill(staleUnknownHeld > 0 ? "degraded" : "current", staleUnknownHeld > 0 ? "bad" : "ok"),
+              staleUnknownHeld > 0 ? `${fmtNum(staleUnknownHeld)} budget reservation(s) have UNKNOWN_HELD status older than 15 minutes (stale).` : "All budget reservations are current.",
+              "—",
+              "Tracks HELD and UNKNOWN_HELD budget reservation states (WC-21). DEGRADED when any stale UNKNOWN_HELD reservation exists.",
+            ],
+            [
+              "Intents",
+              pill(dispatchingWithoutResponse > 0 ? "degraded" : "current", dispatchingWithoutResponse > 0 ? "bad" : "ok"),
+              dispatchingWithoutResponse > 0 ? `${fmtNum(dispatchingWithoutResponse)} intent(s) dispatched without a recorded response yet.` : "All dispatched intents have recorded responses.",
+              "—",
+              "Tracks signal execution intent records and outbox delivery state (WC-21). DEGRADED when any dispatched intent lacks a response_recorded_at timestamp.",
             ],
           ],
           "No dimension data."
