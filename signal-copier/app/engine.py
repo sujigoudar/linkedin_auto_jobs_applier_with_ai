@@ -2753,6 +2753,14 @@ class SignalCopierEngine:
                     submitted_at,
                     acknowledged_quantity,
                 ) = await self._submit_order(order_signal, quantity, account, symbol, broker)
+                # WP-26/E-06: Match plain-account closes to their entry by FIFO
+                # so plain accounts contribute to trade episodes
+                close_family_id = None
+                if result.status == OrderStatus.FILLED:
+                    close_family_id = self.store.get_oldest_entry_signal_id(
+                        account.account_id, symbol, order_signal.side
+                    )
+
                 self.store.save_order_result(
                     result,
                     broker=account.broker,
@@ -2766,7 +2774,7 @@ class SignalCopierEngine:
                     acknowledged_quantity=acknowledged_quantity,
                     submitted_at=submitted_at,
                     purpose="close",
-                    family_id=None,
+                    family_id=close_family_id,
                 )
                 return result
             finally:

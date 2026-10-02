@@ -9022,6 +9022,28 @@ class SignalStore:
             for r in rows
         ]
 
+    def get_oldest_entry_signal_id(self, account_id: str, symbol: str, closing_side: str) -> str | None:
+        """WP-26/E-06: Find the oldest FILLED entry signal for a plain account close.
+
+        For a close order, find the oldest FILLED entry order (opposite side from the
+        close) so we can match them via FIFO for episode grouping. The closing_side
+        parameter is the side of the close order (e.g., 'sell' to close a long).
+
+        Returns the signal_id of the oldest entry, or None if no entry found."""
+        # Determine the entry side (opposite of closing side)
+        entry_side = "buy" if closing_side == "sell" else "sell"
+
+        query = """SELECT o.signal_id
+                   FROM orders o
+                   WHERE o.account_id = ? AND o.symbol = ? AND o.side = ? AND o.status = 'filled'
+                   ORDER BY o.executed_at ASC, o.id ASC
+                   LIMIT 1"""
+
+        with self._connect() as conn:
+            row = conn.execute(query, (account_id, symbol, entry_side)).fetchone()
+
+        return row[0] if row else None
+
     def list_recent_orders(self, limit: int = 50, account_id: str | None = None) -> list[dict]:
         query = """SELECT id, account_id, broker, symbol, side, requested_quantity, signal_id,
                           status, broker_order_id, filled_quantity, filled_price, message, executed_at,

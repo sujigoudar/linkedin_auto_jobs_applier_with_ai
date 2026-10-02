@@ -53,12 +53,14 @@ class ProviderScout:
         min_sample_size: int = 10,
         win_rate_threshold: float = 0.4,
         profit_factor_threshold: float = 1.0,
+        open_episodes_ratio_threshold: float = 0.25,
     ):
         self.store = store
         self.interval_seconds = interval_seconds
         self.min_sample_size = min_sample_size
         self.win_rate_threshold = win_rate_threshold
         self.profit_factor_threshold = profit_factor_threshold
+        self.open_episodes_ratio_threshold = open_episodes_ratio_threshold
         self._task: asyncio.Task | None = None
         #: Same contract as OrderReconciler.last_success_at/PriceMonitor's
         #: identical field -- surfaced by app/main.py's /health.
@@ -93,7 +95,13 @@ class ProviderScout:
     def scan_once(self) -> int:
         """Re-evaluate every non-subscribed (source, analyst, asset_class)
         once. Returns how many were newly recommended for promotion this
-        pass (not the total number of candidates recorded)."""
+        pass (not the total number of candidates recorded).
+
+        WP-26/E-06: Promotion is gated on coverage: refuses promote when
+        any unknown_outcome_episodes exist OR when open_episodes / total_episodes
+        >= threshold. This prevents survivorship-biased promotion of providers
+        that have only managed lifecycle exits (which may be missing price data
+        or be incomplete) or providers with high open position exposure."""
         subscribed_sources = {row["provider_id"] for row in self.store.list_provider_subscriptions()}
         values = compute_provider_value_from_episodes(self.store)
 
@@ -103,7 +111,19 @@ class ProviderScout:
                 continue  # already a tracked provider -- not a "candidate" to scout
 
             decided_episodes = pv.winning_episodes + pv.losing_episodes
+
+            # E-06: Gate promotion on coverage - refuse promote if:
+            # 1. Any unknown-outcome episodes exist (missing price data)
+            # 2. Open episodes comprise too large a fraction of total episodes
+            coverage_issues_exist = (
+                pv.unknown_outcome_episodes > 0 or
+                (pv.total_episodes > 0 and pv.open_episodes / pv.total_episodes >= self.open_episodes_ratio_threshold)
+            )
+
             if decided_episodes < self.min_sample_size:
+                recommendation = "insufficient_data"
+            elif coverage_issues_exist:
+                # E-06: Refuse promotion if coverage is incomplete
                 recommendation = "insufficient_data"
             elif (pv.win_rate or 0.0) >= self.win_rate_threshold and (
                 pv.profit_factor is None or pv.profit_factor >= self.profit_factor_threshold
