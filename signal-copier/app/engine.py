@@ -1525,16 +1525,18 @@ class SignalCopierEngine:
 
             try:
                 # WC-20 STEP 3: Sizing modes (fixed/multiplier/risk_fraction)
-                # Fetch equity if needed (required for risk_fraction mode)
+                # Fetch equity and buying_power if needed (required for risk_fraction mode)
                 equity = None
+                buying_power = None
                 if account.sizing_mode == "risk_fraction":
                     balance = await broker.get_account_balance(account)
                     if balance is not None:
                         equity = balance.equity
+                        buying_power = balance.buying_power
 
                 # Apply sizing mode and get quantity
                 quantity_result, sizing_error = size_for_account_with_mode(
-                    working_signal, account, equity
+                    working_signal, account, equity, buying_power
                 )
                 if sizing_error is not None:
                     raise UnsizedEntryError(sizing_error)
