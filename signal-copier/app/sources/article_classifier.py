@@ -114,7 +114,6 @@ class ArticleClassificationResult:
 
 _ACTIONABLE_PHRASES = [
     r"\bwe(?:'re| are) buying\b",
-    r"\bwe(?:'re| are) selling\b",
     r"\bwe(?:'re| are) shorting\b",
     r"\badding to our position\b",
     r"\bwe added to our position\b",
@@ -154,6 +153,7 @@ _HISTORICAL_PHRASES = [
 ]
 
 _ADJUSTMENT_PHRASES = [
+    r"\bwe(?:'re| are) selling\b",
     r"\braising (?:our|the) stop\b",
     r"\btightening (?:our|the) stop\b",
     r"\btaking (?:partial )?profits\b",

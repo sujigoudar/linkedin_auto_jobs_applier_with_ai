@@ -113,17 +113,40 @@ _NEGATION_OR_CONDITIONAL_WORDS = {
     "won't", "wont", "wouldn't", "wouldnt", "shouldn't", "shouldnt",
     "never", "no", "avoid", "skip", "cancel", "cancelled", "canceled",
     "if", "unless", "maybe", "possibly", "might", "considering", "consider",
-    "wait", "waiting", "hold", "holding", "ignore", "disregard",
+    "wait", "waiting", "ignore", "disregard",
     # SIG-02: past-tense reporting of someone else's instruction ("Yesterday
     # I said BUY AAPL 10") is a description of a signal, not the signal
     # itself.
     "yesterday", "said",
 }
+#: Words that indicate a time horizon, not a negation -- "hold for swing",
+#: "hold for breakout" are management horizons, not instructions to NOT buy.
+_HORIZON_WORDS = {"hold", "holding"}
 _WORDS_BEFORE_MATCH_TO_CHECK = 4
 
 
 def _words(text: str) -> list[str]:
     return re.findall(r"[A-Za-z']+", text.lower())
+
+
+def _is_negation_or_conditional(words: list[str], text: str) -> bool:
+    """Check if text contains negation/conditional words, excluding false positives.
+
+    Special case: "hold" or "holding" followed by "for" (e.g. "hold for swing",
+    "holding for breakout") is a time horizon, not a negation -- return False
+    for these cases."""
+    for i, w in enumerate(words):
+        if w in _NEGATION_OR_CONDITIONAL_WORDS:
+            return True
+        # Check for horizon usage of "hold"/"holding": followed by "for"
+        if w in _HORIZON_WORDS:
+            # Look for "for" in the next 2-3 words
+            if i + 1 < len(words) and words[i + 1] == "for":
+                # This is a horizon, not a negation
+                continue
+            # If "for" is not found nearby, treat as a negation
+            return True
+    return False
 
 
 # SIG-03: a trader posting an OCC-style option contract sometimes puts a
@@ -469,7 +492,8 @@ def classify_text_signal(
 
     preceding = _words(stripped[: match.start()])[-_WORDS_BEFORE_MATCH_TO_CHECK:]
     following = _words(stripped[match.end() :])
-    if any(w in _NEGATION_OR_CONDITIONAL_WORDS for w in preceding + following):
+    all_surrounding_words = preceding + following
+    if _is_negation_or_conditional(all_surrounding_words, stripped):
         return MessageDisposition(
             text=text,
             outcome=DispositionOutcome.IGNORED,
