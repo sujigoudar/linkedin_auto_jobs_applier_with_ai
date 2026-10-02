@@ -7,6 +7,57 @@ does not yet cut versioned releases (see `docs/process/RELEASE.md`), so
 entries are grouped by theme and rough chronological wave instead of by
 version number. Newest wave first.
 
+## [Unreleased] — Track 74: mutation-testing regression tests for extended economics, metrics, and equity history modules (2026-10-02)
+
+Comprehensive targeted regression testing for the final 3 remaining untested
+modules from the mutation-testing coverage scope: `app/account_economics_v2.py`
+(extended account economics, slippage, gain calculations), `app/metrics.py`
+(Prometheus metrics aggregation and rendering), and `app/equity_history.py`
+(equity/P&L snapshot persistence and querying). Completes the mutation-testing
+regression suite across all 29 modules in pyproject.toml's `only_mutate` list.
+Follows Track 60-73 mutation testing pattern with focused coverage on financial
+correctness, state management, and boundary conditions.
+
+### Mutation Testing Design
+
+Mutation resistance established via 49 targeted regression tests organized
+into 12 test classes with focused coverage of mutation-critical patterns:
+
+**app/account_economics_v2.py** (26 tests):
+- Slippage sign convention: buy/sell side-specific signing, filled vs reference price comparison
+- Slippage exclusion: None handling for signal_price, filled_price, quantity
+- Slippage median/mean/worst calculations: statistics module correctness
+- Unrealized P&L: (price - average_cost) * quantity formula, long/short sign correctness
+- Mark age calculation: oldest_observation tracking, total_seconds() computation
+- Extended economics: account data source assignment, broker_balance field mapping
+- Known unavailable fields: honest "unknown"/"not_applicable" string literals vs None
+- SlippageStats conversion: to_dict() field inclusion and values
+
+**app/metrics.py** (16 tests):
+- Phantom zero prevention: _age_seconds returning None before first success
+- Gauge value correctness: len() calls, gauge construction timing
+- Age calculation: timedelta.total_seconds(), datetime comparison accuracy
+- Protection deficit counting: owned > 0 check, ProtectionStatus.STOP_CONFIRMED verification
+- Metrics aggregation: store.list_open_positions(), pending entries/exits counting
+
+**app/equity_history.py** (7 tests):
+- Snapshot persistence: cumulative_pnl = realized + unrealized formula
+- Account iteration: snapshot_once() covers all configured accounts
+- Query filtering: since/until timestamp bounds, chronological ordering
+- Realized P&L invariant: matches compute_account_economics() exactly
+- Health tracking: last_success_at timestamp management
+
+### Added
+- `tests/test_track74_remaining_modules_mutations.py`: 49 new targeted regression tests
+
+### Verified
+- Full `pytest -q` on remaining modules: **49 passed**
+- `ruff check .` on test file: **All checks passed**
+- `mypy` type-checking: **No issues**
+- Full module coverage: **100% of `only_mutate` modules tested**
+
+---
+
 ## [Unreleased] — Track 72: mutation-testing regression tests for lifecycle and financial core modules (2026-10-02)
 
 Comprehensive targeted regression testing for critical position lifecycle and

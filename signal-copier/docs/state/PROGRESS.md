@@ -1,17 +1,19 @@
 # Current progress snapshot
 
-As of `HEAD` after Track 72 and 73: comprehensive mutation-testing regression
-tests for lifecycle/financial and feature/capability modules on
-`claude/signal-copier-readiness-sm44tr` (2026-10-02). Track 72 (57 tests) covers
+As of `HEAD` after Track 72, 73, and 74: comprehensive mutation-testing regression
+tests for lifecycle/financial, feature/capability, and economics/metrics/equity modules
+on `claude/signal-copier-readiness-sm44tr` (2026-10-02). Track 72 (57 tests) covers
 lifecycle management, close arbitration, and financial command logic. Track 73
 (72 tests) covers qualification, event export, shadow mode, escalation, and
-execution quality. This is a snapshot, not a roadmap — update it when the state it
-describes actually changes. This file was previously stale for an extended period
-(it referenced an old branch, `claude/signal-copier-redesign`, and alembic head
-`0015`, long after both had moved on), and was stale again after that (alembic
-head `0033`/2057 passed, and three items below listed as not-yet-landed that had
-in fact landed as Track 25/27) — if you find it stale again, fix it rather than
-working around it.
+execution quality. Track 74 (49 tests) covers extended account economics, Prometheus
+metrics, and equity history snapshots — completing the mutation-testing regression
+suite across all 29 modules in pyproject.toml's `only_mutate` list. This is a snapshot,
+not a roadmap — update it when the state it describes actually changes. This file was
+previously stale for an extended period (it referenced an old branch,
+`claude/signal-copier-redesign`, and alembic head `0015`, long after both had moved on),
+and was stale again after that (alembic head `0033`/2057 passed, and three items below
+listed as not-yet-landed that had in fact landed as Track 25/27) — if you find it stale
+again, fix it rather than working around it.
 
 ## What wave this is
 
@@ -45,21 +47,23 @@ anything past Track 29 has landed since this snapshot was written.
 
 ## What's genuinely landed and working, as of HEAD
 
-- Alembic head is `0034`. Full `pytest -q` suite: **2666 passed, 0 failed**
+- Alembic head is `0034`. Full `pytest -q` suite: **2715 passed, 0 failed**
   (after Track 72's 57 new mutation-regression tests for lifecycle/financial modules
   covering app/lifecycle/manager.py, app/lifecycle/close_arbiter.py,
-  app/writer_lease.py, app/command_ledger.py, app/reconciliation.py, and Track 73's
+  app/writer_lease.py, app/command_ledger.py, app/reconciliation.py; Track 73's
   72 new mutation-regression tests for feature/capability modules covering
   app/qualification.py, app/export_events.py, app/shadow_mode.py,
-  app/phone_escalation.py, app/execution_quality.py, Track 69's 91 new
-  mutation-regression tests for configuration/infrastructure modules covering
-  app/config.py, app/config_admin.py, app/rate_limit.py, app/logging_config.py,
-  Track 64's 64 new mutation-regression tests for certification modules
-  covering app/certification.py and app/certification_evidence.py, Track 65's
-  28 new mutation-regression tests for backtest utility modules covering
-  app/backtest/replay.py, app/backtest/models.py, app/backtest/cost_stress.py,
-  and app/backtest/fit_simulator.py, plus Track 63's 36 comprehensive tests for
-  backtest simulator and Track 61's 19 mutation regression tests for broker adapters).
+  app/phone_escalation.py, app/execution_quality.py; Track 74's 49 new mutation-
+  regression tests for economics/metrics modules covering app/account_economics_v2.py,
+  app/metrics.py, app/equity_history.py (completing `only_mutate` coverage);
+  Track 69's 91 new mutation-regression tests for configuration/infrastructure modules
+  covering app/config.py, app/config_admin.py, app/rate_limit.py, app/logging_config.py;
+  Track 64's 64 new mutation-regression tests for certification modules covering
+  app/certification.py and app/certification_evidence.py; Track 65's 28 new mutation-
+  regression tests for backtest utility modules covering app/backtest/replay.py,
+  app/backtest/models.py, app/backtest/cost_stress.py, and app/backtest/fit_simulator.py;
+  plus Track 63's 36 comprehensive tests for backtest simulator and Track 61's 19
+  mutation regression tests for broker adapters).
 - `ruff check .` and the CI-scoped `mypy` command (file list in
   `.github/workflows/signal-copier-ci.yml`, 39 files) both clean against
   this HEAD.
