@@ -7,7 +7,45 @@ does not yet cut versioned releases (see `docs/process/RELEASE.md`), so
 entries are grouped by theme and rough chronological wave instead of by
 version number. Newest wave first.
 
-<<<<<<< HEAD
+## [Unreleased] — Track 71: comprehensive mutation testing for broker adapters and provider modules (2026-10-02)
+
+Targeted mutation testing for broker adapter capabilities, provider registry/discovery,
+and settings inheritance. This work follows the Track 60-67 regression test pattern with
+hand-written tests for mutation-critical patterns rather than relying on mutant survival
+rates alone.
+
+### Added
+- `tests/test_track71_brokers_providers_mutation.py`: 44 new regression tests covering:
+  - **Broker capability declarations** (supports_native_bracket, supported_asset_classes)
+    - 5 tests verifying correct capability declarations and asset class filtering
+  - **Alpaca order type and bracket logic** (4 tests)
+    - Bracket vs OTO order selection, quantity type coercion
+  - **Side-dependent trading logic** (3 tests)
+    - BUY/SELL transmission, close-side rejection
+  - **Credential validation and authentication** (4 tests)
+    - Missing credential handling, paper/live URL defaults
+  - **Broker order ID coercion** (5 tests)
+    - String/int/float/None/object type handling
+  - **Provider registry and settings override** (9 tests)
+    - Registry lookups, effective settings merging, analyst precedence
+  - **Apply override logic** (5 tests)
+    - Enabled/disabled state management (RISK-04), None fallbacks
+  - **Load provider registry from YAML** (4 tests)
+    - Missing files, empty YAML, provider/analyst parsing
+  - **CCXT broker capabilities** (3 tests)
+    - Crypto-only asset class support
+  - **Integration tests** (2 tests)
+    - Provider multiplier application, disabled analyst blocking
+
+### Changed
+- No production code changes. All existing broker and provider logic passes the new
+  regression tests. Test count: 44 passed.
+
+### Verified
+- Full `pytest -q tests/test_track71_brokers_providers_mutation.py`: **44 passed**
+- `ruff check`: All linting checks passed
+- Type checking: No type errors in test file
+
 ## [Unreleased] — Track 60: mutation-testing baseline for app/sources/base.py and app/sources/webhook.py (2026-10-02)
 
 Targeted mutation testing baseline pass on the signal-ingestion boundary
