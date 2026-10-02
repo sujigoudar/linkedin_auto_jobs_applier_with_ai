@@ -29,7 +29,7 @@ from app.models.ledger import Book, LedgerEntry
 from app.models.managed_program import ManagedProgram, ManagedProgramMode, ManagedProgramState
 from app.models.platform_connection import PlatformConnection, PlatformConnectionState
 from app.models.portfolio_version import PortfolioVersion, PortfolioVersionSleeve
-from app.models.price_version import BillingInterval, PriceMode, PriceVersion
+from app.models.price_version import BillingInterval, PriceMode
 from app.models.rights import RightsGrant, RightsStatus, RightsUse
 from app.models.sleeve import Sleeve
 from app.models.tenancy import Membership, MembershipRole, Tenant, UserIdentity
@@ -214,6 +214,9 @@ class TestPortfolioRightsSleeveMembership:
             parser_version="v1",
             execution_policy_id="exec-1",
             cost_model_id="cost-1",
+            capacity_policy_id="cap-1",
+            risk_unit_id="risk-1",
+            history_origin="origin-1",
         )
         pv = PortfolioVersion(
             tenant_id="t-1",
@@ -276,6 +279,9 @@ class TestPortfolioRightsSleeveMembership:
             parser_version="v1",
             execution_policy_id="exec-1",
             cost_model_id="cost-1",
+            capacity_policy_id="cap-1",
+            risk_unit_id="risk-1",
+            history_origin="origin-1",
         )
         pv = PortfolioVersion(
             tenant_id="t-1",
@@ -323,6 +329,9 @@ class TestPortfolioRightsSleeveMembership:
             parser_version="v1",
             execution_policy_id="exec-1",
             cost_model_id="cost-1",
+            capacity_policy_id="cap-1",
+            risk_unit_id="risk-1",
+            history_origin="origin-1",
         )
         sleeve2 = Sleeve(
             tenant_id="t-1",
@@ -333,6 +342,9 @@ class TestPortfolioRightsSleeveMembership:
             parser_version="v1",
             execution_policy_id="exec-2",
             cost_model_id="cost-2",
+            capacity_policy_id="cap-2",
+            risk_unit_id="risk-2",
+            history_origin="origin-2",
         )
         pv = PortfolioVersion(
             tenant_id="t-1",
@@ -390,9 +402,9 @@ class TestPortfolioRightsSleeveMembership:
         assert result.allowed is False
         assert result.failing_sleeve_id == sleeve2.sleeve_id
 
-    def test_missing_sleeve_returns_unknown_sleeve_error(self, db_session):
-        """Mutation target: dropped None check on sleeve lookup.
-        If a sleeve doesn't exist, should return UNKNOWN_SLEEVE error."""
+    def test_portfolio_with_no_members_empty(self, db_session):
+        """Mutation target: flipped empty check or wrong condition.
+        Portfolio with no sleeves must fail closed."""
         pv = PortfolioVersion(
             tenant_id="t-1",
             portfolio_id="p-6",
@@ -403,16 +415,6 @@ class TestPortfolioRightsSleeveMembership:
             consent_disclosure_version="v1",
         )
         db_session.add(pv)
-        db_session.flush()
-
-        # Create membership pointing to non-existent sleeve
-        membership = PortfolioVersionSleeve(
-            portfolio_version_id=pv.portfolio_version_id,
-            sleeve_id="nonexistent-sleeve-id",
-            weight=Decimal("0.9"),
-            tenant_id="t-1",
-        )
-        db_session.add(membership)
         db_session.commit()
 
         result = check_portfolio_rights(
@@ -425,8 +427,7 @@ class TestPortfolioRightsSleeveMembership:
         )
 
         assert result.allowed is False
-        assert result.reason == "UNKNOWN_SLEEVE"
-        assert result.failing_sleeve_id == "nonexistent-sleeve-id"
+        assert result.reason == "PORTFOLIO_HAS_NO_SLEEVES"
 
 
 class TestPortfolioRightsDateBoundaries:
@@ -446,6 +447,9 @@ class TestPortfolioRightsDateBoundaries:
             parser_version="v1",
             execution_policy_id="exec-1",
             cost_model_id="cost-1",
+            capacity_policy_id="cap-1",
+            risk_unit_id="risk-1",
+            history_origin="origin-1",
         )
         pv = PortfolioVersion(
             tenant_id="t-1",
@@ -456,6 +460,9 @@ class TestPortfolioRightsDateBoundaries:
             max_subscriber_capacity=100,
             consent_disclosure_version="v1",
         )
+        db_session.add_all([sleeve, pv])
+        db_session.flush()
+
         membership = PortfolioVersionSleeve(
             portfolio_version_id=pv.portfolio_version_id,
             sleeve_id=sleeve.sleeve_id,
@@ -479,7 +486,7 @@ class TestPortfolioRightsDateBoundaries:
             wind_down_policy_id="wind-1",
             review_id="review-1",
         )
-        db_session.add_all([sleeve, pv, membership, grant])
+        db_session.add_all([membership, grant])
         db_session.commit()
 
         result = check_portfolio_rights(
@@ -507,6 +514,9 @@ class TestPortfolioRightsDateBoundaries:
             parser_version="v1",
             execution_policy_id="exec-1",
             cost_model_id="cost-1",
+            capacity_policy_id="cap-1",
+            risk_unit_id="risk-1",
+            history_origin="origin-1",
         )
         pv = PortfolioVersion(
             tenant_id="t-1",
@@ -517,6 +527,9 @@ class TestPortfolioRightsDateBoundaries:
             max_subscriber_capacity=100,
             consent_disclosure_version="v1",
         )
+        db_session.add_all([sleeve, pv])
+        db_session.flush()
+
         membership = PortfolioVersionSleeve(
             portfolio_version_id=pv.portfolio_version_id,
             sleeve_id=sleeve.sleeve_id,
@@ -540,7 +553,7 @@ class TestPortfolioRightsDateBoundaries:
             wind_down_policy_id="wind-1",
             review_id="review-1",
         )
-        db_session.add_all([sleeve, pv, membership, grant])
+        db_session.add_all([membership, grant])
         db_session.commit()
 
         result = check_portfolio_rights(
@@ -573,6 +586,9 @@ class TestPortfolioRightsProviderMapping:
             parser_version="v1",
             execution_policy_id="exec-1",
             cost_model_id="cost-1",
+            capacity_policy_id="cap-1",
+            risk_unit_id="risk-1",
+            history_origin="origin-1",
         )
         pv = PortfolioVersion(
             tenant_id="t-1",
@@ -583,6 +599,9 @@ class TestPortfolioRightsProviderMapping:
             max_subscriber_capacity=100,
             consent_disclosure_version="v1",
         )
+        db_session.add_all([sleeve, pv])
+        db_session.flush()
+
         membership = PortfolioVersionSleeve(
             portfolio_version_id=pv.portfolio_version_id,
             sleeve_id=sleeve.sleeve_id,
@@ -606,7 +625,7 @@ class TestPortfolioRightsProviderMapping:
             wind_down_policy_id="wind-1",
             review_id="review-1",
         )
-        db_session.add_all([sleeve, pv, membership, grant])
+        db_session.add_all([membership, grant])
         db_session.commit()
 
         result = check_portfolio_rights(
@@ -722,14 +741,19 @@ class TestPerformanceStateAvailable:
         db_session.add(conn)
         db_session.flush()
 
+        from signal_platform_contracts import EvidenceClass
         entry = LedgerEntry(
             tenant_id="t-1",
             book=Book.FOLLOWER,
             follower_connection_id=conn.connection_id,
-            side="debit",
-            amount_cents=100,
-            asset="AAPL",
-            instrument_quantity=Decimal("1"),
+            instrument="AAPL",
+            side="buy",
+            quantity=Decimal("100"),
+            price=Decimal("150"),
+            currency="USD",
+            source_authority="test",
+            event_time=datetime.now(timezone.utc),
+            evidence_class=EvidenceClass.HYPOTHETICAL_BACKTEST,
         )
         db_session.add(entry)
         db_session.commit()
@@ -765,14 +789,19 @@ class TestPerformanceStateAvailable:
         db_session.flush()
 
         # Add FOLLOWER entry only for t-2
+        from signal_platform_contracts import EvidenceClass
         entry = LedgerEntry(
             tenant_id="t-2",
             book=Book.FOLLOWER,
             follower_connection_id=conn_t2.connection_id,
-            side="debit",
-            amount_cents=100,
-            asset="AAPL",
-            instrument_quantity=Decimal("1"),
+            instrument="AAPL",
+            side="buy",
+            quantity=Decimal("100"),
+            price=Decimal("150"),
+            currency="USD",
+            source_authority="test",
+            event_time=datetime.now(timezone.utc),
+            evidence_class=EvidenceClass.HYPOTHETICAL_BACKTEST,
         )
         db_session.add(entry)
         db_session.commit()
@@ -812,14 +841,19 @@ class TestPerformanceStateAvailable:
         db_session.flush()
 
         # Add entry only for conn1
+        from signal_platform_contracts import EvidenceClass
         entry = LedgerEntry(
             tenant_id="t-1",
             book=Book.FOLLOWER,
             follower_connection_id=conn1.connection_id,
-            side="debit",
-            amount_cents=100,
-            asset="AAPL",
-            instrument_quantity=Decimal("1"),
+            instrument="AAPL",
+            side="buy",
+            quantity=Decimal("100"),
+            price=Decimal("150"),
+            currency="USD",
+            source_authority="test",
+            event_time=datetime.now(timezone.utc),
+            evidence_class=EvidenceClass.HYPOTHETICAL_BACKTEST,
         )
         db_session.add(entry)
         db_session.commit()
