@@ -15,24 +15,17 @@ Modules covered:
 from __future__ import annotations
 
 import pytest
-from datetime import datetime, timezone
-from decimal import Decimal
 
 from app.email_collectors import (
     EmailCollector,
     EmailCollectorError,
     CollectorHealth,
     ConnectionMode,
-    AllowedUse,
     validate_registration,
-    now_utc,
 )
 from app.website_collectors import (
-    WebsiteCollector,
     WebsiteCollectorError,
-    CollectorHealth as WebsiteCollectorHealth,
     SiteFormat,
-    AllowedUse as WebsiteAllowedUse,
     validate_registration as validate_website_registration,
 )
 from app.parser_tooling import (
@@ -43,7 +36,6 @@ from app.parser_tooling import (
     validate_profile_transition,
 )
 from app.notification_bridge import (
-    NotificationBridgeDevice,
     generate_pairing_token,
     hash_pairing_token,
     verify_pairing_token,
@@ -54,7 +46,6 @@ from app.notification_bridge import (
 from app.provider_value import (
     ProviderValue,
 )
-from app.models import AssetClass
 
 
 # ============================================================================

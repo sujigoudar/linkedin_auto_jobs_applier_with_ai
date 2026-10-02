@@ -1,7 +1,7 @@
 # Current progress snapshot
 
-As of `HEAD` after Track 71: comprehensive mutation testing for broker adapters
-and provider modules on `agent-track71-brokers-providers-mutation`
+As of `HEAD` after Track 70: comprehensive mutation testing for collectors
+and parser modules on `agent-track70-collectors-parsers-mutation`
 (2026-10-02). This is a snapshot, not a roadmap — update it when the state
 it describes actually changes. This file was previously stale for an
 extended period (it referenced an old branch, `claude/signal-copier-
@@ -42,8 +42,9 @@ anything past Track 29 has landed since this snapshot was written.
 
 ## What's genuinely landed and working, as of HEAD
 
-- Alembic head is `0034`. Full `pytest -q` suite: **2196 passed, 0 failed**
-  (after Track 71's 44 new mutation regression tests for brokers and providers,
+- Alembic head is `0034`. Full `pytest -q` suite: **2265 passed, 0 failed**
+  (after Track 70's 69 new mutation regression tests for collectors/parsers/notification/provider-value
+  and Track 71's 44 new mutation regression tests for brokers and providers,
   building on Track 59's critical bug fix in signal_correlation.fingerprint_key).
 - `ruff check .` and the CI-scoped `mypy` command (file list in
   `.github/workflows/signal-copier-ci.yml`, 39 files) both clean against

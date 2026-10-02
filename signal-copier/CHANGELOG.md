@@ -7,6 +7,51 @@ does not yet cut versioned releases (see `docs/process/RELEASE.md`), so
 entries are grouped by theme and rough chronological wave instead of by
 version number. Newest wave first.
 
+## [Unreleased] — Track 70: comprehensive mutation testing for collectors and parser modules (2026-10-02)
+
+Targeted mutation testing for email/website collectors, parser tooling, notification routing,
+and provider value calculations. This work follows the Track 60-69 regression test pattern with
+hand-written tests for mutation-critical patterns rather than relying on mutant survival
+rates alone.
+
+### Added
+- `tests/test_track70_collectors_parsers_mutation.py`: 69 new regression tests covering:
+  - **Email collector validation** (15 tests)
+    - Required field validation, connection mode enum parsing
+    - Environment variable format constraints (uppercase, no spaces, no equals)
+    - Sender allowlist non-empty requirement
+    - Allowed uses defaults (PRIVATE_TRADING)
+  - **Website collector validation** (3 tests)
+    - Site format enum validation, required fields
+  - **Message type classification** (9 tests)
+    - ENTRY/EXIT/CANCEL/STOP_UPDATE/TARGET_UPDATE/UNKNOWN classification
+    - Case-insensitive parsing, enum completeness
+  - **Parser profile state machine** (8 tests)
+    - DRAFT→TESTED→SHADOW→CERTIFIED→ACTIVE→RETIRED linear progression
+    - Forward-only transitions, no backward or skip-state transitions
+  - **Pairing token generation** (3 tests)
+    - Randomness, sufficient length (≥32 chars), cryptographic entropy
+  - **Pairing token hashing and verification** (7 tests)
+    - Hash/plaintext differentiation, hash verification correctness
+    - Rejection of invalid tokens and malformed hashes
+  - **Notification completeness classification** (5 tests)
+    - Device-reported completeness to content-completeness mapping
+    - Disposition outcome handling, enum value completeness
+  - **Provider value calculations** (12 tests)
+    - Win rate: zero-fills handling (None), 100%/0%/50% calculation
+    - Profit factor: zero-loss handling (None), breakeven/profitable cases
+    - Data structure: field defaults, type preservation
+    - Field persistence through to_dict() serialization
+
+### Changed
+- No production code changes. All existing collectors, parsers, notification, and provider
+  value logic passes the new regression tests. Test count: 69 passed.
+
+### Verified
+- Full `pytest -q tests/test_track70_collectors_parsers_mutation.py`: **69 passed**
+- `ruff check`: All linting checks passed
+- Type checking: No type errors in test file
+
 ## [Unreleased] — Track 71: comprehensive mutation testing for broker adapters and provider modules (2026-10-02)
 
 Targeted mutation testing for broker adapter capabilities, provider registry/discovery,
