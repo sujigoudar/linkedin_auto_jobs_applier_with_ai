@@ -134,6 +134,7 @@ def test_alpaca_sends_client_order_id(monkeypatch):
 
 def test_ccxt_sends_client_order_id():
     """Test CCXT adapter includes clientOrderId in order params."""
+    pytest.importorskip("ccxt")
     from app.brokers.ccxt_broker import CCXTBroker
 
     broker = CCXTBroker(exchange_id="binance")

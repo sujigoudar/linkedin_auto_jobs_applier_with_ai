@@ -78,6 +78,7 @@ class TestC10EntriesAdmissible:
 
     def test_ccxt_admits_entries(self):
         """CCXT can admit entries (has get_broker_position feedback)."""
+        pytest.importorskip("ccxt")
         broker = CCXTBroker()
         assert broker.entries_admissible()
         assert broker.has_position_readback_capability

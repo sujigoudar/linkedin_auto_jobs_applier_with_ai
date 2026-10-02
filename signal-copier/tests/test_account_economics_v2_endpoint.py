@@ -63,6 +63,5 @@ def test_returns_extended_shape_with_honest_unknowns(client):
     assert body["realized"]["gross_realized"] == pytest.approx(100.0)
     assert body["realized"]["fees"] == "unknown"
     assert body["returns"]["twr"] is None
-    # PaperBroker reports cash but (WP-32b) keeps equity honestly None until a
-    # fill opens a position; this test never calls place_order, so NAV stays None.
-    assert body["account"]["nav"] is None
+    # PaperBroker reports cash-only equity when flat (no open positions).
+    assert body["account"]["nav"] == 100000.0

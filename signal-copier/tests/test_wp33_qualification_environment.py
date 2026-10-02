@@ -76,6 +76,7 @@ def test_alpaca_live_venue_environment(mock_alpaca_live):
 
 def test_ccxt_sandbox_venue_environment():
     """CCXTBroker returns 'sandbox' when sandbox=True."""
+    pytest.importorskip("ccxt")
     broker = CCXTBroker(exchange_id="binance", sandbox=True)
     account = DestinationAccount(
         account_id="test_acct",
@@ -87,6 +88,7 @@ def test_ccxt_sandbox_venue_environment():
 
 def test_ccxt_live_venue_environment():
     """CCXTBroker returns 'live' when sandbox=False."""
+    pytest.importorskip("ccxt")
     broker = CCXTBroker(exchange_id="binance", sandbox=False)
     account = DestinationAccount(
         account_id="test_acct",

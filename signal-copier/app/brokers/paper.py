@@ -274,23 +274,38 @@ class PaperBroker(BrokerAdapter):
         # Compute equity: cash + market value of positions
         position_value = 0.0
         short_notional = 0.0
+        has_open_positions = False
+        has_unknown_prices = False
+
         for symbol, quantity in positions.items():
             if quantity != 0.0:
-                price = prices.get(symbol, 0.0)
-                position_value += quantity * price
-                # Track short notional for maintenance margin
-                if quantity < 0:
-                    short_notional += abs(quantity) * price
+                has_open_positions = True
+                price = prices.get(symbol)
+                if price is None:
+                    has_unknown_prices = True
+                else:
+                    position_value += quantity * price
+                    # Track short notional for maintenance margin
+                    if quantity < 0:
+                        short_notional += abs(quantity) * price
 
-        equity = cash + position_value
         maintenance_margin = 0.5 * short_notional if short_notional > 0 else 0.0
 
-        # WP-32b: Don't fabricate equity or maintenance_margin. Report None (unknown)
-        # when no positions have been opened yet (no fills), since marking market and
-        # margin calculation apply only to open positions.
-        has_positions = any(positions.values())
-        equity_to_report = equity if has_positions else None
-        maintenance_margin_to_report = maintenance_margin if has_positions and maintenance_margin > 0 else None
+        # WP-32b: equity = cash + position values when ALL open positions have known prices.
+        # NO open positions → equity == cash (computed, not fabricated).
+        # Open positions with unknown prices → equity = None (honest unknown).
+        if not has_open_positions:
+            # Flat account: equity is cash
+            equity_to_report = cash
+            maintenance_margin_to_report = 0.0
+        elif has_unknown_prices:
+            # Positions exist but not all have prices: report unknown
+            equity_to_report = None
+            maintenance_margin_to_report = None
+        else:
+            # All positions have known prices: compute equity
+            equity_to_report = cash + position_value
+            maintenance_margin_to_report = maintenance_margin if maintenance_margin > 0 else 0.0
 
         return AccountBalance(
             account_id=account.account_id,

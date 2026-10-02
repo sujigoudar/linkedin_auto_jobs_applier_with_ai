@@ -60,11 +60,16 @@ class DailyLossLimiter:
             return None
 
         # Get account balance to compute percentage
-        if account.broker not in getattr(self.store, "_broker_adapters", {}):
+        # Look up broker in self.brokers first, then fall back to self.store._broker_adapters
+        broker = None
+        if account.broker in self.brokers:
+            broker = self.brokers[account.broker]
+        elif hasattr(self.store, "_broker_adapters") and account.broker in self.store._broker_adapters:
+            broker = self.store._broker_adapters[account.broker]  # type: ignore[attr-defined]
+
+        if broker is None:
             # No broker available, fail closed
             return "Daily loss limit check failed: no broker adapter available"
-
-        broker = self.store._broker_adapters[account.broker]  # type: ignore[attr-defined]
         try:
             balance = await broker.get_account_balance(account)
             if balance is None or balance.equity is None:
@@ -117,11 +122,16 @@ class DailyLossLimiter:
             return None  # Min equity threshold not configured
 
         # Get current account balance to check equity
-        if account.broker not in self.brokers:
+        # Look up broker in self.brokers first, then fall back to self.store._broker_adapters
+        broker = None
+        if account.broker in self.brokers:
+            broker = self.brokers[account.broker]
+        elif hasattr(self.store, "_broker_adapters") and account.broker in self.store._broker_adapters:
+            broker = self.store._broker_adapters[account.broker]  # type: ignore[attr-defined]
+
+        if broker is None:
             # No broker available, fail closed
             return "Min equity check failed: no broker adapter available"
-
-        broker = self.brokers[account.broker]
         try:
             balance = await broker.get_account_balance(account)
             if balance is None or balance.equity is None:
