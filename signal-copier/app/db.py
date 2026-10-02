@@ -1952,6 +1952,14 @@ _COLUMN_MIGRATIONS = [
     # Track 42 -- see `export_events`' own CREATE TABLE comment above.
     ("export_events", "terminal_park_reason", "TEXT"),
     ("export_events", "terminal_parked_at", "TEXT"),
+    # E04 (bounded) / E10: fee tracking for financial correctness -- see
+    # the `orders` table's own SCHEMA comment above. All three columns
+    # report the broker's own values directly, never fabricated. NULL when
+    # the broker doesn't report them (some brokers don't charge fees, some
+    # don't expose them, some don't compute slippage).
+    ("orders", "fee", "DECIMAL(18, 8)"),
+    ("orders", "fee_currency", "TEXT"),
+    ("orders", "slippage", "DECIMAL(18, 8)"),
 ]
 
 
