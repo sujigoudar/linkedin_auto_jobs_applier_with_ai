@@ -246,6 +246,8 @@ only_mutate = [
     "app/economics.py", "app/account_economics_v2.py", "app/pricing.py",
     "app/qualification.py", "app/export_events.py",
     "app/brokers/paper.py", "app/brokers/base.py",
+    "app/routing.py", "app/capital_allocator.py", "app/risk.py", "app/quantity.py",
+    "app/statistics.py", "app/signal_correlation.py",
 ]
 pytest_add_cli_args_test_selection = [
     "tests/test_owner_auth.py", "tests/test_sms_twilio_sender_authorization.py",
