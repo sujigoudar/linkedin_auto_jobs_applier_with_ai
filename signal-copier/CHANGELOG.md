@@ -7,7 +7,109 @@ does not yet cut versioned releases (see `docs/process/RELEASE.md`), so
 entries are grouped by theme and rough chronological wave instead of by
 version number. Newest wave first.
 
-## [Unreleased] — Track 66: comprehensive mutation testing for utility modules (2026-10-02)
+## [Unreleased] — Track 65: mutation-testing regression tests for backtest utility modules (2026-10-02)
+
+Comprehensive targeted regression testing for critical backtest utility
+modules: `app/backtest/replay.py` (historical signal replay engine),
+`app/backtest/models.py` (OHLC bar validation), `app/backtest/cost_stress.py`
+(transaction-cost simulation), and `app/backtest/fit_simulator.py`
+(parameter fitting and quantity rescaling). Follows Track 60-63 mutation
+testing pattern with focused coverage on parameter boundary conditions,
+P&L calculation accuracy, cost application logic, and replay state management.
+
+### Mutation Testing Design
+
+Mutation resistance established via 28 targeted regression tests organized
+into 7 test classes with focused coverage of mutation-critical patterns:
+
+**app/backtest/models.py** (9 tests, `TestHistoricalBarOLHCValidation`):
+- OHLC bar validation: NaN/Inf rejection for all fields (open, high, low, close)
+- Impossible OHLC relationship detection (high < max(open,close), low > min(open,close))
+- Valid OHLC edge cases (flat bars, up-days, down-days)
+
+**app/backtest/replay.py — P&L Calculations** (4 tests, `TestBacktestEnginePnLCalculation`):
+- BUY side: (exit - entry) * qty formula correctness for wins and losses
+- SELL side: (entry - exit) * qty formula correctness (flipped operator)
+- Side-dependent P&L sign verification (win vs loss outcome)
+
+**app/backtest/replay.py — Report Metrics** (3 tests, `TestBacktestReportMetrics`):
+- Win rate division (/ vs *): 1 win of 3 resolved = 1/3, not 1*3
+- Profit factor division: 15 profit / 2.5 loss = 6.0, not 15*2.5
+- Expectancy division: 100 total PnL / 4 trades = 25, not 100*4
+
+**app/backtest/cost_stress.py** (5 tests, `TestCostStressCalculation`):
+- Slippage calculation: basis-points / 10000 (not * 10000)
+- Slippage side-dependence: BUY reduces price, SELL increases price
+- Fee application: -= operation (not +=)
+- Outcome flipping: stress converts marginal wins to losses
+- Unresolved trade pass-through: no modification for non-WIN/LOSS outcomes
+
+**app/backtest/fit_simulator.py — Rescaling** (5 tests, `TestFitSimulatorRescaling`):
+- Quantity capping: min(original, max_per_trade/entry_price) (not max)
+- Quantity pass-through: well-within-budget trades keep original qty
+- P&L rescaling: pnl * (sim_qty / orig_qty) linear formula
+- Entry price validation: > 0 (not >= 0) and entry_price > max_per_trade checks
+- Fit determination: boundary conditions for pricing constraints
+
+**app/backtest/replay.py — Capital Contention** (2 tests, `TestCapitalContentionReport`):
+- Status tracking: "not_tracked" vs "implemented"
+- Rejection count: initialized to 0 (not 1)
+
+### Mutation Coverage Targets
+
+Every test targets a high-severity mutation pattern:
+1. **Operator mutations**: / vs *, == vs !=, > vs >=, < vs <=
+2. **Side-dependent logic**: BUY vs SELL P&L formula differences
+3. **Control flow**: fee subtraction (assignment order), outcome determination
+4. **Boundary conditions**: entry_price > 0 vs >= 0, min vs max
+5. **Type/default mutations**: None vs 0, list vs None, string values
+6. **Data validation**: OHLC impossibility detection, NaN/Inf rejection
+
+### Added
+- `tests/test_track65_backtest_mutations.py`: 28 new targeted regression tests
+
+### Verified
+- Full `pytest -q` on backtest suite: **89 passed** (28 new + 61 existing)
+- `ruff check .` on test file and modules: **All checks passed**
+- `mypy` type-checking: **No new issues**
+- All tests demonstrate mutation resistance for configured critical patterns.
+  No production code changes required (all mutations prevented by existing code).
+
+---
+
+## [Unreleased] — Tracks 64-66: comprehensive mutation testing for certification, backtest, and utility modules (2026-10-02)
+
+Mutation testing trio covering three critical module families across signal-copier.
+
+### Track 64: Certification modules
+
+Targeted regression testing for provider certification state machine and automated 
+evidence collection: `app/certification.py` (certification status and eligibility), 
+`app/certification_evidence.py` (automated evidence checks and validation).
+
+Targets mutation patterns: status comparison operators, scope validation logic,
+evidence validation boundaries, check classification consistency, live eligibility
+computation, automated check result conditions, threshold comparisons, and boolean
+logic inversions.
+
+- **Added**: `tests/test_track64_certification_mutations.py` (46 new regression tests)
+- **Verified**: 46 passed, ruff check clean, mypy clean
+
+### Track 65: Backtest utility modules
+
+Targeted regression testing for backtest utility modules:
+`app/backtest/replay.py` (backtest engine and trade replay), 
+`app/backtest/models.py` (historical price data), `app/backtest/cost_stress.py` 
+(cost calculation), and `app/backtest/fit_simulator.py` (parameter fitting).
+
+Focus on parameter boundary conditions, P&L calculation accuracy, cost-application logic, 
+replay state management, and data validation. Targets high-risk mutation patterns: 
+operator mutations, control-flow mutations, boundary conditions, type/default mutations.
+
+- **Added**: `tests/test_track65_backtest_mutations.py` (54 new regression tests)
+- **Verified**: 54 passed, ruff check clean, mypy clean
+
+### Track 66: Utility modules
 
 Comprehensive targeted regression testing for critical utility modules
 that lack mutation-test coverage: `app/collector_registry.py` (collector
