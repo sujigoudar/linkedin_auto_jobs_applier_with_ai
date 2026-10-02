@@ -1878,6 +1878,11 @@ CREATE TABLE IF NOT EXISTS margin_call_alerts (
 );
 CREATE INDEX IF NOT EXISTS ix_daily_pnl_account_id ON daily_pnl(account_id);
 CREATE INDEX IF NOT EXISTS ix_margin_call_alerts_account_id ON margin_call_alerts(account_id);
+-- F-08: heartbeat table for disk write capability and health checks
+CREATE TABLE IF NOT EXISTS health_heartbeat (
+    id INTEGER PRIMARY KEY,
+    last_write TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL
+);
 """
 
 
@@ -2034,6 +2039,8 @@ _COLUMN_MIGRATIONS = [
     ("config_accounts", "currency", "TEXT"),
     ("orders", "price_currency", "TEXT"),
     # E04 (bounded): daily loss limit and minimum equity threshold for risk control
+    # F-04 fix: these were in SCHEMA but not in _COLUMN_MIGRATIONS, causing
+    # fresh DBs to have them but upgraded DBs (bootstrapped pre-0036) to lack them.
     ("config_accounts", "daily_loss_limit_percent", "DECIMAL(5, 2)"),
     ("config_accounts", "min_equity_threshold", "DECIMAL(18, 8)"),
     # B-11: maximum gross leverage ceiling
@@ -2099,18 +2106,30 @@ class SignalStore:
         would try to CREATE a table that's already there); this is purely
         so `alembic history`/`alembic upgrade head` are meaningful for
         every real database from here on, for whatever the NEXT schema
-        change adds as a proper revision. Never re-stamps a database
-        that's already stamped (or that a real `alembic upgrade` has
-        already brought under version control) -- see this method's own
-        `alembic_version` check.
+        change adds as a proper revision.
+
+        F-04 fix: Re-stamp to head whenever version_num != alembic_code_head()
+        to handle schema drift from deployed/upgraded DBs where bootstrap
+        applied more migrations than the database is currently stamped at.
         """
         with self._connect() as conn:
             already_tracked = conn.execute(
                 "SELECT name FROM sqlite_master WHERE type='table' AND name='alembic_version'"
             ).fetchone()
-        if already_tracked:
+
+        if not already_tracked:
+            # Fresh database: stamp to head
+            command.stamp(_alembic_config(self.db_path), "head")
             return
-        command.stamp(_alembic_config(self.db_path), "head")
+
+        # Database already has alembic_version table: check if it matches code head
+        current_version = self.schema_version()
+        code_head = alembic_code_head()
+
+        if current_version != code_head:
+            # F-04: drift detected; re-stamp to current code head since bootstrap
+            # already applied all the migrations
+            command.stamp(_alembic_config(self.db_path), "head")
 
     def schema_version(self) -> str | None:
         """TR-16 (E01 bounded, deployment-reproducibility slice): the
@@ -2122,6 +2141,20 @@ class SignalStore:
         with self._connect() as conn:
             row = conn.execute("SELECT version_num FROM alembic_version").fetchone()
         return row[0] if row else None
+
+    def database_write_ok(self) -> bool:
+        """F-08: Test write capability using a cheap heartbeat probe.
+        Returns True if we can write to the database, False if the disk
+        is full, read-only, or otherwise unable to accept writes."""
+        try:
+            with self._connect() as conn:
+                # INSERT OR REPLACE into the heartbeat row with current timestamp
+                conn.execute(
+                    "INSERT OR REPLACE INTO health_heartbeat (id, last_write) VALUES (1, CURRENT_TIMESTAMP)"
+                )
+            return True
+        except Exception:  # noqa: BLE001 - health check must not raise
+            return False
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
@@ -2168,6 +2201,40 @@ class SignalStore:
             from app.signal_correlation import fingerprint_key
 
             correlation_fingerprint = fingerprint_key(signal)
+
+        # WP-44: serialize contract specs into raw["contract_spec"] for
+        # persistence (these specs are runtime-only fields on Signal but need
+        # to be recoverable for UI interpretation, so serialize them into raw).
+        raw_data = signal.raw.copy()
+        contract_spec = {}
+        if signal.option is not None:
+            contract_spec["option"] = {
+                "underlying": signal.option.underlying,
+                "strike": signal.option.strike,
+                "right": signal.option.right,
+                "expiry": signal.option.expiry,
+                "multiplier": signal.option.multiplier,
+            }
+        if signal.future is not None:
+            contract_spec["future"] = {
+                "contract": signal.future.contract,
+                "expiry": signal.future.expiry,
+                "multiplier": signal.future.multiplier,
+            }
+        if signal.fx is not None:
+            contract_spec["fx"] = {
+                "base_currency": signal.fx.base_currency,
+                "quote_currency": signal.fx.quote_currency,
+                "lot_size": signal.fx.lot_size,
+            }
+        if signal.crypto_derivative is not None:
+            contract_spec["crypto_derivative"] = {
+                "underlying": signal.crypto_derivative.underlying,
+                "leverage": signal.crypto_derivative.leverage,
+            }
+        if contract_spec:
+            raw_data["contract_spec"] = contract_spec
+
         with self._connect() as conn:
             conn.execute(
                 """INSERT OR REPLACE INTO signals
@@ -2188,7 +2255,7 @@ class SignalStore:
                     signal.take_profit,
                     signal.analyst,
                     signal.received_at.isoformat(),
-                    json.dumps(signal.raw),
+                    json.dumps(raw_data),
                     signal.import_batch,
                     signal.channel_id,
                     signal.message_id,
@@ -3647,7 +3714,7 @@ class SignalStore:
         with self._connect() as conn:
             rows = conn.execute(
                 """SELECT id, source, symbol, side, asset_class, quantity, price, received_at, analyst,
-                          stop_loss, take_profit, raw, import_batch
+                          stop_loss, take_profit, raw, import_batch, intent, reduce_fraction
                    FROM signals ORDER BY received_at DESC LIMIT ?""",
                 (limit,),
             ).fetchall()
@@ -3687,6 +3754,15 @@ class SignalStore:
                 # POST /sources/{source}/import-signals -- see
                 # Signal.import_batch's docstring in app/models.py.
                 "import_batch": r[12],
+                # WP-44: signal interpretation fields for UI display.
+                # `intent` is the derived/explicit trading intent from the signal.
+                # `reduce_fraction` (0 < x ≤ 1) is the fraction of position to reduce
+                # when intent is REDUCE. Contract specs are in raw["contract_spec"]
+                # if present (see save_signal). asset_class_inferred is a boolean
+                # in raw["asset_class_inferred"] indicating whether the asset class
+                # was inferred from symbol shape rather than source-declared.
+                "intent": r[13],
+                "reduce_fraction": r[14],
             }
             for r in rows
         ]

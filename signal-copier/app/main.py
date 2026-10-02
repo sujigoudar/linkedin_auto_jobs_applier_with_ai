@@ -656,7 +656,12 @@ async def health() -> dict:
     protected are making progress -- no account IDs, balances, or other
     private data belongs here (see docs on why this stays unauthenticated).
     `*_ok` is False both when a worker hasn't completed a pass recently
-    (stuck/dead task) and before its very first pass after startup."""
+    (stuck/dead task) and before its very first pass after startup.
+
+    F-08: Includes disk write capability (database_write_ok) and free space
+    check (disk_free_bytes) to detect full/read-only filesystems."""
+    import shutil
+
     now = datetime.now(timezone.utc)
 
     def _fresh(last_success: datetime | None, interval_seconds: float) -> bool:
@@ -669,6 +674,23 @@ async def health() -> dict:
         db_ok = True
     except Exception:  # noqa: BLE001 - health check must never raise
         db_ok = False
+
+    # F-08: Test write capability via heartbeat probe
+    try:
+        database_write_ok = store.database_write_ok()
+    except Exception:  # noqa: BLE001 - health check must never raise
+        database_write_ok = False
+
+    # F-08: Check free disk space on the volume containing the database
+    disk_free_bytes: int | None = None
+    disk_usage_ok = True
+    try:
+        disk_usage = shutil.disk_usage(store.db_path)
+        disk_free_bytes = disk_usage.free
+        # Fail closed: if free space is less than 1MB, consider disk unhealthy
+        disk_usage_ok = disk_free_bytes > (1024 * 1024)
+    except Exception:  # noqa: BLE001 - health check must never raise
+        disk_usage_ok = False
 
     price_monitor_ok = _fresh(price_monitor.last_success_at, config.PRICE_MONITOR_INTERVAL_SECONDS)
     reconciler_ok = _fresh(reconciler.last_success_at, config.RECONCILE_INTERVAL_SECONDS)
@@ -746,8 +768,12 @@ async def health() -> dict:
         # right next to it -- a fresh startup (before either worker's
         # first successful pass) or a genuinely stuck worker still
         # reported "ok" overall while its own detail flag said otherwise.
-        "status": "ok" if (db_ok and price_monitor_ok and reconciler_ok and writer_lease_ok is not False) else "degraded",
+        # F-08: Now also includes database_write_ok and disk_usage_ok
+        "status": "ok" if (db_ok and database_write_ok and disk_usage_ok and price_monitor_ok and reconciler_ok and writer_lease_ok is not False) else "degraded",
         "database_ok": db_ok,
+        "database_write_ok": database_write_ok,
+        "disk_usage_ok": disk_usage_ok,
+        "disk_free_bytes": disk_free_bytes,
         "price_monitor_ok": price_monitor_ok,
         "reconciler_ok": reconciler_ok,
         "provider_scout_ok": provider_scout_ok,
@@ -2653,6 +2679,139 @@ def _account_has_exposure(account_id: str) -> bool:
     return any(lifecycle.key[0] == account_id for lifecycle in lifecycle_manager.list_open_lifecycles())
 
 
+def _check_rule_deletion_exposure(rule_id: int) -> list[dict]:
+    """F-07: Check if deleting a rule would strand any open positions that
+    rely on it for closing. Returns a list of affected positions (each a dict
+    with account_id, symbol, and source). Empty list means safe to delete."""
+    # Get the rule being deleted
+    rules = store.list_config_routing_rules()
+    rule_dict = next((r for r in rules if r["id"] == rule_id), None)
+
+    if rule_dict is None:
+        return []
+
+    rule_to_delete = RoutingRule(
+        source=rule_dict["source"],
+        destinations=rule_dict["destinations"],
+        symbol_filter=rule_dict["symbol_filter"],
+    )
+
+    # Build a config without this rule to test
+    pending_rules: list[RoutingRule] = []
+    for r in rules:
+        if r["id"] != rule_id:
+            pending_rules.append(
+                RoutingRule(
+                    source=r["source"],
+                    destinations=r["destinations"],
+                    symbol_filter=r["symbol_filter"],
+                )
+            )
+    pending_config = RoutingConfig(rules=pending_rules, accounts=routing_config.accounts)
+
+    # Check each open position: if it would lose its exit path, it's stranded
+    stranded = []
+    origin_by_key: dict[tuple[str, str], dict] = {}
+    for fill in store.list_filled_orders_with_signal_chronological():
+        origin_by_key[(fill["account_id"], fill["symbol"])] = fill
+
+    for pos in store.list_open_positions():
+        origin = origin_by_key.get((pos["account_id"], pos["symbol"]))
+        if origin is None or origin["source"] != rule_to_delete.source:
+            continue  # Not routed by this rule
+
+        # Check if this position would still have an exit path after deletion
+        now_close = any(
+            a.account_id == pos["account_id"]
+            for a in routing_config.destinations_for(
+                rule_to_delete.source, pos["symbol"], include_disabled=True
+            )
+        )
+        pending_close = any(
+            a.account_id == pos["account_id"]
+            for a in pending_config.destinations_for(
+                rule_to_delete.source, pos["symbol"], include_disabled=True
+            )
+        )
+
+        if now_close and not pending_close:
+            # This position would be stranded
+            stranded.append({
+                "account_id": pos["account_id"],
+                "symbol": pos["symbol"],
+                "source": origin["source"],
+            })
+
+    return stranded
+
+
+def _check_rule_modification_exposure(
+    rule_id: int, new_source: str, new_destinations: list[str], new_symbol_filter: list[str] | None
+) -> list[dict]:
+    """F-07: Check if modifying a rule would strand any open positions that
+    rely on it for closing. Returns list of affected positions. Empty means safe."""
+    # Get the original rule
+    rules = store.list_config_routing_rules()
+    orig_rule_dict = next((r for r in rules if r["id"] == rule_id), None)
+    if orig_rule_dict is None:
+        return []
+    
+    orig_source = orig_rule_dict["source"]
+
+    # Build config with modified rule
+    pending_rules: list[RoutingRule] = []
+    for r in rules:
+        if r["id"] == rule_id:
+            pending_rules.append(
+                RoutingRule(source=new_source, destinations=new_destinations, symbol_filter=new_symbol_filter)
+            )
+        else:
+            pending_rules.append(
+                RoutingRule(
+                    source=r["source"],
+                    destinations=r["destinations"],
+                    symbol_filter=r["symbol_filter"],
+                )
+            )
+    pending_config = RoutingConfig(rules=pending_rules, accounts=routing_config.accounts)
+
+    # Check each open position routed by this rule's source
+    stranded = []
+    origin_by_key: dict[tuple[str, str], dict] = {}
+    for fill in store.list_filled_orders_with_signal_chronological():
+        origin_by_key[(fill["account_id"], fill["symbol"])] = fill
+
+    for pos in store.list_open_positions():
+        origin = origin_by_key.get((pos["account_id"], pos["symbol"]))
+        if origin is None:
+            continue  # Not routed by this rule's source
+        if origin["source"] != orig_source:
+            continue  # Not routed by this rule's source
+
+        # Check exit path before/after
+        now_close = any(
+            a.account_id == pos["account_id"]
+            for a in routing_config.destinations_for(
+                orig_source, pos["symbol"], include_disabled=True
+            )
+        )
+        pending_close = any(
+            a.account_id == pos["account_id"]
+            for a in pending_config.destinations_for(
+                orig_source, pos["symbol"], include_disabled=True
+            )
+        )
+
+        if now_close and not pending_close:
+            stranded.append({
+                "account_id": pos["account_id"],
+                "symbol": pos["symbol"],
+                "source": origin["source"],
+            })
+
+    return stranded
+
+
 class RoutingRuleRequest(BaseModel):
     source: str
     destinations: list[str]
@@ -2677,7 +2836,34 @@ async def create_routing_rule(request: RoutingRuleRequest, _owner: dict = Depend
 
 
 @app.put("/routing-rules/{rule_id}")
-async def update_routing_rule(rule_id: int, request: RoutingRuleRequest, _owner: dict = Depends(require_owner)) -> dict:
+async def update_routing_rule(
+    rule_id: int,
+    request: RoutingRuleRequest,
+    force: bool = False,
+    _owner: dict = Depends(require_owner),
+) -> dict:
+    """F-07: Modify a routing rule, checking for exposure before allowing
+    the change. Returns 409 Conflict if the modification would strand positions
+    that rely on this rule for closing, unless ?force=true is passed."""
+    # Check if modification would strand positions
+    stranded = _check_rule_modification_exposure(
+        rule_id, request.source, request.destinations, request.symbol_filter
+    )
+
+    if stranded and not force:
+        # Log the stranding as a warning; WP-34 will record this as an alert
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.warning(
+            "F-07: Rule modification would strand %d positions; set ?force=true to proceed. Stranded: %s",
+            len(stranded),
+            stranded,
+        )  # TODO: WP-34 - record an alert
+        raise HTTPException(
+            status_code=409,
+            detail=f"Modification would strand {len(stranded)} position(s) from exiting. Pass ?force=true to override.",
+        )
+
     store.update_config_routing_rule(
         rule_id, request.source, request.destinations, request.symbol_filter, request.delivery_mode
     )
@@ -2686,7 +2872,31 @@ async def update_routing_rule(rule_id: int, request: RoutingRuleRequest, _owner:
 
 
 @app.delete("/routing-rules/{rule_id}")
-async def delete_routing_rule(rule_id: int, _owner: dict = Depends(require_owner)) -> dict:
+async def delete_routing_rule(
+    rule_id: int,
+    force: bool = False,
+    _owner: dict = Depends(require_owner),
+) -> dict:
+    """F-07: Delete a routing rule, checking for exposure before allowing deletion.
+    Returns 409 Conflict if deletion would strand positions that rely on this rule
+    for closing, unless ?force=true is passed."""
+    # Check if deletion would strand positions
+    stranded = _check_rule_deletion_exposure(rule_id)
+
+    if stranded and not force:
+        # Log the stranding as a warning; WP-34 will record this as an alert
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.warning(
+            "F-07: Rule deletion would strand %d positions; set ?force=true to proceed. Stranded: %s",
+            len(stranded),
+            stranded,
+        )  # TODO: WP-34 - record an alert
+        raise HTTPException(
+            status_code=409,
+            detail=f"Deletion would strand {len(stranded)} position(s) from exiting. Pass ?force=true to override.",
+        )
+
     store.delete_config_routing_rule(rule_id)
     _reload_routing_config()
     return {"id": rule_id, "status": "deleted"}
