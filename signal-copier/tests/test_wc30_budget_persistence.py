@@ -628,7 +628,7 @@ class TestBudgetBoundaryConditions:
             close_quantity=0, slots=1,
         )
 
-        res_id = tmp_store.create_hierarchical_reservation(
+        _res_id = tmp_store.create_hierarchical_reservation(
             opportunity_id="opp_boundary_plus1",
             scope=scope,
             need=need,
