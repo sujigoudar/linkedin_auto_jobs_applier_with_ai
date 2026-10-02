@@ -32,6 +32,7 @@ from app.models.portfolio_version import PortfolioVersion, PortfolioVersionSleev
 from app.models.price_version import BillingInterval, PriceMode, PriceVersion
 from app.models.rights import RightsGrant, RightsStatus, RightsUse
 from app.models.sleeve import Sleeve
+from app.models.tenancy import Membership, MembershipRole, Tenant, UserIdentity
 from app.services.customer_managed_programs import (
     get_own_managed_programs_view,
     list_customer_visible_managed_programs,
@@ -223,6 +224,9 @@ class TestPortfolioRightsSleeveMembership:
             max_subscriber_capacity=100,
             consent_disclosure_version="v1",
         )
+        db_session.add_all([sleeve, pv])
+        db_session.flush()
+
         membership = PortfolioVersionSleeve(
             portfolio_version_id=pv.portfolio_version_id,
             sleeve_id=sleeve.sleeve_id,
@@ -245,7 +249,7 @@ class TestPortfolioRightsSleeveMembership:
             wind_down_policy_id="wind-1",
             review_id="review-1",
         )
-        db_session.add_all([sleeve, pv, membership, grant])
+        db_session.add_all([membership, grant])
         db_session.commit()
 
         result = check_portfolio_rights(
@@ -282,13 +286,16 @@ class TestPortfolioRightsSleeveMembership:
             max_subscriber_capacity=100,
             consent_disclosure_version="v1",
         )
+        db_session.add_all([sleeve, pv])
+        db_session.flush()
+
         membership = PortfolioVersionSleeve(
             portfolio_version_id=pv.portfolio_version_id,
             sleeve_id=sleeve.sleeve_id,
             weight=Decimal("0.9"),
             tenant_id="t-1",
         )
-        db_session.add_all([sleeve, pv, membership])
+        db_session.add(membership)
         db_session.commit()
 
         result = check_portfolio_rights(
@@ -336,6 +343,9 @@ class TestPortfolioRightsSleeveMembership:
             max_subscriber_capacity=100,
             consent_disclosure_version="v1",
         )
+        db_session.add_all([sleeve1, sleeve2, pv])
+        db_session.flush()
+
         membership1 = PortfolioVersionSleeve(
             portfolio_version_id=pv.portfolio_version_id,
             sleeve_id=sleeve1.sleeve_id,
@@ -365,7 +375,7 @@ class TestPortfolioRightsSleeveMembership:
             wind_down_policy_id="wind-1",
             review_id="review-1",
         )
-        db_session.add_all([sleeve1, sleeve2, pv, membership1, membership2, grant])
+        db_session.add_all([membership1, membership2, grant])
         db_session.commit()
 
         result = check_portfolio_rights(
@@ -392,6 +402,9 @@ class TestPortfolioRightsSleeveMembership:
             max_subscriber_capacity=100,
             consent_disclosure_version="v1",
         )
+        db_session.add(pv)
+        db_session.flush()
+
         # Create membership pointing to non-existent sleeve
         membership = PortfolioVersionSleeve(
             portfolio_version_id=pv.portfolio_version_id,
@@ -399,7 +412,7 @@ class TestPortfolioRightsSleeveMembership:
             weight=Decimal("0.9"),
             tenant_id="t-1",
         )
-        db_session.add_all([pv, membership])
+        db_session.add(membership)
         db_session.commit()
 
         result = check_portfolio_rights(
@@ -611,6 +624,20 @@ class TestPortfolioRightsProviderMapping:
 # =============================================================================
 # CUSTOMER_PERFORMANCE_STATE.PY MUTATION TESTS
 # =============================================================================
+def _seed_membership(db_session, *, tenant_id="t-1", user_id="u-1"):
+    """Helper to create Tenant, UserIdentity, and Membership records
+    required by PlatformConnection FK constraints."""
+    if db_session.get(Tenant, tenant_id) is None:
+        db_session.add(Tenant(tenant_id=tenant_id, display_name="Tenant", environment="LOCAL_SIM"))
+        db_session.flush()
+    if db_session.get(UserIdentity, user_id) is None:
+        db_session.add(UserIdentity(user_id=user_id, email=f"{user_id}@example.com"))
+        db_session.flush()
+    if db_session.get(Membership, (tenant_id, user_id)) is None:
+        db_session.add(Membership(tenant_id=tenant_id, user_id=user_id, role=MembershipRole.CUSTOMER))
+        db_session.commit()
+
+
 class TestPerformanceStateNoConnection:
     """No connection case (mutation target: == vs !=, None check omitted)."""
 
@@ -637,12 +664,13 @@ class TestPerformanceStateAwaitingObservations:
     def test_connection_no_observations_awaiting_state(self, db_session):
         """Mutation target: dropped FOLLOWER book existence check or wrong
         book type. No observations should return AWAITING state."""
+        _seed_membership(db_session, tenant_id="t-1", user_id="u-1")
         conn = PlatformConnection(
             tenant_id="t-1",
             user_id="u-1",
             platform="collective2",
             connection_id="conn-1",
-            platform_account_id="acct-1",
+            masked_account_label="Collective2 ****1234",
             state=PlatformConnectionState.DECLARED,
             environment="local_simulation",
         )
@@ -656,12 +684,13 @@ class TestPerformanceStateAwaitingObservations:
     def test_awaiting_not_available_without_entries(self, db_session):
         """Mutation target: flipped logic or dropped query. Should not be
         AVAILABLE without any ledger entries."""
+        _seed_membership(db_session, tenant_id="t-1", user_id="u-2")
         conn = PlatformConnection(
             tenant_id="t-1",
             user_id="u-2",
             platform="etoro",
             connection_id="conn-2",
-            platform_account_id="acct-2",
+            masked_account_label="eToro ****5678",
             state=PlatformConnectionState.DECLARED,
             environment="local_simulation",
         )
@@ -680,12 +709,13 @@ class TestPerformanceStateAvailable:
     def test_connection_with_follower_entries_available(self, db_session):
         """Mutation target: wrong book type check or missing FOLLOWER query.
         With FOLLOWER entries, should return AVAILABLE state."""
+        _seed_membership(db_session, tenant_id="t-1", user_id="u-3")
         conn = PlatformConnection(
             tenant_id="t-1",
             user_id="u-3",
-            platform="metapi",
+            platform="collective2",
             connection_id="conn-3",
-            platform_account_id="acct-3",
+            masked_account_label="Test ****3456",
             state=PlatformConnectionState.DECLARED,
             environment="local_simulation",
         )
@@ -711,12 +741,14 @@ class TestPerformanceStateAvailable:
     def test_tenant_isolation_in_performance_state(self, db_session):
         """Mutation target: == vs != on tenant_id, or dropped check.
         Different tenants' entries must not leak."""
+        _seed_membership(db_session, tenant_id="t-1", user_id="u-4")
+        _seed_membership(db_session, tenant_id="t-2", user_id="u-5")
         conn_t1 = PlatformConnection(
             tenant_id="t-1",
             user_id="u-4",
             platform="collective2",
             connection_id="conn-t1",
-            platform_account_id="acct-t1",
+            masked_account_label="T1 ****1111",
             state=PlatformConnectionState.DECLARED,
             environment="local_simulation",
         )
@@ -725,7 +757,7 @@ class TestPerformanceStateAvailable:
             user_id="u-5",
             platform="collective2",
             connection_id="conn-t2",
-            platform_account_id="acct-t2",
+            masked_account_label="T2 ****2222",
             state=PlatformConnectionState.DECLARED,
             environment="local_simulation",
         )
@@ -756,12 +788,14 @@ class TestPerformanceStateAvailable:
     def test_connection_id_matching_in_state_query(self, db_session):
         """Mutation target: wrong field used in connection_id check.
         Query must match on follower_connection_id field specifically."""
+        _seed_membership(db_session, tenant_id="t-1", user_id="u-6")
+        _seed_membership(db_session, tenant_id="t-1", user_id="u-7")
         conn1 = PlatformConnection(
             tenant_id="t-1",
             user_id="u-6",
             platform="collective2",
             connection_id="conn-x",
-            platform_account_id="acct-x",
+            masked_account_label="Conn1 ****1234",
             state=PlatformConnectionState.DECLARED,
             environment="local_simulation",
         )
@@ -770,7 +804,7 @@ class TestPerformanceStateAvailable:
             user_id="u-7",
             platform="etoro",
             connection_id="conn-y",
-            platform_account_id="acct-y",
+            masked_account_label="Conn2 ****5678",
             state=PlatformConnectionState.DECLARED,
             environment="local_simulation",
         )
