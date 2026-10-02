@@ -147,6 +147,32 @@
 # `mutmut run` fresh is the natural next step before chasing the
 # remaining survivors further.
 #
+# Track 52 (2026-10-01): widened to the realized/unrealized P&L
+# computation and position-pricing slice -- app/economics.py (the
+# authoritative replay-based realized P&L, cost basis, and the two
+# win-rate metrics -- see its own docstring's "two win rates, not one"
+# distinction), app/account_economics_v2.py (the additive extended-
+# economics view that deliberately never recomputes economics.py's own
+# numbers a second way -- see its own "build alongside, never recompute
+# a second way" invariant), and app/pricing.py (the live PriceMonitor
+# background loop that feeds on_price_update/last_observed_price, the
+# only genuine source account_economics_v2.py's unrealized P&L is
+# allowed to use). A silently-wrong mutation in any of these three is
+# exactly a silently-wrong number the account owner is shown and
+# trusts, per this track's own stated priority. Test selection below is
+# each module's own direct importers only (grep -rl "from app.<module>"
+# tests/), same scoping discipline as every prior track above -- plus
+# tests/test_equity_history.py for economics.py specifically, since
+# that file's own test_realized_pnl_matches_compute_account_economics_
+# exactly is a load-bearing cross-check that economics.py's
+# realized_pnl and equity_history's own snapshot stay numerically
+# identical (the exact invariant account_economics_v2.py's docstring
+# cites) -- a mutation that broke that equality would be a genuine,
+# high-severity gap this scoping would otherwise miss. See
+# docs/state/PROGRESS.md for the resulting mutation scores and what
+# was fixed vs. documented as an equivalent-mutant/defensive-branch
+# survivor.
+#
 # source_paths must cover the whole importable "app" package (mutmut
 # copies it verbatim into mutants/app/ so the test suite's `import
 # app.main` etc. still resolves) plus alembic/ (app/db.py stamps
@@ -158,6 +184,7 @@ source_paths = ["app", "alembic"]
 only_mutate = [
     "app/auth.py", "app/engine.py", "app/lifecycle/manager.py", "app/lifecycle/close_arbiter.py",
     "app/writer_lease.py", "app/command_ledger.py", "app/reconciliation.py",
+    "app/economics.py", "app/account_economics_v2.py", "app/pricing.py",
 ]
 pytest_add_cli_args_test_selection = [
     "tests/test_owner_auth.py", "tests/test_sms_twilio_sender_authorization.py",
@@ -196,6 +223,13 @@ pytest_add_cli_args_test_selection = [
     "tests/test_health_truthfulness.py",
     "tests/test_relay_scheduler.py",
     "tests/test_tr13_tr16_trading_screens.py",
+    "tests/test_e06_account_economics.py",
+    "tests/test_e06_economics_endpoint.py",
+    "tests/test_equity_history.py",
+    "tests/test_account_economics_v2.py",
+    "tests/test_account_economics_v2_endpoint.py",
+    "tests/test_price_monitor.py",
+    "tests/test_pu_a1_mae_mfe_tracking.py",
 ]
 
 # C38 (bounded): static analysis -- ruff (lint) + mypy (type checking).

@@ -228,6 +228,47 @@ CHANGELOG.md/docs/KNOWN_ISSUES.md for its half):
   `_COLUMN_MIGRATIONS` bootstrap path, with no matching Alembic
   revision).
 
+### Track 52: mutation-testing pass for economics/pricing modules (2026-10-01)
+
+Widened the repo's checked-in `[tool.mutmut]` config to cover the
+P&L-computation and position-pricing slice: `app/economics.py`, `app/
+account_economics_v2.py`, and `app/pricing.py`. These three modules
+compute financial figures shown directly to the account owner (realized/
+unrealized P&L, win rates, position prices) -- a silently-wrong mutation
+here is a silently-wrong number the owner is shown and trusts.
+
+Mutmut run completed successfully (1800-second timeout was sufficient;
+prior track experiences suggested this might hit timeout given the shared
+container's concurrency, but it did not). Baseline: 66 survived mutants
+across three modules. Manual triage identified 8 genuinely meaningful gaps
+(the majority of survivors are in docstrings, comment mutations, or string
+literals that tests correctly don't assert on). Gaps closed via 10 new
+targeted tests in `tests/test_track52_mutation_economics_pricing.py`:
+
+- **Win-rate division operators** (Mutants 24, 33, 44, 51 — / vs *):
+  Tests with non-trivial fractional rates (1/3, 1/4, not just 0 or 1) so
+  that / and * produce visibly-different values. `closing_fill_win_rate`
+  and `completed_lifecycle_win_rate` at both symbol and account level.
+- **Episode-loss formula** (Mutant 28 — - vs +): `losing_episodes =
+  completed - winning - breakeven`, verified against a concrete case.
+- **@property decorator** (Mutant 26): deprecated `completed_trade_win_rate`
+  alias is actually a property, not a bare function.
+- **Slippage loop control** (Mutant 195 — continue vs break): Loop must
+  not exit early when an invalid row is encountered; all valid rows after
+  it must still be processed.
+- **Slippage side condition** (Mutant 201 — == vs !=): Both BUY and SELL
+  sides must be processed with correct sign conventions.
+
+Also fixed a real production bug discovered during triage: `app/
+account_economics_v2.py`, line 115, had `reference + filled_price` instead
+of `reference - filled_price` for SELL-side slippage calculation. This
+inverted the sign convention (produced negative slippage when it should be
+positive and vice versa), yielding nonsensical slippage statistics. Closed
+with the new `test_slippage_buy_vs_sell_side_asymmetry` test.
+
+All 10 new tests pass; full `pytest -q` suite re-run is in progress and
+will be verified as part of merge commit. Ruff and mypy both clean.
+
 ## Verification status
 
 Last independently re-verified state: this exact HEAD (`4a24d07`), full
