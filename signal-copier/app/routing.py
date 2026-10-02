@@ -206,16 +206,13 @@ def load_routing_config(routing_path: Path, accounts_path: Path) -> RoutingConfi
                 exclusive_writer_qualified=spec.get("exclusive_writer_qualified", False),
                 daily_loss_limit_percent=spec.get("daily_loss_limit_percent"),
                 min_equity_threshold=spec.get("min_equity_threshold"),
-<<<<<<< HEAD
                 currency=spec.get("currency"),
                 max_gross_leverage=spec.get("max_gross_leverage"),
                 allow_short=spec.get("allow_short", False),
                 sizing_mode=spec.get("sizing_mode", "multiplier"),
                 risk_fraction=spec.get("risk_fraction"),
                 allow_short=spec.get("allow_short", False),  # WP-08: allow_short setting
-=======
                 max_gross_leverage=spec.get("max_gross_leverage"),
->>>>>>> c659a00 (WP-32b: Enforce max_gross_leverage cap and implement paper broker margin/equity)
             )
 
     rules: list[RoutingRule] = []
@@ -256,7 +253,6 @@ def load_routing_config_from_store(store) -> RoutingConfig:
             exclusive_writer_qualified=bool(row.get("exclusive_writer_qualified", False)),
             daily_loss_limit_percent=row.get("daily_loss_limit_percent"),
             min_equity_threshold=row.get("min_equity_threshold"),
-<<<<<<< HEAD
             evidence_class=row.get("evidence_class"),  # WP-38 (G-C-13)
             paper_order_id_sequence=row.get("paper_order_id_sequence"),  # WP-38 (G-C-24) (WP-30: Loss limits end-to-end wiring (B-08/F-02))
             currency=row.get("currency"),
@@ -265,9 +261,7 @@ def load_routing_config_from_store(store) -> RoutingConfig:
             sizing_mode=row.get("sizing_mode", "multiplier"),
             risk_fraction=row.get("risk_fraction"),
             allow_short=bool(row.get("allow_short", False)),  # WP-08: allow_short setting
-=======
             max_gross_leverage=row.get("max_gross_leverage"),
->>>>>>> c659a00 (WP-32b: Enforce max_gross_leverage cap and implement paper broker margin/equity)
         )
         for row in store.list_config_accounts()
     }

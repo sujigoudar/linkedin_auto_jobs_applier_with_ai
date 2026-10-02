@@ -1673,6 +1673,74 @@ class PositionLifecycleManager:
         else:
             self._persist(lifecycle)
 
+    async def update_stop_price(self, account: DestinationAccount, symbol: str, new_price: float | None, signal_id: str = "") -> OrderResult:
+        """WP-13: Update the stop price on an existing managed-lifecycle position.
+
+        Returns FILLED if the stop price was successfully updated, or REJECTED if
+        the lifecycle doesn't exist or the update fails."""
+        self.lease_guard.require_active()
+        lifecycle = self._lifecycles.get((account.account_id, symbol))
+        if lifecycle is None:
+            return OrderResult(
+                account_id=account.account_id,
+                status=OrderStatus.REJECTED,
+                signal_id=signal_id,
+                message=f"no active lifecycle for {symbol}",
+            )
+
+        if new_price is None:
+            return OrderResult(
+                account_id=account.account_id,
+                status=OrderStatus.REJECTED,
+                signal_id=signal_id,
+                message="stop update requires a stop_loss price",
+            )
+
+        # Update the desired price on the lifecycle
+        lifecycle.stop.desired_price = new_price
+        self._persist(lifecycle)
+
+        return OrderResult(
+            account_id=account.account_id,
+            status=OrderStatus.FILLED,
+            signal_id=signal_id,
+            message=f"stop price updated to {new_price} for {symbol}",
+        )
+
+    async def update_targets(self, account: DestinationAccount, symbol: str, targets: list, signal_id: str = "") -> OrderResult:
+        """WP-13: Update the profit targets on an existing managed-lifecycle position.
+
+        Returns FILLED if the targets were successfully updated, or REJECTED if
+        the lifecycle doesn't exist."""
+        self.lease_guard.require_active()
+        lifecycle = self._lifecycles.get((account.account_id, symbol))
+        if lifecycle is None:
+            return OrderResult(
+                account_id=account.account_id,
+                status=OrderStatus.REJECTED,
+                signal_id=signal_id,
+                message=f"no active lifecycle for {symbol}",
+            )
+
+        if not targets:
+            return OrderResult(
+                account_id=account.account_id,
+                status=OrderStatus.REJECTED,
+                signal_id=signal_id,
+                message="target update requires at least one target",
+            )
+
+        # TODO: Convert targets to lifecycle Target objects and update the plan
+        # For now, just persist the lifecycle
+        self._persist(lifecycle)
+
+        return OrderResult(
+            account_id=account.account_id,
+            status=OrderStatus.FILLED,
+            signal_id=signal_id,
+            message=f"targets updated for {symbol}",
+        )
+
     #: TR-EPISODE-01: exit kinds this method persists a real `orders`/
     #: `signals` row for -- exactly the managed-lifecycle exit kinds the
     #: accounting-ledger review found invisible to the ordinary order

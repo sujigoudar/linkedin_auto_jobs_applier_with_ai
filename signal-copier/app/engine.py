@@ -839,7 +839,73 @@ class SignalCopierEngine:
                 )
                 continue
 
+<<<<<<< HEAD
             if working_signal.side != Side.CLOSE:
+=======
+            # WP-13: Handle STOP_UPDATE and TARGET_UPDATE intents before entry/close routing
+            if signal.intent == Intent.STOP_UPDATE or signal.intent == Intent.TARGET_UPDATE:
+                symbol = symbol_for_account(signal, account)
+
+                if signal.intent == Intent.STOP_UPDATE:
+                    lifecycle = self.lifecycle_manager.get_lifecycle(account.account_id, symbol)
+                    if lifecycle is not None:
+                        result = await self.lifecycle_manager.update_stop_price(account, symbol, signal.stop_loss, signal_id=signal.id)
+                    else:
+                        result = OrderResult(
+                            account_id=account.account_id,
+                            status=OrderStatus.REJECTED,
+                            signal_id=signal.id,
+                            message=f"stop update needs a managed lifecycle for {symbol} on {account.account_id}",
+                        )
+                    self.store.save_order_result(
+                        result,
+                        broker=account.broker,
+                        symbol=symbol,
+                        side=signal.side,
+                        purpose="stop_update",
+                        family_id=None,
+                    )
+                    results.append(result)
+                    self._export_routing_outcome(
+                        signal,
+                        outcome=_OUTCOME_BY_ORDER_STATUS[result.status],
+                        account=account,
+                        order_status=result.status,
+                        message=result.message,
+                    )
+                    continue
+
+                if signal.intent == Intent.TARGET_UPDATE:
+                    lifecycle = self.lifecycle_manager.get_lifecycle(account.account_id, symbol)
+                    if lifecycle is not None:
+                        result = await self.lifecycle_manager.update_targets(account, symbol, signal.targets, signal_id=signal.id)
+                    else:
+                        result = OrderResult(
+                            account_id=account.account_id,
+                            status=OrderStatus.REJECTED,
+                            signal_id=signal.id,
+                            message=f"target update needs a managed lifecycle for {symbol} on {account.account_id}",
+                        )
+                    self.store.save_order_result(
+                        result,
+                        broker=account.broker,
+                        symbol=symbol,
+                        side=signal.side,
+                        purpose="target_update",
+                        family_id=None,
+                    )
+                    results.append(result)
+                    self._export_routing_outcome(
+                        signal,
+                        outcome=_OUTCOME_BY_ORDER_STATUS[result.status],
+                        account=account,
+                        order_status=result.status,
+                        message=result.message,
+                    )
+                    continue
+
+            if signal.side != Side.CLOSE:
+>>>>>>> 4735f9c (WP-13: Implement STOP_UPDATE and TARGET_UPDATE intent handlers)
                 # Track 1b: refuse a live ENTRY before anything else broker/
                 # asset-class-specific is even checked -- see
                 # `_check_route_qualified`'s own docstring for exactly what
