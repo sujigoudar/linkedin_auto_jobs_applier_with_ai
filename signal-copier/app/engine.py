@@ -266,6 +266,33 @@ def _positions_reconcile(broker_position: float, local_position: float) -> bool:
     return abs(broker_position - local_position) <= tolerance
 
 
+def _get_contract_multiplier(signal: Signal) -> tuple[float, str | None]:
+    """Extract the contract multiplier from a Signal based on its asset class.
+
+    Returns (multiplier, error_message). error_message is non-None only when
+    a required contract spec is missing (e.g., OPTION without OptionContractSpec).
+
+    - CRYPTO/EQUITY: multiplier = 1.0 (no spec required)
+    - OPTION: multiplier = signal.option.multiplier (default 100.0, spec required)
+    - FUTURE: multiplier = signal.future.multiplier (spec required)
+    - FOREX: multiplier = 1.0 (spec optional, lot normalization handled by adapter)
+    """
+    if signal.asset_class == AssetClass.OPTION:
+        if signal.option is None:
+            return 1.0, "OPTION signal missing required OptionContractSpec"
+        return signal.option.multiplier, None
+    elif signal.asset_class == AssetClass.FUTURE:
+        if signal.future is None:
+            return 1.0, "FUTURE signal missing required FutureContractSpec"
+        return signal.future.multiplier, None
+    elif signal.asset_class == AssetClass.FOREX:
+        # FX spec optional; lot normalization handled by adapter, not engine
+        return 1.0, None
+    else:
+        # CRYPTO and EQUITY have no contract multiplier
+        return 1.0, None
+
+
 class SignalCopierEngine:
     def __init__(
         self,
@@ -1968,7 +1995,11 @@ class SignalCopierEngine:
                 "against a stale or invented one",
             )
         equity = balance.equity
-        risk_notional = abs(price - stop_loss) * abs(quantity)
+        # B-03: apply contract multiplier to risk calculation
+        contract_multiplier, spec_error = _get_contract_multiplier(order_signal)
+        if spec_error is not None:
+            return False, self._reject(account, order_signal, spec_error)
+        risk_notional = abs(price - stop_loss) * abs(quantity) * contract_multiplier
         risk_ceiling = equity * risk_percent_of_equity
         if risk_notional > risk_ceiling:
             return False, self._reject(
@@ -2048,7 +2079,11 @@ class SignalCopierEngine:
                 account.broker,
             )
             return True, None
-        notional = abs(quantity) * abs(order_signal.price)
+        # B-03: apply contract multiplier to buying power check
+        contract_multiplier, spec_error = _get_contract_multiplier(order_signal)
+        if spec_error is not None:
+            return False, self._reject(account, order_signal, spec_error)
+        notional = abs(quantity) * abs(order_signal.price) * contract_multiplier
         if notional > balance.buying_power:
             return False, self._reject(
                 account,
@@ -2182,7 +2217,11 @@ class SignalCopierEngine:
                 "can't be safely computed, refusing rather than admitting an unbounded or corrupted "
                 "reservation",
             )
-        notional = abs(quantity) * abs(order_signal.price)
+        # B-03: apply contract multiplier to capital allocation
+        contract_multiplier, spec_error = _get_contract_multiplier(order_signal)
+        if spec_error is not None:
+            return False, 0.0, self._reject(account, order_signal, spec_error)
+        notional = abs(quantity) * abs(order_signal.price) * contract_multiplier
 
         owner_gated = self.max_owner_notional_exposure is not None
         if owner_gated:
