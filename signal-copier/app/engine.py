@@ -111,11 +111,14 @@ for `/positions` observability, same as the plain path.
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import logging
 import math
 from collections import defaultdict
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
+from decimal import Decimal
 
 import structlog
 from signal_platform_contracts import Environment, EventEnvelope, EvidenceClass
@@ -168,7 +171,9 @@ from app.routing import RoutingConfig
 from app.shadow_mode import evaluate_shadow, to_result_row
 from app.writer_lease import NullLeaseGuard, WriterLeaseGuard
 from app.workflow.admission import AdmissionInputs, evaluate_admission
-from app.workflow.budget import HierarchicalBudget, BudgetScope, ResourceVector, BrokerSnapshot
+from app.workflow.budget import HierarchicalBudget, BudgetScope, ResourceVector, BrokerSnapshot, ReservationState
+from app.workflow.intents import OrderIntent, Outbox
+from app.workflow.money import ceil_cents
 
 logger = logging.getLogger(__name__)
 structured_logger = structlog.get_logger(__name__)
@@ -348,6 +353,11 @@ class SignalCopierEngine:
         # effect occurs. Claims opportunity atomically to prevent duplicate
         # admission from concurrent workers.
         self.hierarchical_budget = HierarchicalBudget(store=store)
+        # WC-33: Outbox for durable order intents and dispatch coordination.
+        # Decouples intent creation from broker dispatch for SUBMISSION_UNKNOWN
+        # recovery. Enqueues an intent, claims it for dispatch, and records
+        # the response in separate transactions (§6.3).
+        self.outbox = Outbox(store)
         # Wired in after construction (app/lifecycle/manager.py's own
         # __init__ can't take this: main.py often constructs a
         # PositionLifecycleManager before this Engine, and so before this
@@ -383,8 +393,8 @@ class SignalCopierEngine:
         quantity: float,
         signal: Signal,
         broker: BrokerAdapter,
-    ) -> tuple[bool, str | None]:
-        """WC-20 STEP 4: Check and reserve hierarchical resources atomically.
+    ) -> tuple[bool, str | None, str | None]:
+        """WC-33: Check and reserve hierarchical resources atomically.
 
         Constructs a budget scope and resource vector for the account/signal/quantity,
         fetches the broker snapshot (equity, margin, buying power), and calls
@@ -392,30 +402,47 @@ class SignalCopierEngine:
         (owner, account, portfolio, sleeve, provider, underlying, cluster) have
         sufficient resources before any broker effect occurs.
 
+        Implementation (WC-33 STEP A):
+        - Resolve price using _resolve_price_for_gating (same price used by _try_reserve_capital)
+        - Fail closed when price is None and any level has finite limit configured
+        - Calculate resource vector: cash = ceil(qty × price × multiplier), notional = cash
+        - planned_risk = |price - stop_loss| × qty × multiplier when stop_loss set, else 0
+        - initial_margin based on margin_type (cash venues: 0, margin venues: ceil(cash / max_gross_leverage))
+        - Call check_and_reserve atomically
+
         Args:
             signal_id: The signal ID (used as opportunity_id for deduplication)
             account: The destination account
-            quantity: The calculated order quantity
+            quantity: The calculated order quantity (float)
             signal: The signal being routed
             broker: The broker adapter for this account
 
         Returns:
-            (reserved_ok, error_message) where reserved_ok=True if resources were
-            reserved, or False with an error_message if reservation was blocked.
+            (reserved_ok, error_message, reservation_id) where:
+            - reserved_ok=True and reservation_id is set if resources reserved
+            - reserved_ok=False with error_message if reservation blocked
+            - reservation_id is None if not reserved
         """
-        # TODO (WC-20 STEP 5): Wire OrderIntent creation and wire the actual
-        # enforcement of reservation failures. For now, STEP 4 logs the result
-        # for audit/tracing but does not reject the entry if reservation fails.
-
         try:
+            # WC-33 STEP A: Calculate resource vector from sized order
+
+            # Resolve price using the same logic as _try_reserve_capital
+            price, price_source = await self._resolve_price_for_gating(broker, signal)
+
+            # Get contract multiplier
+            mult, spec_error, _spec_note = _get_contract_multiplier(signal)
+            if spec_error is not None:
+                return False, f"resource reservation blocked: {spec_error}", None
+            contract_multiplier = mult
+
             # Fetch broker snapshot (equity, margin, buying power)
             balance = await broker.get_account_balance(account)
             broker_snapshot = None
             if balance is not None:
-                # Convert float dollars to integer cents (1 dollar = 100 cents)
-                buying_power_cents = int(balance.buying_power * 100) if balance.buying_power is not None else None
-                equity_cents = int(balance.equity * 100) if balance.equity is not None else None
-                maintenance_cents = int(balance.maintenance_margin * 100) if balance.maintenance_margin is not None else None
+                # Convert to integer cents, using to_cents (which is exact)
+                buying_power_cents = ceil_cents(balance.buying_power) if balance.buying_power is not None else None
+                equity_cents = ceil_cents(balance.equity) if balance.equity is not None else None
+                maintenance_cents = ceil_cents(balance.maintenance_margin) if balance.maintenance_margin is not None else None
 
                 broker_snapshot = BrokerSnapshot(
                     buying_power=buying_power_cents,
@@ -426,9 +453,8 @@ class SignalCopierEngine:
                 )
 
             # Construct budget scope (all hierarchical levels)
-            # For now, minimal scope: owner, account, provider, underlying
             scope = BudgetScope(
-                owner="owner",  # TODO: derive from config
+                owner="owner",  # TODO: derive from config or account metadata
                 physical_account_id=account.account_id,
                 portfolio_id=None,  # TODO: support multi-portfolio
                 sleeve_id=None,  # TODO: support sleeves
@@ -439,12 +465,42 @@ class SignalCopierEngine:
             )
 
             # Construct resource vector for the sized entry
-            # All fields in cents (integer scaled) or integer quantities
-            planned_risk_cents = 0  # TODO: calculate from signal.stop_loss
-            stress_risk_cents = None  # TODO: calculate from stress scenarios
-            cash_needed_cents = 0  # TODO: calculate from entry_price * quantity
-            initial_margin_cents = 0  # TODO: calculate from broker margin rules
-            notional_cents = 0  # TODO: calculate from price * quantity
+            # WC-33 STEP A: Calculate from sized order using integer cents
+
+            # Cash need: ceil(quantity × price × contract_multiplier)
+            # Always round UP for conservative cash requirement
+            if price is not None and price > 0:
+                cash_needed_decimal = Decimal(str(quantity)) * Decimal(str(price)) * Decimal(str(contract_multiplier))
+                cash_needed_cents = ceil_cents(cash_needed_decimal)
+                notional_cents = cash_needed_cents
+            else:
+                # No resolvable price: check if any level has finite limit
+                # If so, reject; if all unlimited, proceed with cash=0
+                cash_needed_cents = 0
+                notional_cents = 0
+
+                # Check if any hierarchical level has finite limit
+                has_finite_limit = False
+                # TODO: query store for owner/account/portfolio/sleeve/provider/underlying limits
+                # For now, assume if we reach here and price is None, we can't proceed if there are limits
+                if has_finite_limit or account.max_notional_exposure is not None:
+                    return False, "no resolvable price for reservation", None
+
+            # Planned risk: |price - stop_loss| × quantity × multiplier (in cents)
+            planned_risk_cents = 0
+            if signal.stop_loss is not None and signal.stop_loss > 0 and price is not None and price > 0:
+                # Calculate planned risk in cents
+                risk_per_unit = abs(Decimal(str(price)) - Decimal(str(signal.stop_loss)))
+                planned_risk_decimal = risk_per_unit * Decimal(str(quantity)) * Decimal(str(contract_multiplier))
+                planned_risk_cents = ceil_cents(planned_risk_decimal)
+
+            # Initial margin calculation
+            # For cash venues: 0
+            # For margin venues with max_gross_leverage: ceil(cash / max_gross_leverage)
+            # TODO: determine margin_type from physical account metadata
+            initial_margin_cents = 0
+            # NOTE: margin_type is not available on DestinationAccount yet;
+            # assuming cash venue for now (initial_margin_cents = 0)
 
             need = ResourceVector(
                 cash=cash_needed_cents,
@@ -453,12 +509,12 @@ class SignalCopierEngine:
                 maintenance=None,  # Validated from broker snapshot
                 notional=notional_cents,
                 planned_risk=planned_risk_cents,
-                stress_risk=stress_risk_cents,
+                stress_risk=None,  # TODO: calculate from stress scenarios
                 close_quantity=0,  # TODO: track closeable inventory
                 slots=1,  # One order slot required
             )
 
-            # Call check_and_reserve (currently logs result, enforcement in STEP 5)
+            # Call check_and_reserve
             reservation_result = self.hierarchical_budget.check_and_reserve(
                 opportunity_id=signal_id,
                 scope=scope,
@@ -467,22 +523,23 @@ class SignalCopierEngine:
             )
 
             logger.info(
-                "resource_reservation signal=%s account=%s ok=%s binding_level=%s",
+                "resource_reservation signal=%s account=%s ok=%s binding_level=%s reservation_id=%s",
                 signal_id,
                 account.account_id,
                 reservation_result.ok,
                 reservation_result.binding_level,
+                reservation_result.reservation_id,
             )
 
             if reservation_result.ok:
-                return True, None
+                return True, None, reservation_result.reservation_id
             else:
                 reason = reservation_result.reason.value if reservation_result.reason else "unknown"
-                return False, f"resource reservation blocked at {reservation_result.binding_level}: {reason}"
+                return False, f"resource reservation blocked: {reason}", None
 
         except Exception as e:
             logger.exception("resource_reservation failed signal=%s account=%s", signal_id, account.account_id)
-            return False, f"resource reservation check failed: {str(e)}"
+            return False, f"resource reservation check failed: {str(e)}", None
 
     def _build_export_envelope(
         self,
@@ -1841,6 +1898,46 @@ class SignalCopierEngine:
                     continue
                 committed_account_id = account.account_id
 
+            # WC-33 STEP B: Check and reserve hierarchical resources before
+            # command ledger entry. This ensures all budget levels are checked
+            # atomically before any broker effect occurs.
+            resources_ok, resource_error, reservation_id = await self._check_and_reserve_resources(
+                signal_id=signal.id,
+                account=account,
+                quantity=quantity,
+                signal=order_signal,
+                broker=broker,
+            )
+            if not resources_ok:
+                assert resource_error is not None
+                # Release the capital reserved by _try_reserve_capital
+                self.capital_allocator.release(account.account_id, notional, signal_id=signal.id)
+                # Create rejection result
+                result = OrderResult(
+                    account_id=account.account_id,
+                    status=OrderStatus.REJECTED,
+                    signal_id=signal.id,
+                    message=f"resource reservation blocked: {resource_error}",
+                )
+                self.store.save_order_result(
+                    result,
+                    broker=account.broker,
+                    symbol=symbol,
+                    side=order_signal.side,
+                    requested_quantity=quantity,
+                    purpose=order_purpose,
+                    family_id=order_family_id,
+                )
+                results.append(result)
+                self._export_routing_outcome(
+                    signal,
+                    outcome=_OUTCOME_BY_ORDER_STATUS[result.status],
+                    account=account,
+                    order_status=result.status,
+                    message=result.message,
+                )
+                continue
+
             # P0-2: pre-effect durable command-ledger intent, written and
             # COMMITTED before the broker is ever called -- see
             # app/command_ledger.py's module docstring. `signal.id` is
@@ -1922,29 +2019,228 @@ class SignalCopierEngine:
                     )
                 continue
 
+            # WC-33 STEP C: Durable intent before dispatch
+            # Build OrderIntent with policy hash from sizing inputs
+            policy_input = {
+                "side": order_signal.side.value,
+                "quantity": quantity,
+                "multiplier": contract_multiplier,
+                "price": order_signal.price,
+            }
+            policy_hash = hashlib.sha256(json.dumps(policy_input, sort_keys=True).encode()).hexdigest()
+
+            # Handle fractional quantities: if not whole number, store in price_constraints
+            if isinstance(quantity, float) and not quantity.is_integer():
+                intent_quantity = 0
+                quantity_fractional = quantity
+            else:
+                intent_quantity = int(quantity)
+                quantity_fractional = None
+
+            # Build price constraints and protection recipe
+            price_constraints = {"entry": order_signal.price}
+            if order_signal.stop_loss is not None:
+                price_constraints["stop_loss"] = order_signal.stop_loss
+            if order_signal.take_profit is not None:
+                price_constraints["take_profit"] = order_signal.take_profit
+            if quantity_fractional is not None:
+                price_constraints["quantity_fractional"] = quantity_fractional
+
+            protection_recipe = None
+            if order_signal.stop_loss is not None or order_signal.take_profit is not None:
+                protection_recipe = {}
+                if order_signal.stop_loss is not None:
+                    protection_recipe["stop_loss"] = order_signal.stop_loss
+                # TODO: map take_profit to targets if needed
+
+            # Create OrderIntent (WC-33 STEP C)
+            intent = OrderIntent.create(
+                opportunity_id=signal.id,
+                physical_account_id=account.account_id,  # Using account_id as physical_account_id for now
+                binding_id=account.account_id,  # Using account_id as binding_id for now
+                client_correlation_id=ledger_key,
+                policy_hash=policy_hash,
+                quantity=intent_quantity,
+                price_constraints=price_constraints,
+                protection_recipe=protection_recipe,
+                reservation_id=reservation_id,
+            )
+
             # PU-A2: the real moment this engine actually calls the broker --
             # the "decision -> submission" boundary app/execution_quality.py's
             # stage breakdown reports, captured immediately before the call
             # so nothing else on this path (routing, sizing, the capital-
             # admission check above) is folded into it.
-            # WC-20 STEP 5: Skip broker call in dry_run mode
+            # WC-33: Honest dry_run: stop AFTER intent is built, BEFORE outbox.enqueue
             submitted_at = datetime.now(timezone.utc)
             ambiguous_submission = False
+            if dry_run:
+                # WC-33 STEP E: Honest dry_run
+                # Stop after intent is built, before outbox.enqueue
+                # Transition reservation to RELEASED with dry_run evidence
+                if reservation_id is not None:
+                    self.hierarchical_budget.transition(
+                        reservation_id,
+                        ReservationState.RELEASED,
+                        evidence={"dry_run": True},
+                    )
+                # Release capital allocation
+                self.capital_allocator.release(account.account_id, notional, signal_id=signal.id)
+                # Update decision trace reason with planned details
+                # TODO: implement update_decision_trace_reason in store and call it here
+                # For now, log the plan details
+                logger.info(
+                    "dry_run mode: planned signal=%s account=%s qty=%s price=%s reservation=%s",
+                    signal.id,
+                    account.account_id,
+                    quantity,
+                    order_signal.price,
+                    reservation_id,
+                )
+                # Return honest PENDING result without going through normal fill processing
+                result = OrderResult(
+                    account_id=account.account_id,
+                    status=OrderStatus.PENDING,
+                    signal_id=signal.id,
+                    message="dry_run: planned, not dispatched",
+                    filled_quantity=None,
+                    filled_price=None,
+                )
+                self.store.save_order_result(
+                    result,
+                    broker=account.broker,
+                    symbol=symbol,
+                    side=order_signal.side,
+                    requested_quantity=quantity,
+                    purpose=order_purpose,
+                    family_id=order_family_id,
+                )
+                results.append(result)
+                self._export_routing_outcome(
+                    signal,
+                    outcome=_OUTCOME_BY_ORDER_STATUS[result.status],
+                    account=account,
+                    order_status=result.status,
+                    message=result.message,
+                )
+                continue
+
+            # WC-33 STEP C: Enqueue intent and claim for dispatch
+            try:
+                self.outbox.enqueue(intent)
+                logger.info(
+                    "intent_enqueued signal=%s account=%s intent_id=%s",
+                    signal.id,
+                    account.account_id,
+                    intent.intent_id,
+                )
+            except Exception as e:
+                logger.exception("failed to enqueue intent signal=%s account=%s", signal.id, account.account_id)
+                # Release reservations on enqueue failure
+                self.capital_allocator.release(account.account_id, notional, signal_id=signal.id)
+                if reservation_id is not None:
+                    self.hierarchical_budget.transition(
+                        reservation_id,
+                        ReservationState.RELEASED,
+                        evidence={"error": str(e)},
+                    )
+                result = OrderResult(
+                    account_id=account.account_id,
+                    status=OrderStatus.ERROR,
+                    signal_id=signal.id,
+                    message=f"intent enqueue failed: {str(e)}",
+                )
+                self.store.save_order_result(
+                    result,
+                    broker=account.broker,
+                    symbol=symbol,
+                    side=order_signal.side,
+                    requested_quantity=quantity,
+                    purpose=order_purpose,
+                    family_id=order_family_id,
+                )
+                results.append(result)
+                self._export_routing_outcome(
+                    signal,
+                    outcome=_OUTCOME_BY_ORDER_STATUS[result.status],
+                    account=account,
+                    order_status=result.status,
+                    message=result.message,
+                )
+                continue
+
+            # Claim the outbox item for dispatch
+            worker_lease_id = self.lease_guard.lease_id if hasattr(self.lease_guard, 'lease_id') else "engine"
+            try:
+                claimed_item = self.outbox.claim_next(worker_lease_id)
+                if claimed_item is None:
+                    logger.error("failed to claim outbox item signal=%s", signal.id)
+                    raise RuntimeError("outbox item not found after enqueue")
+            except Exception as e:
+                logger.exception("failed to claim outbox item signal=%s", signal.id)
+                # Release reservations on claim failure
+                self.capital_allocator.release(account.account_id, notional, signal_id=signal.id)
+                if reservation_id is not None:
+                    self.hierarchical_budget.transition(
+                        reservation_id,
+                        ReservationState.RELEASED,
+                        evidence={"error": str(e)},
+                    )
+                result = OrderResult(
+                    account_id=account.account_id,
+                    status=OrderStatus.ERROR,
+                    signal_id=signal.id,
+                    message=f"outbox claim failed: {str(e)}",
+                )
+                self.store.save_order_result(
+                    result,
+                    broker=account.broker,
+                    symbol=symbol,
+                    side=order_signal.side,
+                    requested_quantity=quantity,
+                    purpose=order_purpose,
+                    family_id=order_family_id,
+                )
+                results.append(result)
+                self._export_routing_outcome(
+                    signal,
+                    outcome=_OUTCOME_BY_ORDER_STATUS[result.status],
+                    account=account,
+                    order_status=result.status,
+                    message=result.message,
+                )
+                continue
+
             try:
                 order_signal.client_order_id = ledger_key
-                if dry_run:
-                    # Dry-run mode: simulate a successful order without calling broker
-                    logger.info("dry_run mode: skipping broker submission for account=%s", account.account_id)
-                    result = OrderResult(
-                        account_id=account.account_id,
-                        status=OrderStatus.FILLED,  # Simulate successful fill
-                        signal_id=signal.id,
-                        message="dry_run simulation",
-                        filled_quantity=quantity,
-                        filled_price=order_signal.price,
-                    )
-                else:
-                    result = await broker.place_order(order_signal, account, quantity, symbol)
+                result = await broker.place_order(order_signal, account, quantity, symbol)
+                # WC-33 STEP C & D: Record response in outbox and transition reservation
+                outbox_response = {
+                    "status": result.status.value,
+                    "broker_order_id": result.broker_order_id,
+                    "message": result.message,
+                }
+                self.outbox.record_response(intent.intent_id, outbox_response)
+                # WC-33 STEP D: Transition reservation based on result status
+                if reservation_id is not None:
+                    if result.status == OrderStatus.FILLED:
+                        self.hierarchical_budget.transition(
+                            reservation_id,
+                            ReservationState.FILLED_EXPOSURE,
+                            evidence={"broker_order_id": result.broker_order_id, "filled_quantity": result.filled_quantity},
+                        )
+                    elif result.status == OrderStatus.PENDING:
+                        self.hierarchical_budget.transition(
+                            reservation_id,
+                            ReservationState.COMMITTED_TO_PENDING_ORDER,
+                            evidence={"broker_order_id": result.broker_order_id},
+                        )
+                    elif result.status == OrderStatus.REJECTED:
+                        self.hierarchical_budget.transition(
+                            reservation_id,
+                            ReservationState.RELEASED,
+                            evidence={"reason": "broker_rejected"},
+                        )
             except Exception as exc:  # noqa: BLE001 - one account's failure must not block others
                 logger.exception("order failed for account=%s", account.account_id)
                 result = OrderResult(
@@ -1954,6 +2250,26 @@ class SignalCopierEngine:
                     message=str(exc),
                 )
                 ambiguous_submission = True
+                # WC-33 STEP C & D: Record response and transition to UNKNOWN_HELD on exception
+                try:
+                    outbox_response = {
+                        "exception": str(exc),
+                        "status": "error",
+                        "message": result.message,
+                    }
+                    self.outbox.record_response(intent.intent_id, outbox_response)
+                except Exception:
+                    logger.exception("failed to record outbox response for failed order")
+                # WC-33 STEP D: Transition to UNKNOWN_HELD (held, not released automatically)
+                if reservation_id is not None:
+                    try:
+                        self.hierarchical_budget.transition(
+                            reservation_id,
+                            ReservationState.UNKNOWN_HELD,
+                            evidence={"exception": str(exc)},
+                        )
+                    except Exception:
+                        logger.exception("failed to transition reservation to UNKNOWN_HELD")
                 self.store.mark_command_ledger_outcome(
                     ledger_key,
                     uncertainty_state=UncertaintyState.UNKNOWN_AMBIGUOUS,

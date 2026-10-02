@@ -3,7 +3,7 @@
 WC-01 creates this module with the Cents type and to_cents() function.
 Money is always exact: integer cents or Decimal, never float.
 """
-from decimal import Decimal, ROUND_DOWN
+from decimal import Decimal, ROUND_DOWN, ROUND_UP
 from typing import Union
 
 
@@ -85,6 +85,43 @@ def to_cents_floor(value: Union[Decimal, str, int]) -> Cents:
 
     # Convert to cents and floor
     cents_decimal = (d * 100).quantize(Decimal("1"), rounding=ROUND_DOWN)
+    return int(cents_decimal)
+
+
+def ceil_cents(value: Union[Decimal, str, int, float]) -> Cents:
+    """Convert a value to integer cents, rounding up (ceiling).
+
+    WC-33: Used where the spec requires rounding up cash reserves (never down).
+
+    Args:
+        value: A Decimal, str, int, or float representing money.
+
+    Returns:
+        Integer cents rounded up (ceiling).
+
+    Raises:
+        TypeError: If value is not one of the accepted types.
+        ValueError: If value is negative.
+    """
+    if isinstance(value, int):
+        if value < 0:
+            raise ValueError(f"Value {value} cannot be negative")
+        return value
+
+    if isinstance(value, float):
+        d = Decimal(str(value))
+    elif isinstance(value, str):
+        d = Decimal(value)
+    elif isinstance(value, Decimal):
+        d = value
+    else:
+        raise TypeError(f"Expected Decimal, str, int, or float, got {type(value).__name__}")
+
+    if d < 0:
+        raise ValueError(f"Value {value} cannot be negative")
+
+    # Convert to cents and ceil
+    cents_decimal = (d * 100).quantize(Decimal("1"), rounding=ROUND_UP)
     return int(cents_decimal)
 
 
