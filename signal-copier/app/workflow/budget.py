@@ -14,6 +14,7 @@ mark-to-protection loss (current equity to stop), stress loss (adverse scenario)
 """
 from __future__ import annotations
 
+import sqlite3
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
@@ -21,6 +22,9 @@ from enum import Enum
 from app.workflow.money import Cents
 from app.workflow.reasons import Reason
 
+
+# WC-30: Sentinel value for unlimited budget at a level (no configured limit).
+UNLIMITED_CENTS = 2**62
 
 class ReservationState(str, Enum):
     """Reservation state transitions (§6.2)."""
@@ -184,8 +188,17 @@ class HierarchicalBudget:
                 remaining=remaining_by_level,
             )
 
+        except sqlite3.IntegrityError:
+            # Opportunity already claimed (unique constraint violation)
+            return ReservationResult(
+                ok=False,
+                reservation_id=None,
+                reason=Reason.DUPLICATE,
+                binding_level="opportunity",
+                remaining={},
+            )
         except Exception:
-            # Transaction will rollback; return error
+            # Other exceptions: transaction will rollback
             return ReservationResult(
                 ok=False,
                 reservation_id=None,

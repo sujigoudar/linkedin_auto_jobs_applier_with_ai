@@ -9,6 +9,7 @@ import json
 import sqlite3
 import uuid
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterator
@@ -2017,6 +2018,17 @@ CREATE TABLE IF NOT EXISTS owner_limits (
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_owner_limits_owner ON owner_limits(owner);
+-- WC-30: Budget limits for levels (account, analyst, underlying, cluster)
+CREATE TABLE IF NOT EXISTS budget_limits (
+    limit_id TEXT PRIMARY KEY,
+    level TEXT NOT NULL,
+    key TEXT NOT NULL,
+    max_cents INTEGER NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    UNIQUE(level, key)
+);
+CREATE INDEX IF NOT EXISTS idx_budget_limits_level_key ON budget_limits(level, key);
 CREATE TABLE IF NOT EXISTS decision_traces (
     id TEXT PRIMARY KEY,
     signal_id TEXT NOT NULL,
@@ -2314,6 +2326,34 @@ _SOURCE_OBSERVATION_KINDS = ("created", "edited", "deleted", "retrieved")
 #: app/sources/rss_source.py's module docstring for how this gates
 #: whether an observation may ever become a real `Signal`.
 _SOURCE_OBSERVATION_PURPOSES = ("research", "backfill", "signal_candidate")
+
+
+@dataclass(frozen=True)
+class BudgetReservationRow:
+    """WC-30: Immutable budget reservation record with durable state.
+
+    Attributes correspond to budget_reservations table columns and provide
+    attribute access for transition logic.
+    """
+    reservation_id: str
+    opportunity_id: str
+    owner: str
+    physical_account_id: str
+    portfolio_id: str | None
+    sleeve_id: str | None
+    provider: str
+    analyst: str | None
+    underlying: str
+    cluster_id: str | None
+    needed_cash_cents: int
+    needed_margin_cents: int
+    needed_notional_cents: int
+    needed_planned_risk_cents: int
+    needed_stress_risk_cents: int | None
+    state: str
+    created_at: str
+    updated_at: str
+    evidence: str | None
 
 
 class SignalStore:
@@ -10033,4 +10073,520 @@ class SignalStore:
                 (trace_id, signal_id, physical_account_id, candidate_rank, int(feasible), reason, int(selected)),
             )
         return trace_id
+
+    # ============================================================================
+    # WC-30: Hierarchical budget persistence (budget reservations, limits, etc.)
+    # ============================================================================
+
+    def is_opportunity_claimed(self, opportunity_id: str) -> bool:
+        """WC-30: Check if an opportunity is already claimed (reserved).
+
+        Returns True iff a budget_reservations row exists for it with state
+        not in ("RELEASED",).
+
+        Args:
+            opportunity_id: Unique signal/order identifier to check.
+
+        Returns:
+            True if opportunity is claimed and not released, False otherwise.
+        """
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM budget_reservations WHERE opportunity_id = ? AND state != 'RELEASED' LIMIT 1",
+                (opportunity_id,),
+            ).fetchone()
+        return row is not None
+
+    def create_hierarchical_reservation(
+        self,
+        *,
+        opportunity_id: str,
+        scope,  # BudgetScope from app.workflow.budget
+        need,  # ResourceVector from app.workflow.budget
+        state: str,  # ReservationState string
+    ) -> str:
+        """WC-30: Insert ONE budget reservation inside BEGIN IMMEDIATE txn.
+
+        Implements atomicity: two concurrent callers racing on the same
+        opportunity_id will get exactly one success; the loser's IntegrityError
+        is caught by caller (HierarchicalBudget.check_and_reserve) and mapped to
+        Reason.DUPLICATE.
+
+        Args:
+            opportunity_id: Unique signal/order identifier (must be unique across DB).
+            scope: BudgetScope with owner, account, portfolio, sleeve, provider, etc.
+            need: ResourceVector with cash, margin, notional, risk, etc.
+            state: Initial reservation state (usually ReservationState.HELD).
+
+        Returns:
+            Reservation ID (uuid4 hex).
+
+        Raises:
+            sqlite3.IntegrityError: If opportunity_id already exists (caught by caller).
+        """
+        reservation_id = str(uuid.uuid4().hex)
+        now = datetime.now(timezone.utc).isoformat()
+
+        # Evidence: JSON list starting with ResourceVector as first entry
+        evidence_dict = {
+            "cash": need.cash,
+            "buying_power": need.buying_power,
+            "initial_margin": need.initial_margin,
+            "maintenance": need.maintenance,
+            "notional": need.notional,
+            "planned_risk": need.planned_risk,
+            "stress_risk": need.stress_risk,
+            "close_quantity": need.close_quantity,
+            "slots": need.slots,
+        }
+        evidence_json = json.dumps([evidence_dict])
+
+        with self._immediate() as conn:
+            # This will raise sqlite3.IntegrityError if opportunity_id already exists
+            conn.execute(
+                """INSERT INTO budget_reservations
+                   (reservation_id, opportunity_id, owner, physical_account_id, portfolio_id,
+                    sleeve_id, provider, analyst, underlying, cluster_id,
+                    needed_cash_cents, needed_margin_cents, needed_notional_cents,
+                    needed_planned_risk_cents, needed_stress_risk_cents, state, created_at, updated_at, evidence)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    reservation_id, opportunity_id, scope.owner, scope.physical_account_id,
+                    scope.portfolio_id, scope.sleeve_id, scope.provider, scope.analyst,
+                    scope.underlying, scope.cluster,
+                    need.cash, need.initial_margin, need.notional,
+                    need.planned_risk, need.stress_risk, state, now, now, evidence_json,
+                ),
+            )
+        return reservation_id
+
+    def get_reservation(self, reservation_id: str) -> BudgetReservationRow:
+        """WC-30: Retrieve a budget reservation by ID.
+
+        Returns a frozen dataclass with attribute access for state transitions.
+
+        Args:
+            reservation_id: Reservation to fetch.
+
+        Returns:
+            BudgetReservationRow with all fields.
+
+        Raises:
+            KeyError: If reservation not found.
+        """
+        with self._connect() as conn:
+            row = conn.execute(
+                """SELECT reservation_id, opportunity_id, owner, physical_account_id,
+                          portfolio_id, sleeve_id, provider, analyst, underlying, cluster_id,
+                          needed_cash_cents, needed_margin_cents, needed_notional_cents,
+                          needed_planned_risk_cents, needed_stress_risk_cents, state,
+                          created_at, updated_at, evidence
+                   FROM budget_reservations WHERE reservation_id = ?""",
+                (reservation_id,),
+            ).fetchone()
+
+        if row is None:
+            raise KeyError(f"Reservation {reservation_id} not found")
+
+        return BudgetReservationRow(
+            reservation_id=row[0],
+            opportunity_id=row[1],
+            owner=row[2],
+            physical_account_id=row[3],
+            portfolio_id=row[4],
+            sleeve_id=row[5],
+            provider=row[6],
+            analyst=row[7],
+            underlying=row[8],
+            cluster_id=row[9],
+            needed_cash_cents=row[10],
+            needed_margin_cents=row[11],
+            needed_notional_cents=row[12],
+            needed_planned_risk_cents=row[13],
+            needed_stress_risk_cents=row[14],
+            state=row[15],
+            created_at=row[16],
+            updated_at=row[17],
+            evidence=row[18],
+        )
+
+    def update_reservation_state(
+        self, reservation_id: str, new_state: str, *, evidence: dict
+    ) -> None:
+        """WC-30: Update reservation state and append evidence atomically.
+
+        Args:
+            reservation_id: Reservation to update.
+            new_state: Target state (from ReservationState enum).
+            evidence: Context dict for the transition (appended to JSON list).
+
+        Raises:
+            KeyError: If reservation not found.
+        """
+        now = datetime.now(timezone.utc).isoformat()
+
+        with self._connect() as conn:
+            # Fetch current evidence list
+            row = conn.execute(
+                "SELECT evidence FROM budget_reservations WHERE reservation_id = ?",
+                (reservation_id,),
+            ).fetchone()
+
+            if row is None:
+                raise KeyError(f"Reservation {reservation_id} not found")
+
+            # Append evidence to existing list
+            existing_evidence = json.loads(row[0]) if row[0] else []
+            if not isinstance(existing_evidence, list):
+                existing_evidence = [existing_evidence]
+            existing_evidence.append(evidence)
+            new_evidence_json = json.dumps(existing_evidence)
+
+            # Update state and evidence
+            conn.execute(
+                "UPDATE budget_reservations SET state = ?, updated_at = ?, evidence = ? WHERE reservation_id = ?",
+                (new_state, now, new_evidence_json, reservation_id),
+            )
+
+    def get_level_remaining(self, level: str, level_scope: dict) -> int:
+        """WC-30: Query remaining budget at a hierarchical level (in cents).
+
+        Semantics (fail closed): remaining = configured limit at that level −
+        sum over budget_reservations rows at that level in states other than
+        RELEASED of (needed_cash_cents + needed_margin_cents).
+
+        Configured limits per level:
+        - "owner": owner_limits.max_notional_cents; NULL → UNLIMITED_CENTS
+        - "account": budget_limits row; absent → UNLIMITED_CENTS
+        - "portfolio": sum of portfolio_backings.dedicated_equity_cents; no rows → 0
+        - "sleeve": strategy_sleeves.max_notional_cents; NULL → UNLIMITED_CENTS
+        - "provider": strategy_budgets (legacy, converted to cents); absent → UNLIMITED_CENTS
+        - "analyst": budget_limits row; absent → UNLIMITED_CENTS
+        - "underlying": budget_limits row; absent → UNLIMITED_CENTS
+        - "cluster": budget_limits row; absent → UNLIMITED_CENTS
+
+        Args:
+            level: Level name (owner, account, portfolio, sleeve, provider, analyst, underlying, cluster).
+            level_scope: Dict with relevant keys for that level.
+
+        Returns:
+            Available cents at that level (or UNLIMITED_CENTS if no limit configured).
+        """
+        from app.workflow.budget import UNLIMITED_CENTS
+
+        with self._connect() as conn:
+            if level == "owner":
+                owner = level_scope["owner"]
+                row = conn.execute(
+                    "SELECT max_notional_cents FROM owner_limits WHERE owner = ?",
+                    (owner,),
+                ).fetchone()
+                limit_cents = row[0] if row and row[0] is not None else UNLIMITED_CENTS
+
+                # Sum usage (cash + margin) in non-RELEASED state
+                usage_row = conn.execute(
+                    """SELECT COALESCE(SUM(needed_cash_cents + needed_margin_cents), 0)
+                       FROM budget_reservations WHERE owner = ? AND state != 'RELEASED'""",
+                    (owner,),
+                ).fetchone()
+                usage_cents = usage_row[0] if usage_row else 0
+
+                return max(0, limit_cents - usage_cents)
+
+            elif level == "account":
+                physical_account_id = level_scope["physical_account_id"]
+                row = conn.execute(
+                    "SELECT max_cents FROM budget_limits WHERE level = 'account' AND key = ?",
+                    (physical_account_id,),
+                ).fetchone()
+                limit_cents = row[0] if row else UNLIMITED_CENTS
+
+                usage_row = conn.execute(
+                    """SELECT COALESCE(SUM(needed_cash_cents + needed_margin_cents), 0)
+                       FROM budget_reservations WHERE physical_account_id = ? AND state != 'RELEASED'""",
+                    (physical_account_id,),
+                ).fetchone()
+                usage_cents = usage_row[0] if usage_row else 0
+
+                return max(0, limit_cents - usage_cents)
+
+            elif level == "portfolio":
+                portfolio_id = level_scope["portfolio_id"]
+                # Sum dedicated equity from backings
+                backing_row = conn.execute(
+                    "SELECT COALESCE(SUM(dedicated_equity_cents), 0) FROM portfolio_backings WHERE portfolio_id = ?",
+                    (portfolio_id,),
+                ).fetchone()
+                limit_cents = backing_row[0] if backing_row else 0
+
+                usage_row = conn.execute(
+                    """SELECT COALESCE(SUM(needed_cash_cents + needed_margin_cents), 0)
+                       FROM budget_reservations WHERE portfolio_id = ? AND state != 'RELEASED'""",
+                    (portfolio_id,),
+                ).fetchone()
+                usage_cents = usage_row[0] if usage_row else 0
+
+                return max(0, limit_cents - usage_cents)
+
+            elif level == "sleeve":
+                sleeve_id = level_scope["sleeve_id"]
+                row = conn.execute(
+                    "SELECT max_notional_cents FROM strategy_sleeves WHERE sleeve_id = ?",
+                    (sleeve_id,),
+                ).fetchone()
+                limit_cents = row[0] if row and row[0] is not None else UNLIMITED_CENTS
+
+                usage_row = conn.execute(
+                    """SELECT COALESCE(SUM(needed_cash_cents + needed_margin_cents), 0)
+                       FROM budget_reservations WHERE sleeve_id = ? AND state != 'RELEASED'""",
+                    (sleeve_id,),
+                ).fetchone()
+                usage_cents = usage_row[0] if usage_row else 0
+
+                return max(0, limit_cents - usage_cents)
+
+            elif level == "provider":
+                # Reuse strategy_budgets (legacy, WC-03 pattern)
+                owner = level_scope["owner"]
+                provider = level_scope["provider"]
+                row = conn.execute(
+                    "SELECT max_notional FROM strategy_budgets WHERE strategy_key = ?",
+                    (provider,),
+                ).fetchone()
+                if row and row[0] is not None:
+                    # Convert dollars to cents using to_cents_floor
+                    from app.workflow.money import to_cents_floor
+                    from decimal import Decimal
+                    limit_cents = to_cents_floor(Decimal(str(row[0])))
+                else:
+                    limit_cents = UNLIMITED_CENTS
+
+                usage_row = conn.execute(
+                    """SELECT COALESCE(SUM(needed_cash_cents + needed_margin_cents), 0)
+                       FROM budget_reservations WHERE provider = ? AND state != 'RELEASED'""",
+                    (provider,),
+                ).fetchone()
+                usage_cents = usage_row[0] if usage_row else 0
+
+                return max(0, limit_cents - usage_cents)
+
+            elif level in ("analyst", "underlying", "cluster"):
+                key_value = level_scope.get(level)
+                if key_value is None:
+                    return UNLIMITED_CENTS
+
+                row = conn.execute(
+                    "SELECT max_cents FROM budget_limits WHERE level = ? AND key = ?",
+                    (level, key_value),
+                ).fetchone()
+                limit_cents = row[0] if row else UNLIMITED_CENTS
+
+                # Build WHERE clause for the level
+                if level == "analyst":
+                    where_clause = "analyst = ? AND state != 'RELEASED'"
+                    params = (key_value,)
+                elif level == "underlying":
+                    where_clause = "underlying = ? AND state != 'RELEASED'"
+                    params = (key_value,)
+                else:  # cluster
+                    where_clause = "cluster_id = ? AND state != 'RELEASED'"
+                    params = (key_value,)
+
+                usage_row = conn.execute(
+                    f"SELECT COALESCE(SUM(needed_cash_cents + needed_margin_cents), 0) FROM budget_reservations WHERE {where_clause}",
+                    params,
+                ).fetchone()
+                usage_cents = usage_row[0] if usage_row else 0
+
+                return max(0, limit_cents - usage_cents)
+
+            else:
+                # Unknown level
+                return UNLIMITED_CENTS
+
+    def set_budget_limit(self, level: str, key: str, max_cents: int) -> None:
+        """WC-30: Set or update a budget limit for a level/key pair.
+
+        Args:
+            level: Budget level (account, analyst, underlying, cluster).
+            key: Level-specific key (physical_account_id, analyst, underlying, cluster_id).
+            max_cents: Maximum budget in cents.
+        """
+        limit_id = f"{level}_{key}_{uuid.uuid4().hex[:8]}"
+        now = datetime.now(timezone.utc).isoformat()
+
+        with self._connect() as conn:
+            conn.execute(
+                """INSERT INTO budget_limits (limit_id, level, key, max_cents, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(level, key) DO UPDATE SET max_cents = ?, updated_at = ?""",
+                (limit_id, level, key, max_cents, now, now, max_cents, now),
+            )
+
+    def get_budget_limit(self, level: str, key: str) -> int | None:
+        """WC-30: Query a budget limit, or None if not configured.
+
+        Args:
+            level: Budget level.
+            key: Level-specific key.
+
+        Returns:
+            Maximum cents, or None if no limit configured.
+        """
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT max_cents FROM budget_limits WHERE level = ? AND key = ?",
+                (level, key),
+            ).fetchone()
+        return row[0] if row else None
+
+    def list_budget_limits(self) -> list[dict]:
+        """WC-30: List all budget limits.
+
+        Returns:
+            List of dicts with keys: limit_id, level, key, max_cents, created_at, updated_at.
+        """
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT limit_id, level, key, max_cents, created_at, updated_at FROM budget_limits"
+            ).fetchall()
+
+        return [
+            {
+                "limit_id": row[0],
+                "level": row[1],
+                "key": row[2],
+                "max_cents": row[3],
+                "created_at": row[4],
+                "updated_at": row[5],
+            }
+            for row in rows
+        ]
+
+    def delete_budget_limit(self, level: str, key: str) -> None:
+        """WC-30: Delete a budget limit.
+
+        Args:
+            level: Budget level.
+            key: Level-specific key.
+        """
+        with self._connect() as conn:
+            conn.execute(
+                "DELETE FROM budget_limits WHERE level = ? AND key = ?",
+                (level, key),
+            )
+
+    def set_owner_limit(
+        self, owner: str, *, max_notional_cents: int | None = None,
+        max_planned_risk_cents: int | None = None,
+        max_stress_risk_cents: int | None = None,
+    ) -> None:
+        """WC-30: Set or update owner-level limits.
+
+        Args:
+            owner: Owner identifier.
+            max_notional_cents: Maximum notional exposure in cents.
+            max_planned_risk_cents: Maximum planned risk in cents.
+            max_stress_risk_cents: Maximum stress risk in cents.
+        """
+        limit_id = f"owner_{owner}_{uuid.uuid4().hex[:8]}"
+        now = datetime.now(timezone.utc).isoformat()
+
+        with self._connect() as conn:
+            conn.execute(
+                """INSERT INTO owner_limits (limit_id, owner, max_notional_cents, max_planned_risk_cents, max_stress_risk_cents, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(owner) DO UPDATE SET max_notional_cents = ?, max_planned_risk_cents = ?, max_stress_risk_cents = ?, updated_at = ?""",
+                (limit_id, owner, max_notional_cents, max_planned_risk_cents, max_stress_risk_cents, now, now,
+                 max_notional_cents, max_planned_risk_cents, max_stress_risk_cents, now),
+            )
+
+    def get_owner_limit(self, owner: str) -> dict | None:
+        """WC-30: Query owner limits.
+
+        Args:
+            owner: Owner identifier.
+
+        Returns:
+            Dict with keys: limit_id, owner, max_notional_cents, max_planned_risk_cents, max_stress_risk_cents, created_at, updated_at,
+            or None if no limit configured.
+        """
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT limit_id, owner, max_notional_cents, max_planned_risk_cents, max_stress_risk_cents, created_at, updated_at FROM owner_limits WHERE owner = ?",
+                (owner,),
+            ).fetchone()
+
+        if row is None:
+            return None
+
+        return {
+            "limit_id": row[0],
+            "owner": row[1],
+            "max_notional_cents": row[2],
+            "max_planned_risk_cents": row[3],
+            "max_stress_risk_cents": row[4],
+            "created_at": row[5],
+            "updated_at": row[6],
+        }
+
+    def create_portfolio(self, portfolio_id: str, owner: str, name: str | None = None) -> None:
+        """WC-30: Create a portfolio.
+
+        Args:
+            portfolio_id: Portfolio identifier.
+            owner: Owner identifier.
+            name: Optional portfolio name.
+        """
+        now = datetime.now(timezone.utc).isoformat()
+
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO portfolios (portfolio_id, owner, name, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                (portfolio_id, owner, name, now, now),
+            )
+
+    def add_portfolio_backing(
+        self, portfolio_id: str, physical_account_id: str, dedicated_equity_cents: int
+    ) -> None:
+        """WC-30: Add (or update) portfolio backing from an account.
+
+        Args:
+            portfolio_id: Portfolio to back.
+            physical_account_id: Account providing the backing.
+            dedicated_equity_cents: Dedicated equity in cents.
+        """
+        backing_id = f"backing_{portfolio_id}_{physical_account_id}_{uuid.uuid4().hex[:8]}"
+        now = datetime.now(timezone.utc).isoformat()
+
+        with self._connect() as conn:
+            conn.execute(
+                """INSERT INTO portfolio_backings (backing_id, portfolio_id, physical_account_id, dedicated_equity_cents, created_at)
+                   VALUES (?, ?, ?, ?, ?)
+                   ON CONFLICT(portfolio_id, physical_account_id) DO UPDATE SET dedicated_equity_cents = ?""",
+                (backing_id, portfolio_id, physical_account_id, dedicated_equity_cents, now, dedicated_equity_cents),
+            )
+
+    def create_strategy_sleeve(
+        self, sleeve_id: str, portfolio_id: str, provider: str, analyst: str | None = None,
+        name: str | None = None, max_notional_cents: int | None = None,
+    ) -> None:
+        """WC-30: Create a strategy sleeve within a portfolio.
+
+        Args:
+            sleeve_id: Sleeve identifier.
+            portfolio_id: Parent portfolio.
+            provider: Signal provider.
+            analyst: Strategy/analyst identifier.
+            name: Optional sleeve name.
+            max_notional_cents: Optional max notional exposure in cents.
+        """
+        now = datetime.now(timezone.utc).isoformat()
+
+        with self._connect() as conn:
+            conn.execute(
+                """INSERT INTO strategy_sleeves (sleeve_id, portfolio_id, provider, analyst, name, max_notional_cents, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (sleeve_id, portfolio_id, provider, analyst, name, max_notional_cents, now, now),
+            )
 
