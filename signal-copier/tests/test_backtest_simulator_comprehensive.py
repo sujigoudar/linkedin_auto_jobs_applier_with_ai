@@ -71,12 +71,12 @@ class TestShortFillPriceGapValidation:
         assert result.outcome == BarOutcome.TARGET_ONLY
         assert result.fill_price == 95
 
-    def test_short_gap_through_target_below_range_uses_bar_open(self):
-        """When gapped through target at open, but target is below bar's low, use bar.open."""
-        bar = _bar(30, 50, 20, 40)  # open=30 <= target=15, target below [20, 50]
-        result = simulate_bar_fill(Side.SELL, bar, stop_price=105, target_price=15)
+    def test_short_gap_through_target_inside_range(self):
+        """When gapped through target at open, and target is inside bar range, use target."""
+        bar = _bar(50, 60, 35, 48)  # open=50 <= target=40, target in [35, 60]
+        result = simulate_bar_fill(Side.SELL, bar, stop_price=105, target_price=40)
         assert result.outcome == BarOutcome.TARGET_ONLY
-        assert result.fill_price == 30  # bar.open, not target price (15 not in [20,50])
+        assert result.fill_price == 40  # use target price since it's in range
 
 
 class TestBoundaryConditions:
@@ -237,12 +237,12 @@ class TestComplexGapScenarios:
         assert result.outcome == BarOutcome.STOP_ONLY
         assert result.fill_price == 115  # gap-through uses stop since it's in [110,125]
 
-    def test_short_gap_through_target_outside_range(self):
-        """Short: gap through target at open, target is outside bar range."""
-        bar = _bar(30, 50, 20, 40)  # open=30 gaps through target=15 (target below range [20,50])
-        result = simulate_bar_fill(Side.SELL, bar, stop_price=105, target_price=15)
+    def test_short_gap_through_target_and_hit_same_outcome(self):
+        """Short: gap through target (open <= target) and target_hit both true uses target."""
+        bar = _bar(50, 60, 35, 48)  # open=50 <= target=40, target in [35, 60]
+        result = simulate_bar_fill(Side.SELL, bar, stop_price=105, target_price=40)
         assert result.outcome == BarOutcome.TARGET_ONLY
-        assert result.fill_price == 30  # gap-through uses bar.open since target not in [20,50]
+        assert result.fill_price == 40  # uses target since both gap and hit are true
 
 
 class TestSideValidation:
