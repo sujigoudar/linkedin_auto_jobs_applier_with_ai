@@ -2014,13 +2014,20 @@ class SignalCopierEngine:
 
     async def _handle_signal_edit(self, signal: Signal) -> list[OrderResult] | None:
         """WP-11 (A-02/A-11): Handle edited/revised signals.
-        
+
         When signal.original_message_id is set, this signal is an edit of an
         earlier message. Instead of placing new entry orders, we detect the
         original signal and prevent duplicate entries.
-        
+
+        NOTE (Track 5, point 6): An edit with a DISTINCT revision_id is a NEW
+        provider event. Only treat it as an amendment if the revision_id is the
+        same (or both None). This preserves the audited behavior that distinct
+        revisions (from Telegram MTProto or other versioning systems) are not
+        collapsed with their originals.
+
         Returns a list of OrderResults marking edit amendments, or None if no
-        original signal is found (in which case normal routing continues).
+        original signal is found or if the revision_id is distinct (in which case
+        normal routing continues).
         """
         # Find the original signal(s) that this edits
         original_signal_ids = self.store.find_signals_by_original_message_id(
@@ -2029,6 +2036,15 @@ class SignalCopierEngine:
         )
         if not original_signal_ids:
             # No original signal found; treat this as a regular new signal
+            return None
+
+        # Get the original signal to check its revision_id
+        # If the edited signal has a DISTINCT revision_id, it's a NEW provider event
+        # and should not be treated as an amendment.
+        original_signal = self.store.get_signal(original_signal_ids[0])
+        if original_signal and original_signal.get("revision_id") != signal.revision_id:
+            # Distinct revision_id means this is a NEW signal in the provider's eyes
+            # (e.g., Telegram edit with new MTProto revision). Let normal routing proceed.
             return None
 
         # Collect all accounts that have entry orders from the original signal(s)

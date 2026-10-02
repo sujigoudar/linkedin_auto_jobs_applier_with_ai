@@ -63,5 +63,8 @@ def test_returns_extended_shape_with_honest_unknowns(client):
     assert body["realized"]["gross_realized"] == pytest.approx(100.0)
     assert body["realized"]["fees"] == "unknown"
     assert body["returns"]["twr"] is None
-    # paper broker doesn't implement get_account_balance -- NAV/equity stay honestly unavailable.
-    assert body["account"]["nav"] is None
+    # PaperBroker does implement get_account_balance (genuinely computed from simulated state).
+    # However, this test only saves order results to the database; it never calls broker.place_order.
+    # So PaperBroker's internal state (positions and cash) is unchanged from its initial state.
+    # Nav = starting cash + position value = 100,000 + 0 = 100,000
+    assert body["account"]["nav"] == pytest.approx(100000.0)

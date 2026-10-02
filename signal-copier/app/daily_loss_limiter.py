@@ -117,11 +117,11 @@ class DailyLossLimiter:
             return None  # Min equity threshold not configured
 
         # Get current account balance to check equity
-        if account.broker not in getattr(self.store, "_broker_adapters", {}):
+        if account.broker not in self.brokers:
             # No broker available, fail closed
             return "Min equity check failed: no broker adapter available"
 
-        broker = self.store._broker_adapters[account.broker]  # type: ignore[attr-defined]
+        broker = self.brokers[account.broker]
         try:
             balance = await broker.get_account_balance(account)
             if balance is None or balance.equity is None:
