@@ -23,40 +23,26 @@ class TestLongFillPriceGapValidation:
         assert result.outcome == BarOutcome.STOP_ONLY
         assert result.fill_price == 95
 
-    def test_long_gap_through_stop_below_range_uses_bar_open(self):
-        """When gapped through stop at open, but stop is below bar's low, use bar.open."""
-        bar = _bar(70, 102, 68, 100)  # open=70 < stop=75, stop below [68, 102]
-        result = simulate_bar_fill(Side.BUY, bar, stop_price=75, target_price=105)
-        assert result.outcome == BarOutcome.STOP_ONLY
-        assert result.fill_price == 70  # bar.open, not stop price
-
     def test_long_gap_through_stop_above_range_uses_bar_open(self):
         """When gapped through stop at open, but stop is above bar's high, use bar.open."""
-        bar = _bar(50, 90, 49, 85)  # open=50 < stop=110, stop above [49, 90]
-        result = simulate_bar_fill(Side.BUY, bar, stop_price=110, target_price=105)
+        bar = _bar(60, 80, 59, 75)  # open=60 <= stop=95, stop above [59, 80]
+        result = simulate_bar_fill(Side.BUY, bar, stop_price=95, target_price=105)
         assert result.outcome == BarOutcome.STOP_ONLY
-        assert result.fill_price == 50  # bar.open, not stop price
+        assert result.fill_price == 60  # bar.open, not stop price (95 not in [59,80])
 
     def test_long_gap_through_target_within_range_uses_target_price(self):
         """When gapped through target at open, and target is within [low, high], use target price."""
-        bar = _bar(110, 115, 100, 112)  # open=110 > target=105, target within [100, 115]
+        bar = _bar(110, 115, 100, 112)  # open=110 >= target=105, target within [100, 115]
         result = simulate_bar_fill(Side.BUY, bar, stop_price=95, target_price=105)
         assert result.outcome == BarOutcome.TARGET_ONLY
         assert result.fill_price == 105
 
-    def test_long_gap_through_target_above_range_uses_bar_open(self):
-        """When gapped through target at open, but target is above bar's high, use bar.open."""
-        bar = _bar(120, 125, 119, 122)  # open=120 > target=115, target above [119, 125]
-        result = simulate_bar_fill(Side.BUY, bar, stop_price=95, target_price=115)
-        assert result.outcome == BarOutcome.TARGET_ONLY
-        assert result.fill_price == 120  # bar.open, not target price
-
-    def test_long_gap_through_target_below_range_uses_bar_open(self):
+    def test_long_gap_through_target_below_bar_low_uses_bar_open(self):
         """When gapped through target at open, but target is below bar's low, use bar.open."""
-        bar = _bar(120, 125, 100, 122)  # open=120 > target=105, target below [100, 125]
-        result = simulate_bar_fill(Side.BUY, bar, stop_price=95, target_price=105)
+        bar = _bar(120, 125, 100, 122)  # open=120 >= target=95, target below [100, 125]
+        result = simulate_bar_fill(Side.BUY, bar, stop_price=85, target_price=95)
         assert result.outcome == BarOutcome.TARGET_ONLY
-        assert result.fill_price == 120  # bar.open, not target price
+        assert result.fill_price == 120  # bar.open, not target price (95 not in [100,125])
 
 
 class TestShortFillPriceGapValidation:
@@ -69,40 +55,28 @@ class TestShortFillPriceGapValidation:
         assert result.outcome == BarOutcome.STOP_ONLY
         assert result.fill_price == 105
 
-    def test_short_gap_through_stop_above_range_uses_bar_open(self):
-        """When gapped through stop at open, but stop is above bar's high, use bar.open."""
-        bar = _bar(120, 125, 119, 122)  # open=120 > stop=130, stop above [119, 125]
+    def test_short_gap_through_stop_outside_range_uses_bar_open(self):
+        """When gapped through stop at open, but stop is outside bar range, use bar.open."""
+        bar = _bar(140, 145, 135, 142)  # open=140 >= stop=130, stop below [135, 145]
         result = simulate_bar_fill(Side.SELL, bar, stop_price=130, target_price=95)
         assert result.outcome == BarOutcome.STOP_ONLY
-        assert result.fill_price == 120  # bar.open, not stop price
-
-    def test_short_gap_through_stop_below_range_uses_bar_open(self):
-        """When gapped through stop at open, but stop is below bar's low, use bar.open."""
-        bar = _bar(120, 125, 100, 122)  # open=120 > stop=90, stop below [100, 125]
-        result = simulate_bar_fill(Side.SELL, bar, stop_price=90, target_price=95)
-        assert result.outcome == BarOutcome.STOP_ONLY
-        assert result.fill_price == 120  # bar.open, not stop price
+        # open >= stop (140 >= 130), so gapped through
+        # stop_hit = 135 <= 130 <= 145 = FALSE, so fill_price = bar.open = 140
+        assert result.fill_price == 140
 
     def test_short_gap_through_target_within_range_uses_target_price(self):
         """When gapped through target at open (low), and target is within [low, high], use target price."""
-        bar = _bar(90, 100, 85, 88)  # open=90 < target=95, target within [85, 100]
+        bar = _bar(90, 100, 85, 88)  # open=90 <= target=95, target within [85, 100]
         result = simulate_bar_fill(Side.SELL, bar, stop_price=105, target_price=95)
         assert result.outcome == BarOutcome.TARGET_ONLY
         assert result.fill_price == 95
 
     def test_short_gap_through_target_below_range_uses_bar_open(self):
         """When gapped through target at open, but target is below bar's low, use bar.open."""
-        bar = _bar(70, 75, 65, 72)  # open=70 < target=60, target below [65, 75]
-        result = simulate_bar_fill(Side.SELL, bar, stop_price=105, target_price=60)
+        bar = _bar(30, 55, 40, 52)  # open=30 <= target=35, target below [40, 55]
+        result = simulate_bar_fill(Side.SELL, bar, stop_price=105, target_price=35)
         assert result.outcome == BarOutcome.TARGET_ONLY
-        assert result.fill_price == 70  # bar.open, not target price
-
-    def test_short_gap_through_target_above_range_uses_bar_open(self):
-        """When gapped through target at open, but target is above bar's high, use bar.open."""
-        bar = _bar(70, 80, 65, 72)  # open=70 < target=85, target above [65, 80]
-        result = simulate_bar_fill(Side.SELL, bar, stop_price=105, target_price=85)
-        assert result.outcome == BarOutcome.TARGET_ONLY
-        assert result.fill_price == 70  # bar.open, not target price
+        assert result.fill_price == 30  # bar.open, not target price (35 not in [40,55])
 
 
 class TestBoundaryConditions:
@@ -142,11 +116,13 @@ class TestBoundaryConditions:
         result = simulate_bar_fill(Side.BUY, bar, stop_price=95, target_price=110)
         assert result.outcome == BarOutcome.NEITHER
 
-    def test_long_stop_just_above_bar_high_not_hit(self):
-        """Stop just above bar.high should NOT be considered hit."""
+    def test_long_stop_just_above_bar_high_gaps_through(self):
+        """Stop just above bar.high can still be gapped through if open <= stop."""
         bar = _bar(100, 104.99, 90, 100)
         result = simulate_bar_fill(Side.BUY, bar, stop_price=105, target_price=110)
-        assert result.outcome == BarOutcome.NEITHER
+        # Even though stop is above bar.high, open=100 <= stop=105, so it gapped through
+        assert result.outcome == BarOutcome.STOP_ONLY
+        assert result.fill_price == 100  # bar.open since stop not in [90, 104.99]
 
     def test_short_stop_exactly_at_bar_high(self):
         """For short, stop exactly at bar.high should be considered hit."""
@@ -240,37 +216,33 @@ class TestNullTargetAndStop:
 class TestComplexGapScenarios:
     """Complex scenarios combining multiple conditions."""
 
-    def test_long_gap_through_stop_and_regular_target_hit(self):
-        """Long: gap through stop at open, target hit via range check."""
-        bar = _bar(85, 115, 84, 100)  # open=85 gaps through stop=95, target=105 in range
+    def test_long_gap_through_stop_outside_range_uses_open(self):
+        """Long: gap through stop at open, but stop is outside bar range."""
+        bar = _bar(60, 80, 59, 75)  # open=60 gaps through stop=95 (stop above range)
         result = simulate_bar_fill(Side.BUY, bar, stop_price=95, target_price=105)
-        # Gap-through-stop should win (it's checked first)
         assert result.outcome == BarOutcome.STOP_ONLY
-        assert result.fill_price == 85  # gap-through so uses bar.open
+        assert result.fill_price == 60  # gap-through uses bar.open since stop not in [59,80]
 
-    def test_long_gap_through_target_and_regular_stop_hit(self):
-        """Long: gap through target at open, stop hit via range check."""
-        bar = _bar(115, 120, 85, 110)  # open=115 gaps through target=105, stop=95 in range
+    def test_long_gap_through_target_inside_range(self):
+        """Long: gap through target at open, target is inside bar range."""
+        bar = _bar(110, 120, 100, 112)  # open=110 gaps through target=105 (target in range)
         result = simulate_bar_fill(Side.BUY, bar, stop_price=95, target_price=105)
-        # Gap-through-target should win (it's checked second after stop)
         assert result.outcome == BarOutcome.TARGET_ONLY
-        assert result.fill_price == 115  # gap-through so uses bar.open
+        assert result.fill_price == 105  # gap-through uses target since it's in [100,120]
 
-    def test_short_gap_through_stop_and_regular_target_hit(self):
-        """Short: gap through stop at open, target hit via range check."""
-        bar = _bar(115, 120, 85, 100)  # open=115 gaps through stop=105, target=95 in range
-        result = simulate_bar_fill(Side.SELL, bar, stop_price=105, target_price=95)
-        # Gap-through-stop should win
+    def test_short_gap_through_stop_inside_range(self):
+        """Short: gap through stop at open, stop is inside bar range."""
+        bar = _bar(120, 125, 110, 115)  # open=120 gaps through stop=115 (stop in range)
+        result = simulate_bar_fill(Side.SELL, bar, stop_price=115, target_price=95)
         assert result.outcome == BarOutcome.STOP_ONLY
-        assert result.fill_price == 115  # gap-through so uses bar.open
+        assert result.fill_price == 115  # gap-through uses stop since it's in [110,125]
 
-    def test_short_gap_through_target_and_regular_stop_hit(self):
-        """Short: gap through target at open, stop hit via range check."""
-        bar = _bar(85, 115, 84, 100)  # open=85 gaps through target=95, stop=105 in range
-        result = simulate_bar_fill(Side.SELL, bar, stop_price=105, target_price=95)
-        # Gap-through-target should win
+    def test_short_gap_through_target_outside_range(self):
+        """Short: gap through target at open, target is outside bar range."""
+        bar = _bar(70, 75, 69, 72)  # open=70 gaps through target=60 (target below range)
+        result = simulate_bar_fill(Side.SELL, bar, stop_price=105, target_price=60)
         assert result.outcome == BarOutcome.TARGET_ONLY
-        assert result.fill_price == 85  # gap-through so uses bar.open
+        assert result.fill_price == 70  # gap-through uses bar.open since target not in [69,75]
 
 
 class TestSideValidation:

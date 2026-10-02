@@ -306,6 +306,7 @@ pytest_add_cli_args_test_selection = [
     "tests/test_provider_scout.py", "tests/test_e05_execution_quality.py",
     "tests/test_c23_metrics_endpoint.py", "tests/test_equity_history_endpoint.py",
     "tests/test_t13_phone_escalation.py", "tests/test_track37_phone_escalation_correlation_wiring.py",
+    "tests/test_trk62_sources_providers_mutation.py",
 ]
 
 # C38 (bounded): static analysis -- ruff (lint) + mypy (type checking).
