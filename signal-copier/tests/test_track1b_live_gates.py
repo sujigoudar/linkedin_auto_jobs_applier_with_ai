@@ -17,8 +17,9 @@
    _check_buying_power` closes this: an entry whose notional would
    exceed the broker's real, just-fetched buying power is refused,
    independent of (and never a substitute for) `max_notional_exposure`/
-   `risk_percent_of_equity`. It fails open (admits, logs a skip) only
-   where buying power genuinely isn't verifiable for this account/broker.
+   `risk_percent_of_equity`. It fails closed where buying power genuinely
+   isn't verifiable AND no ceiling is configured; otherwise it skips the
+   check and relies on the configured ceiling.
 """
 from __future__ import annotations
 
@@ -274,7 +275,10 @@ async def test_entry_admitted_when_notional_is_within_buying_power_and_risk_ceil
 
 
 @pytest.mark.asyncio
-async def test_broker_that_cannot_report_buying_power_fails_open_and_logs_it(tmp_path, caplog):
+async def test_broker_that_cannot_report_buying_power_fails_closed(tmp_path):
+    """A broker with no balance capability and no configured ceiling
+    must refuse entry fail-closed, naming both the missing figure
+    (balance capability) and the mitigation option (ceiling)."""
     store = SignalStore(tmp_path / "test.db")
     broker = _NoBalanceBroker()
     assert broker.has_balance_capability is False
@@ -282,20 +286,22 @@ async def test_broker_that_cannot_report_buying_power_fails_open_and_logs_it(tmp
     engine = _engine(store, account, broker)
     _record_release_approved(store, adapter_type="paper", route_key="acct1", asset_class="crypto")
 
-    with caplog.at_level("INFO"):
-        signal = Signal(source=SOURCE, symbol=SYMBOL, side=Side.BUY, quantity=10.0, price=100.0)
-        results = await engine.handle_signal(signal)
+    signal = Signal(source=SOURCE, symbol=SYMBOL, side=Side.BUY, quantity=10.0, price=100.0)
+    results = await engine.handle_signal(signal)
 
-    assert results[0].status == OrderStatus.FILLED
-    assert any("buying_power_check_skipped" in r.message for r in caplog.records)
-    assert any("no_verified_balance_capability" in r.message for r in caplog.records)
+    assert results[0].status == OrderStatus.REJECTED
+    assert "has no verified balance capability" in results[0].message
+    assert "no capital ceiling is configured" in results[0].message
+    assert "(max_notional_exposure or risk_percent_of_equity)" in results[0].message
 
 
 @pytest.mark.asyncio
-async def test_broker_reporting_none_buying_power_also_fails_open(tmp_path, caplog):
+async def test_broker_reporting_none_buying_power_also_fails_closed(tmp_path):
     """has_balance_capability is True (a real override exists) but this
     specific account/call genuinely has no buying_power concept (e.g. a
-    ccxt spot account) -- must not be treated as zero buying power."""
+    ccxt spot account) -- must not be treated as zero buying power. Must
+    instead fail closed, naming both the missing figure and the ceiling
+    option, when no ceiling is configured."""
     store = SignalStore(tmp_path / "test.db")
     broker = _BuyingPowerBroker(buying_power=None)
     assert broker.has_balance_capability is True
@@ -303,12 +309,13 @@ async def test_broker_reporting_none_buying_power_also_fails_open(tmp_path, capl
     engine = _engine(store, account, broker)
     _record_release_approved(store, adapter_type="paper", route_key="acct1", asset_class="crypto")
 
-    with caplog.at_level("INFO"):
-        signal = Signal(source=SOURCE, symbol=SYMBOL, side=Side.BUY, quantity=10.0, price=100.0)
-        results = await engine.handle_signal(signal)
+    signal = Signal(source=SOURCE, symbol=SYMBOL, side=Side.BUY, quantity=10.0, price=100.0)
+    results = await engine.handle_signal(signal)
 
-    assert results[0].status == OrderStatus.FILLED
-    assert any("buying_power_not_reported" in r.message for r in caplog.records)
+    assert results[0].status == OrderStatus.REJECTED
+    assert "does not report a buying_power figure" in results[0].message
+    assert "no capital ceiling is configured" in results[0].message
+    assert "(max_notional_exposure or risk_percent_of_equity)" in results[0].message
 
 
 @pytest.mark.asyncio

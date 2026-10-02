@@ -158,6 +158,10 @@ class OrderReconciler:
                 )
                 continue
 
+            # WP-27: E-07 ensure executed_at is set for export events
+            if result is not None and result.status == OrderStatus.FILLED and result.executed_at is None:
+                result.executed_at = datetime.now(timezone.utc)
+
             if result is None or result.status == OrderStatus.PENDING:
                 # Still open on the broker's side. A PENDING result here can
                 # carry partial-fill progress (see AlpacaBroker/IBKRBroker's

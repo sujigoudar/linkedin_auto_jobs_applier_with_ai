@@ -1,17 +1,12 @@
 """Add real fill timestamps and confirmed_at for E-07/E-08 fix.
 
 Revision ID: 0040
-Revises: 0036
+Revises: 0039
 Create Date: 2026-10-02 00:00:00.000000
 
 E-07 fix: Reconciliation-confirmed fills now preserve broker's actual
 executed_at timestamp; confirmed_at tracks the poll time separately.
 E-08 fix: Synthetic lifecycle signals excluded from latency calculations.
-
-Note: This revision is assigned ID 0040 with intended down_revision 0037 per
-the remediation plan. However, intermediate revisions 0037-0039 from other
-work packages are not yet present. This file uses 0036 as down_revision for
-testing; the integrator will re-chain revisions as needed.
 
 """
 from __future__ import annotations

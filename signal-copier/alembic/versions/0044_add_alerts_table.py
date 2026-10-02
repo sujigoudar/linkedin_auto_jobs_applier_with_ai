@@ -1,7 +1,7 @@
 """Add alerts table for operational notifications (WP-34).
 
 Revision ID: 0044
-Revises: 0037
+Revises: 0043
 Create Date: 2026-10-02 00:00:00.000000
 
 """

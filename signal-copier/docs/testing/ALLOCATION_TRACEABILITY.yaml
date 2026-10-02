@@ -1092,8 +1092,8 @@
   status: unit-only
   impl_status: implemented
   tests:
-  - tests/test_risk_sizing.py::test_default_quantity_when_signal_has_no_quantity_is_exactly_one
-  - tests/test_risk_sizing.py::test_default_quantity_scales_by_multiplier_when_signal_has_no_quantity
+  - tests/test_risk_sizing.py::test_unsized_entry_raises_when_signal_has_no_quantity
+  - tests/test_risk_sizing.py::test_unsized_entry_raises_even_with_multiplier
   evidence: Unit asserts the default 1.0; no policy/guard.
   notes: Behavior is pinned, arguably unsafe for futures/options.
 - id: G-04

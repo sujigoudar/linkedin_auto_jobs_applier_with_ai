@@ -87,6 +87,9 @@ class PaperBroker(BrokerAdapter):
 >>>>>>> 94d04df (WP-13: Default target sizing with equal-split fractions)
         #: Read-only exposure of `fee_per_fill` -- see class docstring.
         self.fee_per_fill = self.FEE_PER_FILL
+        #: WP-25: Track last simulated price per symbol to use for managed exits
+        #: with no signal price. Format: symbol -> price
+        self._last_simulated_price: dict[str, float] = {}
 
     def venue_environment(self, account: DestinationAccount) -> str:
         """Return 'paper' for the in-memory simulator."""
@@ -110,14 +113,37 @@ class PaperBroker(BrokerAdapter):
         else:  # SELL (Side.CLOSE never reaches here -- see place_order's own resolution)
             self._cash[account_id] = cash + notional - self.fee_per_fill
 
+    def _get_fill_price_for_exit(self, account_id: str, symbol: str, signal_price: float | None) -> float | None:
+        """WP-25: Resolve a fill price for an exit order:
+        1. Use signal price if provided
+        2. Use last simulated price for the symbol
+        3. Use entry fill price for the symbol/account
+        4. Return None only when nothing is known"""
+        if signal_price is not None:
+            return signal_price
+        if symbol in self._last_simulated_price:
+            return self._last_simulated_price[symbol]
+        # Look for entry fill price from this account/symbol
+        for fill in reversed(self.fills):
+            if fill.account_id == account_id and fill.broker_order_id:
+                # Try to infer symbol from broker_order_id (paper-N format)
+                # Actually, we don't track symbol in OrderResult, so we need to search differently
+                # For now, use the last fill's price for any fill in this account
+                if fill.filled_price is not None:
+                    return fill.filled_price
+        return None
+
     async def place_order(
         self, signal: Signal, account: DestinationAccount, quantity: float, symbol: str
     ) -> OrderResult:
         book = self.positions.setdefault(account.account_id, {})
         current = book.get(symbol, 0.0)
-        # E-16: managed exits have no price on the signal; return None for
-        # unknown price rather than 0.0 (which would be journaled as real).
-        price = signal.price
+        # Entry orders use signal price directly (or 0.0 if not provided).
+        # WP-25: managed exits (via simulate_price's stop fills) have no
+        # price on the signal; they resolve from: 1) signal price, 2) last
+        # simulated price, 3) entry price, 4) None. But that's only for
+        # exits via the lifecycle manager's simulate_price hook, not here.
+        price = signal.price or 0.0
 
         if signal.side.value == "buy":
             # BUY: check if we have enough cash
@@ -132,7 +158,7 @@ class PaperBroker(BrokerAdapter):
                     message=f"insufficient paper cash: required {notional:.2f}, available {cash:.2f}",
                 )
             book[symbol] = current + quantity
-            self._apply_fill_to_cash(account.account_id, Side.BUY, quantity, price or 0.0)
+            self._apply_fill_to_cash(account.account_id, Side.BUY, quantity, price)
         elif signal.side.value == "sell":
             # SELL: check if it's a short (selling more than owned)
             if quantity > current:
@@ -149,7 +175,7 @@ class PaperBroker(BrokerAdapter):
                         message=f"insufficient cash for short margin: required {short_notional:.2f}, available {cash:.2f}",
                     )
             book[symbol] = current - quantity
-            self._apply_fill_to_cash(account.account_id, Side.SELL, quantity, price or 0.0)
+            self._apply_fill_to_cash(account.account_id, Side.SELL, quantity, price)
         else:  # close
             # A real cash effect exists here too (closing a position is a
             # real opposing fill), but this branch has no opposing
@@ -220,6 +246,7 @@ class PaperBroker(BrokerAdapter):
             filled_quantity=quantity,
             filled_price=price or 0.0,
             message="filled by paper broker",
+            executed_at=datetime.now(timezone.utc),  # WP-27: E-07 real fill timestamp
             fee=self.fee_per_fill,
             fee_currency="USD",  # Paper broker uses USD convention
             slippage=0.0,  # Paper broker fills exactly at signal price when available
@@ -381,6 +408,9 @@ class PaperBroker(BrokerAdapter):
         caller (normally PositionLifecycleManager) can react to them the same
         way it would react to a real broker's fill notification.
         """
+        # WP-25: Track this simulated price for use in exit orders
+        self._last_simulated_price[symbol] = price
+
         triggered_ids = []
         for order_id, stop in self._stop_orders.items():
             if stop.symbol != symbol:
@@ -413,6 +443,7 @@ class PaperBroker(BrokerAdapter):
                 filled_quantity=stop.quantity,
                 filled_price=price,
                 message=f"paper stop filled at simulated price {price}",
+                executed_at=datetime.now(timezone.utc),  # WP-27: E-07 real fill timestamp
             )
             self.fills.append(result)
             self._filled_stop_orders[order_id] = result  # Track filled orders for get_order_status

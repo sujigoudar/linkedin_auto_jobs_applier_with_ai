@@ -52,12 +52,10 @@ from app.models import DestinationAccount, OrderResult, OrderStatus, Signal
 _TRADE_RETCODE_DONE_PARTIAL = 10010
 
 #: Ambiguous/transient retcodes that should be classified as ERROR, not REJECTED.
-#: These indicate temporary issues (requote, timeout, connection failure) that
-#: might succeed on retry, not definite rejections.
+#: These indicate temporary issues (timeout, connection failure) that might succeed
+#: on retry, not definite rejections.
 _TRADE_RETCODE_AMBIGUOUS = {
-    10004,  # TRADE_RETCODE_REQUOTE - re-quote of the price
     10012,  # TRADE_RETCODE_TIMEOUT - operation timeout
-    10013,  # TRADE_RETCODE_INVALID_PRICE - invalid price
     10031,  # TRADE_RETCODE_CONNECTION - connection failed
 }
 

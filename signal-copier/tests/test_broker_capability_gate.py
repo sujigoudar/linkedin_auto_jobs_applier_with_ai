@@ -120,14 +120,14 @@ async def test_plain_path_allows_entry_with_no_protection_requested(store, monke
         return _Resp()
 
     monkeypatch.setattr(broker._client, "post", fake_post)
-    account = DestinationAccount(account_id="acct1", broker="signalstack")
+    account = DestinationAccount(account_id="acct1", broker="signalstack", max_notional_exposure=100000.0)
     routing = RoutingConfig(
         rules=[RoutingRule(source="tradingview", destinations=["acct1"])], accounts={"acct1": account}
     )
     engine = SignalCopierEngine(routing=routing, brokers={"signalstack": broker}, store=store)
     _force_release_approved(store, adapter_type="signalstack", route_key="acct1", asset_class="crypto")
 
-    signal = Signal(source="tradingview", symbol="AAPL", side=Side.BUY, quantity=10.0)  # no stop_loss requested
+    signal = Signal(source="tradingview", symbol="AAPL", side=Side.BUY, quantity=10.0, price=100.0)  # no stop_loss requested
     results = await engine.handle_signal(signal)
 
     assert results[0].status == OrderStatus.PENDING  # unchanged pre-existing behavior

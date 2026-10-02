@@ -1872,6 +1872,7 @@ class PositionLifecycleManager:
             broker_order_id=broker_order_id,
             filled_quantity=filled_quantity,
             filled_price=exit_price,
+            executed_at=datetime.now(timezone.utc),
         )
         source_stream = f"signal-copier:{account.account_id}"
         export_envelope = build_execution_applied_envelope(

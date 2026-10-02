@@ -12,7 +12,7 @@ Fixes:
 - Never fabricate or guess currency values; NULL is honest when unavailable
 
 Revision ID: 0041
-Revises: 0037
+Revises: 0040
 Create Date: 2026-10-02 00:00:00.000000
 
 """
