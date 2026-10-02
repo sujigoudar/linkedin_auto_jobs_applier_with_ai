@@ -99,6 +99,11 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setattr(main_module, "store", store)
     monkeypatch.setattr(main_module.engine, "store", store)
     monkeypatch.setattr(main_module.engine.capital_allocator, "store", store)
+    # the module-level PaperBroker is shared by every API test in the run; a
+    # fresh instance keeps cash/positions left by earlier tests from changing
+    # the admission outcome here (the engine, lifecycle manager and
+    # reconciler all hold the same `brokers` dict, so setitem reaches them)
+    monkeypatch.setitem(main_module.brokers, "paper", PaperBroker())
     main_module.routing_config.accounts.clear()
     main_module.routing_config.rules.clear()
     main_module.provider_registry.providers.clear()
@@ -121,7 +126,7 @@ def test_unresolved_ledger_rows_are_listed_and_resolvable(client, monkeypatch):
         assert client.post("/accounts", json={"account_id": "a1", "broker": "paper", "max_notional_exposure": 100000}).status_code == 200
         assert client.post("/routing-rules", json={"source": "tradingview", "destinations": ["a1"]}).status_code == 200
         r = client.post("/webhook/tradingview", json={"symbol": "BTCUSDT", "side": "buy", "quantity": 0.5, "price": 65000})
-        assert r.status_code == 200 and r.json()["orders"][0]["status"] == "error"
+        assert r.status_code == 200 and r.json()["orders"][0]["status"] == "error", r.json()
 
         listed = client.get("/command-ledger/unresolved").json()["unresolved"]
         assert len(listed) == 1
