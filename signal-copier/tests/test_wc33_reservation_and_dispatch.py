@@ -8,10 +8,7 @@ Implements WORKFLOW_SPECIFICATION.md §6.1–6.3, §13.3 requirements for:
 """
 from __future__ import annotations
 
-import json
-import sqlite3
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
 
@@ -20,21 +17,12 @@ from app.db import SignalStore
 from app.engine import SignalCopierEngine
 from app.models import (
     DestinationAccount,
-    OrderResult,
     OrderStatus,
     Signal,
     Side,
     AssetClass,
 )
 from app.routing import RoutingConfig, RoutingRule
-from app.workflow.budget import (
-    UNLIMITED_CENTS,
-    BudgetScope,
-    HierarchicalBudget,
-    ReservationState,
-    ResourceVector,
-)
-from app.workflow.intents import OrderIntent, Outbox
 
 
 class CountingPaperBroker(PaperBroker):
@@ -100,9 +88,6 @@ class TestI04Ordering:
             price=150.0,
             analyst="analyst_001",
         )
-
-        # Get the account from engine
-        account = engine.routing.accounts["test_account"]
 
         # Place order
         results = await engine.handle_signal(signal)
@@ -176,7 +161,14 @@ class TestBudgetEnforcement:
 
         assert len(results2) == 1
         assert results2[0].status == OrderStatus.REJECTED
-        assert "resource reservation blocked" in results2[0].message
+        # Two honest blockers can fire once the owner budget is exhausted: the
+        # WC-32 admission pre-check (remaining == 0 -> BUDGET_NOT_ADMISSIBLE)
+        # runs before the WC-33 step-4 reservation; either proves the limit
+        # is enforced and that no broker call was made.
+        assert (
+            "resource reservation blocked" in results2[0].message
+            or "BUDGET_NOT_ADMISSIBLE" in results2[0].message
+        )
         assert engine.brokers["paper"].place_order_call_count == 0
 
 
