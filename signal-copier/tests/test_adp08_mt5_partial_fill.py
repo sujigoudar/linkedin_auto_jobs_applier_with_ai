@@ -64,12 +64,30 @@ async def test_partial_fill_reports_filled_not_pending():
 
 
 @pytest.mark.asyncio
-async def test_genuine_rejection_is_still_rejected():
-    """A real reject retcode (anything besides DONE/DONE_PARTIAL) must
-    still be reported as REJECTED -- the fix must not swallow real
-    rejections along with genuine partial fills."""
+async def test_requote_is_ambiguous_error_not_rejection():
+    """REQUOTE (10004) is an ambiguous/transient error (price may have
+    changed, retry might work) -- must be ERROR, not REJECTED. Definite
+    rejections use other retcodes."""
     broker = _stub_broker(
         {"retcode": 10004, "order": 0, "price": 0, "volume": 0, "comment": "REQUOTE"}
+    )
+
+    result = await broker.place_order(
+        Signal("s", "EURUSD", Side.BUY), DestinationAccount("a", "mt4_mt5"), 1, "EURUSD"
+    )
+
+    assert result.status == OrderStatus.ERROR
+
+
+@pytest.mark.asyncio
+async def test_genuine_rejection_is_still_rejected():
+    """Definite rejections (not ambiguous retcodes) must be reported as
+    REJECTED -- the fix must not swallow real rejections along with
+    genuine partial fills. Use a retcode that's not in the ambiguous set."""
+    # Using a hypothetical definite rejection (any code not in the ambiguous set)
+    # For this test, we use 10015 (hypothetical definite rejection)
+    broker = _stub_broker(
+        {"retcode": 10015, "order": 0, "price": 0, "volume": 0, "comment": "REJECTED"}
     )
 
     result = await broker.place_order(
