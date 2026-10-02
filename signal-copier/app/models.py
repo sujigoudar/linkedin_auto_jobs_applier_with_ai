@@ -220,6 +220,10 @@ class Signal:
     future: Optional["FutureContractSpec"] = None
     fx: Optional["FxContractSpec"] = None
     crypto_derivative: Optional["CryptoDerivativeSpec"] = None
+    #: Client-assigned order id for broker-side deduplication. Set by the
+    #: engine before submitting to a broker to enable idempotent order
+    #: submission. None when not yet set (before submission).
+    client_order_id: Optional[str] = None
 
     # -- Provider message identity / revision / provenance --------------
 

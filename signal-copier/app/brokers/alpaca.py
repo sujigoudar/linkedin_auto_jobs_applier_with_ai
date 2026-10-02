@@ -135,6 +135,8 @@ class AlpacaBroker(BrokerAdapter):
             "type": "market",
             "time_in_force": "day",
         }
+        if signal.client_order_id:
+            order_payload["client_order_id"] = signal.client_order_id
         if signal.stop_loss and signal.take_profit:
             # Both legs present: OTOCO bracket order.
             order_payload["order_class"] = "bracket"
@@ -308,6 +310,34 @@ class AlpacaBroker(BrokerAdapter):
             return False
 
         return status_response.json().get("status") in self._TERMINAL_CANCELLED_STATUSES
+
+    async def find_order_by_client_id(
+        self, account: DestinationAccount, client_order_id: str
+    ) -> str | None:
+        """Look up an order by its client-assigned id.
+
+        Returns the broker_order_id if found, or None if not found or lookup fails.
+        Uses Alpaca's /v2/orders:by_client_order_id endpoint.
+        """
+        try:
+            api_key, api_secret, base_url = self._credentials_for(account)
+        except RuntimeError:
+            return None
+
+        try:
+            response = await self._client.get(
+                f"{base_url}/v2/orders:by_client_order_id",
+                params={"client_order_id": client_order_id},
+                headers={"APCA-API-KEY-ID": api_key, "APCA-API-SECRET-KEY": api_secret},
+            )
+            # 404 means not found, which is fine
+            if response.status_code == 404:
+                return None
+            response.raise_for_status()
+            order = response.json()
+            return _coerce_broker_order_id(order.get("id"))
+        except httpx.HTTPError:
+            return None
 
     async def replace_stop_quantity(
         self,

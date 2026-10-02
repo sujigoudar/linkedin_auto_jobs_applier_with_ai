@@ -127,6 +127,20 @@ class BrokerAdapter(abc.ABC):
         caller falls back to cancel-then-resubmit instead."""
         return None
 
+    async def find_order_by_client_id(
+        self, account: DestinationAccount, client_order_id: str
+    ) -> str | None:
+        """Look up an order by its client-assigned id (idempotency key).
+
+        Returns the broker_order_id if found, or None if not found or lookup fails.
+        This is optional; brokers that don't implement it return None."""
+        return None
+
+    @property
+    def has_client_id_lookup_capability(self) -> bool:
+        """Check if this broker has overridden find_order_by_client_id."""
+        return type(self).find_order_by_client_id is not BrokerAdapter.find_order_by_client_id
+
     async def get_broker_position(self, account: DestinationAccount, symbol: str) -> float | None:
         """Query the broker's own record of the current position size for this
         symbol (positive = long, negative = short, 0 = flat). Return None if

@@ -59,6 +59,7 @@ silently placing the entry without its exit.
 from __future__ import annotations
 
 import os
+from typing import Any
 
 from app.models import AssetClass, DestinationAccount, OrderResult, OrderStatus, Side, Signal
 from app.brokers.base import BrokerAdapter
@@ -156,7 +157,9 @@ class CCXTBroker(BrokerAdapter):
                 message="'close' side reached the broker directly without engine-level resolution (see SignalCopierEngine._resolve_close); this broker only accepts buy/sell",
             )
 
-        params = {}
+        params: dict[str, Any] = {}
+        if signal.client_order_id:
+            params["clientOrderId"] = signal.client_order_id
         if signal.stop_loss or signal.take_profit:
             if not self._exchange_declares_attached_bracket_support(exchange):
                 return OrderResult(
@@ -261,6 +264,26 @@ class CCXTBroker(BrokerAdapter):
             broker_order_id=order_id,
             message="ccxt stop resting",
         )
+
+    async def find_order_by_client_id(self, account: DestinationAccount, client_order_id: str) -> str | None:
+        """Look up an order by its client-assigned id.
+
+        Returns the broker_order_id if found, or None if not found or lookup fails.
+        Not all exchanges support client order id lookup; this returns None for
+        exchanges that don't support it.
+        """
+        exchange = self._exchange_for(account)
+        try:
+            # Some exchanges support fetch_order_by_client_id directly
+            if hasattr(exchange, 'fetch_order_by_client_id'):
+                order = await exchange.fetch_order_by_client_id(client_order_id)
+                return str(order.get("id"))
+            else:
+                # Fallback: return None for exchanges without fetch_order_by_client_id
+                # Searching through open orders would require the symbol, which we don't have
+                return None
+        except Exception:  # noqa: BLE001 - network error or not supported
+            return None
 
     async def cancel_order(self, account: DestinationAccount, broker_order_id: str) -> bool:
         exchange = self._exchange_for(account)

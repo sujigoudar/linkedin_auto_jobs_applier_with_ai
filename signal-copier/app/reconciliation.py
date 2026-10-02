@@ -41,7 +41,7 @@ from app.capital_allocator import CapitalAllocator
 from app.db import SignalStore
 from app.export_events import build_execution_applied_envelope
 from app.lifecycle.manager import PositionLifecycleManager
-from app.models import AssetClass, DestinationAccount, OrderResult, OrderStatus, Side
+from app.models import AssetClass, CommandType, DestinationAccount, OrderResult, OrderStatus, Side, UncertaintyState
 
 logger = logging.getLogger(__name__)
 
@@ -227,6 +227,7 @@ class OrderReconciler:
 
         corrected += await self._reconcile_pending_exits()
         corrected += await self._reconcile_pending_entries()
+        corrected += await self._reconcile_unknown_submissions()
         if self.lifecycle_manager is not None:
             # PRO-04: retry protection for any owned-but-unprotected
             # lifecycle every pass, independent of whether a new fill
@@ -470,6 +471,83 @@ class OrderReconciler:
                 account, symbol, filled, remainder_cancelled=is_terminal, filled_price=result.filled_price
             )
             resolved += 1
+
+        return resolved
+
+    async def _reconcile_unknown_submissions(self) -> int:
+        """Resolve UNKNOWN_AMBIGUOUS command ledger entries by attempting to
+        look up the submitted order at its broker using the client_order_id
+        (the command ledger's idempotency key).
+
+        Returns how many entries were resolved (either confirmed as placed or
+        rejected as not placed).
+        """
+        resolved = 0
+        for ledger_entry in self.store.list_unresolved_command_ledger_entries():
+            # Only process ENTRY commands in UNKNOWN_AMBIGUOUS state
+            if (
+                ledger_entry.command_type != CommandType.ENTRY
+                or ledger_entry.uncertainty_state != UncertaintyState.UNKNOWN_AMBIGUOUS
+            ):
+                continue
+
+            # The idempotency key is the client_order_id we assigned before submission
+            client_order_id = ledger_entry.idempotency_key
+            account_id = ledger_entry.account_id
+            terminal_evidence = ledger_entry.terminal_evidence or {}
+
+            # Try each broker that has client_id lookup capability
+            order_found = False
+            for broker_name, broker in self.brokers.items():
+                if not broker.has_client_id_lookup_capability:
+                    continue
+
+                account = DestinationAccount(account_id=account_id, broker=broker_name)
+                try:
+                    broker_order_id = await broker.find_order_by_client_id(account, client_order_id)
+                    if broker_order_id is not None:
+                        # Order found at this broker -- mark as confirmed
+                        self.store.mark_command_ledger_outcome(
+                            client_order_id,
+                            uncertainty_state=UncertaintyState.CONFIRMED,
+                            terminal_evidence={
+                                **terminal_evidence,
+                                "resolution": "found_at_broker",
+                                "broker": broker_name,
+                            },
+                            remote_identifiers={"broker_order_id": broker_order_id},
+                        )
+                        order_found = True
+                        resolved += 1
+                        break
+                except Exception:  # noqa: BLE001 - one broker's lookup failure must not block the rest
+                    logger.exception(
+                        "find_order_by_client_id failed for account=%s client_order_id=%s",
+                        account_id,
+                        client_order_id,
+                    )
+                    continue
+
+            if not order_found:
+                # Order not found at any broker -- mark as rejected and release capital
+                self.store.mark_command_ledger_outcome(
+                    client_order_id,
+                    uncertainty_state=UncertaintyState.REJECTED_CONFIRMED,
+                    terminal_evidence={
+                        **terminal_evidence,
+                        "resolution": "not_placed",
+                    },
+                )
+                # Release the capital reservation since the order was not placed
+                if self.capital_allocator is not None:
+                    reserved_notional = terminal_evidence.get("reserved_notional", 0.0)
+                    if reserved_notional > 0:
+                        self.capital_allocator.release(
+                            account_id,
+                            reserved_notional,
+                            signal_id=terminal_evidence.get("signal_id"),
+                        )
+                resolved += 1
 
         return resolved
 

@@ -1354,6 +1354,7 @@ class SignalCopierEngine:
             submitted_at = datetime.now(timezone.utc)
             ambiguous_submission = False
             try:
+                order_signal.client_order_id = ledger_key
                 result = await broker.place_order(order_signal, account, quantity, symbol)
             except Exception as exc:  # noqa: BLE001 - one account's failure must not block others
                 logger.exception("order failed for account=%s", account.account_id)
@@ -2485,6 +2486,7 @@ class SignalCopierEngine:
 
         submitted_at = datetime.now(timezone.utc)
         try:
+            order_signal.client_order_id = ledger_key
             result = await broker.place_order(order_signal, account, quantity, symbol)
         except Exception as exc:  # noqa: BLE001 - one account's failure must not block others
             logger.exception("order failed for account=%s", account.account_id)
@@ -3051,6 +3053,7 @@ class SignalCopierEngine:
         # handle_signal's identical field for what it feeds into.
         submitted_at = datetime.now(timezone.utc)
         try:
+            entry_signal.client_order_id = ledger_key
             result = await broker.place_order(entry_signal, account, quantity, symbol)
         except Exception as exc:  # noqa: BLE001 - one account's failure must not block others
             # EXE-01: `place_order` raising here is genuinely ambiguous — the
