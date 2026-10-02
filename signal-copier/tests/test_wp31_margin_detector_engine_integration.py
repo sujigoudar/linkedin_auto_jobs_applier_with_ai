@@ -120,8 +120,11 @@ async def test_margin_call_detector_allows_entry_with_sufficient_margin(store):
 
 
 @pytest.mark.asyncio
-async def test_margin_call_detector_fail_closed_equity_without_maintenance(store):
-    """Fail-closed: equity reported but no maintenance_margin should reject entry."""
+async def test_margin_gate_is_skipped_when_maintenance_margin_is_not_reported(store):
+    """Equity without a maintenance figure means the adapter does not track
+    margin (cash accounts, the paper simulator): the margin-call gate cannot
+    run, so it is skipped -- never a rejection -- and no alert is persisted.
+    The other admission gates (buying power, loss limit, exposure) still apply."""
     broker = MockBrokerWithMarginBalance(equity=10000.0, maintenance_margin=None)
     account = DestinationAccount(account_id="acct1", broker="mock_margin_broker")
     engine = _engine(store, broker, account)
@@ -129,10 +132,8 @@ async def test_margin_call_detector_fail_closed_equity_without_maintenance(store
     signal = Signal(source="tradingview", symbol="AAPL", side=Side.BUY, quantity=10.0)
     results = await engine.handle_signal(signal)
 
-    # Should be rejected due to fail-closed pattern
-    assert results[0].status == OrderStatus.REJECTED
-    assert "Cannot determine margin state" in results[0].message
-    assert "maintenance requirement" in results[0].message
+    assert results[0].status != OrderStatus.REJECTED or "margin" not in results[0].message.lower()
+    assert engine.margin_call_detector.get_unresolved_margin_calls("acct1") == []
 
 
 @pytest.mark.asyncio

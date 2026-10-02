@@ -847,41 +847,32 @@ class SignalCopierEngine:
                     current_equity = balance.equity
                     maintenance_requirement = balance.maintenance_margin
 
-                    # Fail-closed: if account reports equity but no maintenance_margin,
-                    # we cannot safely determine margin state for a margin account.
-                    # This is a configuration/adapter problem that needs attention.
+                    # A balance with equity but no maintenance figure is an
+                    # adapter/account that does not track margin (cash
+                    # accounts, the paper simulator): the margin-call gate
+                    # cannot run and says so; it does NOT reject, because the
+                    # buying-power, loss-limit and exposure gates still apply.
+                    # The readiness checklist reports "margin: not_tracked".
                     if current_equity is not None and maintenance_requirement is None:
-                        result = OrderResult(
-                            account_id=account.account_id,
-                            status=OrderStatus.REJECTED,
-                            signal_id=signal.id,
-                            message=f"Cannot determine margin state for account '{account.account_id}': "
-                            f"broker reports equity ({current_equity:.2f}) but no maintenance requirement. "
-                            f"Broker adapter may not support margin reporting for this account type.",
+                        logger.info(
+                            "margin_check_skipped account=%s broker=%s reason=maintenance_margin_not_reported",
+                            account.account_id,
+                            account.broker,
                         )
-                        self.store.save_order_result(
-                            result,
-                            broker=account.broker,
-                            purpose=order_purpose,
-                            family_id=order_family_id,
-                        )
-                        results.append(result)
-                        self._export_routing_outcome(
-                            signal,
-                            outcome=_OUTCOME_BY_ORDER_STATUS[result.status],
-                            account=account,
-                            order_status=result.status,
-                            message=result.message,
-                        )
-                        continue
 
-                # Check margin state with the detector.
-                margin_error = self.margin_call_detector.check_and_persist_margin_call(
-                    account=account,
-                    current_equity=current_equity,
-                    maintenance_requirement=maintenance_requirement,
-                    excess_margin=None,  # Detector will calculate if needed
-                    broker=account.broker,
+                # Check margin state with the detector only when the venue
+                # reports a maintenance figure; without one there is no margin
+                # state to evaluate (see the skip above).
+                margin_error = (
+                    self.margin_call_detector.check_and_persist_margin_call(
+                        account=account,
+                        current_equity=current_equity,
+                        maintenance_requirement=maintenance_requirement,
+                        excess_margin=None,  # Detector will calculate if needed
+                        broker=account.broker,
+                    )
+                    if maintenance_requirement is not None
+                    else None
                 )
                 if margin_error is not None:
                     result = OrderResult(
