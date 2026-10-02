@@ -241,6 +241,10 @@ CREATE TABLE IF NOT EXISTS orders (
     -- REJECTED_CONFIRMED/UNKNOWN_AMBIGUOUS.
     reserved_quantity REAL,
     acknowledged_quantity REAL,
+    -- E04 (bounded): fee tracking for financial correctness
+    fee DECIMAL(18, 8),
+    fee_currency TEXT,
+    slippage DECIMAL(18, 8),
     FOREIGN KEY (signal_id) REFERENCES signals (id)
 );
 
@@ -309,7 +313,10 @@ CREATE TABLE IF NOT EXISTS config_accounts (
     qualification_level TEXT,
     -- P0-5: off-by-default exclusive-writer-qualified assertion -- see
     -- DestinationAccount.exclusive_writer_qualified's own docstring.
-    exclusive_writer_qualified INTEGER NOT NULL DEFAULT 0
+    exclusive_writer_qualified INTEGER NOT NULL DEFAULT 0,
+    -- E04 (bounded): daily loss limit circuit breaker for risk control
+    daily_loss_limit_percent DECIMAL(5, 2),
+    min_equity_threshold DECIMAL(18, 8)
 );
 
 CREATE TABLE IF NOT EXISTS config_routing_rules (
@@ -1782,6 +1789,34 @@ CREATE INDEX IF NOT EXISTS idx_orders_status ON orders (status);
 CREATE INDEX IF NOT EXISTS idx_signals_received_at ON signals (received_at);
 CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions (expires_at);
 CREATE INDEX IF NOT EXISTS idx_export_events_undelivered ON export_events (source_stream, export_sequence) WHERE delivered_at IS NULL;
+CREATE TABLE IF NOT EXISTS daily_pnl (
+    id INTEGER PRIMARY KEY,
+    account_id TEXT NOT NULL,
+    date DATE NOT NULL,
+    opening_equity DECIMAL(18, 8),
+    closing_equity DECIMAL(18, 8),
+    realized_pnl DECIMAL(18, 8),
+    unrealized_pnl DECIMAL(18, 8),
+    fees DECIMAL(18, 8),
+    slippage DECIMAL(18, 8),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    UNIQUE (account_id, date)
+);
+CREATE TABLE IF NOT EXISTS margin_call_alerts (
+    id INTEGER PRIMARY KEY,
+    account_id TEXT NOT NULL,
+    alert_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    current_equity DECIMAL(18, 8) NOT NULL,
+    maintenance_requirement DECIMAL(18, 8) NOT NULL,
+    excess_margin DECIMAL(18, 8) NOT NULL,
+    broker TEXT NOT NULL,
+    resolved BOOLEAN DEFAULT 0 NOT NULL,
+    resolved_at TIMESTAMP,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_daily_pnl_account_id ON daily_pnl(account_id);
+CREATE INDEX IF NOT EXISTS ix_margin_call_alerts_account_id ON margin_call_alerts(account_id);
 """
 
 
