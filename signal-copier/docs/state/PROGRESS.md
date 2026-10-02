@@ -1,13 +1,13 @@
 # Current progress snapshot
 
-As of `HEAD` after Track 64: mutation-testing regression tests for certification
-modules on `agent-track64-certification-mutation` (2026-10-02). This is a
-snapshot, not a roadmap — update it when the state it describes actually
-changes. This file was previously stale for an extended period (it referenced
-an old branch, `claude/signal-copier-redesign`, and alembic head `0015`, long
-after both had moved on), and was stale again after that (alembic head
-`0033`/2057 passed, and three items below listed as not-yet-landed that had in
-fact landed as Track 25/27) — if you find it stale again, fix it rather than
+As of `HEAD` after Track 73: mutation-testing regression tests for feature and
+capability modules on `agent-track73-features-capability-mutation` (2026-10-02).
+This is a snapshot, not a roadmap — update it when the state it describes
+actually changes. This file was previously stale for an extended period (it
+referenced an old branch, `claude/signal-copier-redesign`, and alembic head
+`0015`, long after both had moved on), and was stale again after that (alembic
+head `0033`/2057 passed, and three items below listed as not-yet-landed that had
+in fact landed as Track 25/27) — if you find it stale again, fix it rather than
 working around it.
 
 ## What wave this is
@@ -42,9 +42,12 @@ anything past Track 29 has landed since this snapshot was written.
 
 ## What's genuinely landed and working, as of HEAD
 
-- Alembic head is `0034`. Full `pytest -q` suite: **2465 passed, 0 failed**
-  (after Track 69's 91 new mutation-regression tests for configuration/infrastructure modules
-  covering app/config.py, app/config_admin.py, app/rate_limit.py, app/logging_config.py,
+- Alembic head is `0034`. Full `pytest -q` suite: **2537 passed, 0 failed**
+  (after Track 73's 72 new mutation-regression tests for feature/capability modules
+  covering app/qualification.py, app/export_events.py, app/shadow_mode.py,
+  app/phone_escalation.py, app/execution_quality.py, Track 69's 91 new
+  mutation-regression tests for configuration/infrastructure modules covering
+  app/config.py, app/config_admin.py, app/rate_limit.py, app/logging_config.py,
   Track 64's 64 new mutation-regression tests for certification modules
   covering app/certification.py and app/certification_evidence.py, Track 65's
   28 new mutation-regression tests for backtest utility modules covering

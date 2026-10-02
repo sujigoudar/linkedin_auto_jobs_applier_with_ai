@@ -7,6 +7,63 @@ does not yet cut versioned releases (see `docs/process/RELEASE.md`), so
 entries are grouped by theme and rough chronological wave instead of by
 version number. Newest wave first.
 
+## [Unreleased] — Track 73: mutation-testing regression tests for feature and capability modules (2026-10-02)
+
+Comprehensive targeted regression testing for critical feature and capability
+modules: `app/qualification.py` (trading qualification and eligibility gates),
+`app/export_events.py` (event export pipeline), `app/shadow_mode.py` (shadow
+trading mode logic), `app/phone_escalation.py` (phone escalation coordination),
+and `app/execution_quality.py` (execution quality and latency metrics). Follows
+Track 60-71 mutation testing pattern with focused coverage on state machine
+validation, conditional logic, enum parsing, side-dependent logic, and
+timestamp handling.
+
+### Mutation Testing Design
+
+Mutation resistance established via 72 targeted regression tests organized
+into 18 test classes with focused coverage of mutation-critical patterns:
+
+**app/qualification.py** (12 tests):
+- State ladder ordering: index calculations, state sequence verification
+- Prerequisite validation: missing prerequisites detection, set membership
+- Feedback dependency: correct threshold identification (>= vs <)
+- Enum parsing: valid vs invalid state strings, case sensitivity
+
+**app/export_events.py** (10 tests):
+- Currency resolution: forex pair splitting, default value handling
+- Event ID construction: prefix/format verification
+- Status validation: FILLED check, None field validation
+- Side filtering: CLOSE signal rejection, BUY/SELL acceptance
+
+**app/shadow_mode.py** (6 tests):
+- Target price extraction: list presence check, fallback logic
+- Empty target handling: None vs empty list distinction
+- Intent conversion: field completeness, datetime serialization
+
+**app/phone_escalation.py** (24 tests):
+- Escalation eligibility: completeness set membership
+- Denied app package: exact match vs pattern matching, case insensitivity
+- State transitions: allowed transitions table, same-state idempotence
+- Config validation: required field checking, package deny-list enforcement
+- Adapter constraints: role-based access control (navigation-only tap)
+
+**app/execution_quality.py** (20 tests):
+- Timestamp parsing: valid/invalid datetime handling, None acceptance
+- Latency calculation: subtraction direction, total_seconds() application
+- Clock skew detection: negative interval rejection
+- None endpoint handling: stage skip logic
+- Structure integrity: field presence and type verification
+
+### Added
+- `tests/test_track73_features_capability_mutations.py`: 72 new targeted regression tests
+
+### Verified
+- Full `pytest -q` on feature/capability modules: **72 passed**
+- `ruff check .` on test file: **All checks passed**
+- `mypy` type-checking: **No new issues**
+
+---
+
 ## [Unreleased] — Track 69: mutation-testing regression tests for configuration and infrastructure modules (2026-10-02)
 
 Comprehensive targeted regression testing for configuration and infrastructure
