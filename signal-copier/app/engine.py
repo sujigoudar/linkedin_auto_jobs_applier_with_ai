@@ -141,7 +141,7 @@ build_execution_applied_envelope,
     build_source_receipt_envelope,
 )
 from app.lifecycle.manager import PositionLifecycleManager
-from app.lifecycle.models import PositionPlan, Target, TargetAction
+from app.lifecycle.models import PositionPlan, Target, TargetAction, TrailingPolicy
 from app.logging_config import bind_signal_context
 from app.models import (
     AssetClass,
@@ -2094,6 +2094,41 @@ class SignalCopierEngine:
             account_id=account.account_id, status=OrderStatus.REJECTED, signal_id=order_signal.id, message=message
         )
 
+    async def _resolve_price_for_gating(
+        self, broker: BrokerAdapter, order_signal: Signal
+    ) -> tuple[float | None, str | None]:
+        """B-06: Resolve entry price for pre-flight gating, using broker live
+        quotes when available as a primary source, falling back to the signal's
+        message price.
+
+        Returns:
+            (price, source) where:
+            - price: float | None — the resolved price, or None if unresolvable
+            - source: str | None — "broker_quote" if from broker, "signal" if from
+              message, None if unresolvable
+        """
+        # Try broker quote first if capability available
+        if broker.has_quote_capability:
+            try:
+                quote = await broker.get_quote(order_signal.symbol)
+                if quote is not None and math.isfinite(quote) and quote > 0:
+                    return quote, "broker_quote"
+            except Exception:
+                # Log but don't fail; fall back to signal price
+                logger.debug(
+                    "broker quote fetch failed for symbol=%s broker=%s; falling back to signal price",
+                    order_signal.symbol,
+                    broker.__class__.__name__,
+                    exc_info=True,
+                )
+
+        # Fall back to signal price
+        if order_signal.price is not None and math.isfinite(order_signal.price) and order_signal.price > 0:
+            return order_signal.price, "signal"
+
+        # No resolvable price from either source
+        return None, None
+
     def _check_route_qualified(
         self, account: DestinationAccount, signal: Signal, broker: BrokerAdapter
     ) -> tuple[bool, OrderResult | None]:
@@ -2329,7 +2364,9 @@ class SignalCopierEngine:
                     "account balance",
                 )
 
-        if order_signal.price is None or not math.isfinite(order_signal.price) or order_signal.price <= 0:
+        # B-06: Resolve price using broker quote capability when available
+        price, price_source = await self._resolve_price_for_gating(broker, order_signal)
+        if price is None:
             logger.info(
                 "buying_power_check_skipped account=%s broker=%s reason=no_resolvable_price",
                 account.account_id,
@@ -2363,14 +2400,14 @@ class SignalCopierEngine:
         if spec_error is not None:
             return False, self._reject(account, order_signal, spec_error)
         contract_multiplier = mult
-        notional = abs(quantity) * abs(order_signal.price) * contract_multiplier
+        notional = abs(quantity) * abs(price) * contract_multiplier
         if notional > balance.buying_power:
             return False, self._reject(
                 account,
                 order_signal,
                 f"account '{account.account_id}' insufficient buying power: broker-reported buying_power "
-                f"({balance.buying_power:.2f}) is less than this entry's notional ({notional:.2f}) -- "
-                "refusing",
+                f"({balance.buying_power:.2f}) is less than this entry's notional ({notional:.2f}) "
+                f"(price_source={price_source}) -- refusing",
             )
         return True, None
 
@@ -2469,41 +2506,35 @@ class SignalCopierEngine:
         )
         if not has_gate:
             return True, 0.0, None
-        if order_signal.price is None:
+
+        # B-06: Resolve price using broker quote capability when available
+        broker = self.brokers.get(account.broker)
+        if broker is not None:
+            price, _ = await self._resolve_price_for_gating(broker, order_signal)
+        else:
+            # No broker available; use signal price only
+            if order_signal.price is not None and math.isfinite(order_signal.price) and order_signal.price > 0:
+                price = order_signal.price
+            else:
+                price = None
+
+        if price is None:
             return False, 0.0, self._reject(
                 account,
                 order_signal,
                 f"account '{account.account_id}' has a capital/risk exposure gate configured "
                 "(max_notional_exposure, risk_percent_of_equity, and/or an owner-wide ceiling) but this "
-                "signal carries no price -- notional can't be computed and this build has no independent "
-                "current-market-price source to fall back to, so admission is refused rather than "
+                "signal carries no resolvable price -- neither broker quote (if capability available) nor message "
+                "price can be resolved, so notional can't be computed; admission is refused rather than "
                 "silently skipping the check (see app/capital_allocator.py)",
             )
-        if not math.isfinite(order_signal.price) or order_signal.price <= 0:
-            # Fail-closed defense-in-depth, same rationale as the `price is
-            # None` check just above: sources are expected to reject a
-            # non-finite/zero/negative price before a Signal ever reaches
-            # this admission path, but this gate must never trust that
-            # blindly. Left unchecked: price=0 makes notional=0 (every
-            # notional/risk ceiling below is trivially satisfied regardless
-            # of real trade size), price=NaN makes every `>` ceiling
-            # comparison below silently evaluate False (never trips), and
-            # price<0 makes notional negative, corrupting
-            # CapitalAllocator._pending's running total for this account.
-            return False, 0.0, self._reject(
-                account,
-                order_signal,
-                f"account '{account.account_id}' has a capital/risk exposure gate configured but this "
-                f"signal's price ({order_signal.price!r}) is not a finite positive number -- notional "
-                "can't be safely computed, refusing rather than admitting an unbounded or corrupted "
-                "reservation",
-            )
+
         # B-03: apply contract multiplier to capital allocation
         mult, spec_error, spec_note = _get_contract_multiplier(order_signal)
         if spec_error is not None:
             return False, 0.0, self._reject(account, order_signal, spec_error)
         contract_multiplier = mult
-        notional = abs(quantity) * abs(order_signal.price) * contract_multiplier
+        notional = abs(quantity) * abs(price) * contract_multiplier
 
         owner_gated = self.max_owner_notional_exposure is not None
         if owner_gated:
@@ -3303,6 +3334,17 @@ class SignalCopierEngine:
         else:
             targets = []
 
+        # D-12: Resolve trailing stop configuration from signal
+        trailing = None
+        trail_percent = None
+        if signal.trail_amount is not None:
+            trailing = TrailingPolicy(trail_distance=signal.trail_amount)
+        elif signal.trail_percent is not None:
+            # Deferred: trail_distance will be calculated after entry fills
+            # when we know the entry price (trail_distance = entry_price * trail_percent)
+            trailing = TrailingPolicy(trail_distance=0.0)  # Placeholder; will be updated in on_entry_fill
+            trail_percent = signal.trail_percent
+
         plan = PositionPlan(
             account_id=account.account_id,
             symbol=symbol,
@@ -3312,6 +3354,9 @@ class SignalCopierEngine:
             broker=account.broker,
             initial_stop=signal.stop_loss,
             targets=targets,
+            trailing=trailing,
+            trail_percent=trail_percent,
+            time_exit=signal.time_exit_at,
             # DB-0X: this position's own real entry signal id, carried for
             # its whole lifetime so a later CLOSE for this same
             # (account_id, symbol) can report the same `orders.family_id`

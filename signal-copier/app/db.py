@@ -2295,6 +2295,13 @@ _COLUMN_MIGRATIONS = [
     # contract_multiplier(signal). Capital allocator queries use COALESCE(..., 1.0)
     # so pre-existing rows (multiplier=1.0 equivalent) work correctly.
     ("orders", "contract_multiplier", "REAL"),
+    # D-12: Trailing stops and time exits reachable from signals --
+    # see Signal.trail_amount/trail_percent/time_exit_at in app/models.py.
+    # Mutually exclusive: trail_amount XOR trail_percent. time_exit_at is
+    # independent. All NULL means no trailing/time exit configured.
+    ("signals", "trail_amount", "REAL"),
+    ("signals", "trail_percent", "REAL"),
+    ("signals", "time_exit_at", "TEXT"),
 ]
 
 

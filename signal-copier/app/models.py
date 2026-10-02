@@ -225,6 +225,19 @@ class Signal:
     #: submission. None when not yet set (before submission).
     client_order_id: Optional[str] = None
 
+    # -- D-12: Trailing stops and time exits reachable from signals ------
+
+    #: D-12: Trailing stop amount (absolute price delta, e.g. 2.5 means trail
+    #: 2.5 points below the high). Mutually exclusive with trail_percent.
+    #: `None` means no trailing stop configured on this signal.
+    trail_amount: Optional[float] = None
+    #: D-12: Trailing stop percentage (e.g. 0.02 means trail 2% below the high).
+    #: Mutually exclusive with trail_amount. `None` means no trailing stop.
+    trail_percent: Optional[float] = None
+    #: D-12: Time-based exit time (when to automatically close this position).
+    #: `None` means no time-based exit configured on this signal.
+    time_exit_at: Optional[datetime] = None
+
     # -- Provider message identity / revision / provenance --------------
 
     #: This provider's own native channel identifier (e.g. a Discord/

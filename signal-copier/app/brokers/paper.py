@@ -81,6 +81,8 @@ class PaperBroker(BrokerAdapter):
         #: WP-25: Track last simulated price per symbol to use for managed exits
         #: with no signal price. Format: symbol -> price
         self._last_simulated_price: dict[str, float] = {}
+        #: B-06: symbol -> last simulated fill price (used for get_quote)
+        self._last_prices: dict[str, float] = {}
 
     def venue_environment(self, account: DestinationAccount) -> str:
         """Return 'paper' for the in-memory simulator."""
@@ -178,6 +180,10 @@ class PaperBroker(BrokerAdapter):
             # branch is a defensive fallback for direct/standalone use, not
             # a real path this cash tracking needs to cover.
             book[symbol] = 0.0
+
+        # B-06: Track the last simulated fill price for get_quote() gating
+        if price:
+            self._last_prices[symbol] = price
 
         # WP-38 (G-C-24): Use persistent per-account sequence for order IDs.
         # The engine initializes _order_id_sequence from the database and
@@ -332,6 +338,12 @@ class PaperBroker(BrokerAdapter):
     async def get_broker_position(self, account: DestinationAccount, symbol: str) -> float | None:
         return self.positions.setdefault(account.account_id, {}).get(symbol, 0.0)
 
+    async def get_quote(self, symbol: str) -> float | None:
+        """B-06: Return the last simulated fill price for this symbol, if known.
+        Used by app/engine.py for pre-flight gating (notional/leverage/buying-power).
+        Returns None if the symbol has never been traded on this paper broker."""
+        return self._last_prices.get(symbol)
+
     def set_order_id_sequence(self, account_id: str, sequence: int) -> None:
         """Initialize the order ID sequence for an account (WP-38, G-C-24).
         Called by the engine at startup to restore the persisted sequence
@@ -371,6 +383,8 @@ class PaperBroker(BrokerAdapter):
         """
         # WP-25: Track this simulated price for use in exit orders
         self._last_simulated_price[symbol] = price
+        # B-06: Track the simulated price for get_quote() gating
+        self._last_prices[symbol] = price
 
         triggered_ids = []
         for order_id, stop in self._stop_orders.items():

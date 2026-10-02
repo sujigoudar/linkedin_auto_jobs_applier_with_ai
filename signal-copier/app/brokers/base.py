@@ -174,6 +174,22 @@ class BrokerAdapter(abc.ABC):
         stop monitoring the position entirely."""
         return None
 
+    async def get_quote(self, symbol: str) -> float | None:
+        """Optional: fetch a current market quote for gating purposes
+        (e.g. for notional/leverage/buying-power checks before entry).
+
+        B-06: Called by app/engine.py before entry admission to fetch a
+        live quote when available, falling back to the message price only
+        when this broker has no quote capability. Return None if this
+        broker has no verified way to fetch one (the default); the caller
+        will use the signal price instead.
+
+        Called at pre-flight time before any order is submitted, not tied to
+        a specific account (unlike get_last_price). Brokers that can only
+        provide quotes per-account (most) should return None here — the
+        engine will fall back to the signal price."""
+        return None
+
     async def get_account_balance(self, account: DestinationAccount) -> AccountBalance | None:
         """Query this account's real, live cash/equity/buying-power/margin
         directly from the broker (see app/models.py's `AccountBalance` for
@@ -225,6 +241,11 @@ class BrokerAdapter(abc.ABC):
     @property
     def has_last_price_capability(self) -> bool:
         return type(self).get_last_price is not BrokerAdapter.get_last_price
+
+    @property
+    def has_quote_capability(self) -> bool:
+        """B-06: whether this adapter can fetch a live quote for gating purposes."""
+        return type(self).get_quote is not BrokerAdapter.get_quote
 
     @property
     def has_balance_capability(self) -> bool:

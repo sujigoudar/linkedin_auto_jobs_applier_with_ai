@@ -894,6 +894,20 @@ class PositionLifecycleManager:
                     lifecycle, account, broker, filled_quantity, lifecycle.plan.initial_stop, source="signal"
                 )
 
+            # D-12: Register trailing stops if configured on the signal
+            if lifecycle.plan.trailing is not None and broker is not None:
+                # If trail_percent was used, calculate the actual trail_distance now that we have entry_price
+                if lifecycle.plan.trail_percent is not None and entry_price is not None:
+                    lifecycle.plan.trailing.trail_distance = entry_price * lifecycle.plan.trail_percent
+                # Note: trailing policy activation state and floor price are managed by on_price_update,
+                # not here. If a trailing stop is in the plan, the manager will handle its lifecycle.
+
+            # D-12: Register time-based exit if configured on the signal
+            if lifecycle.plan.time_exit is not None:
+                # Record the time exit for persistence and reconciliation
+                # The actual scheduling is handled by app/reconciliation.py's polling loop
+                pass  # Time exit is now persisted as part of lifecycle.plan.time_exit
+
         self._persist(lifecycle)
         return lifecycle
 
@@ -2672,6 +2686,7 @@ def _lifecycle_to_state(lifecycle: PositionLifecycle, ledger: dict) -> dict:
                 "active": plan.trailing.active,
                 "floor_price": plan.trailing.floor_price,
             },
+            "trail_percent": plan.trail_percent,
             "time_exit": plan.time_exit.isoformat() if plan.time_exit else None,
             "max_risk": plan.max_risk,
         },
@@ -2740,6 +2755,7 @@ def _lifecycle_from_state(row: dict) -> PositionLifecycle:
             active=trailing_row.get("active", False),
             floor_price=trailing_row.get("floor_price"),
         ),
+        trail_percent=plan_row.get("trail_percent"),
         time_exit=time_exit,
         max_risk=plan_row.get("max_risk"),
     )
