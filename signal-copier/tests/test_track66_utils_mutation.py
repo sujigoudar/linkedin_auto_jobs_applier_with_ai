@@ -672,6 +672,14 @@ class TestConfigDefaultsMutation:
 class TestConfigParsing:
     """Mutation tests for configuration parsing logic."""
 
+    @pytest.fixture(autouse=True)
+    def reset_config_module_after_test(self):
+        """Reload config module after each test to clean up module state."""
+        yield
+        import importlib
+        import app.config as config_module
+        importlib.reload(config_module)
+
     def test_twitter_rules_parsed_from_comma_separated_string(self, monkeypatch):
         """Mutation: breaking CSV parsing breaks Twitter rules."""
         monkeypatch.setenv("TWITTER_RULES", "rule1, rule2 , rule3")
