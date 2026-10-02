@@ -73,6 +73,10 @@ class PaperBroker(BrokerAdapter):
         #: Read-only exposure of `fee_per_fill` -- see class docstring.
         self.fee_per_fill = self.FEE_PER_FILL
 
+    def venue_environment(self, account: DestinationAccount) -> str:
+        """Return 'paper' for the in-memory simulator."""
+        return "paper"
+
     def _cash_for(self, account_id: str) -> float:
         return self._cash.setdefault(account_id, self.STARTING_CASH)
 

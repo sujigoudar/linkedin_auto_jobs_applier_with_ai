@@ -107,6 +107,16 @@ class AlpacaBroker(BrokerAdapter):
             )
         return api_key, api_secret, base_url
 
+    def venue_environment(self, account: DestinationAccount) -> str:
+        """Return the Alpaca venue environment: 'paper' or 'live' based on the base URL."""
+        _, _, base_url = self._credentials_for(account)
+        if "paper-api" in base_url:
+            return "paper"
+        elif "api.alpaca" in base_url:
+            return "live"
+        else:
+            return "unknown"
+
     async def place_order(
         self, signal: Signal, account: DestinationAccount, quantity: float, symbol: str
     ) -> OrderResult:

@@ -83,6 +83,10 @@ class QualificationState(str, enum.Enum):
     #: An explicit human/operator sign-off that this route is approved for
     #: real, live trading -- separate from every technical state above it.
     RELEASE_APPROVED = "release_approved"
+    #: A terminal state indicating this route has been revoked and may no
+    #: longer be used for live trading. Once revoked, a route cannot
+    #: return to an approved state; a new route must be created instead.
+    REVOKED = "revoked"
 
 
 #: The strict order of the ladder. Index N requires every state at index

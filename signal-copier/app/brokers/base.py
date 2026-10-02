@@ -295,3 +295,17 @@ class BrokerAdapter(abc.ABC):
         opened positions (see _check_route_qualified's logic), but live
         entries are structurally impossible and fail-closed here."""
         return self.has_account_order_position_feedback
+    def venue_environment(self, account: DestinationAccount) -> str:
+        """Return the venue environment identifier for this account.
+
+        This is used to qualify routes per environment: a route is only
+        release-approved for the environment it was qualified in. Different
+        adapters resolve this differently:
+        - Alpaca: reads base URL env var (paper-api.alpaca.markets = "paper", api.alpaca.markets = "live")
+        - ccxt: reads sandbox flag per instance ("sandbox" or "live")
+        - Others: return "unknown" by default
+
+        The value becomes part of the route qualification key alongside
+        (adapter_type, route_key, asset_class, product_type), so changing
+        the environment requires re-qualification."""
+        return "unknown"

@@ -128,6 +128,10 @@ class CCXTBroker(BrokerAdapter):
         self._exchanges[account.account_id] = exchange
         return exchange
 
+    def venue_environment(self, account: DestinationAccount) -> str:
+        """Return the CCXT venue environment: 'sandbox' or 'live' based on the sandbox flag."""
+        return "sandbox" if self.sandbox else "live"
+
     @staticmethod
     def _exchange_declares_attached_bracket_support(exchange) -> bool:
         """ADP-02: `stopLossPrice`/`takeProfitPrice` are ccxt's UNIFIED

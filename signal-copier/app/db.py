@@ -819,15 +819,16 @@ CREATE TABLE IF NOT EXISTS route_qualifications (
     route_key TEXT NOT NULL,
     asset_class TEXT NOT NULL,
     product_type TEXT NOT NULL,
+    environment TEXT NOT NULL DEFAULT "unknown",
     state TEXT NOT NULL,
     recorded_at TEXT NOT NULL,
     recorded_by TEXT NOT NULL,
     notes TEXT,
-    UNIQUE(adapter_type, route_key, asset_class, product_type, state)
+    UNIQUE(adapter_type, route_key, asset_class, product_type, environment, state)
 );
 
 CREATE INDEX IF NOT EXISTS idx_route_qualifications_route
-    ON route_qualifications (adapter_type, route_key, asset_class, product_type);
+    ON route_qualifications (adapter_type, route_key, asset_class, product_type, environment);
 
 -- P0-2 (external release audit, "one durable command ledger"): the
 -- pre-effect durable ledger for EVERY real financial command this service
@@ -2077,6 +2078,10 @@ _COLUMN_MIGRATIONS = [
     # signals. Used to find all orders produced by the original signal
     # when deciding how to amend vs reject/accept an edit.
     ("signals", "original_message_id", "TEXT"),
+    # WP-33 (qualification keyed by venue environment): a route is release-
+    # approved only for the environment it was qualified in. Include the
+    # resolved environment (base URL/env/sandbox flag) in the route tuple.
+    ("route_qualifications", "environment", "TEXT NOT NULL DEFAULT 'unknown'"),
 ]
 
 
@@ -5327,14 +5332,14 @@ class SignalStore:
     # --- Live qualification (app/qualification.py) ---------------------
 
     def _achieved_qualification_states(
-        self, conn: sqlite3.Connection, *, adapter_type: str, route_key: str, asset_class: str, product_type: str
+        self, conn: sqlite3.Connection, *, adapter_type: str, route_key: str, asset_class: str, product_type: str, environment: str = "unknown"
     ) -> "set":
         from app.qualification import QualificationState
 
         rows = conn.execute(
             "SELECT DISTINCT state FROM route_qualifications "
-            "WHERE adapter_type = ? AND route_key = ? AND asset_class = ? AND product_type = ?",
-            (adapter_type, route_key, asset_class, product_type),
+            "WHERE adapter_type = ? AND route_key = ? AND asset_class = ? AND product_type = ? AND environment = ?",
+            (adapter_type, route_key, asset_class, product_type, environment),
         ).fetchall()
         achieved = set()
         for (state_value,) in rows:
@@ -5356,6 +5361,7 @@ class SignalStore:
         recorded_by: str,
         notes: str | None = None,
         recorded_at: datetime | None = None,
+        environment: str = "unknown",
     ) -> dict:
         """Record ONE state achieved for ONE exact route. Fails closed --
         raises `app.qualification.QualificationError` (never silently
@@ -5407,7 +5413,7 @@ class SignalStore:
         row, via the schema's UNIQUE constraint) -- it never re-runs the
         prerequisite check against itself.
         """
-        from app.qualification import QualificationError, parse_state, missing_prerequisites, requires_feedback
+        from app.qualification import QualificationState, QualificationError, parse_state, missing_prerequisites, requires_feedback
 
         parsed_state = parse_state(state)
         if not adapter_type or not route_key or not asset_class or not product_type:
@@ -5441,36 +5447,38 @@ class SignalStore:
                 )
 
             achieved = self._achieved_qualification_states(
-                conn, adapter_type=adapter_type, route_key=route_key, asset_class=asset_class, product_type=product_type
+                conn, adapter_type=adapter_type, route_key=route_key, asset_class=asset_class, product_type=product_type, environment=environment
             )
-            if parsed_state not in achieved:
-                missing = missing_prerequisites(parsed_state, achieved)
-                if missing:
-                    raise QualificationError(
-                        f"cannot record '{parsed_state.value}' for route "
-                        f"({adapter_type}/{route_key}/{asset_class}/{product_type}): "
-                        f"missing prerequisite state(s) {[m.value for m in missing]} -- "
-                        "the qualification ladder must be achieved in order"
-                    )
-                if requires_feedback(parsed_state) and not supports_feedback:
-                    raise QualificationError(
-                        f"cannot record '{parsed_state.value}' for route "
-                        f"({adapter_type}/{route_key}/{asset_class}/{product_type}): "
-                        f"adapter '{adapter_type}' has no real order-status, position-readback, or "
-                        "balance-readback implementation (has_account_order_position_feedback is False) -- "
-                        "there is no genuine feedback channel to verify this state with, so it structurally "
-                        "cannot be claimed for any route on this adapter, regardless of operator intent"
-                    )
+            # REVOKED is a terminal state outside the normal ladder, so skip prerequisite checks
+            if parsed_state != QualificationState.REVOKED:
+                if parsed_state not in achieved:
+                    missing = missing_prerequisites(parsed_state, achieved)
+                    if missing:
+                        raise QualificationError(
+                            f"cannot record '{parsed_state.value}' for route "
+                            f"({adapter_type}/{route_key}/{asset_class}/{product_type}): "
+                            f"missing prerequisite state(s) {[m.value for m in missing]} -- "
+                            "the qualification ladder must be achieved in order"
+                        )
+                    if requires_feedback(parsed_state) and not supports_feedback:
+                        raise QualificationError(
+                            f"cannot record '{parsed_state.value}' for route "
+                            f"({adapter_type}/{route_key}/{asset_class}/{product_type}): "
+                            f"adapter '{adapter_type}' has no real order-status, position-readback, or "
+                            "balance-readback implementation (has_account_order_position_feedback is False) -- "
+                            "there is no genuine feedback channel to verify this state with, so it structurally "
+                            "cannot be claimed for any route on this adapter, regardless of operator intent"
+                        )
 
             conn.execute(
                 """
                 INSERT INTO route_qualifications
-                    (adapter_type, route_key, asset_class, product_type, state, recorded_at, recorded_by, notes)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(adapter_type, route_key, asset_class, product_type, state)
+                    (adapter_type, route_key, asset_class, product_type, state, recorded_at, recorded_by, notes, environment)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(adapter_type, route_key, asset_class, product_type, environment, state)
                 DO UPDATE SET recorded_at = excluded.recorded_at, recorded_by = excluded.recorded_by, notes = excluded.notes
                 """,
-                (adapter_type, route_key, asset_class, product_type, parsed_state.value, when, recorded_by, notes),
+                (adapter_type, route_key, asset_class, product_type, parsed_state.value, when, recorded_by, notes, environment),
             )
 
         return {
@@ -5482,6 +5490,7 @@ class SignalStore:
             "recorded_at": when,
             "recorded_by": recorded_by,
             "notes": notes,
+            "environment": environment,
         }
 
     def list_route_qualifications(
@@ -5545,29 +5554,37 @@ class SignalStore:
         return result
 
     def is_route_release_approved(
-        self, *, adapter_type: str, route_key: str, asset_class: str, product_type: str
+        self, *, adapter_type: str, route_key: str, asset_class: str, product_type: str, environment: str = "unknown"
     ) -> bool:
         """Live-routing gate read (app/engine.py's `_check_route_qualified`):
         has `QualificationState.RELEASE_APPROVED` -- the deliberate human
         sign-off, never auto-set (see app/qualification.py's own
         docstring) -- actually been recorded for this EXACT
-        (adapter_type, route_key, asset_class, product_type) tuple.
+        (adapter_type, route_key, asset_class, product_type, environment) tuple.
+
+        A route is only release-approved for the environment it was qualified in;
+        if the environment changes, the route must be re-qualified. Also checks
+        that the route has not been revoked (a terminal state that prevents
+        the route from ever being used again).
 
         Reuses `_achieved_qualification_states` (the same read the write
         path's own prerequisite check uses), so this can never disagree
         with what `record_route_qualification`/`list_route_qualifications`
         report as achieved for the same route. Returns `False` for a route
-        with zero recorded qualification events at all, and `False` for a
-        route that has SOME recorded states but not `release_approved`
-        itself -- there is no partial credit here; the ladder's own
-        ordering already guarantees `release_approved` recorded means
-        every rung below it was too."""
+        with zero recorded qualification events at all, `False` for a route
+        that has been revoked, and `False` for a route that has SOME recorded
+        states but not `release_approved` itself -- there is no partial credit
+        here; the ladder's own ordering already guarantees `release_approved`
+        recorded means every rung below it was too."""
         from app.qualification import QualificationState
 
         with self._connect() as conn:
             achieved = self._achieved_qualification_states(
-                conn, adapter_type=adapter_type, route_key=route_key, asset_class=asset_class, product_type=product_type
+                conn, adapter_type=adapter_type, route_key=route_key, asset_class=asset_class, product_type=product_type, environment=environment
             )
+        # A route is blocked if it has been revoked (terminal state) or if it hasn't been approved
+        if QualificationState.REVOKED in achieved:
+            return False
         return QualificationState.RELEASE_APPROVED in achieved
 
     # -- Track 8: the UNIFIED collector registry (app/unified_collectors.py) --

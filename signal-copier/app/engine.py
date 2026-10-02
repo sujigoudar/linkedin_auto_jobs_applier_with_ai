@@ -2017,8 +2017,8 @@ class SignalCopierEngine:
     ) -> tuple[bool, OrderResult | None]:
         """Track 1b live-routing gate: refuse to route a live ENTRY through
         an execution route -- (adapter_type, route_key, asset_class,
-        product_type), the exact tuple app/qualification.py's ladder is
-        tracked per -- that has never had a human operator record
+        product_type, environment), the exact tuple app/qualification.py's
+        ladder is tracked per -- that has never had a human operator record
         `release_approved` for it (`POST /qualifications`, app/main.py).
         See app/qualification.py's own module docstring for why this is a
         deliberate human sign-off, never something this engine (or any
@@ -2030,6 +2030,9 @@ class SignalCopierEngine:
         `route_key` is `account.account_id` -- the finest per-route
         distinction this schema actually carries (see
         `_UNDECLARED_ROUTE_PRODUCT_TYPE`'s own comment on `product_type`).
+        `environment` is the resolved venue environment (paper/live/sandbox)
+        from the broker; a route is only release-approved for the environment
+        it was qualified in.
 
         PAPER accounts are exempt: `PaperBroker` never sends an order
         anywhere outside this process's own memory (see that class's own
@@ -2053,11 +2056,13 @@ class SignalCopierEngine:
             return True, None
         route_key = account.account_id
         asset_class = signal.asset_class.value
+        environment = broker.venue_environment(account)
         approved = self.store.is_route_release_approved(
             adapter_type=account.broker,
             route_key=route_key,
             asset_class=asset_class,
             product_type=_UNDECLARED_ROUTE_PRODUCT_TYPE,
+            environment=environment,
         )
         if not approved:
             return False, self._reject(
@@ -2065,7 +2070,8 @@ class SignalCopierEngine:
                 signal,
                 "route not qualified for live release: no 'release_approved' qualification recorded for "
                 f"route (adapter_type='{account.broker}', route_key='{route_key}', "
-                f"asset_class='{asset_class}', product_type='{_UNDECLARED_ROUTE_PRODUCT_TYPE}') -- "
+                f"asset_class='{asset_class}', product_type='{_UNDECLARED_ROUTE_PRODUCT_TYPE}', "
+                f"environment='{environment}') -- "
                 "see app/qualification.py; a human operator must record every ladder rung up through "
                 "release_approved for this exact route via POST /qualifications before it may route a "
                 "live order",
