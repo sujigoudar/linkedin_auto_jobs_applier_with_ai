@@ -443,10 +443,97 @@
       .join("<br>");
   }
 
+  // WP-44: interpret and format the signal for plain-language display.
+  function interpretSignal(s) {
+    if (!s.intent) return "—";
+
+    const formatContractSpec = () => {
+      const raw = s.raw || {};
+      const spec = raw.contract_spec || {};
+
+      if (spec.option) {
+        const o = spec.option;
+        return `Option: ${s.symbol} ${o.strike}${o.right || "?"} ${o.expiry || "?"} ×${o.multiplier || 100}`;
+      }
+      if (spec.future) {
+        const f = spec.future;
+        return `Future: ${s.symbol} ${f.root || ""} ${f.expiry || ""} ×${f.multiplier || 1}`;
+      }
+      if (spec.fx) {
+        const fx = spec.fx;
+        return `FX: ${fx.base_currency || s.symbol}/${fx.quote_currency || "?"} ${fx.unit ? `(${fx.unit})` : ""}`;
+      }
+      if (spec.crypto_derivative) {
+        const cd = spec.crypto_derivative;
+        return `Crypto derivative: ${s.symbol} ${cd.instrument_kind || ""}`;
+      }
+      return null;
+    };
+
+    const qty = s.quantity != null ? fmtNum(s.quantity) : "—";
+    const contractSpec = formatContractSpec();
+    const symbol = `<span class="mono">${escapeHtml(s.symbol)}</span>`;
+
+    switch (s.intent) {
+      case "entry_long":
+        return contractSpec || `Enter long ${qty} ${symbol}`;
+      case "entry_short":
+        return contractSpec || `Enter short ${qty} ${symbol}`;
+      case "sell":
+        return contractSpec || `Sell ${qty} ${symbol}`;
+      case "exit":
+        const exitQty = qty === "—" ? "" : ` ${qty}`;
+        return `Exit${exitQty} ${symbol}`;
+      case "reduce":
+        const frac = s.reduce_fraction ? `${Math.round(s.reduce_fraction * 100)}%` : "50%";
+        return `Exit ${frac} ${symbol}`;
+      case "stop_update":
+        const slPrice = s.stop_loss != null ? fmtNum(s.stop_loss) : "?";
+        return `Update stop → ${slPrice} on ${symbol}`;
+      case "target_update":
+        return `Update targets on ${symbol}`;
+      case "cancel":
+        return `Cancel order on ${symbol}`;
+      case "add":
+        return `Add to position on ${symbol}`;
+      default:
+        return `${s.intent} ${symbol}`;
+    }
+  }
+
+  // WP-44: determine fix route for a rejection reason.
+  function fixRouteForReason(message) {
+    if (!message) return null;
+    const msg = message.toLowerCase();
+
+    // sizing/allow_short/leverage/loss-limit → TR-08
+    if (msg.includes("sizing") || msg.includes("quantity") || msg.includes("allow_short") ||
+        msg.includes("leverage") || msg.includes("loss limit") || msg.includes("buying power") ||
+        msg.includes("notional") || msg.includes("margin")) {
+      return "#/accounts";  // TR-08 (account editor)
+    }
+
+    // no destination/routing → TR-11
+    if (msg.includes("no destination") || msg.includes("routing")) {
+      return "#/trade/routing";  // TR-11
+    }
+
+    // halts/unresolved commands/alerts → TR-20
+    if (msg.includes("halt") || msg.includes("unresolved") || msg.includes("alert")) {
+      return "#/operations";  // TR-20 (operations center)
+    }
+
+    return null;
+  }
+
   function rejectionReasonCell(ordersForSignal) {
     const reasons = ordersForSignal.filter((o) => (o.status === "rejected" || o.status === "error") && o.message);
     if (!reasons.length) return "—";
-    return reasons.map((o) => `<span class="mono">${escapeHtml(o.account_id)}</span>: ${escapeHtml(o.message)}`).join("<br>");
+    return reasons.map((o) => {
+      const fixRoute = fixRouteForReason(o.message);
+      const fixLink = fixRoute ? ` <a href="${escapeAttr(fixRoute)}" class="inline-link">Fix</a>` : "";
+      return `<span class="mono">${escapeHtml(o.account_id)}</span>: ${escapeHtml(o.message)}${fixLink}`;
+    }).join("<br>");
   }
 
   function buildInboxRow(entry) {
@@ -465,6 +552,7 @@
       dispositionCell(stageIndex, ordersForSignal),
       destinationsCell(ordersForSignal),
       orderResultCell(ordersForSignal),
+      interpretSignal(s),  // WP-44: "Interpreted as" column
       rejectionReasonCell(ordersForSignal),
     ];
   }
@@ -623,6 +711,7 @@
               "Disposition",
               "Destinations",
               "Order result",
+              "Interpreted as",
               "Rejection reason",
             ],
             rows,

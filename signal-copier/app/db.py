@@ -4670,6 +4670,7 @@ class SignalStore:
                           managed_lifecycle, max_notional_exposure, risk_percent_of_equity,
                           management_recipe, qualification_level, exclusive_writer_qualified,
                           daily_loss_limit_percent, min_equity_threshold
+                          allow_short, currency, max_gross_leverage, daily_loss_limit_percent, min_equity_threshold
                    FROM config_accounts ORDER BY account_id"""
             ).fetchall()
         return [
@@ -4694,6 +4695,11 @@ class SignalStore:
                 "exclusive_writer_qualified": bool(r[11]),
                 "daily_loss_limit_percent": r[12],
                 "min_equity_threshold": r[13],
+                "allow_short": bool(r[12]),
+                "currency": r[13],
+                "max_gross_leverage": r[14],
+                "daily_loss_limit_percent": r[15],
+                "min_equity_threshold": r[16],
             }
             for r in rows
         ]
@@ -4714,6 +4720,13 @@ class SignalStore:
         exclusive_writer_qualified: bool = False,
         daily_loss_limit_percent: float | None = None,
         min_equity_threshold: float | None = None,
+        allow_short: bool | None = None,
+        currency: str | None = None,
+        max_gross_leverage: float | None = None,
+        daily_loss_limit_percent: float | None = None,
+        min_equity_threshold: float | None = None,
+        sizing_mode: str | None = None,  # WP-16: forward-compatible, not stored yet
+        risk_fraction: float | None = None,  # WP-16: forward-compatible, not stored yet
     ) -> None:
         with self._connect() as conn:
             conn.execute(
@@ -4722,6 +4735,9 @@ class SignalStore:
                     max_notional_exposure, risk_percent_of_equity, management_recipe, qualification_level,
                     exclusive_writer_qualified, daily_loss_limit_percent, min_equity_threshold)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    exclusive_writer_qualified, allow_short, currency, max_gross_leverage,
+                    daily_loss_limit_percent, min_equity_threshold)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT (account_id) DO UPDATE SET
                      broker = excluded.broker, multiplier = excluded.multiplier,
                      fixed_quantity = excluded.fixed_quantity, symbol_map = excluded.symbol_map,
@@ -4731,6 +4747,9 @@ class SignalStore:
                      management_recipe = excluded.management_recipe,
                      qualification_level = excluded.qualification_level,
                      exclusive_writer_qualified = excluded.exclusive_writer_qualified,
+                     allow_short = excluded.allow_short,
+                     currency = excluded.currency,
+                     max_gross_leverage = excluded.max_gross_leverage,
                      daily_loss_limit_percent = excluded.daily_loss_limit_percent,
                      min_equity_threshold = excluded.min_equity_threshold""",
                 (
@@ -4751,10 +4770,15 @@ class SignalStore:
                     management_recipe or ("full_managed_lifecycle" if managed_lifecycle else "plain_unmanaged"),
                     qualification_level,
                     int(exclusive_writer_qualified),
+                    int(allow_short) if allow_short is not None else 0,
+                    currency,
+                    max_gross_leverage,
                     daily_loss_limit_percent,
                     min_equity_threshold,
                 ),
             )
+            # Note: sizing_mode and risk_fraction are forward-compatible fields accepted
+            # from requests but not stored yet -- WP-16 will add persistence for these
 
     def update_account_paper_order_id_sequence(self, account_id: str, sequence: int) -> None:
         """WP-38 (G-C-24): update the persistent paper order ID sequence for an

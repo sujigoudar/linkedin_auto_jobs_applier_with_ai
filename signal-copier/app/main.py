@@ -2496,9 +2496,24 @@ class AccountRequest(BaseModel):
     #: P0-5: off by default -- see DestinationAccount.exclusive_writer_qualified's
     #: own docstring for exactly what setting this True asserts and allows.
     exclusive_writer_qualified: bool = False
+    #: B-14: whether this account is allowed to open short positions
+    allow_short: bool = False
+    #: E-11/B-10: account base currency (ISO 4217 code)
+    currency: str | None = None
+    #: B-11: maximum gross leverage ceiling
+    max_gross_leverage: float | None = Field(default=None, gt=0)
+    #: B-08/F-02: daily loss limit as percentage of equity
+    daily_loss_limit_percent: float | None = Field(default=None, gt=0)
+    #: B-08/F-02: minimum equity threshold
+    min_equity_threshold: float | None = Field(default=None, gt=0)
+    #: WP-16: position sizing mode (accept for forward compatibility; storage in WP-16)
+    sizing_mode: str | None = None
+    #: WP-16: risk fraction for sizing (accept for forward compatibility; storage in WP-16)
+    risk_fraction: float | None = Field(default=None, gt=0, le=1)
 
     _reject_bool_multiplier = field_validator(
-        "multiplier", "fixed_quantity", "max_notional_exposure", "risk_percent_of_equity", mode="before"
+        "multiplier", "fixed_quantity", "max_notional_exposure", "risk_percent_of_equity",
+        "max_gross_leverage", "daily_loss_limit_percent", "min_equity_threshold", "risk_fraction", mode="before"
     )(_reject_bool_scaling_value)
 
     @field_validator("management_recipe")
@@ -2540,9 +2555,24 @@ class AccountPatchRequest(BaseModel):
     management_recipe: str | None = None
     qualification_level: str | None = None
     exclusive_writer_qualified: bool | None = None
+    #: B-14: whether this account is allowed to open short positions
+    allow_short: bool | None = None
+    #: E-11/B-10: account base currency (ISO 4217 code)
+    currency: str | None = None
+    #: B-11: maximum gross leverage ceiling
+    max_gross_leverage: float | None = Field(default=None, gt=0)
+    #: B-08/F-02: daily loss limit as percentage of equity
+    daily_loss_limit_percent: float | None = Field(default=None, gt=0)
+    #: B-08/F-02: minimum equity threshold
+    min_equity_threshold: float | None = Field(default=None, gt=0)
+    #: WP-16: position sizing mode (accept for forward compatibility; storage in WP-16)
+    sizing_mode: str | None = None
+    #: WP-16: risk fraction for sizing (accept for forward compatibility; storage in WP-16)
+    risk_fraction: float | None = Field(default=None, gt=0, le=1)
 
     _reject_bool_multiplier = field_validator(
-        "multiplier", "fixed_quantity", "max_notional_exposure", "risk_percent_of_equity", mode="before"
+        "multiplier", "fixed_quantity", "max_notional_exposure", "risk_percent_of_equity",
+        "max_gross_leverage", "daily_loss_limit_percent", "min_equity_threshold", "risk_fraction", mode="before"
     )(_reject_bool_scaling_value)
 
     @field_validator("management_recipe")
@@ -2613,6 +2643,13 @@ async def create_or_update_account(request: AccountRequest, _owner: dict = Depen
         management_recipe=request.management_recipe,
         qualification_level=request.qualification_level,
         exclusive_writer_qualified=request.exclusive_writer_qualified,
+        allow_short=request.allow_short,
+        currency=request.currency,
+        max_gross_leverage=request.max_gross_leverage,
+        daily_loss_limit_percent=request.daily_loss_limit_percent,
+        min_equity_threshold=request.min_equity_threshold,
+        sizing_mode=request.sizing_mode,
+        risk_fraction=request.risk_fraction,
     )
     _reload_routing_config()
     return {"account_id": request.account_id, "status": "saved"}
@@ -2671,6 +2708,20 @@ async def patch_account(account_id: str, request: AccountPatchRequest, _owner: d
         merged["qualification_level"] = request.qualification_level
     if request.exclusive_writer_qualified is not None:
         merged["exclusive_writer_qualified"] = request.exclusive_writer_qualified
+    if request.allow_short is not None:
+        merged["allow_short"] = request.allow_short
+    if request.currency is not None:
+        merged["currency"] = request.currency
+    if request.max_gross_leverage is not None:
+        merged["max_gross_leverage"] = request.max_gross_leverage
+    if request.daily_loss_limit_percent is not None:
+        merged["daily_loss_limit_percent"] = request.daily_loss_limit_percent
+    if request.min_equity_threshold is not None:
+        merged["min_equity_threshold"] = request.min_equity_threshold
+    if request.sizing_mode is not None:
+        merged["sizing_mode"] = request.sizing_mode
+    if request.risk_fraction is not None:
+        merged["risk_fraction"] = request.risk_fraction
 
     # Apply exposure guards: broker change or managed_lifecycle change
     if merged["broker"] != stored["broker"] and _account_has_exposure(account_id):
@@ -2705,6 +2756,13 @@ async def patch_account(account_id: str, request: AccountPatchRequest, _owner: d
         management_recipe=merged["management_recipe"],
         qualification_level=merged["qualification_level"],
         exclusive_writer_qualified=merged["exclusive_writer_qualified"],
+        allow_short=merged.get("allow_short"),
+        currency=merged.get("currency"),
+        max_gross_leverage=merged.get("max_gross_leverage"),
+        daily_loss_limit_percent=merged.get("daily_loss_limit_percent"),
+        min_equity_threshold=merged.get("min_equity_threshold"),
+        sizing_mode=merged.get("sizing_mode"),
+        risk_fraction=merged.get("risk_fraction"),
     )
     _reload_routing_config()
     return {"account_id": account_id, "status": "patched"}
