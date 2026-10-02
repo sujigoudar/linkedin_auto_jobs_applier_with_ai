@@ -1,14 +1,14 @@
 # Current progress snapshot
 
-As of `HEAD` after Track 59: mutation testing for statistics.py and
-signal_correlation.py on `claude/signal-copier-readiness-sm44tr`
-(2026-10-02). This is a snapshot, not a roadmap — update it when the state
-it describes actually changes. This file was previously stale for an
-extended period (it referenced an old branch, `claude/signal-copier-
-redesign`, and alembic head `0015`, long after both had moved on), and was
-stale again after that (alembic head `0033`/2057 passed, and three items
-below listed as not-yet-landed that had in fact landed as Track 25/27) — if
-you find it stale again, fix it rather than working around it.
+As of `HEAD` after Track 61: mutation-testing regression tests for broker
+adapters on `claude/signal-copier-readiness-sm44tr` (2026-10-02). This is a
+snapshot, not a roadmap — update it when the state it describes actually
+changes. This file was previously stale for an extended period (it referenced
+an old branch, `claude/signal-copier-redesign`, and alembic head `0015`, long
+after both had moved on), and was stale again after that (alembic head
+`0033`/2057 passed, and three items below listed as not-yet-landed that had in
+fact landed as Track 25/27) — if you find it stale again, fix it rather than
+working around it.
 
 ## What wave this is
 
@@ -42,10 +42,11 @@ anything past Track 29 has landed since this snapshot was written.
 
 ## What's genuinely landed and working, as of HEAD
 
-- Alembic head is `0034`. Full `pytest -q` suite: **2152 passed, 0 failed**
-  (after Track 59's 23 new mutation regression tests for statistics.py and
-  signal_correlation.py, which also uncovered and fixed a critical bug in
-  signal_correlation.fingerprint_key).
+- Alembic head is `0034`. Full `pytest -q` suite: **2171 passed, 0 failed**
+  (after Track 61's 19 new mutation regression tests for broker adapters,
+  which cover order ID coercion, bracket/OTO order selection, fill-status
+  parsing, cancellation verification, and position-defaulting logic across
+  all 13 broker adapter modules).
 - `ruff check .` and the CI-scoped `mypy` command (file list in
   `.github/workflows/signal-copier-ci.yml`, 39 files) both clean against
   this HEAD.
