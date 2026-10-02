@@ -2071,6 +2071,12 @@ _COLUMN_MIGRATIONS = [
     # was confirmed by reconciliation polling, distinct from the actual
     # execution time. Both TEXT (ISO 8601), NULL when not yet confirmed.
     ("orders", "confirmed_at", "TEXT"),
+    # WP-11 (A-02/A-11): track the original message id for edit chains --
+    # when a signal is an edit/revision, this points to the original
+    # message's message_id. NULL for originals and non-revision-aware
+    # signals. Used to find all orders produced by the original signal
+    # when deciding how to amend vs reject/accept an edit.
+    ("signals", "original_message_id", "TEXT"),
 ]
 
 
@@ -2260,9 +2266,9 @@ class SignalStore:
                 """INSERT OR REPLACE INTO signals
                    (id, source, symbol, side, asset_class, quantity, price, stop_loss, take_profit,
                     analyst, received_at, raw, import_batch, channel_id, message_id, revision_id,
-                    correlation_fingerprint, source_created_at, source_modified_at, first_observed_at,
+                    original_message_id, correlation_fingerprint, source_created_at, source_modified_at, first_observed_at,
                     parsed_at, decision_at, intent, reduce_fraction)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     signal.id,
                     signal.source,
@@ -2280,6 +2286,7 @@ class SignalStore:
                     signal.channel_id,
                     signal.message_id,
                     signal.revision_id,
+                    signal.original_message_id,
                     correlation_fingerprint,
                     signal.source_created_at.isoformat() if signal.source_created_at else None,
                     signal.source_modified_at.isoformat() if signal.source_modified_at else None,
@@ -2325,6 +2332,29 @@ class SignalStore:
                 (channel_id, message_id, revision_id, revision_id),
             ).fetchone()
         return row[0] if row else None
+
+    def find_signals_by_original_message_id(
+        self, *, channel_id: str | None, original_message_id: str | None
+    ) -> list[str]:
+        """WP-11 (A-02): find all signal ids from the original message in
+        an edit chain. When a signal arrives with original_message_id set
+        (i.e., it's an edit/revision), this returns the signal id(s) produced
+        by the original message (where original_message_id is NULL and
+        message_id equals this signal's original_message_id).
+
+        Returns a list of signal ids, or empty list if no original signal
+        is found. Used by app/engine.py to detect existing orders before
+        deciding whether to place new ones or amend existing positions."""
+        if channel_id is None or original_message_id is None:
+            return []
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT id FROM signals WHERE channel_id = ? AND message_id = ?
+                   AND original_message_id IS NULL
+                   ORDER BY received_at ASC""",
+                (channel_id, original_message_id),
+            ).fetchall()
+        return [row[0] for row in rows]
 
     # -- Track 12: cross-transport signal correlation (app/signal_correlation.py) --
 
@@ -2575,7 +2605,7 @@ class SignalStore:
             row = conn.execute(
                 """SELECT id, source, symbol, side, asset_class, quantity, price, stop_loss, take_profit,
                           analyst, received_at, import_batch, channel_id, message_id, revision_id,
-                          correlation_fingerprint, source_created_at, source_modified_at, first_observed_at,
+                          original_message_id, correlation_fingerprint, source_created_at, source_modified_at, first_observed_at,
                           parsed_at, decision_at, intent, reduce_fraction
                    FROM signals WHERE id = ?""",
                 (signal_id,),
@@ -2598,14 +2628,15 @@ class SignalStore:
             "channel_id": row[12],
             "message_id": row[13],
             "revision_id": row[14],
-            "correlation_fingerprint": row[15],
-            "source_created_at": row[16],
-            "source_modified_at": row[17],
-            "first_observed_at": row[18],
-            "parsed_at": row[19],
-            "decision_at": row[20],
-            "intent": row[21],
-            "reduce_fraction": row[22],
+            "original_message_id": row[15],
+            "correlation_fingerprint": row[16],
+            "source_created_at": row[17],
+            "source_modified_at": row[18],
+            "first_observed_at": row[19],
+            "parsed_at": row[20],
+            "decision_at": row[21],
+            "intent": row[22],
+            "reduce_fraction": row[23],
         }
 
     def get_signal_lifecycle(self, signal_id: str) -> dict | None:

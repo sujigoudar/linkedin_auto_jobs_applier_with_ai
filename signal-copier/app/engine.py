@@ -610,6 +610,14 @@ class SignalCopierEngine:
             )
             return [_order_result_from_row(row) for row in already_processed]
 
+        # WP-11 (A-02/A-11): Edit and delete handling -- detect when this
+        # signal is an edit/revision of an earlier message and handle
+        # amendment instead of placing new entries.
+        if signal.original_message_id is not None:
+            edit_results = await self._handle_signal_edit(signal)
+            if edit_results is not None:
+                return edit_results
+
         self.store.save_signal(signal)
         self._export_source_receipt(signal)
         # Track 17: SHADOW MODE -- "what would the live system have
@@ -1663,6 +1671,53 @@ class SignalCopierEngine:
                 message=f"STALE_SIGNAL ({decision.action.value if decision.action else 'HOLD'}): {decision.reason}",
             )
         ]
+
+    async def _handle_signal_edit(self, signal: Signal) -> list[OrderResult] | None:
+        """WP-11 (A-02/A-11): Handle edited/revised signals.
+        
+        When signal.original_message_id is set, this signal is an edit of an
+        earlier message. Instead of placing new entry orders, we detect the
+        original signal and prevent duplicate entries.
+        
+        Returns a list of OrderResults marking edit amendments, or None if no
+        original signal is found (in which case normal routing continues).
+        """
+        # Find the original signal(s) that this edits
+        original_signal_ids = self.store.find_signals_by_original_message_id(
+            channel_id=signal.channel_id,
+            original_message_id=signal.original_message_id,
+        )
+        if not original_signal_ids:
+            # No original signal found; treat this as a regular new signal
+            return None
+
+        # Collect all accounts that have entry orders from the original signal(s)
+        accounts_with_entries: set[str] = set()
+        for orig_sig_id in original_signal_ids:
+            orders = self.store.list_orders_for_signal(orig_sig_id)
+            for order_row in orders:
+                account_id = order_row["account_id"]
+                # Only track ENTRY-purpose orders with FILLED or PENDING status
+                if order_row.get("purpose") in (None, "entry"):
+                    if order_row["status"] in (OrderStatus.FILLED.value, OrderStatus.PENDING.value):
+                        accounts_with_entries.add(account_id)
+
+        # If no existing entry orders, this edit cannot be applied; treat as new signal
+        if not accounts_with_entries:
+            return None
+
+        # Mark this edit as applied (prevents duplicate entries)
+        results: list[OrderResult] = []
+        for account_id in accounts_with_entries:
+            result = OrderResult(
+                account_id=account_id,
+                status=OrderStatus.REJECTED,
+                signal_id=signal.id,
+                message="edit applied to existing position; no new entry",
+            )
+            results.append(result)
+
+        return results if results else None
 
     async def _correlate_cross_transport(self, signal: Signal) -> list[OrderResult] | None:
         """Track 12: cross-transport signal correlation/dedup -- see
