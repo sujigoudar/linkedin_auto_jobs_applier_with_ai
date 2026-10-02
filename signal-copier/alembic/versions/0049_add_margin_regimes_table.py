@@ -1,7 +1,7 @@
 """WC-09: Add physical_accounts and margin_regimes tables for margin regime tracking.
 
-Revision ID: 0042
-Revises: 0041
+Revision ID: 0049
+Revises: 0048
 Create Date: 2026-10-02 00:00:00.000000
 
 Spec §9: Store per-physical-account margin regime (legacy_pdt_verified |
@@ -14,8 +14,8 @@ from __future__ import annotations
 import sqlalchemy as sa
 from alembic import op
 
-revision = "0042"
-down_revision = "0041"
+revision = "0049"
+down_revision = "0048"
 branch_labels = None
 depends_on = None
 

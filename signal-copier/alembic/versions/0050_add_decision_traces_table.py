@@ -1,7 +1,7 @@
 """Add decision_traces table for admission/selection traceability (WC-05).
 
-Revision ID: 0045
-Revises: 0044
+Revision ID: 0050
+Revises: 0049
 Create Date: 2026-10-02 00:00:00.000000
 
 """
@@ -10,8 +10,8 @@ from __future__ import annotations
 import sqlalchemy as sa
 from alembic import op
 
-revision = "0045"
-down_revision = "0044"
+revision = "0050"
+down_revision = "0049"
 branch_labels = None
 depends_on = None
 
