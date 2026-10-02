@@ -4885,7 +4885,7 @@ class SignalStore:
     # --- Global (cross-account) fill replay for provider attribution (app/provider_value.py) ---
 
     def list_filled_orders_with_signal_chronological(self) -> list[dict]:
-        """Every FILLED order across every account, oldest first, joined
+        """Every order with an actual fill (status='filled' or filled_quantity > 0) across every account, oldest first, joined
         with its originating signal's source/analyst/asset_class -- the
         provider-attribution equivalent of `list_filled_orders_chronological`
         (which is scoped to one account and doesn't need signal identity at
@@ -4903,7 +4903,7 @@ class SignalStore:
                           s.source, s.analyst, s.asset_class, o.purpose, o.family_id, o.signal_id
                    FROM orders o
                    JOIN signals s ON s.id = o.signal_id
-                   WHERE o.status = 'filled'
+                   WHERE o.status = 'filled' OR o.filled_quantity > 0
                    ORDER BY o.executed_at ASC, o.id ASC"""
             ).fetchall()
         return [
@@ -8909,20 +8909,21 @@ class SignalStore:
             rows = conn.execute(
                 "SELECT DISTINCT o.account_id FROM orders o JOIN signals s ON o.signal_id = s.id "
                 "LEFT JOIN signals fs ON fs.id = o.family_id "
-                "WHERE o.status = 'filled' AND COALESCE(fs.source, s.source) = ?",
+                "WHERE (o.status = 'filled' OR o.filled_quantity > 0) AND COALESCE(fs.source, s.source) = ?",
                 (source,),
             ).fetchall()
         return [r[0] for r in rows]
 
     def list_filled_orders_chronological(self, account_id: str, source: str | None = None) -> list[dict]:
-        """Every FILLED order for this account, oldest first -- the replay
+        """Every order with an actual fill (status='filled' or filled_quantity > 0)
+        for this account, oldest first -- the replay
         order app/economics.py needs to reconstruct realized P&L via
         average-cost lot accounting. Unlike `list_recent_orders`, this has
         no LIMIT: a P&L computation that silently dropped older fills would
         misstate cost basis and realized gains, not just show fewer rows."""
         query = """SELECT o.id, o.account_id, o.broker, o.symbol, o.side, o.requested_quantity, o.signal_id,
                           o.status, o.broker_order_id, o.filled_quantity, o.filled_price, o.message, o.executed_at
-                   FROM orders o {join} WHERE o.account_id = ? AND o.status = 'filled' {extra}
+                   FROM orders o {join} WHERE o.account_id = ? AND (o.status = 'filled' OR o.filled_quantity > 0) {extra}
                    ORDER BY o.executed_at ASC, o.id ASC"""
         params: list[Any] = [account_id]
         if source is None:
@@ -8958,7 +8959,7 @@ class SignalStore:
         ]
 
     def list_filled_orders_with_signal_timing(self, account_id: str) -> list[dict]:
-        """Every FILLED order for this account joined to its originating
+        """Every order with an actual fill (status='filled' or filled_quantity > 0) for this account joined to its originating
         signal's `received_at`, plus this order's own PU-A2 stage
         timestamps (`submitted_at`/`protection_confirmed_at`) --
         app/execution_quality.py's source for both the original
@@ -8970,7 +8971,7 @@ class SignalStore:
         stages this schema does and doesn't separately track."""
         query = """SELECT o.symbol, o.executed_at, s.received_at, o.submitted_at, o.protection_confirmed_at
                    FROM orders o JOIN signals s ON o.signal_id = s.id
-                   WHERE o.account_id = ? AND o.status = 'filled'
+                   WHERE o.account_id = ? AND (o.status = 'filled' OR o.filled_quantity > 0)
                    ORDER BY o.executed_at ASC"""
         with self._connect() as conn:
             rows = conn.execute(query, (account_id,)).fetchall()
@@ -8996,7 +8997,7 @@ class SignalStore:
         than compared against a fabricated reference."""
         query = """SELECT o.symbol, o.side, o.filled_quantity, o.filled_price, o.executed_at, s.price
                    FROM orders o JOIN signals s ON o.signal_id = s.id
-                   WHERE o.account_id = ? AND o.status = 'filled'
+                   WHERE o.account_id = ? AND (o.status = 'filled' OR o.filled_quantity > 0)
                    ORDER BY o.executed_at ASC, o.id ASC"""
         with self._connect() as conn:
             rows = conn.execute(query, (account_id,)).fetchall()
