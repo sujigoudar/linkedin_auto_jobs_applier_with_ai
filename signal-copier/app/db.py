@@ -2010,6 +2010,18 @@ CREATE TABLE IF NOT EXISTS owner_limits (
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_owner_limits_owner ON owner_limits(owner);
+CREATE TABLE IF NOT EXISTS decision_traces (
+    id TEXT PRIMARY KEY,
+    signal_id TEXT NOT NULL,
+    physical_account_id TEXT NOT NULL,
+    candidate_rank INTEGER NOT NULL,
+    feasible INTEGER NOT NULL,
+    reason TEXT NOT NULL,
+    selected INTEGER NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_decision_traces_signal_id ON decision_traces(signal_id);
+CREATE INDEX IF NOT EXISTS ix_decision_traces_account_id ON decision_traces(physical_account_id);
 """
 
 
