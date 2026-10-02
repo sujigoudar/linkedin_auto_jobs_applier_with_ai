@@ -824,10 +824,17 @@ class SignalCopierEngine:
 
             # WC-20 step 2: Admission evaluation
             # Evaluate if entry is admissible before sizing
-            if single_candidates and signal.side != Side.CLOSE:
+            # The gate guards NEW ENTRIES only. Intents that manage an existing
+            # position (EXIT/REDUCE/STOP_UPDATE/TARGET_UPDATE/CANCEL) are handled
+            # by their own per-account handlers below and are not entries, so
+            # they bypass this gate rather than being rejected by it. Intent.SELL
+            # is ambiguous (exit-or-short-entry, resolved per account in WP-09)
+            # and ADD is an entry-sized order, so both are admitted as entries.
+            _entry_like_intents = (Intent.ENTRY_LONG, Intent.ENTRY_SHORT, Intent.SELL, Intent.ADD)
+            if single_candidates and signal.side != Side.CLOSE and signal.intent in _entry_like_intents:
                 # Build admission inputs from real state
                 auth = "authorized" if self.routing.pool_for(signal.source, signal.symbol) is not None else "unauthorized"
-                interp = "entry" if signal.intent in (Intent.ENTRY_LONG, Intent.ENTRY_SHORT) else "non_entry"
+                interp = "entry"
                 eligible_accounts = [a.account_id for a in single_candidates]
 
                 # Check budget state using existing allocator logic (pre-check)
