@@ -70,14 +70,15 @@ def _force_release_approved(store, *, adapter_type, route_key, asset_class, prod
 async def test_a_confirmed_partial_fill_in_the_initial_pending_response_is_protected_immediately(tmp_path):
     store = SignalStore(tmp_path / "test.db")
     broker = _ImmediatePartialFillBroker()
-    account = DestinationAccount(account_id="acct1", broker="partial-broker", managed_lifecycle=True)
+    # WP-32: broker has no verified balance capability, so add max_notional_exposure ceiling
+    account = DestinationAccount(account_id="acct1", broker="partial-broker", managed_lifecycle=True, max_notional_exposure=50000.0)
     routing = RoutingConfig(rules=[RoutingRule(source="test", destinations=["acct1"])], accounts={"acct1": account})
     manager = PositionLifecycleManager(brokers={"partial-broker": broker}, store=store)
     engine = SignalCopierEngine(routing=routing, brokers={"partial-broker": broker}, store=store, lifecycle_manager=manager)
     _force_release_approved(store, adapter_type="partial-broker", route_key="acct1", asset_class="crypto")
 
     results = await engine.handle_signal(
-        Signal(source="test", symbol="AAPL", side=Side.BUY, quantity=100.0, stop_loss=90.0)
+        Signal(source="test", symbol="AAPL", side=Side.BUY, quantity=100.0, price=150.0, stop_loss=90.0)
     )
 
     assert results[0].status == OrderStatus.PENDING

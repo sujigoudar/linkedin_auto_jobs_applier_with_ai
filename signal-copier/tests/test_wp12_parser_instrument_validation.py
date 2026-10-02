@@ -10,16 +10,29 @@ class TestSymbolValidation:
     """Test symbol token validation (WP-12 step 1)."""
 
     def test_stop_word_symbols_are_rejected(self):
-        """Stop-word symbols (HALF, TO, ALL, etc.) should result in MISSING_DATA."""
-        test_cases = [
-            "SELL half AAPL",  # symbol parsed as "HALF"
-            "Close half ETHUSDT",  # symbol parsed as "HALF"
+        """Stop-word symbols (TO, AT, etc.) should result in MISSING_DATA.
+
+        WP-13: "half"/"trim" with reduce verbs are now reduce keywords, not stop-word symbols.
+        "SELL half" and "Close half" now parse as valid REDUCE operations.
+        """
+        # Cases where stop-words are actual symbols (should be rejected)
+        rejected_cases = [
             "BUY TO OPEN AAPL",  # symbol parsed as "TO"
             "BUY AT AAPL",  # symbol parsed as "AT"
         ]
-        for text in test_cases:
+        for text in rejected_cases:
             disposition = classify_text_signal(text, source="test")
             assert disposition.outcome == DispositionOutcome.MISSING_DATA, f"Expected MISSING_DATA for {text!r}, got {disposition.outcome}: {disposition.detail}"
+
+        # WP-13: "half" as reduce keyword now parses (not stop-word symbol)
+        parsed_cases = [
+            ("SELL half AAPL", 0.5),  # reduce keyword with fraction
+            ("Close half ETHUSDT", 0.5),  # reduce keyword with fraction
+        ]
+        for text, expected_fraction in parsed_cases:
+            disposition = classify_text_signal(text, source="test")
+            assert disposition.outcome == DispositionOutcome.PARSED, f"Expected PARSED for {text!r}, got {disposition.outcome}: {disposition.detail}"
+            assert disposition.signal.reduce_fraction == expected_fraction, f"Expected reduce_fraction={expected_fraction} for {text!r}, got {disposition.signal.reduce_fraction}"
 
     def test_purely_numeric_symbols_are_rejected(self):
         """Purely numeric symbols (10, 150, etc.) should result in MISSING_DATA."""
@@ -164,9 +177,10 @@ class TestProbesCases:
     """Test the exact probe cases from the audit."""
 
     def test_sell_half_aapl_probe(self):
-        """'SELL half AAPL' should be MISSING_DATA (HALF is stop-word)."""
+        """WP-13: 'SELL half AAPL' now parses as REDUCE with reduce_fraction=0.5."""
         disposition = classify_text_signal("SELL half AAPL", source="test")
-        assert disposition.outcome == DispositionOutcome.MISSING_DATA
+        assert disposition.outcome == DispositionOutcome.PARSED
+        assert disposition.signal.reduce_fraction == 0.5
 
     def test_buy_to_open_aapl_150c_probe(self):
         """'BUY TO OPEN AAPL 150C 1/17' - TO is stop-word, but AAPL 150C should parse."""

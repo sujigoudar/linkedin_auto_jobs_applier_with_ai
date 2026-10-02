@@ -152,6 +152,8 @@ async def test_plain_close_strips_all_risk_fields(store, broker, engine):
 async def test_manual_close_strips_sl_tp(store, broker, engine):
     """A manual close (dashboard "Exit now") should also strip SL/TP."""
     account = engine.routing.accounts["acct1"]
+    # WP-08: a SELL on a flat account is a short entry only when allow_short=True
+    account.allow_short = True
     # Entry: SELL 5 (short)
     entry = Signal(source="tradingview", symbol="EURUSD", side=Side.SELL, quantity=5.0)
     await engine.handle_signal(entry)

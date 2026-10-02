@@ -15,7 +15,9 @@ def store(tmp_path):
 @pytest.fixture
 def engine(store):
     paper = PaperBroker()
-    accounts = {"acct1": DestinationAccount(account_id="acct1", broker="paper", multiplier=1.0)}
+    # WP-08: SELL on flat account requires allow_short=True
+    # PaperBroker has balance capability, so no capital ceiling needed
+    accounts = {"acct1": DestinationAccount(account_id="acct1", broker="paper", multiplier=1.0, allow_short=True)}
     routing = RoutingConfig(
         rules=[RoutingRule(source="tradingview", destinations=["acct1"])], accounts=accounts
     )

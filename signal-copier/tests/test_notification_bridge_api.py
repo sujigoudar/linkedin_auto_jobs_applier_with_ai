@@ -48,7 +48,8 @@ def _register_device(client, app_packages=("com.example.tradingapp",), provider_
 
 
 def _wire_paper_route(client, source: str):
-    resp = client.post("/accounts", json={"account_id": "acct1", "broker": "paper"})
+    # WP-01: entry has no quantity, so add fixed_quantity
+    resp = client.post("/accounts", json={"account_id": "acct1", "broker": "paper", "fixed_quantity": 1.0})
     assert resp.status_code == 200, resp.text
     resp = client.post("/routing-rules", json={"source": source, "destinations": ["acct1"]})
     assert resp.status_code == 200, resp.text

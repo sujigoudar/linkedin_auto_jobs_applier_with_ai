@@ -233,12 +233,23 @@ def classify_message_type(text: str) -> MessageType:
 
     # Reuse the real parser's own side/instruction resolution rather than
     # re-deciding "is this an entry or an exit" with a second grammar --
-    # PARSED + Side.CLOSE is an exit instruction, PARSED + BUY/SELL is an
-    # entry instruction, exactly what text_parser.py already determined.
+    # PARSED + Side.CLOSE is an exit instruction, PARSED + BUY/LONG is an
+    # entry instruction. PARSED + Side.SELL with intent.SELL is ambiguous
+    # (WP-08: could be short entry or reduction), so it returns UNKNOWN.
     disposition = classify_text_signal(stripped, source="parser-tooling-classification")
     if disposition.outcome is DispositionOutcome.PARSED:
         assert disposition.signal is not None
-        return MessageType.EXIT if disposition.signal.side is Side.CLOSE else MessageType.ENTRY
+        if disposition.signal.side is Side.CLOSE:
+            return MessageType.EXIT
+        elif disposition.signal.side is Side.SELL:
+            # WP-08: bare SELL is ambiguous, resolved only by engine with account context
+            from app.sources.text_parser import Intent
+            if disposition.signal.intent is Intent.SELL:
+                return MessageType.UNKNOWN
+            # SELL with explicit "short" keyword → ENTRY_SHORT
+            return MessageType.ENTRY
+        else:
+            return MessageType.ENTRY
 
     if _contains_any(lowered, _NON_SIGNAL_PHRASES):
         return MessageType.NON_SIGNAL

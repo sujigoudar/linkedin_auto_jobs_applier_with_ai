@@ -37,10 +37,13 @@ def broker():
 
 @pytest.fixture
 def engine(store, broker):
+    # WP-08: SELL on flat account requires allow_short=True
+    # PaperBroker has balance capability, so no capital ceiling needed
     account = DestinationAccount(
         account_id="acct1",
         broker="paper",
         managed_lifecycle=False,  # plain account for close tests
+        allow_short=True,
     )
     routing = RoutingConfig(
         rules=[RoutingRule(source="tradingview", destinations=["acct1"])],
@@ -52,10 +55,13 @@ def engine(store, broker):
 @pytest.fixture
 def managed_engine(store, broker):
     """Engine with managed lifecycle enabled."""
+    # WP-08: SELL on flat account requires allow_short=True
+    # PaperBroker has balance capability, so no capital ceiling needed
     account = DestinationAccount(
         account_id="acct1",
         broker="paper",
         managed_lifecycle=True,
+        allow_short=True,
     )
     routing = RoutingConfig(
         rules=[RoutingRule(source="tradingview", destinations=["acct1"])],

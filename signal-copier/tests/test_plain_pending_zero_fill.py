@@ -60,12 +60,13 @@ def _force_release_approved(store, *, adapter_type, route_key, asset_class, prod
 @pytest.mark.asyncio
 async def test_explicit_zero_fill_on_a_pending_entry_does_not_apply_the_full_quantity(store):
     broker = _ZeroFillPendingBroker()
-    account = DestinationAccount(account_id="acct1", broker="zero-fill")
+    # WP-32: broker has no verified balance capability, so add max_notional_exposure ceiling
+    account = DestinationAccount(account_id="acct1", broker="zero-fill", max_notional_exposure=50000.0)
     routing = RoutingConfig(rules=[RoutingRule(source="test", destinations=["acct1"])], accounts={"acct1": account})
     engine = SignalCopierEngine(routing=routing, brokers={"zero-fill": broker}, store=store)
     _force_release_approved(store, adapter_type="zero-fill", route_key="acct1", asset_class="crypto")
 
-    results = await engine.handle_signal(Signal(source="test", symbol="AAPL", side=Side.BUY, quantity=10.0))
+    results = await engine.handle_signal(Signal(source="test", symbol="AAPL", side=Side.BUY, quantity=10.0, price=150.0))
 
     assert results[0].status == OrderStatus.PENDING
     assert store.get_position("acct1", "AAPL") == 0.0
