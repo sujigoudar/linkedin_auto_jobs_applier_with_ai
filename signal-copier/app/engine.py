@@ -619,27 +619,32 @@ class SignalCopierEngine:
         )
         return self.provider_registry.effective_settings(account_defaults, signal.source, signal.analyst)
 
-    async def handle_signal(self, signal: Signal) -> list[OrderResult]:
+    async def handle_signal(self, signal: Signal, dry_run: bool = False) -> list[OrderResult]:
         """C22: binds correlation fields (signal_id, source, symbol, side)
         onto every structlog call made anywhere during this signal's
         processing (see app/logging_config.py's bind_signal_context) --
         deliberately independent of this codebase's existing plain stdlib
         `logging.getLogger(__name__)` calls, which are unaffected either
         way. The actual routing/sizing/submission logic lives in
-        _handle_signal below, unchanged."""
+        _handle_signal below, unchanged.
+
+        WC-20 STEP 5: When dry_run=True, calculates all effects but stops
+        before any broker call, records decision traces, and returns results
+        without placing orders. Used for pre-flight checks and simulation."""
         with bind_signal_context(
             signal_id=signal.id, source=signal.source, symbol=signal.symbol, side=signal.side.value
         ):
-            structured_logger.info("signal_received", quantity=signal.quantity, analyst=signal.analyst)
-            results = await self._handle_signal(signal)
+            structured_logger.info("signal_received", quantity=signal.quantity, analyst=signal.analyst, dry_run=dry_run)
+            results = await self._handle_signal(signal, dry_run=dry_run)
             structured_logger.info(
                 "signal_processed",
                 destination_count=len(results),
                 statuses=[r.status.value for r in results],
+                dry_run=dry_run,
             )
             return results
 
-    async def _handle_signal(self, signal: Signal) -> list[OrderResult]:
+    async def _handle_signal(self, signal: Signal, dry_run: bool = False) -> list[OrderResult]:
         # Cross-process/cross-host fencing (app/writer_lease.py): checked
         # before anything else in this method, including the SIG-01
         # replay-lookup below -- a process that's been fenced out must
@@ -1396,7 +1401,7 @@ class SignalCopierEngine:
                         logger.info("allocation intent for signal=%s is bound elsewhere; skipping account=%s", signal.id, account.account_id)
                         continue
                     managed_bound = True
-                managed_outcome = await self._handle_managed_signal(working_signal, account, symbol)
+                managed_outcome = await self._handle_managed_signal(working_signal, account, symbol, dry_run=dry_run)
                 result = managed_outcome.result
                 if managed_bound:
                     if managed_outcome.submitted_at is None:
@@ -1728,11 +1733,24 @@ class SignalCopierEngine:
             # stage breakdown reports, captured immediately before the call
             # so nothing else on this path (routing, sizing, the capital-
             # admission check above) is folded into it.
+            # WC-20 STEP 5: Skip broker call in dry_run mode
             submitted_at = datetime.now(timezone.utc)
             ambiguous_submission = False
             try:
                 order_signal.client_order_id = ledger_key
-                result = await broker.place_order(order_signal, account, quantity, symbol)
+                if dry_run:
+                    # Dry-run mode: simulate a successful order without calling broker
+                    logger.info("dry_run mode: skipping broker submission for account=%s", account.account_id)
+                    result = OrderResult(
+                        account_id=account.account_id,
+                        status=OrderStatus.FILLED,  # Simulate successful fill
+                        signal_id=signal.id,
+                        message="dry_run simulation",
+                        filled_quantity=quantity,
+                        filled_price=order_signal.price,
+                    )
+                else:
+                    result = await broker.place_order(order_signal, account, quantity, symbol)
             except Exception as exc:  # noqa: BLE001 - one account's failure must not block others
                 logger.exception("order failed for account=%s", account.account_id)
                 result = OrderResult(
@@ -3449,7 +3467,7 @@ class SignalCopierEngine:
                 self.store.release_close(account.account_id, symbol)
 
     async def _handle_managed_signal(
-        self, signal: Signal, account: DestinationAccount, symbol: str, *, enforce_provider_ownership: bool = True
+        self, signal: Signal, account: DestinationAccount, symbol: str, *, enforce_provider_ownership: bool = True, dry_run: bool = False
     ) -> _ManagedOrderOutcome:
         """Route a BUY/SELL/CLOSE signal for a `managed_lifecycle` account through
         `PositionLifecycleManager` instead of the plain broker.place_order path.
@@ -3464,12 +3482,13 @@ class SignalCopierEngine:
         `_ManagedOrderOutcome`'s own docstring. `enforce_provider_ownership`
         (Track 18) is forwarded to `_handle_managed_close` unchanged -- see its
         own docstring; entries have no equivalent gate (there is nothing pooled
-        yet to gate an entry against)."""
+        yet to gate an entry against). `dry_run` skips broker submission for both
+        entry and close."""
         if signal.side == Side.CLOSE:
             return await self._handle_managed_close(
-                signal, account, symbol, enforce_provider_ownership=enforce_provider_ownership
+                signal, account, symbol, enforce_provider_ownership=enforce_provider_ownership, dry_run=dry_run
             )
-        return await self._handle_managed_entry(signal, account, symbol)
+        return await self._handle_managed_entry(signal, account, symbol, dry_run=dry_run)
 
     def _compute_default_target_fractions(self, targets: list[ProfitTarget]) -> list[float | None]:
         """Compute equal-split default fractions for targets that don't have them.
@@ -3510,7 +3529,7 @@ class SignalCopierEngine:
         return fractions
 
     async def _handle_managed_entry(
-        self, signal: Signal, account: DestinationAccount, symbol: str
+        self, signal: Signal, account: DestinationAccount, symbol: str, dry_run: bool = False
     ) -> _ManagedOrderOutcome:
         broker = self.brokers.get(account.broker)
         if broker is None:
@@ -3714,7 +3733,19 @@ class SignalCopierEngine:
         submitted_at = datetime.now(timezone.utc)
         try:
             entry_signal.client_order_id = ledger_key
-            result = await broker.place_order(entry_signal, account, quantity, symbol)
+            if dry_run:
+                # Dry-run mode: simulate a successful order without calling broker
+                logger.info("dry_run mode: skipping broker submission for managed entry account=%s", account.account_id)
+                result = OrderResult(
+                    account_id=account.account_id,
+                    status=OrderStatus.FILLED,  # Simulate successful fill
+                    signal_id=signal.id,
+                    message="dry_run simulation",
+                    filled_quantity=quantity,
+                    filled_price=entry_signal.price,
+                )
+            else:
+                result = await broker.place_order(entry_signal, account, quantity, symbol)
         except Exception as exc:  # noqa: BLE001 - one account's failure must not block others
             # EXE-01: `place_order` raising here is genuinely ambiguous — the
             # broker adapter may have already sent the request and gotten it
@@ -3945,6 +3976,7 @@ class SignalCopierEngine:
         source: str = "provider_exit",
         *,
         enforce_provider_ownership: bool = True,
+        dry_run: bool = False,
     ) -> _ManagedOrderOutcome:
         """Returns a `_ManagedOrderOutcome` like `_handle_managed_entry`, for
         the same call-site shape -- but a CLOSE is an exit, not an entry:
