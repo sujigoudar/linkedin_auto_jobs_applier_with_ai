@@ -1,0 +1,193 @@
+{
+  "total_mutants": 37,
+  "killed": 37,
+  "survived": 0,
+  "not_yet_implemented": 0,
+  "mutants": {
+    "M1": {
+      "status": "KILLED",
+      "killing_test": "test_mutant_m1_remove_owner_wide_cap",
+      "description": "Remove owner-wide cap"
+    },
+    "M2": {
+      "status": "KILLED",
+      "killing_test": "test_mutant_m2_ignore_reservations",
+      "description": "Ignore reservations"
+    },
+    "M3": {
+      "status": "KILLED",
+      "killing_test": "test_mutant_m3_round_quantity_up",
+      "description": "Round size up"
+    },
+    "M4": {
+      "status": "KILLED",
+      "killing_test": "test_mutant_m4_ignore_option_multiplier",
+      "description": "Ignore option multiplier"
+    },
+    "M5": {
+      "status": "KILLED",
+      "killing_test": "test_mutant_m5_ignore_fees",
+      "description": "Ignore fees"
+    },
+    "M6": {
+      "status": "KILLED",
+      "killing_test": "test_mutant_m6_allow_negative_costs",
+      "description": "Allow negative costs"
+    },
+    "M7": {
+      "status": "KILLED",
+      "killing_test": "test_mutant_m7_treat_desired_stop_as_confirmed",
+      "description": "Treat desired stop as confirmed"
+    },
+    "M8": {
+      "status": "KILLED",
+      "killing_test": "test_mutant_m8_use_requested_not_filled_quantity",
+      "description": "Use original requested rather than filled quantity"
+    },
+    "M9": {
+      "status": "KILLED",
+      "killing_test": "test_mutant_m9_ignore_late_fills",
+      "description": "Ignore late fills"
+    },
+    "M10": {
+      "status": "KILLED",
+      "killing_test": "test_mutant_m10_use_wrong_timezone",
+      "description": "Use wrong timezone"
+    },
+    "M11": {
+      "status": "KILLED",
+      "killing_test": "test_mutant_m11_no_error_on_partial_broker_snapshot",
+      "description": "Accept partial broker snapshot as complete"
+    },
+    "M12": {
+      "status": "KILLED",
+      "killing_test": "test_mutant_m12_no_xss_on_source_strings",
+      "description": "Render source strings as HTML"
+    },
+    "M13": {
+      "status": "KILLED",
+      "killing_test": "test_mutant_m13_no_merge_paper_live_identities",
+      "description": "Merge paper/live identities"
+    },
+    "M14": {
+      "status": "KILLED",
+      "killing_test": "test_mutant_m14_no_deduplication_removal",
+      "description": "Remove deduplication"
+    },
+    "M15": {
+      "status": "KILLED",
+      "killing_test": "test_mutant_m15_no_child_override_of_disabled_provider",
+      "description": "Let a child override disabled provider"
+    },
+    "M16": {
+      "status": "KILLED",
+      "killing_test": "test_mutant_m16_unknown_capability_fail_closed",
+      "description": "Treat unknown capability as true"
+    },
+    "M17": {
+      "status": "KILLED",
+      "killing_test": "test_mutant_m17_duplicate_binding_dedup",
+      "description": "Count duplicate bindings as accounts"
+    },
+    "M18": {
+      "status": "KILLED",
+      "killing_test": "test_mutant_m18_reflected_once",
+      "description": "Subtract reflected reservations twice"
+    },
+    "M19": {
+      "status": "KILLED",
+      "killing_test": "test_mutant_m19_preserve_source_ids",
+      "description": "Regenerate source IDs"
+    },
+    "M20": {
+      "status": "KILLED",
+      "killing_test": "test_mutant_m20_no_negative_free_risk",
+      "description": "Let profitable lots create negative free risk"
+    },
+    "M21": {
+      "status": "KILLED",
+      "killing_test": "test_mutant_m21_risk_accumulates",
+      "description": "Reset risk at each add"
+    },
+    "M22": {
+      "status": "KILLED",
+      "killing_test": "test_mutant_m22_trail_survives_restart",
+      "description": "Reset trail on restart"
+    },
+    "M23": {
+      "status": "KILLED",
+      "killing_test": "test_mutant_m23_stop_not_clamped",
+      "description": "Clamp crossed stop downward"
+    },
+    "M24": {
+      "status": "KILLED",
+      "killing_test": "test_mutant_m24_cancel_releases_reservation",
+      "description": "Release on cancel request"
+    },
+    "M25": {
+      "status": "KILLED",
+      "killing_test": "test_mutant_m25_uncertain_create_idempotent",
+      "description": "Retry uncertain create with a new key"
+    },
+    "M26": {
+      "status": "KILLED",
+      "killing_test": "test_mutant_m26_timeout_handling",
+      "description": "Fail over after timeout"
+    },
+    "M27": {
+      "status": "KILLED",
+      "killing_test": "test_mutant_m27_order_family_tracking",
+      "description": "Delete old replace-family ID"
+    },
+    "M28": {
+      "status": "KILLED",
+      "killing_test": "test_mutant_m28_exit_routing_entry_based",
+      "description": "Route exit by current preferences"
+    },
+    "M29": {
+      "status": "KILLED",
+      "killing_test": "test_mutant_m29_close_position_specific",
+      "description": "Close entire ticker"
+    },
+    "M30": {
+      "status": "KILLED",
+      "killing_test": "test_mutant_m30_manual_quantity_tracked",
+      "description": "Ignore external manual quantity"
+    },
+    "M31": {
+      "status": "KILLED",
+      "killing_test": "test_mutant_m31_gap_scenarios_handled",
+      "description": "Omit gap scenarios"
+    },
+    "M32": {
+      "status": "KILLED",
+      "killing_test": "test_mutant_m32_kelly_not_summed",
+      "description": "Sum correlated Kelly fractions"
+    },
+    "M33": {
+      "status": "KILLED",
+      "killing_test": "test_mutant_m33_equity_not_margin",
+      "description": "Use margin as equity"
+    },
+    "M34": {
+      "status": "KILLED",
+      "killing_test": "test_mutant_m34_full_source_id_dedup",
+      "description": "Key it only by ticker"
+    },
+    "M35": {
+      "status": "KILLED",
+      "killing_test": "test_mutant_m35_halt_survives_restart",
+      "description": "Clear halt on restart"
+    },
+    "M36": {
+      "status": "KILLED",
+      "killing_test": "test_mutant_m36_live_no_replay",
+      "description": "Replay history live"
+    },
+    "M37": {
+      "status": "KILLED",
+      "killing_test": "test_mutant_m37_error_on_quote_fail",
+      "description": "Display green on quote failure"
+    }
+  }
+}
