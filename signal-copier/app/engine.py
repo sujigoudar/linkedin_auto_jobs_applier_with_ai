@@ -160,6 +160,7 @@ from app.providers import ProviderRegistry, SettingsOverride
 from app.risk import (
     UnsizedEntryError,
     size_for_account,
+    size_for_account_with_mode,
     symbol_for_account,
     contract_multiplier,
 )
@@ -1395,7 +1396,25 @@ class SignalCopierEngine:
                 continue
 
             try:
-                order_signal, quantity = working_signal, size_for_account(working_signal, account)
+                # WC-20 STEP 3: Sizing modes (fixed/multiplier/risk_fraction)
+                # Fetch equity if needed (required for risk_fraction mode)
+                equity = None
+                if account.sizing_mode == "risk_fraction":
+                    balance = await broker.get_account_balance(account)
+                    if balance is not None:
+                        equity = balance.equity
+
+                # Apply sizing mode and get quantity
+                quantity_result, sizing_error = size_for_account_with_mode(
+                    working_signal, account, equity
+                )
+                if sizing_error is not None:
+                    raise UnsizedEntryError(sizing_error)
+                if quantity_result is None:
+                    raise UnsizedEntryError("sizing returned None without error message")
+
+                order_signal, quantity = working_signal, quantity_result
+
                 # WP-17 (B-04): normalize quantity to venue precision after sizing
                 normalized_qty = broker.normalize_quantity(account, symbol, quantity)
                 if normalized_qty is None:

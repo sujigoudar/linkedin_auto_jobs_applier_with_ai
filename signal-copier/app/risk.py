@@ -35,6 +35,52 @@ def size_for_account(signal: Signal, account: DestinationAccount) -> float:
     )
 
 
+def size_for_account_with_mode(
+    signal: Signal, account: DestinationAccount, equity: float | None = None
+) -> tuple[float | None, str | None]:
+    """WC-20 STEP 3: Compute position sizing based on account's sizing_mode.
+
+    Evaluates the account's sizing_mode configuration and delegates to the
+    appropriate sizing function:
+    - "multiplier": uses fixed_quantity if set, else signal.quantity * multiplier
+    - "fixed": uses fixed_quantity only (requires fixed_quantity to be set)
+    - "risk_fraction": dynamic sizing based on risk fraction and stop loss
+
+    Args:
+        signal: The incoming signal.
+        account: The destination account with sizing_mode and related config.
+        equity: The account's current equity (required for risk_fraction mode,
+                optional for other modes).
+
+    Returns:
+        (quantity, None) if sizing succeeds, or (None, error_message) if rejected.
+    """
+    sizing_mode = account.sizing_mode or "multiplier"
+
+    if sizing_mode == "fixed":
+        if account.fixed_quantity is None:
+            return None, f"fixed sizing mode requires fixed_quantity; account '{account.account_id}' has none"
+        return account.fixed_quantity, None
+
+    elif sizing_mode == "risk_fraction":
+        # risk_fraction mode requires equity, price, and stop_loss
+        quantity, error = risk_fraction_quantity(signal, account, equity)
+        if error is not None:
+            return None, error
+        return quantity, None
+
+    elif sizing_mode == "multiplier":
+        # Default multiplier mode
+        try:
+            quantity = size_for_account(signal, account)
+            return quantity, None
+        except UnsizedEntryError as e:
+            return None, str(e)
+
+    else:
+        return None, f"unknown sizing_mode '{sizing_mode}' on account '{account.account_id}'"
+
+
 def risk_fraction_quantity(
     signal: Signal, account: DestinationAccount, equity: float | None
 ) -> tuple[float | None, str | None]:
