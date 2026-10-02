@@ -2854,9 +2854,17 @@ async def simulate_routing_rules(request: RoutingSimulateRequest, _owner: dict =
     # came entirely from `evaluate` above, never recomputed here.
     rule_rows = store.list_config_routing_rules()
     rules_out = []
-    for idx, entry in enumerate(trace):
+    # WP-07: trace entries are now in evaluation order (precedence), not DB insertion order.
+    # Match rules by their content to find the correct rule_id.
+    for entry in trace:
         rule = entry["rule"]
-        rule_id = rule_rows[idx]["id"] if idx < len(rule_rows) else None
+        rule_id = None
+        for rule_row in rule_rows:
+            if (rule_row["source"] == rule.source and
+                rule_row["destinations"] == rule.destinations and
+                rule_row["symbol_filter"] == rule.symbol_filter):
+                rule_id = rule_row["id"]
+                break
         row: dict[str, Any] = {
             "id": rule_id,
             "source": rule.source,

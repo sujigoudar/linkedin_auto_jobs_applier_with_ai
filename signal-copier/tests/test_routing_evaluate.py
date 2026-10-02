@@ -115,6 +115,7 @@ def test_trace_for_a_non_matching_source_reports_matched_false_with_rule_and_rea
             "rule": rule,
             "matched": False,
             "reason": "rule source 'other_source' does not match signal source 'tv'",
+            "precedence": 0,
         }
     ]
 

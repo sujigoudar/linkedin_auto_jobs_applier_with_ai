@@ -69,11 +69,14 @@ def test_simulate_precedence_matches_the_real_engines_own_precedence(client):
         client.post("/accounts", json={"account_id": "acct_catchall", "broker": "paper"})
         client.post("/accounts", json={"account_id": "acct_btc", "broker": "paper"})
 
-        # Real precedence per app/routing.py: rules evaluate in ascending
-        # rule id / DB insertion order. Insert the catch-all FIRST and the
-        # symbol-filtered rule SECOND -- both name a *different* account, so
-        # this exercises real per-rule fan-out/ordering (not just SIG-01
-        # dedup, which is already covered elsewhere).
+        # WP-07: real precedence per app/routing.py is now most-specific-first:
+        # rules whose symbol_filter names the symbol are evaluated before
+        # catch-all rules (both in insertion order within their group).
+        # Insert the catch-all FIRST and the symbol-filtered rule SECOND --
+        # but the symbol-filtered rule is evaluated FIRST because it's more
+        # specific for BTCUSDT. Both name *different* accounts, so this
+        # exercises real per-rule ordering (not just SIG-01 dedup, which is
+        # already covered elsewhere).
         client.post(
             "/routing-rules", json={"source": "tradingview", "destinations": ["acct_catchall"]}
         )
@@ -89,22 +92,29 @@ def test_simulate_precedence_matches_the_real_engines_own_precedence(client):
         assert sim.status_code == 200
         body = sim.json()
 
-        # Every real rule was evaluated, in real DB order, and both really
-        # matched (same source, and the BTCUSDT symbol_filter matches).
-        assert [r["id"] for r in body["rules_evaluated"]] == [1, 2]
+        # Rules are evaluated in precedence order (most-specific first).
+        # The symbol-filtered rule (id=2) is evaluated first, then the
+        # catch-all rule (id=1). Both really matched (same source, and the
+        # BTCUSDT symbol_filter matches). Both different accounts are admitted,
+        # but in SINGLE mode (default), only the first rule's account is selected.
+        assert len(body["rules_evaluated"]) == 2
+        # Symbol-filtered rule is evaluated first (precedence 0)
+        assert body["rules_evaluated"][0]["id"] == 2
         assert body["rules_evaluated"][0]["matched"] is True
-        assert body["rules_evaluated"][0]["admitted_accounts"] == ["acct_catchall"]
+        assert body["rules_evaluated"][0]["admitted_accounts"] == ["acct_btc"]
+        # Catch-all rule is evaluated second (precedence 1)
+        assert body["rules_evaluated"][1]["id"] == 1
         assert body["rules_evaluated"][1]["matched"] is True
-        assert body["rules_evaluated"][1]["admitted_accounts"] == ["acct_btc"]
+        assert body["rules_evaluated"][1]["admitted_accounts"] == ["acct_catchall"]
 
-        # ALLOC-01: both rules are `single` mode, so they merge into ONE
-        # ordered pool and exactly one account (the first eligible, in
-        # priority order) is selected; the other is eligible-not-selected.
-        assert body["final_destinations"] == ["acct_catchall"]
-        assert body["allocation"]["selected_account_id"] == "acct_catchall"
-        assert body["allocation"]["eligible_single_pool"] == ["acct_catchall", "acct_btc"]
+        # WP-07: the symbol-filtered rule has precedence over the catch-all,
+        # so the single-mode pool is ordered acct_btc first; ALLOC-01 then
+        # selects exactly that first eligible account.
+        assert body["final_destinations"] == ["acct_btc"]
+        assert body["allocation"]["selected_account_id"] == "acct_btc"
+        assert body["allocation"]["eligible_single_pool"] == ["acct_btc", "acct_catchall"]
         statuses = {a["account_id"]: a["allocation"]["status"] for a in body["accounts"]}
-        assert statuses == {"acct_catchall": "selected", "acct_btc": "eligible_not_selected"}
+        assert statuses == {"acct_btc": "selected", "acct_catchall": "eligible_not_selected"}
 
         # Cross-check against the REAL engine: send the identical signal for
         # real via the webhook endpoint and confirm it actually reaches the

@@ -99,9 +99,12 @@ class RoutingConfig:
         # signal to the SAME account more than once, which submitted
         # duplicate orders for it. Each distinct account_id is routed to
         # at most once per signal, keeping the first rule's match order.
+        # WP-07: rules are evaluated in precedence order: rules whose
+        # `symbol_filter` names the symbol first (in insertion order), then
+        # rules with no filter (insertion order). This ensures most-specific
+        # rules win.
 
-        Trace entries, one per rule in `self.rules`'s own real evaluation
-        order (ascending rule id / DB insertion order):
+        Trace entries, one per rule in evaluation order (most-specific first):
         - `matched: False` with a `reason` -- this rule's `source` or
           `symbol_filter` didn't match; nothing of it was evaluated further.
         - `matched: True` with `admitted` (account ids this rule newly
@@ -112,16 +115,31 @@ class RoutingConfig:
           ends up in exactly one of these three, or is silently dropped
           only if the account id itself isn't configured at all (a config
           error, not a routing outcome worth a bucket of its own).
+        - `precedence`: 0-based evaluation position in the evaluation order.
         """
         accounts: list[DestinationAccount] = []
         seen_account_ids: set[str] = set()
         trace: list[dict] = []
-        for rule in self.rules:
+
+        # Separate rules into symbol-filtered and catch-all, preserving insertion order within each group
+        symbol_filtered_rules = []
+        catchall_rules = []
+        for i, rule in enumerate(self.rules):
+            if rule.symbol_filter is not None:
+                symbol_filtered_rules.append((i, rule))
+            else:
+                catchall_rules.append((i, rule))
+
+        # Evaluate in precedence order: symbol-filtered first, then catch-all
+        evaluation_order = symbol_filtered_rules + catchall_rules
+
+        for precedence, (_original_index, rule) in enumerate(evaluation_order):
             if rule.source != source:
                 trace.append({
                     "rule": rule,
                     "matched": False,
                     "reason": f"rule source '{rule.source}' does not match signal source '{source}'",
+                    "precedence": precedence,
                 })
                 continue
             if rule.symbol_filter and symbol not in rule.symbol_filter:
@@ -129,6 +147,7 @@ class RoutingConfig:
                     "rule": rule,
                     "matched": False,
                     "reason": f"symbol '{symbol}' is not in this rule's symbol_filter {rule.symbol_filter}",
+                    "precedence": precedence,
                 })
                 continue
             admitted: list[str] = []
@@ -153,6 +172,7 @@ class RoutingConfig:
                 "admitted": admitted,
                 "deduped": deduped,
                 "paused": paused,
+                "precedence": precedence,
             })
         return accounts, trace
 
