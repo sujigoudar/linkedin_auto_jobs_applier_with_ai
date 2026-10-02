@@ -136,7 +136,9 @@ class PaperBroker(BrokerAdapter):
         # price on the signal; they resolve from: 1) signal price, 2) last
         # simulated price, 3) entry price, 4) None. But that's only for
         # exits via the lifecycle manager's simulate_price hook, not here.
-        price = signal.price or 0.0
+        # Keep the original signal.price for filled_price reporting
+        signal_price = signal.price
+        price = signal_price or 0.0  # Use 0.0 for calculations but keep original for reporting
 
         if signal.side.value == "buy":
             # BUY: check if we have enough cash
@@ -223,13 +225,15 @@ class PaperBroker(BrokerAdapter):
             prices_for_account = self._last_prices.setdefault(account.account_id, {})
             prices_for_account[symbol] = price
 
+        # WP-25: Report filled_price as None when signal has no price,
+        # never fabricate it as 0.0
         result = OrderResult(
             account_id=account.account_id,
             status=OrderStatus.FILLED,
             signal_id=signal.id,
             broker_order_id=order_id,
             filled_quantity=quantity,
-            filled_price=price or 0.0,
+            filled_price=signal_price,
             message="filled by paper broker",
             executed_at=datetime.now(timezone.utc),  # WP-27: E-07 real fill timestamp
             fee=self.fee_per_fill,

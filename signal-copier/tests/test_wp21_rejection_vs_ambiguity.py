@@ -124,8 +124,17 @@ async def test_alpaca_408_returns_error(monkeypatch):
 
 
 def test_mt5_ambiguous_retcode_constants():
-    """C-12: Verify MT5 ambiguous retcodes are properly classified."""
+    """C-12: Verify MT5 ambiguous retcodes are properly classified.
+
+    WP-21: Retcodes are classified by execution certainty:
+    - REQUOTE (10004): price changed, order definitely NOT executed -> definite rejection
+    - INVALID_PRICE (10013): price invalid, order definitely NOT executed -> definite rejection
+    - TIMEOUT (10012): operation timeout, execution unknown -> ambiguous
+    - CONNECTION (10031): connection failed, execution unknown -> ambiguous
+
+    Only TIMEOUT and CONNECTION are ambiguous; REQUOTE and INVALID_PRICE are definite rejections.
+    """
     from app.brokers.mt4_mt5 import _TRADE_RETCODE_AMBIGUOUS
-    assert 10004 in _TRADE_RETCODE_AMBIGUOUS  # REQUOTE
-    assert 10012 in _TRADE_RETCODE_AMBIGUOUS  # TIMEOUT
-    assert 10031 in _TRADE_RETCODE_AMBIGUOUS  # CONNECTION
+    assert 10004 not in _TRADE_RETCODE_AMBIGUOUS  # REQUOTE - definite rejection
+    assert 10012 in _TRADE_RETCODE_AMBIGUOUS  # TIMEOUT - ambiguous
+    assert 10031 in _TRADE_RETCODE_AMBIGUOUS  # CONNECTION - ambiguous
