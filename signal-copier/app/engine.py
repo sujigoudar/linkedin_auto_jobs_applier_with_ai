@@ -2220,6 +2220,9 @@ class SignalCopierEngine:
 
         closing_side = Side.SELL if position > 0 else Side.BUY
         quantity = abs(position)
+        # WP-02 (C-02): strip stop_loss/take_profit/targets from close
+        # signals to prevent adapters from building reverse-side bracket
+        # legs that would open new positions after the close executes.
         resolved_signal = Signal(
             source=signal.source,
             symbol=signal.symbol,
@@ -2227,8 +2230,6 @@ class SignalCopierEngine:
             asset_class=signal.asset_class,
             quantity=quantity,
             price=signal.price,
-            stop_loss=signal.stop_loss,
-            take_profit=signal.take_profit,
             id=signal.id,
             received_at=signal.received_at,
             raw=signal.raw,
