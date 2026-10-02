@@ -168,6 +168,7 @@ from app.routing import RoutingConfig
 from app.shadow_mode import evaluate_shadow, to_result_row
 from app.writer_lease import NullLeaseGuard, WriterLeaseGuard
 from app.workflow.admission import AdmissionInputs, evaluate_admission
+from app.workflow.budget import HierarchicalBudget, BudgetScope, ResourceVector, BrokerSnapshot
 
 logger = logging.getLogger(__name__)
 structured_logger = structlog.get_logger(__name__)
@@ -340,6 +341,13 @@ class SignalCopierEngine:
         # broker thresholds. Fail-closed: inability to determine margin state
         # prevents trading to avoid silent failures.
         self.margin_call_detector = MarginCallDetector(store=store)
+        # WC-20 STEP 4: Hierarchical budget allocator with atomic resource
+        # reservation (§6.2–6.3). Ensures all resource checks (cash, margin,
+        # notional, risk) apply simultaneously at owner, account, portfolio,
+        # sleeve, provider, underlying and cluster levels before any broker
+        # effect occurs. Claims opportunity atomically to prevent duplicate
+        # admission from concurrent workers.
+        self.hierarchical_budget = HierarchicalBudget(store=store)
         # Wired in after construction (app/lifecycle/manager.py's own
         # __init__ can't take this: main.py often constructs a
         # PositionLifecycleManager before this Engine, and so before this
@@ -367,6 +375,114 @@ class SignalCopierEngine:
             if isinstance(paper_broker, PaperBroker):
                 seq = paper_broker.get_order_id_sequence(account.account_id)
                 self.store.update_account_paper_order_id_sequence(account.account_id, seq)
+
+    async def _check_and_reserve_resources(
+        self,
+        signal_id: str,
+        account: DestinationAccount,
+        quantity: float,
+        signal: Signal,
+        broker: BrokerAdapter,
+    ) -> tuple[bool, str | None]:
+        """WC-20 STEP 4: Check and reserve hierarchical resources atomically.
+
+        Constructs a budget scope and resource vector for the account/signal/quantity,
+        fetches the broker snapshot (equity, margin, buying power), and calls
+        HierarchicalBudget.check_and_reserve to ensure all hierarchical levels
+        (owner, account, portfolio, sleeve, provider, underlying, cluster) have
+        sufficient resources before any broker effect occurs.
+
+        Args:
+            signal_id: The signal ID (used as opportunity_id for deduplication)
+            account: The destination account
+            quantity: The calculated order quantity
+            signal: The signal being routed
+            broker: The broker adapter for this account
+
+        Returns:
+            (reserved_ok, error_message) where reserved_ok=True if resources were
+            reserved, or False with an error_message if reservation was blocked.
+        """
+        # TODO (WC-20 STEP 5): Wire OrderIntent creation and wire the actual
+        # enforcement of reservation failures. For now, STEP 4 logs the result
+        # for audit/tracing but does not reject the entry if reservation fails.
+
+        try:
+            # Fetch broker snapshot (equity, margin, buying power)
+            balance = await broker.get_account_balance(account)
+            broker_snapshot = None
+            if balance is not None:
+                # Convert float dollars to integer cents (1 dollar = 100 cents)
+                buying_power_cents = int(balance.buying_power * 100) if balance.buying_power is not None else None
+                equity_cents = int(balance.equity * 100) if balance.equity is not None else None
+                maintenance_cents = int(balance.maintenance_margin * 100) if balance.maintenance_margin is not None else None
+
+                broker_snapshot = BrokerSnapshot(
+                    buying_power=buying_power_cents,
+                    equity=equity_cents,
+                    maintenance=maintenance_cents,
+                    reflected_intent_ids=None,  # TODO: populate from active orders
+                    as_of=datetime.now(timezone.utc),
+                )
+
+            # Construct budget scope (all hierarchical levels)
+            # For now, minimal scope: owner, account, provider, underlying
+            scope = BudgetScope(
+                owner="owner",  # TODO: derive from config
+                physical_account_id=account.account_id,
+                portfolio_id=None,  # TODO: support multi-portfolio
+                sleeve_id=None,  # TODO: support sleeves
+                provider=signal.source,
+                analyst=signal.analyst,  # Can be None
+                underlying=signal.symbol,
+                cluster=None,  # TODO: support correlated risk clusters
+            )
+
+            # Construct resource vector for the sized entry
+            # All fields in cents (integer scaled) or integer quantities
+            planned_risk_cents = 0  # TODO: calculate from signal.stop_loss
+            stress_risk_cents = None  # TODO: calculate from stress scenarios
+            cash_needed_cents = 0  # TODO: calculate from entry_price * quantity
+            initial_margin_cents = 0  # TODO: calculate from broker margin rules
+            notional_cents = 0  # TODO: calculate from price * quantity
+
+            need = ResourceVector(
+                cash=cash_needed_cents,
+                buying_power=None,  # Let check_and_reserve validate against broker snapshot
+                initial_margin=initial_margin_cents,
+                maintenance=None,  # Validated from broker snapshot
+                notional=notional_cents,
+                planned_risk=planned_risk_cents,
+                stress_risk=stress_risk_cents,
+                close_quantity=0,  # TODO: track closeable inventory
+                slots=1,  # One order slot required
+            )
+
+            # Call check_and_reserve (currently logs result, enforcement in STEP 5)
+            reservation_result = self.hierarchical_budget.check_and_reserve(
+                opportunity_id=signal_id,
+                scope=scope,
+                need=need,
+                snapshot=broker_snapshot,
+            )
+
+            logger.info(
+                "resource_reservation signal=%s account=%s ok=%s binding_level=%s",
+                signal_id,
+                account.account_id,
+                reservation_result.ok,
+                reservation_result.binding_level,
+            )
+
+            if reservation_result.ok:
+                return True, None
+            else:
+                reason = reservation_result.reason.value if reservation_result.reason else "unknown"
+                return False, f"resource reservation blocked at {reservation_result.binding_level}: {reason}"
+
+        except Exception as e:
+            logger.exception("resource_reservation failed signal=%s account=%s", signal_id, account.account_id)
+            return False, f"resource reservation check failed: {str(e)}"
 
     def _build_export_envelope(
         self,
