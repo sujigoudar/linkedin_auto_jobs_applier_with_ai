@@ -16,6 +16,26 @@ from pathlib import Path
 import httpx
 import pytest
 
+
+@pytest.fixture(autouse=True)
+def reset_capital_allocator_state():
+    """Prevent test state leakage by resetting capital allocator
+    pending reservations before each test. The engine holds a shared
+    CapitalAllocator instance that persists across test fixtures."""
+    try:
+        import app.main as main_module
+        if hasattr(main_module, 'engine') and hasattr(main_module.engine, 'capital_allocator'):
+            main_module.engine.capital_allocator._pending.clear()
+    except Exception:
+        pass
+    yield
+    try:
+        import app.main as main_module
+        if hasattr(main_module, 'engine') and hasattr(main_module.engine, 'capital_allocator'):
+            main_module.engine.capital_allocator._pending.clear()
+    except Exception:
+        pass
+
 _SIGNAL_COPIER_DIR = Path(__file__).resolve().parent.parent
 
 

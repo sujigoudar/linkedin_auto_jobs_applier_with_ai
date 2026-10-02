@@ -40,7 +40,6 @@ def client(tmp_path, monkeypatch):
     main_module.routing_config.accounts.clear()
     main_module.routing_config.rules.clear()
     main_module.provider_registry.providers.clear()
-    main_module.engine.capital_allocator._pending.clear()
 
     test_client = TestClient(main_module.app)
     login = test_client.post("/auth/login", json={"password": "test-owner-password"})
