@@ -13,7 +13,6 @@ This module is designed to work with broker adapters that report:
 from __future__ import annotations
 
 import logging
-from datetime import datetime
 from typing import Optional
 
 from app.db import SignalStore
