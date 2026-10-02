@@ -181,14 +181,20 @@ def build_traceability(
     }
 
 
-def main():
-    """Main entry point."""
+def main(argv: list[str] | None = None):
+    """Main entry point. `--output PATH` writes elsewhere (tests use tmp_path)."""
+    import argparse
+
     script_dir = Path(__file__).parent
     repo_root = script_dir.parent.parent
 
+    parser = argparse.ArgumentParser(description="Build requirements_traceability.json")
+    parser.add_argument("--output", type=Path, default=script_dir / "requirements_traceability.json")
+    args = parser.parse_args(argv)
+
     catalog_path = script_dir / "SCENARIO_CATALOG.json"
     map_path = script_dir / "traceability_map.yaml"
-    output_path = script_dir / "requirements_traceability.json"
+    output_path = args.output
 
     # Load inputs
     print(f"Loading SCENARIO_CATALOG from {catalog_path}...")

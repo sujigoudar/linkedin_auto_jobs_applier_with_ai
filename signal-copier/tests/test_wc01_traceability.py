@@ -231,13 +231,14 @@ class TestRequirementsTraceability:
         script = docs_dir / "build_traceability.py"
         assert script.exists(), f"build_traceability.py not found at {script}"
 
-    def test_build_traceability_runs(self, docs_dir):
-        """build_traceability.py runs without error (optional)."""
+    def test_build_traceability_runs(self, docs_dir, tmp_path):
+        """build_traceability.py runs without error; writes to tmp_path so the
+        tracked requirements_traceability.json is never rewritten by a test."""
         # Note: Only run if PyYAML is available
         try:
             import subprocess
             result = subprocess.run(
-                ["python3", str(docs_dir / "build_traceability.py")],
+                ["python3", str(docs_dir / "build_traceability.py"), "--output", str(tmp_path / "rt.json")],
                 capture_output=True,
                 text=True,
                 cwd=str(docs_dir.parent.parent),
