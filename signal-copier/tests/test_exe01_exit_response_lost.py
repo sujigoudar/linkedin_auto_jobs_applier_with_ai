@@ -50,7 +50,7 @@ async def test_audits_exact_case_exit_response_lost_keeps_durable_commitment(sto
         await manager.request_exit(account, "AAPL", 10, "target")
 
     fresh_manager = PositionLifecycleManager(brokers={"paper": broker}, store=store)
-    fresh_manager.restore_from_store()
+    await fresh_manager.restore_from_store()
 
     snapshot = fresh_manager.arbiter.snapshot("acct1", "AAPL")
     lifecycle = fresh_manager.get_lifecycle("acct1", "AAPL")

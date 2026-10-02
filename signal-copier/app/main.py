@@ -258,7 +258,8 @@ if not config.STANDBY_MODE:
     # holds the lease -- see that error's docstring.
     writer_lease_guard.acquire()
 lifecycle_manager = PositionLifecycleManager(brokers=brokers, store=store)
-lifecycle_manager.restore_from_store()  # resume any managed-lifecycle positions from before a restart
+# Note: restore_from_store() is called asynchronously in the lifespan handler
+# below, before starting reconciliation and other background tasks.
 engine = SignalCopierEngine(
     routing=routing_config,
     brokers=brokers,
@@ -526,6 +527,10 @@ async def lifespan(app: FastAPI):
         )
         raise
     _heartbeat_task = asyncio.create_task(_writer_lease_heartbeat())
+
+    # Restore managed lifecycles and adopt any unresolved stops from before
+    # the restart (D-09). Must happen before reconciler starts polling.
+    await lifecycle_manager.restore_from_store()
 
     await webhook_source.start()
     for source in _background_sources:

@@ -252,7 +252,7 @@ async def test_control_completed_reconciliation_restart_is_stable(world):
     await progress(world, entry, 100.0, OrderStatus.FILLED)
     store = SignalStore(world.database_path)
     manager = PositionLifecycleManager(brokers={"paper": world.broker}, store=store)
-    manager.restore_from_store()
+    await manager.restore_from_store()
     reconciler = OrderReconciler(store, {"paper": world.broker}, lifecycle_manager=manager)
     await reconciler.reconcile_once()
     assert store.get_position(ACCOUNT, SYMBOL) == 100.0
@@ -413,7 +413,7 @@ async def test_crash_after_position_commit_before_fill_checkpoint_does_not_doubl
 
     restored_store = SignalStore(world.database_path)
     restored_manager = PositionLifecycleManager(brokers={"paper": world.broker}, store=restored_store)
-    restored_manager.restore_from_store()
+    await restored_manager.restore_from_store()
     restored_reconciler = OrderReconciler(
         restored_store, {"paper": world.broker}, lifecycle_manager=restored_manager
     )
@@ -452,7 +452,7 @@ async def test_crash_during_protection_work_after_position_commit_does_not_doubl
 
     restored_store = SignalStore(world.database_path)
     restored_manager = PositionLifecycleManager(brokers={"paper": world.broker}, store=restored_store)
-    restored_manager.restore_from_store()
+    await restored_manager.restore_from_store()
     restored_reconciler = OrderReconciler(restored_store, {"paper": world.broker}, lifecycle_manager=restored_manager)
     await restored_reconciler.reconcile_once()
 
