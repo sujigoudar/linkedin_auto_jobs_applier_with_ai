@@ -215,6 +215,9 @@ class TestOutbox:
             reservation_id="res_111",
         )
 
+        # Enqueue the intent first
+        outbox.enqueue(intent)
+
         response = {"status": "submitted", "order_id": "ord_123"}
 
         # Should not raise

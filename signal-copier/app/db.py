@@ -2068,7 +2068,8 @@ CREATE TABLE IF NOT EXISTS order_intents (
     reservation_id TEXT NOT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL
 );
-CREATE INDEX IF NOT EXISTS ix_order_intents_opportunity ON order_intents(opportunity_id);
+-- WC-31: Unique index to enforce one intent per opportunity_id
+CREATE UNIQUE INDEX IF NOT EXISTS ux_order_intents_opportunity ON order_intents(opportunity_id);
 CREATE INDEX IF NOT EXISTS ix_order_intents_account ON order_intents(physical_account_id);
 CREATE INDEX IF NOT EXISTS ix_order_intents_binding ON order_intents(binding_id);
 CREATE INDEX IF NOT EXISTS ix_order_intents_reservation ON order_intents(reservation_id);
@@ -10893,3 +10894,391 @@ class SignalStore:
             "unknown": unknown,
             "oldest_unresponded_age_seconds": oldest_unresponded_age_seconds,
         }
+
+    # ---------- WC-31: Durable order intents and outbox on SignalStore ----------
+
+    def insert_order_intent_and_outbox(self, intent: Any) -> Any:
+        """Insert an order intent and outbox item in one atomic transaction.
+
+        Atomically inserts both the order_intents row and the outbox row in a
+        single BEGIN IMMEDIATE transaction, claiming the opportunity_id for
+        mutual exclusion.
+
+        Args:
+            intent: An OrderIntent dataclass with intent_id, opportunity_id,
+                physical_account_id, binding_id, client_correlation_id,
+                policy_hash, quantity, price_constraints, protection_recipe,
+                and reservation_id.
+
+        Returns:
+            An OutboxItem dataclass ready for dispatch.
+
+        Raises:
+            sqlite3.IntegrityError: If opportunity_id is already claimed.
+        """
+        import json
+        from datetime import datetime
+        from app.workflow.intents import OutboxItem
+
+        # Generate outbox item ID
+        import uuid
+        item_id = str(uuid.uuid4())
+        now_utc = datetime.utcnow().isoformat() + "Z"
+
+        with self._immediate() as conn:
+            # Insert order_intents row
+            conn.execute(
+                """INSERT INTO order_intents
+                   (intent_id, opportunity_id, physical_account_id, binding_id,
+                    client_correlation_id, policy_hash, quantity,
+                    price_constraints, protection_recipe, reservation_id, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    intent.intent_id,
+                    intent.opportunity_id,
+                    intent.physical_account_id,
+                    intent.binding_id,
+                    intent.client_correlation_id,
+                    intent.policy_hash,
+                    intent.quantity,
+                    json.dumps(intent.price_constraints) if intent.price_constraints is not None else None,
+                    json.dumps(intent.protection_recipe) if intent.protection_recipe is not None else None,
+                    intent.reservation_id,
+                    now_utc,
+                ),
+            )
+
+            # Insert outbox row
+            conn.execute(
+                """INSERT INTO outbox
+                   (item_id, intent_id, state, created_at, claimed_at, claimed_by, response, response_recorded_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    item_id,
+                    intent.intent_id,
+                    "outboxed",
+                    now_utc,
+                    None,
+                    None,
+                    None,
+                    None,
+                ),
+            )
+
+        # Return OutboxItem with fresh UTC timestamps
+        from datetime import datetime
+        from app.workflow.intents import IntentState
+        now_dt = datetime.fromisoformat(now_utc.replace("Z", "+00:00"))
+        return OutboxItem(
+            item_id=item_id,
+            intent_id=intent.intent_id,
+            state=IntentState.OUTBOXED,
+            created_at=now_dt,
+            claimed_at=None,
+            claimed_by=None,
+            response=None,
+            response_recorded_at=None,
+        )
+
+    def claim_next_outbox_item(self, worker_lease_id: str) -> Any:
+        """Claim the next unclaimed outbox item for dispatch.
+
+        In a short BEGIN IMMEDIATE transaction:
+        1. Find the oldest OUTBOXED item
+        2. Mark it DISPATCHING under the given lease
+        3. Return it (or None if queue is empty)
+
+        Args:
+            worker_lease_id: The current writer lease ID.
+
+        Returns:
+            An OutboxItem marked DISPATCHING, or None if queue is empty.
+        """
+        from datetime import datetime
+        from app.workflow.intents import OutboxItem
+
+        now_utc = datetime.utcnow().isoformat() + "Z"
+
+        with self._immediate() as conn:
+            # Select the oldest OUTBOXED item
+            row = conn.execute(
+                """SELECT item_id, intent_id, state, created_at, claimed_at, claimed_by, response, response_recorded_at
+                   FROM outbox
+                   WHERE state = 'outboxed'
+                   ORDER BY created_at ASC
+                   LIMIT 1"""
+            ).fetchone()
+
+            if row is None:
+                return None
+
+            item_id, intent_id, state, created_at_str, claimed_at_str, claimed_by_str, response_str, response_recorded_at_str = row
+
+            # Mark it DISPATCHING
+            conn.execute(
+                """UPDATE outbox
+                   SET state = ?, claimed_at = ?, claimed_by = ?
+                   WHERE item_id = ?""",
+                ("dispatching", now_utc, worker_lease_id, item_id),
+            )
+
+        # Parse timestamps and reconstruct OutboxItem
+        from app.workflow.intents import IntentState
+
+        def parse_timestamp(ts_str: str | None) -> datetime | None:
+            if ts_str is None:
+                return None
+            return datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+
+        created_at = parse_timestamp(created_at_str)
+        assert created_at is not None  # created_at is always set when item is created
+
+        return OutboxItem(
+            item_id=item_id,
+            intent_id=intent_id,
+            state=IntentState.DISPATCHING,
+            created_at=created_at,
+            claimed_at=parse_timestamp(now_utc),
+            claimed_by=worker_lease_id,
+            response=response_str,
+            response_recorded_at=parse_timestamp(response_recorded_at_str),
+        )
+
+    def record_outbox_response(
+        self, intent_id: str, response: dict[str, Any], *, state: str
+    ) -> None:
+        """Persist the broker response and transition the intent state.
+
+        Sets response JSON, response_recorded_at timestamp, and state
+        (one of 'submitted', 'unknown', 'rejected').
+
+        Args:
+            intent_id: The intent's ID.
+            response: The broker response dict or error details.
+            state: The new state ('submitted', 'unknown', or 'rejected').
+
+        Raises:
+            KeyError: If no outbox row for intent_id.
+        """
+        import json
+        from datetime import datetime
+
+        now_utc = datetime.utcnow().isoformat() + "Z"
+
+        with self._connect() as conn:
+            # Verify the outbox row exists
+            existing = conn.execute(
+                "SELECT item_id FROM outbox WHERE intent_id = ?",
+                (intent_id,),
+            ).fetchone()
+
+            if existing is None:
+                raise KeyError(f"No outbox row found for intent_id {intent_id}")
+
+            # Update the outbox row with response and state
+            conn.execute(
+                """UPDATE outbox
+                   SET response = ?, response_recorded_at = ?, state = ?
+                   WHERE intent_id = ?""",
+                (json.dumps(response), now_utc, state, intent_id),
+            )
+
+    def get_order_intent(self, intent_id: str) -> Any:
+        """Retrieve an order intent by intent_id.
+
+        Args:
+            intent_id: The intent's unique identifier.
+
+        Returns:
+            An OrderIntent dataclass, or None if not found.
+        """
+        import json
+        from app.workflow.intents import OrderIntent
+
+        with self._connect() as conn:
+            row = conn.execute(
+                """SELECT intent_id, opportunity_id, physical_account_id, binding_id,
+                          client_correlation_id, policy_hash, quantity,
+                          price_constraints, protection_recipe, reservation_id, created_at
+                   FROM order_intents
+                   WHERE intent_id = ?""",
+                (intent_id,),
+            ).fetchone()
+
+        if row is None:
+            return None
+
+        (
+            intent_id,
+            opportunity_id,
+            physical_account_id,
+            binding_id,
+            client_correlation_id,
+            policy_hash,
+            quantity,
+            price_constraints_json,
+            protection_recipe_json,
+            reservation_id,
+            created_at_str,
+        ) = row
+
+        return OrderIntent(
+            intent_id=intent_id,
+            opportunity_id=opportunity_id,
+            physical_account_id=physical_account_id,
+            binding_id=binding_id,
+            client_correlation_id=client_correlation_id,
+            policy_hash=policy_hash,
+            quantity=quantity,
+            price_constraints=json.loads(price_constraints_json) if price_constraints_json else None,
+            protection_recipe=json.loads(protection_recipe_json) if protection_recipe_json else None,
+            reservation_id=reservation_id,
+        )
+
+    def get_outbox_item_for_intent(self, intent_id: str) -> Any:
+        """Retrieve an outbox item by intent_id.
+
+        Args:
+            intent_id: The intent's identifier (foreign key).
+
+        Returns:
+            An OutboxItem dataclass, or None if not found.
+        """
+        from datetime import datetime
+        from app.workflow.intents import OutboxItem
+
+        with self._connect() as conn:
+            row = conn.execute(
+                """SELECT item_id, intent_id, state, created_at, claimed_at, claimed_by, response, response_recorded_at
+                   FROM outbox
+                   WHERE intent_id = ?""",
+                (intent_id,),
+            ).fetchone()
+
+        if row is None:
+            return None
+
+        item_id, intent_id, state_str, created_at_str, claimed_at_str, claimed_by_str, response_str, response_recorded_at_str = row
+
+        from app.workflow.intents import IntentState
+
+        def parse_timestamp(ts_str: str | None) -> datetime | None:
+            if ts_str is None:
+                return None
+            return datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+
+        created_at = parse_timestamp(created_at_str)
+        assert created_at is not None  # created_at is always set when item is created
+
+        return OutboxItem(
+            item_id=item_id,
+            intent_id=intent_id,
+            state=IntentState(state_str),
+            created_at=created_at,
+            claimed_at=parse_timestamp(claimed_at_str),
+            claimed_by=claimed_by_str,
+            response=response_str,
+            response_recorded_at=parse_timestamp(response_recorded_at_str),
+        )
+
+    def get_order_intent_for_opportunity(self, opportunity_id: str) -> Any:
+        """Retrieve an order intent by opportunity_id.
+
+        Args:
+            opportunity_id: The opportunity's unique identifier.
+
+        Returns:
+            An OrderIntent dataclass, or None if not found.
+        """
+        import json
+        from app.workflow.intents import OrderIntent
+
+        with self._connect() as conn:
+            row = conn.execute(
+                """SELECT intent_id, opportunity_id, physical_account_id, binding_id,
+                          client_correlation_id, policy_hash, quantity,
+                          price_constraints, protection_recipe, reservation_id, created_at
+                   FROM order_intents
+                   WHERE opportunity_id = ?""",
+                (opportunity_id,),
+            ).fetchone()
+
+        if row is None:
+            return None
+
+        (
+            intent_id,
+            opportunity_id,
+            physical_account_id,
+            binding_id,
+            client_correlation_id,
+            policy_hash,
+            quantity,
+            price_constraints_json,
+            protection_recipe_json,
+            reservation_id,
+            created_at_str,
+        ) = row
+
+        return OrderIntent(
+            intent_id=intent_id,
+            opportunity_id=opportunity_id,
+            physical_account_id=physical_account_id,
+            binding_id=binding_id,
+            client_correlation_id=client_correlation_id,
+            policy_hash=policy_hash,
+            quantity=quantity,
+            price_constraints=json.loads(price_constraints_json) if price_constraints_json else None,
+            protection_recipe=json.loads(protection_recipe_json) if protection_recipe_json else None,
+            reservation_id=reservation_id,
+        )
+
+    def recover_outbox_on_restart(self) -> dict[str, Any]:
+        """Recovery on restart: mark ambiguous claimed-but-unresponded items.
+
+        Per spec §6.3, a claimed-but-unresponded item is AMBIGUOUS (the broker
+        call may or may not have happened). Mark it state 'unknown' with response
+        {"reason":"restart_before_response"}.
+
+        Returns:
+            {"marked_unknown": [item_ids marked unknown], "outboxed_pending": [item_ids still outboxed]}
+        """
+        import json
+        from datetime import datetime
+
+        now_utc = datetime.utcnow().isoformat() + "Z"
+
+        marked_unknown = []
+        with self._immediate() as conn:
+            # Find claimed-but-unresponded items (state='dispatching' with response_recorded_at NULL)
+            rows = conn.execute(
+                """SELECT item_id, intent_id
+                   FROM outbox
+                   WHERE state = 'dispatching' AND response_recorded_at IS NULL"""
+            ).fetchall()
+
+            for item_id, _intent_id in rows:
+                # Mark as 'unknown' with restart reason
+                response_json = json.dumps({"reason": "restart_before_response"})
+                conn.execute(
+                    """UPDATE outbox
+                       SET state = ?, response = ?, response_recorded_at = ?
+                       WHERE item_id = ?""",
+                    ("unknown", response_json, now_utc, item_id),
+                )
+                marked_unknown.append(item_id)
+
+        # Get all still-outboxed items
+        outboxed_pending = []
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT item_id FROM outbox WHERE state = 'outboxed'"
+            ).fetchall()
+            outboxed_pending = [row[0] for row in rows]
+
+        return {
+            "marked_unknown": marked_unknown,
+            "outboxed_pending": outboxed_pending,
+        }
+
+    # ---------- End WC-31 ----------

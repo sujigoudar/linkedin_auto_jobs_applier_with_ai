@@ -213,11 +213,7 @@ class Outbox:
             sqlite3.IntegrityError: If opportunity_id is already claimed
               (another worker already admitted this signal).
         """
-        item = OutboxItem.create(intent.intent_id)
-        # The caller's transaction (§6.3) already claimed the opportunity
-        # and wrote the selection. This call writes the intent + outbox,
-        # then commits outside this module.
-        return item
+        return self.store.insert_order_intent_and_outbox(intent)
 
     def claim_next(self, worker_lease_id: str) -> Optional[OutboxItem]:
         """Claim the next unclaimed outbox item for dispatch.
@@ -239,8 +235,7 @@ class Outbox:
         Raises:
             FencedOutError: If the caller's lease is no longer current.
         """
-        # To be implemented by SignalStore integration.
-        return None
+        return self.store.claim_next_outbox_item(worker_lease_id)
 
     def record_response(self, intent_id: str, response: dict[str, Any]) -> None:
         """Persist the broker response and transition the intent state.
@@ -260,5 +255,12 @@ class Outbox:
         Raises:
             ValueError: If the intent is not found.
         """
-        # To be implemented by SignalStore integration.
-        pass
+        # Classify the response based on error/exception/status fields
+        if "error" in response or "exception" in response:
+            state = "unknown"
+        elif response.get("status") in ("rejected",):
+            state = "rejected"
+        else:
+            state = "submitted"
+
+        self.store.record_outbox_response(intent_id, response, state=state)
