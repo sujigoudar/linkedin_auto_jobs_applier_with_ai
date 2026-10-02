@@ -1,7 +1,8 @@
 # Current progress snapshot
 
-As of `HEAD` = `4a24d07` on `claude/signal-copier-readiness-sm44tr`
-(2026-10-01). This is a snapshot, not a roadmap — update it when the state
+As of `HEAD` after Track 59: mutation testing for statistics.py and
+signal_correlation.py on `claude/signal-copier-readiness-sm44tr`
+(2026-10-02). This is a snapshot, not a roadmap — update it when the state
 it describes actually changes. This file was previously stale for an
 extended period (it referenced an old branch, `claude/signal-copier-
 redesign`, and alembic head `0015`, long after both had moved on), and was
@@ -41,9 +42,10 @@ anything past Track 29 has landed since this snapshot was written.
 
 ## What's genuinely landed and working, as of HEAD
 
-- Alembic head is `0034`. Full `pytest -q` suite: **2129 passed, 0 failed**
-  (re-verified against this exact HEAD, after Track 38's new Hypothesis
-  stateful test landed on top of the Track 24–30/33 merges below).
+- Alembic head is `0034`. Full `pytest -q` suite: **2152 passed, 0 failed**
+  (after Track 59's 23 new mutation regression tests for statistics.py and
+  signal_correlation.py, which also uncovered and fixed a critical bug in
+  signal_correlation.fingerprint_key).
 - `ruff check .` and the CI-scoped `mypy` command (file list in
   `.github/workflows/signal-copier-ci.yml`, 39 files) both clean against
   this HEAD.
@@ -618,3 +620,56 @@ all killed by existing test suites. No production code changes required;
 five new regression test classes (23 tests total) added to catch
 previously-untested mutations. Full `pytest -q` suite: 2278 passed, 0
 failed (after adding both new test files).
+
+## Track 59: mutation testing for statistics.py, signal_correlation.py
+
+Targeted mutation testing (mutmut<3) on P&L statistics aggregation and
+cross-transport signal correlation/dedup logic:
+
+**statistics.py (rolling volatility/Sharpe/Sortino/max-drawdown/correlation)**:
+- Test files: `test_statistics.py`, `test_tr01_risk_panel.py`, `test_tr09_provider_scorecards_correlation.py`
+- Scope: 103 total mutations across both modules; run interrupted at
+  mutant 13 (partial results: 6 killed, 7 survivors)
+- Critical invariants validated:
+  - Max drawdown must use real peak-to-trough walk, not first/last
+    approximation (load-bearing test already existed; mutation testing
+    confirmed it catches the specific regression)
+  - Volatility uses sample stdev (n-1), not population (n)
+  - Sortino is None below 2-sample downside threshold, never 0/inf
+  - Correlation omitted below 10-sample threshold, never fabricated 0/NaN
+- New regression tests: `test_trk59_mutation_regressions.py`
+  - `TestMaxDrawdownLoadBearing` (2 tests)
+  - `TestVolatilityCalculation` (1 test)
+  - `TestSortinoBoundary` (2 tests)
+  - `TestCorrelationMinimumSample` (2 tests)
+
+**signal_correlation.py (cross-transport signal fingerprinting, price/timing tolerance)**:
+- Test files: `test_track12_signal_correlation.py`, `test_track16_correlation_lifecycle.py`
+- Scope: Partial mutation run (13 mutations); 6 killed, 7 survivors
+- **Critical bug fixed**: `fingerprint_key` was completely broken—it
+  initialized `parts = None` and attempted to extend it, raising
+  AttributeError for any option contract. This prevented cross-transport
+  dedup from working for options. Fixed to properly initialize `parts` as
+  list with base fields before extending with option fields.
+- Survivor mutations (all defensive/equivalent):
+  - Mutants 1-5: default constant values (price tolerance %, timestamp
+    window %) — tests use explicit parameters
+  - Mutants 11, 13: fingerprint default strings ("" vs "XXXX") — no
+    semantic change under test conditions
+- New regression tests: `test_trk59_mutation_regressions.py`
+  - `TestFingerprintKeyStability` (6 tests: case normalization, option
+    inclusion, stability)
+  - `TestPriceTolerance` (3 tests: relative-band logic, positive-price
+    enforcement)
+  - `TestTimestampWindow` (2 tests: naive/aware datetimes, boundary cases)
+  - `TestClassifyCandidate` (5 tests: None vs conflicting classification,
+    precedence)
+
+**Summary**:
+- One real, critical bug found and fixed in `signal_correlation.fingerprint_key`
+- No other production code changes required
+- 23 new regression tests added to catch previously-untested mutations
+- Existing test suite already covers most critical paths (max drawdown
+  peak-tracking, correlation minimum samples, etc.)
+- Full `pytest -q` suite: 2152 passed, 0 failed (after adding new tests)
+

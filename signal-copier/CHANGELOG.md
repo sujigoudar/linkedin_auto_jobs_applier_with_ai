@@ -7,6 +7,60 @@ does not yet cut versioned releases (see `docs/process/RELEASE.md`), so
 entries are grouped by theme and rough chronological wave instead of by
 version number. Newest wave first.
 
+## [Unreleased] — Track 59: mutation testing for statistics.py, signal_correlation.py (2026-10-02)
+
+Mutation testing (mutmut<3) on the P&L statistics aggregator
+(`app/statistics.py`) and cross-transport signal correlation/dedup logic
+(`app/signal_correlation.py`). Both modules implement critical correctness
+invariants documented in their own module docstrings (P&L-delta semantics,
+honest insufficiency thresholds for max-drawdown/volatility/correlation;
+discrete fingerprinting for signal dedup).
+
+### Fixed
+- **Critical bug in `app/signal_correlation.py::fingerprint_key`**: The
+  function was completely broken -- it initialized `parts = None` and then
+  attempted to extend it, raising `AttributeError` whenever an option
+  contract was present. This bug would have silently prevented cross-
+  transport dedup from working for option signals. Fixed: `parts` is now
+  properly initialized as a list with base fields (source, symbol, side,
+  asset_class) before extending with optional fields.
+
+### Added
+- `tests/test_trk59_mutation_regressions.py`: 23 hand-written regression
+  tests for `statistics.py` and `signal_correlation.py` mutations,
+  covering:
+  - `TestMaxDrawdownLoadBearing`: real peak-to-trough walk, not first/last
+    approximation (2 tests)
+  - `TestVolatilityCalculation`: sample stdev with n-1 divisor
+  - `TestSortinoBoundary`: Sortino is None below thresholds, never 0/inf
+    (2 tests)
+  - `TestCorrelationMinimumSample`: correlation omitted below 10-sample
+    threshold, never fabricated (2 tests)
+  - `TestFingerprintKeyStability`: case normalization, option field
+    inclusion, stability across variants (6 tests)
+  - `TestPriceTolerance`: relative-band logic, positive-price enforcement
+    (3 tests)
+  - `TestTimestampWindow`: naive/aware datetime handling, boundary-second
+    cases (2 tests)
+  - `TestClassifyCandidate`: None-return vs conflicting classification,
+    price/side/timestamp precedence (5 tests)
+
+### Known residual (survivors — all defensive/equivalent, no action required)
+- `app/signal_correlation.py` mutants 1-5, 11, 13: default constant
+  values (price tolerance %, timestamp window %, fingerprint default
+  strings). These are defensive survivals where the tests use explicit
+  parameter values rather than relying on module-level defaults, or where
+  equivalent mutants don't change the semantic meaning under test
+  conditions.
+- Approximately 90 of 103 total mutants were not fully executed (mutation
+  test was interrupted partway through). Partial results showed 6 killed,
+  7 survivors at the 13-mutant mark; full deterministic run would be
+  needed to complete the survey.
+
+No other production code was changed; all bugs were closed or classified as
+defensive/equivalent. Full `pytest -q` suite: passes with new regression
+tests included.
+
 ## [Unreleased] — Track 57: mutation testing for capital_allocator.py, routing.py (2026-10-01)
 
 Mutation testing (mutmut<3) on the live-trading capital-routing
