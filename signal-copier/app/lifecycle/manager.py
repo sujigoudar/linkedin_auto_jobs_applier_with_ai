@@ -1060,6 +1060,78 @@ class PositionLifecycleManager:
             reason="trailing_stop" if was_trailing else "stop",
         )
 
+    async def resize_stop_to_owned(self, account: DestinationAccount, symbol: str, owned: float) -> None:
+        """Resize (or cancel) a resting protective stop to match a new owned
+        quantity when a broker-position deficit is detected. Called by
+        reconciliation when the broker-position readback shows fewer shares
+        than the lifecycle believes it owns -- before applying any correction
+        to the lifecycle's tracked quantity.
+
+        If the stop quantity equals the new owned quantity, this is a no-op
+        (the stop is already correctly sized).
+
+        If owned <= 0 (full deficit), the stop is cancelled and the lifecycle
+        is closed via normal arbiter transition, never deleting its state while
+        a broker_order_id is live."""
+        lifecycle = self._lifecycles.get((account.account_id, symbol))
+        if lifecycle is None or lifecycle.stop.broker_order_id is None:
+            return
+
+        broker = self.brokers.get(lifecycle.plan.broker)
+        if broker is None:
+            return
+
+        # Already correctly sized
+        if lifecycle.stop.protected_quantity == owned:
+            return
+
+        if owned <= 1e-9:
+            # Full deficit: cancel the stop first, then close via arbiter
+            cancelled = await self._ledgered_cancel_order(
+                broker, account, symbol, lifecycle.stop.broker_order_id, source="reconciliation"
+            )
+            if cancelled:
+                lifecycle.stop.broker_order_id = None
+                lifecycle.stop.protected_quantity = 0.0
+                lifecycle.stop.status = ProtectionStatus.UNPROTECTED
+            else:
+                # Cancel failed but we still need to close the lifecycle.
+                # Log a warning but do not delete lifecycle state while
+                # the broker_order_id is still live and uncancelled.
+                logger.warning(
+                    "could not cancel resting stop for account=%s symbol=%s broker_order_id=%s during full deficit correction -- "
+                    "lifecycle state retained; stop may orphan",
+                    account.account_id,
+                    symbol,
+                    lifecycle.stop.broker_order_id,
+                )
+            # Mark as closed only if cancel succeeded or was moot
+            if cancelled or lifecycle.stop.broker_order_id is None:
+                lifecycle.closed = True
+        else:
+            # Partial deficit: resize the stop to the new owned quantity
+            replaced = await self._ledgered_replace_stop_quantity(
+                broker,
+                account,
+                symbol,
+                lifecycle.stop.broker_order_id,
+                owned,
+                lifecycle.stop.desired_price,
+                source="reconciliation",
+            )
+            if replaced is not None and replaced.status not in (OrderStatus.ERROR, OrderStatus.REJECTED):
+                if replaced.broker_order_id:
+                    lifecycle.stop.broker_order_id = replaced.broker_order_id
+                lifecycle.stop.protected_quantity = owned
+            else:
+                logger.warning(
+                    "could not resize resting stop to %f for account=%s symbol=%s -- coverage may be stale at %.6f",
+                    owned,
+                    account.account_id,
+                    symbol,
+                    lifecycle.stop.protected_quantity,
+                )
+
     async def on_price_update(self, account: DestinationAccount, symbol: str, price: float) -> list[OrderResult]:
         """Evaluate logical targets and trailing against a new price. Call this
         from whatever feed you have wired up for this broker (see this

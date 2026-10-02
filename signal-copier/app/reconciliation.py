@@ -336,6 +336,37 @@ class OrderReconciler:
             deficit = lifecycle.confirmed_owned_quantity - broker_owned_abs
             if deficit <= 1e-9:
                 continue  # matches (or the venue reports MORE than tracked -- a different, unmodeled anomaly)
+
+            # WP-19: Poll the stop before attributing a deficit to a stop fill.
+            # If the stop has a broker_order_id, check its real status first.
+            if lifecycle.stop.broker_order_id is not None:
+                try:
+                    stop_status = await broker.get_order_status(account, lifecycle.stop.broker_order_id)
+                except Exception:
+                    logger.exception(
+                        "get_order_status failed for stop order account=%s symbol=%s broker_order_id=%s",
+                        account.account_id,
+                        lifecycle.plan.symbol,
+                        lifecycle.stop.broker_order_id,
+                    )
+                    stop_status = None
+
+                # If the stop is FILLED, route the venue's filled quantity through on_stop_filled
+                if stop_status is not None and stop_status.status == OrderStatus.FILLED:
+                    filled_qty = stop_status.filled_quantity if stop_status.filled_quantity is not None else lifecycle.stop.protected_quantity
+                    await self.lifecycle_manager.on_stop_filled(
+                        account,
+                        lifecycle.plan.symbol,
+                        filled_quantity=filled_qty,
+                        filled_price=stop_status.filled_price,
+                    )
+                    corrected += 1
+                    continue
+
+                # Stop is not filled but there's a deficit: resize/cancel the stop first
+                await self.lifecycle_manager.resize_stop_to_owned(account, lifecycle.plan.symbol, broker_owned_abs)
+
+            # Apply the correction (if no stop to resize, or after resizing/cancelling)
             await self.lifecycle_manager.on_stop_filled(account, lifecycle.plan.symbol, filled_quantity=deficit)
             corrected += 1
         return corrected
