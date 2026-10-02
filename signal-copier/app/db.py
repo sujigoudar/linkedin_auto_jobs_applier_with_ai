@@ -2390,6 +2390,7 @@ class SignalStore:
         # WP-44: serialize contract specs into raw["contract_spec"] for
         # persistence (these specs are runtime-only fields on Signal but need
         # to be recoverable for UI interpretation, so serialize them into raw).
+        # Serialize contract specs into raw["contract_spec"] for persistence
         raw_data = signal.raw.copy()
         contract_spec = {}
         if signal.option is not None:
@@ -4007,6 +4008,9 @@ class SignalStore:
                 # if present (see save_signal). asset_class_inferred is a boolean
                 # in raw["asset_class_inferred"] indicating whether the asset class
                 # was inferred from symbol shape rather than source-declared.
+                # WP-44 (TR-04/TR-03): Signal intent for plain-language interpretation
+                # and reduce_fraction for REDUCE intents. Contract specs are serialized
+                # into raw["contract_spec"] at save time for UI interpretation.
                 "intent": r[13],
                 "reduce_fraction": r[14],
             }

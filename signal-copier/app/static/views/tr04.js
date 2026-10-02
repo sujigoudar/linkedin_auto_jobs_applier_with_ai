@@ -443,6 +443,7 @@
       .join("<br>");
   }
 
+<<<<<<< HEAD
   // WP-44: interpret and format the signal for plain-language display.
   function interpretSignal(s) {
     if (!s.intent) return "—";
@@ -521,6 +522,85 @@
     // halts/unresolved commands/alerts → TR-20
     if (msg.includes("halt") || msg.includes("unresolved") || msg.includes("alert")) {
       return "#/operations";  // TR-20 (operations center)
+=======
+  function interpretSignal(s) {
+    // WP-44: Plain-language signal interpretation for TR-04.
+    // Returns a human-readable description of what the signal means.
+    if (!s.intent) return "—";
+
+    // Helper to format contract specs from raw["contract_spec"]
+    const formatContractSpec = () => {
+      const spec = s.raw?.contract_spec;
+      if (!spec) return "";
+
+      if (spec.option) {
+        const opt = spec.option;
+        const right = opt.right?.toUpperCase() === "CALL" ? "C" : "P";
+        return `Option: ${s.symbol} ${opt.strike}${right} ${opt.expiry} ×${opt.multiplier}`;
+      }
+      if (spec.future) {
+        const fut = spec.future;
+        return `Future: ${s.symbol} ${fut.root} ${fut.expiry} ×${fut.multiplier}`;
+      }
+      if (spec.fx) {
+        const fx = spec.fx;
+        return `FX: ${fx.base_currency}/${fx.quote_currency} (${fx.unit})`;
+      }
+      if (spec.crypto_derivative) {
+        const cd = spec.crypto_derivative;
+        return `Crypto derivative: ${s.symbol} ${cd.instrument_kind}`;
+      }
+      return "";
+    };
+
+    const contractSpec = formatContractSpec();
+    const qty = s.quantity ? `${s.quantity}` : "";
+
+    switch (s.intent) {
+      case "ENTRY_LONG":
+        return `Enter long${qty ? " " + qty : ""} ${s.symbol}${contractSpec ? " (" + contractSpec + ")" : ""}`;
+      case "ENTRY_SHORT":
+        return `Enter short${qty ? " " + qty : ""} ${s.symbol}${contractSpec ? " (" + contractSpec + ")" : ""}`;
+      case "SELL":
+        return `Sell${qty ? " " + qty : ""} ${s.symbol}${contractSpec ? " (" + contractSpec + ")" : ""}`;
+      case "EXIT":
+        return `Exit${qty ? " " + qty : ""} ${s.symbol}${contractSpec ? " (" + contractSpec + ")" : ""}`;
+      case "REDUCE":
+        const fraction = s.reduce_fraction ? Math.round(s.reduce_fraction * 100) : "";
+        return `Exit ${fraction}% ${s.symbol}${contractSpec ? " (" + contractSpec + ")" : ""}`;
+      case "STOP_UPDATE":
+        return `Update stop → ${s.stop_loss || "?"} on ${s.symbol}${contractSpec ? " (" + contractSpec + ")" : ""}`;
+      case "TARGET_UPDATE":
+        return `Update targets on ${s.symbol}${contractSpec ? " (" + contractSpec + ")" : ""}`;
+      case "CANCEL":
+        return `Cancel order on ${s.symbol}${contractSpec ? " (" + contractSpec + ")" : ""}`;
+      case "ADD":
+        return `Add to position on ${s.symbol}${contractSpec ? " (" + contractSpec + ")" : ""}`;
+      default:
+        return s.intent;
+    }
+  }
+
+  function fixRouteForReason(message) {
+    // WP-44: Route rejection messages to appropriate fix screens.
+    // Returns the URL path or null if no match.
+    if (!message) return null;
+    const lowerMessage = message.toLowerCase();
+
+    // TR-08 (Account Editor UI): sizing/quantity/allow_short/leverage/loss-limit/buying power/notional/margin issues
+    if (/sizing|quantity|allow_short|leverage|loss.?limit|buying.?power|notional|margin/i.test(lowerMessage)) {
+      return "#/accounts";
+    }
+
+    // TR-11 (Routing): routing/destination issues
+    if (/no.?destination|routing/i.test(lowerMessage)) {
+      return "#/trade/routing";
+    }
+
+    // TR-20 (Operations): halt/unresolved/alert issues
+    if (/halt|unresolved|alert/i.test(lowerMessage)) {
+      return "#/operations";
+>>>>>>> 02eef07 (WP-44: Plain-language signal interpretation and Why/Fix links on rejections)
     }
 
     return null;
@@ -531,7 +611,11 @@
     if (!reasons.length) return "—";
     return reasons.map((o) => {
       const fixRoute = fixRouteForReason(o.message);
+<<<<<<< HEAD
       const fixLink = fixRoute ? ` <a href="${escapeAttr(fixRoute)}" class="inline-link">Fix</a>` : "";
+=======
+      const fixLink = fixRoute ? ` <a href="${fixRoute}" class="inline-link">Fix</a>` : "";
+>>>>>>> 02eef07 (WP-44: Plain-language signal interpretation and Why/Fix links on rejections)
       return `<span class="mono">${escapeHtml(o.account_id)}</span>: ${escapeHtml(o.message)}${fixLink}`;
     }).join("<br>");
   }
@@ -552,7 +636,11 @@
       dispositionCell(stageIndex, ordersForSignal),
       destinationsCell(ordersForSignal),
       orderResultCell(ordersForSignal),
+<<<<<<< HEAD
       interpretSignal(s),  // WP-44: "Interpreted as" column
+=======
+      interpretSignal(s),
+>>>>>>> 02eef07 (WP-44: Plain-language signal interpretation and Why/Fix links on rejections)
       rejectionReasonCell(ordersForSignal),
     ];
   }
