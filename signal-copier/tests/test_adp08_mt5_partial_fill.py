@@ -64,10 +64,12 @@ async def test_partial_fill_reports_filled_not_pending():
 
 
 @pytest.mark.asyncio
-async def test_requote_is_ambiguous_error_not_rejection():
-    """REQUOTE (10004) is an ambiguous/transient error (price may have
-    changed, retry might work) -- must be ERROR, not REJECTED. Definite
-    rejections use other retcodes."""
+async def test_requote_is_definite_rejection_not_ambiguous():
+    """REQUOTE (10004): MT5 reports the price moved and the order was NOT
+    executed. Execution is certain (nothing happened), so WP-21 classifies it
+    as a definite REJECTED, not an ambiguous ERROR. Only retcodes where
+    execution is genuinely unknown (TIMEOUT 10012, CONNECTION 10031) are
+    ambiguous -- see test_wp21_rejection_vs_ambiguity.py."""
     broker = _stub_broker(
         {"retcode": 10004, "order": 0, "price": 0, "volume": 0, "comment": "REQUOTE"}
     )
@@ -76,7 +78,7 @@ async def test_requote_is_ambiguous_error_not_rejection():
         Signal("s", "EURUSD", Side.BUY), DestinationAccount("a", "mt4_mt5"), 1, "EURUSD"
     )
 
-    assert result.status == OrderStatus.ERROR
+    assert result.status == OrderStatus.REJECTED
 
 
 @pytest.mark.asyncio

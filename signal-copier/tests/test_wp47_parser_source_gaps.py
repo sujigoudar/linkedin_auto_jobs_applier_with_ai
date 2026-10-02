@@ -286,15 +286,12 @@ class TestA09ChaseGuard:
     def test_stale_price_detection_with_age_check_enabled(self, monkeypatch):
         """When max_price_age is set, stale prices should be detected."""
         from app import config
-        from datetime import datetime, timezone, timedelta
 
         # Enable stale price check: max 5 minutes
         monkeypatch.setattr(config, "SIGNAL_MAX_PRICE_AGE_SECONDS", 300.0)
 
-        # Signal with price from 10 minutes ago should be considered stale
-        old_time = datetime.now(timezone.utc) - timedelta(seconds=600)
-        # The signal's received_at marks when we got it (now)
-        # We need the source to report source_created_at for age checking
+        # The engine-level gate is exercised in TestA09EngineGate below; this
+        # test only pins the config plumbing.
         assert config.SIGNAL_MAX_PRICE_AGE_SECONDS == 300.0
 
     def test_price_deviation_detection_with_deviation_check_enabled(self, monkeypatch):
@@ -449,3 +446,74 @@ class TestA21ArticleSourceSelling:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+class TestA09EngineGate:
+    """A-09: the chase guard is enforced by the engine's capital admission
+    path (`_try_reserve_capital`), not only declared in config. These tests
+    drive a real engine + PaperBroker and assert the rejection message."""
+
+    @staticmethod
+    def _engine(tmp_path):
+        from app.brokers.paper import PaperBroker
+        from app.db import SignalStore
+        from app.engine import SignalCopierEngine
+        from app.models import DestinationAccount
+        from app.routing import RoutingConfig, RoutingRule
+
+        store = SignalStore(tmp_path / "a09.db")
+        broker = PaperBroker()
+        # A capital gate must be configured for the admission path to run.
+        account = DestinationAccount(account_id="acct1", broker="paper", max_notional_exposure=1_000_000.0)
+        routing = RoutingConfig(
+            rules=[RoutingRule(source="tradingview", destinations=["acct1"])],
+            accounts={"acct1": account},
+        )
+        engine = SignalCopierEngine(routing=routing, brokers={"paper": broker}, store=store)
+        return engine, broker
+
+    @pytest.mark.asyncio
+    async def test_deviation_gate_rejects_price_far_from_broker_reference(self, tmp_path, monkeypatch):
+        from app import config
+        from app.models import OrderStatus, Side, Signal
+
+        engine, broker = self._engine(tmp_path)
+        # Establish a broker reference price via a real fill at 100.
+        first = await engine.handle_signal(
+            Signal(source="tradingview", symbol="AAPL", side=Side.BUY, quantity=1.0, price=100.0)
+        )
+        assert first[0].status == OrderStatus.FILLED
+        assert broker.get_reference_price("AAPL") == 100.0
+
+        monkeypatch.setattr(config, "SIGNAL_MAX_PRICE_DEVIATION_PCT", 5.0)
+        far = await engine.handle_signal(
+            Signal(source="tradingview", symbol="AAPL", side=Side.BUY, quantity=1.0, price=120.0)
+        )
+        assert far[0].status == OrderStatus.REJECTED
+        assert "price deviation" in (far[0].message or "")
+
+        near = await engine.handle_signal(
+            Signal(source="tradingview", symbol="AAPL", side=Side.BUY, quantity=1.0, price=102.0)
+        )
+        assert near[0].status == OrderStatus.FILLED
+
+    @pytest.mark.asyncio
+    async def test_age_gate_rejects_stale_signal(self, tmp_path, monkeypatch):
+        from datetime import datetime, timedelta, timezone
+
+        from app import config
+        from app.models import OrderStatus, Side, Signal
+
+        engine, _ = self._engine(tmp_path)
+        monkeypatch.setattr(config, "SIGNAL_MAX_PRICE_AGE_SECONDS", 300.0)
+
+        stale = Signal(source="tradingview", symbol="AAPL", side=Side.BUY, quantity=1.0, price=100.0)
+        stale.received_at = datetime.now(timezone.utc) - timedelta(seconds=600)
+        result = await engine.handle_signal(stale)
+        assert result[0].status == OrderStatus.REJECTED
+        assert "price too old" in (result[0].message or "")
+
+        fresh = await engine.handle_signal(
+            Signal(source="tradingview", symbol="AAPL", side=Side.BUY, quantity=1.0, price=100.0)
+        )
+        assert fresh[0].status == OrderStatus.FILLED
