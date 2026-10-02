@@ -8,7 +8,7 @@ import pytest
 
 from app.models.billing import ProductTier, Subscription, SubscriptionState
 from app.models.portfolio_version import PortfolioVersion, PortfolioVersionSleeve
-from app.models.publication import Environment, PublicationAction, PublicationIntent, QuantityBasis
+from app.models.publication import Environment, PublicationAction, PublicationIntent, PublicationSide, QuantityBasis
 from app.models.rights import RightsGrant, RightsStatus, RightsUse
 from app.models.sleeve import Sleeve
 from app.services.publication_admission import (
@@ -104,6 +104,7 @@ def _intent(**overrides) -> PublicationIntent:
         episode_id="ep-1",
         revision=1,
         action=PublicationAction.OPEN,
+        side=PublicationSide.BUY,
         channel="collective2",
         external_strategy_id="strategy-1",
         instrument_id="AAPL",

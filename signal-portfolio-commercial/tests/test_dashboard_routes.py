@@ -2247,6 +2247,7 @@ def _seed_publication_intent(db_session, *, tenant_id="tenant-a", portfolio_vers
         Environment,
         PublicationAction,
         PublicationIntent,
+        PublicationSide,
         PublicationState,
         QuantityBasis,
     )
@@ -2271,6 +2272,7 @@ def _seed_publication_intent(db_session, *, tenant_id="tenant-a", portfolio_vers
         episode_id="ep-http-1",
         revision=1,
         action=PublicationAction.OPEN,
+        side=PublicationSide.BUY,
         channel="collective2",
         external_strategy_id="strategy-http-1",
         instrument_id="AAPL",
@@ -3351,6 +3353,7 @@ def _seed_customer_alert_fixture(
         Environment,
         PublicationAction,
         PublicationIntent,
+        PublicationSide,
         PublicationState,
         QuantityBasis,
     )
@@ -3392,6 +3395,7 @@ def _seed_customer_alert_fixture(
         episode_id=episode_id,
         revision=revision,
         action=PublicationAction.OPEN,
+        side=PublicationSide.BUY,
         channel="collective2",
         external_strategy_id="strategy-alerts-http",
         instrument_id="AAPL",

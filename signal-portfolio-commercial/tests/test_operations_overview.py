@@ -13,6 +13,7 @@ from app.models.publication import (
     Environment,
     PublicationAction,
     PublicationIntent,
+    PublicationSide,
     PublicationState,
     QuantityBasis,
 )
@@ -56,6 +57,7 @@ def _intent(**overrides):
         episode_id="ep-1",
         revision=1,
         action=PublicationAction.OPEN,
+        side=PublicationSide.BUY,
         channel="collective2",
         external_strategy_id="strategy-1",
         instrument_id="AAPL",

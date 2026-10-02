@@ -27,6 +27,7 @@ from app.models.publication import (
     Environment,
     PublicationAction,
     PublicationIntent,
+    PublicationSide,
     PublicationState,
     QuantityBasis,
 )
@@ -63,6 +64,7 @@ class TestPublicationIdempotency:
             episode_id="ep-1",
             revision=1,
             action=PublicationAction.OPEN,
+            side=PublicationSide.BUY,
             channel="collective2",
             external_strategy_id="strategy-1",
             instrument_id="AAPL",
@@ -134,6 +136,7 @@ class TestPublicationStateTransitions:
             episode_id="ep-1",
             revision=1,
             action=PublicationAction.OPEN,
+            side=PublicationSide.BUY,
             channel="collective2",
             external_strategy_id="strategy-1",
             instrument_id="AAPL",

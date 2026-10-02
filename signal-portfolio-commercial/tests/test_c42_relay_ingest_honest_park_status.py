@@ -221,18 +221,22 @@ def test_unresolvable_edit_source_event_reports_parked_with_real_reason(client, 
 
 
 def test_unimplemented_event_type_reports_parked_with_real_reason(client, db_session):
+    """G-C-26 (WP-38): unknown non-economic event types are marked as applied
+    (with applied_at set) to advance the cursor without permanently stalling
+    the stream. The parked_reason is still recorded for tracking and future
+    support."""
     _seed_tenant_and_stream(db_session)
     envelope = _unimplemented_type_envelope(event_id="evt-c42-unimplemented-1")
     response = _signed_post(client, json.dumps({"events": [envelope.model_dump_json()]}).encode())
     assert response.status_code == 200
     assert response.json()["results"] == [
         {
-            "status": "parked",
+            "status": "applied",
             "event_id": "evt-c42-unimplemented-1",
-            "parked_reason": f"{PARKED_REASON_UNIMPLEMENTED_EVENT_TYPE}:cash_movement",
         }
     ]
 
     inbox_event = db_session.get(InboxEvent, "evt-c42-unimplemented-1")
     assert inbox_event is not None
-    assert inbox_event.applied_at is None
+    assert inbox_event.applied_at is not None
+    assert inbox_event.parked_reason == f"{PARKED_REASON_UNIMPLEMENTED_EVENT_TYPE}:cash_movement"
