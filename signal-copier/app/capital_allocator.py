@@ -176,7 +176,7 @@ class ExposureReport:
 
 
 def confirmed_open_notional(store: SignalStore, account_id: str) -> ExposureReport:
-    """Sum of |open_quantity| * average_cost across every symbol this
+    """Sum of |open_quantity| * average_cost * contract_multiplier across every symbol this
     account currently holds a RESOLVED position in, per the confirmed-fill
     replay app/economics.py already performs, plus the list of symbols
     that replay flagged as unresolvable (`AccountEconomics.
@@ -189,14 +189,17 @@ def confirmed_open_notional(store: SignalStore, account_id: str) -> ExposureRepo
     treating "unknown" as "safe"."""
     economics = compute_account_economics(store, account_id)
     total = 0.0
-    for symbol_economics in economics.per_symbol.values():
+    for symbol in economics.per_symbol.keys():
+        symbol_economics = economics.per_symbol[symbol]
         if symbol_economics.average_cost is None:
             # Only reachable when open_quantity == 0 too (a fully closed
             # position -- see app/economics.py's `compute_account_economics`),
             # so contributing 0.0 here is exact, not a fallback: there is
             # truly no notional to add for a flat position.
             continue
-        total += abs(symbol_economics.open_quantity) * symbol_economics.average_cost
+        # Get the contract_multiplier from the most recent order for this symbol
+        multiplier = store.get_latest_contract_multiplier(account_id, symbol)
+        total += abs(symbol_economics.open_quantity) * symbol_economics.average_cost * multiplier
     return ExposureReport(notional=total, unresolved_symbols=list(economics.incomplete_symbols))
 
 
@@ -205,15 +208,18 @@ def confirmed_strategy_notional(store: SignalStore, strategy_key: str) -> Exposu
     account it has filled orders on -- each account's confirmed-fill replay
     filtered to this strategy's own signals (same replay as
     `confirmed_open_notional`, never a second derivation). Unresolved
-    symbols are surfaced, not folded in as zero."""
+    symbols are surfaced, not folded in as zero. Notional includes
+    contract_multiplier scaling for options, futures, and FX."""
     total = 0.0
     unresolved: list[str] = []
     for account_id in store.list_accounts_with_fills_for_source(strategy_key):
         economics = compute_account_economics(store, account_id, source=strategy_key)
-        for symbol_economics in economics.per_symbol.values():
+        for symbol, symbol_economics in economics.per_symbol.items():
             if symbol_economics.average_cost is None:
                 continue
-            total += abs(symbol_economics.open_quantity) * symbol_economics.average_cost
+            # Get the contract_multiplier from the most recent order for this symbol+account
+            multiplier = store.get_latest_contract_multiplier(account_id, symbol)
+            total += abs(symbol_economics.open_quantity) * symbol_economics.average_cost * multiplier
         unresolved.extend(f"{account_id}:{symbol}" for symbol in economics.incomplete_symbols)
     return ExposureReport(notional=total, unresolved_symbols=unresolved)
 

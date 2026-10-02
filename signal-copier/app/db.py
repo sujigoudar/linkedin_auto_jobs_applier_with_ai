@@ -2248,6 +2248,11 @@ _COLUMN_MIGRATIONS = [
     # sizing_mode and risk_fraction docstrings.
     ("config_accounts", "sizing_mode", "TEXT NOT NULL DEFAULT 'multiplier'"),
     ("config_accounts", "risk_fraction", "REAL"),
+    # WP-15b: contract multiplier for notional calculations (option/future/forex)
+    # NULL for rows saved before this column existed; new rows populate it from
+    # contract_multiplier(signal). Capital allocator queries use COALESCE(..., 1.0)
+    # so pre-existing rows (multiplier=1.0 equivalent) work correctly.
+    ("orders", "contract_multiplier", "REAL"),
 ]
 
 
@@ -3081,6 +3086,7 @@ class SignalStore:
         protection_confirmed_at: datetime | None = None,
         purpose: str | None = None,
         family_id: str | None = None,
+        contract_multiplier: float | None = None,
     ) -> int:
         """Persist an order result and return its row id.
 
@@ -3176,6 +3182,12 @@ class SignalStore:
         adapter. These are None when the broker doesn't report them -- never
         fabricated. Fee tracking feeds into daily_pnl aggregation for
         account economics and performance analytics.
+
+        `contract_multiplier` (WP-15b): the contract multiplier from
+        contract_multiplier(signal) used for this order. Capital allocator
+        queries use COALESCE(contract_multiplier, 1.0) to compute correct
+        notional. NULL for pre-existing rows (no multiplier != multiplier 1.0
+        -- both treated equivalently by COALESCE).
         """
         stored_filled_quantity = applied_quantity if applied_quantity is not None else result.filled_quantity
         # E-07: For PENDING orders without a broker-reported fill time, use the current time
@@ -3189,8 +3201,8 @@ class SignalStore:
                     broker_order_id, filled_quantity, filled_price, message, executed_at, reserved_notional,
                     submitted_at, protection_confirmed_at, purpose, family_id,
                     confirmed_cumulative_fill, applied_execution_delta, outstanding_possible_fill,
-                    reserved_quantity, acknowledged_quantity, fee, fee_currency, slippage)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    reserved_quantity, acknowledged_quantity, fee, fee_currency, slippage, contract_multiplier)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     result.account_id,
                     broker,
@@ -3217,6 +3229,7 @@ class SignalStore:
                     result.fee,
                     result.fee_currency,
                     result.slippage,
+                    contract_multiplier,
                 ),
             )
             if export_envelope is not None:
@@ -3988,6 +4001,25 @@ class SignalStore:
             signed = remainder if side == Side.BUY.value else -remainder
             outstanding[symbol] = outstanding.get(symbol, 0.0) + signed
         return outstanding
+
+    def get_latest_contract_multiplier(self, account_id: str, symbol: str) -> float:
+        """WP-15b: Get the contract multiplier from the most recent filled order
+        for this account+symbol combination. Returns 1.0 if no filled orders exist
+        or if contract_multiplier is NULL (pre-migration rows or orders without a
+        contract spec).
+
+        Used by capital_allocator to scale notional calculations for options,
+        futures, and FX contracts."""
+        with self._connect() as conn:
+            result = conn.execute(
+                """SELECT COALESCE(contract_multiplier, 1.0)
+                   FROM orders
+                   WHERE account_id = ? AND symbol = ? AND (status = 'filled' OR filled_quantity > 0)
+                   ORDER BY executed_at DESC, id DESC
+                   LIMIT 1""",
+                (account_id, symbol),
+            ).fetchone()
+        return result[0] if result else 1.0
 
     def record_fill(
         self, account_id: str, symbol: str, side: Side, quantity: float, *, lifecycle_state: dict | None = None

@@ -157,7 +157,12 @@ from app.models import (
     UncertaintyState,
 )
 from app.providers import ProviderRegistry, SettingsOverride
-from app.risk import UnsizedEntryError, size_for_account, symbol_for_account
+from app.risk import (
+    UnsizedEntryError,
+    size_for_account,
+    symbol_for_account,
+    contract_multiplier,
+)
 from app.routing import RoutingConfig
 from app.shadow_mode import evaluate_shadow, to_result_row
 from app.writer_lease import NullLeaseGuard, WriterLeaseGuard
@@ -268,31 +273,8 @@ def _positions_reconcile(broker_position: float, local_position: float) -> bool:
     return abs(broker_position - local_position) <= tolerance
 
 
-def _get_contract_multiplier(signal: Signal) -> tuple[float, str | None]:
-    """Extract the contract multiplier from a Signal based on its asset class.
-
-    Returns (multiplier, error_message). error_message is non-None only when
-    a required contract spec is missing (e.g., OPTION without OptionContractSpec).
-
-    - CRYPTO/EQUITY: multiplier = 1.0 (no spec required)
-    - OPTION: multiplier = signal.option.multiplier (default 100.0, spec required)
-    - FUTURE: multiplier = signal.future.multiplier (spec required)
-    - FOREX: multiplier = 1.0 (spec optional, lot normalization handled by adapter)
-    """
-    if signal.asset_class == AssetClass.OPTION:
-        if signal.option is None:
-            return 1.0, "OPTION signal missing required OptionContractSpec"
-        return signal.option.multiplier, None
-    elif signal.asset_class == AssetClass.FUTURE:
-        if signal.future is None:
-            return 1.0, "FUTURE signal missing required FutureContractSpec"
-        return signal.future.multiplier, None
-    elif signal.asset_class == AssetClass.FOREX:
-        # FX spec optional; lot normalization handled by adapter, not engine
-        return 1.0, None
-    else:
-        # CRYPTO and EQUITY have no contract multiplier
-        return 1.0, None
+# Thin alias for backward compatibility; use contract_multiplier() from app/risk.py instead
+_get_contract_multiplier = contract_multiplier
 
 
 class SignalCopierEngine:
@@ -828,7 +810,8 @@ class SignalCopierEngine:
                     signal_id=signal.id,
                     message=f"no broker adapter registered for '{account.broker}'",
                 )
-                self.store.save_order_result(result, purpose=order_purpose, family_id=order_family_id)
+                mult, _, _ = contract_multiplier(signal)
+                self.store.save_order_result(result, purpose=order_purpose, family_id=order_family_id, contract_multiplier=mult)
                 results.append(result)
                 self._export_routing_outcome(
                     signal,
@@ -914,11 +897,13 @@ class SignalCopierEngine:
                 route_qualified, qualification_rejection = self._check_route_qualified(account, working_signal, broker)
                 if not route_qualified:
                     assert qualification_rejection is not None
+                    mult, _, _ = contract_multiplier(signal)
                     self.store.save_order_result(
                         qualification_rejection,
                         broker=account.broker,
                         purpose=order_purpose,
                         family_id=order_family_id,
+                        contract_multiplier=mult,
                     )
                     results.append(qualification_rejection)
                     self._export_routing_outcome(
@@ -943,11 +928,13 @@ class SignalCopierEngine:
                         signal_id=signal.id,
                         message=daily_loss_error,
                     )
+                    mult, _, _ = contract_multiplier(signal)
                     self.store.save_order_result(
                         result,
                         broker=account.broker,
                         purpose=order_purpose,
                         family_id=order_family_id,
+                        contract_multiplier=mult,
                     )
                     results.append(result)
                     self._export_routing_outcome(
@@ -981,11 +968,13 @@ class SignalCopierEngine:
                         message=f"Cannot trade: account has {len(unresolved_alerts)} unresolved margin call alert(s) "
                         f"(ids: {alert_ids}). Resolve margin call(s) before entering new positions.",
                     )
+                    mult, _, _ = contract_multiplier(signal)
                     self.store.save_order_result(
                         result,
                         broker=account.broker,
                         purpose=order_purpose,
                         family_id=order_family_id,
+                        contract_multiplier=mult,
                     )
                     results.append(result)
                     self._export_routing_outcome(
@@ -1042,11 +1031,13 @@ class SignalCopierEngine:
                         signal_id=signal.id,
                         message=margin_error,
                     )
+                    mult, _, _ = contract_multiplier(signal)
                     self.store.save_order_result(
                         result,
                         broker=account.broker,
                         purpose=order_purpose,
                         family_id=order_family_id,
+                        contract_multiplier=mult,
                     )
                     results.append(result)
                     self._export_routing_outcome(
@@ -1076,11 +1067,13 @@ class SignalCopierEngine:
                             signal_id=signal.id,
                             message=liquidation_error,
                         )
+                        mult, _, _ = contract_multiplier(signal)
                         self.store.save_order_result(
                             result,
                             broker=account.broker,
                             purpose=order_purpose,
                             family_id=order_family_id,
+                            contract_multiplier=mult,
                         )
                         results.append(result)
                         self._export_routing_outcome(
@@ -1108,8 +1101,9 @@ class SignalCopierEngine:
                         f"'{signal.asset_class.value}' — refusing to route this signal here"
                     ),
                 )
+                mult, _, _ = contract_multiplier(signal)
                 self.store.save_order_result(
-                    result, broker=account.broker, purpose=order_purpose, family_id=order_family_id
+                    result, broker=account.broker, purpose=order_purpose, family_id=order_family_id, contract_multiplier=mult
                 )
                 results.append(result)
                 self._export_routing_outcome(
@@ -1134,8 +1128,9 @@ class SignalCopierEngine:
                         f"'{working_signal.entry_order_type.value if working_signal.entry_order_type else 'market'}' — refusing to route this signal here"
                     ),
                 )
+                mult, _, _ = contract_multiplier(signal)
                 self.store.save_order_result(
-                    result, broker=account.broker, purpose=order_purpose, family_id=order_family_id
+                    result, broker=account.broker, purpose=order_purpose, family_id=order_family_id, contract_multiplier=mult
                 )
                 results.append(result)
                 self._export_routing_outcome(
@@ -1629,6 +1624,10 @@ class SignalCopierEngine:
                 originating_source_event_id=signal.id,
                 originating_analyst_id=signal.analyst,
             )
+            mult, _, spec_note = contract_multiplier(order_signal)
+            # Append spec note to result message if present (e.g., "fx unit assumed: units")
+            if spec_note is not None and result.status in (OrderStatus.FILLED, OrderStatus.PENDING):
+                result = replace(result, message=f"{result.message} ({spec_note})")
             self.store.save_order_result(
                 result,
                 broker=account.broker,
@@ -1646,6 +1645,7 @@ class SignalCopierEngine:
                 submitted_at=submitted_at,
                 purpose=order_purpose,
                 family_id=order_family_id,
+                contract_multiplier=mult,
             )
             # D-01: Save bracket child leg orders (stop and take-profit)
             # as separate orders rows so they can be polled in reconciliation
@@ -2260,9 +2260,10 @@ class SignalCopierEngine:
             )
         equity = balance.equity
         # B-03: apply contract multiplier to risk calculation
-        contract_multiplier, spec_error = _get_contract_multiplier(order_signal)
+        mult, spec_error, spec_note = _get_contract_multiplier(order_signal)
         if spec_error is not None:
             return False, self._reject(account, order_signal, spec_error)
+        contract_multiplier = mult
         risk_notional = abs(price - stop_loss) * abs(quantity) * contract_multiplier
         risk_ceiling = equity * risk_percent_of_equity
         if risk_notional > risk_ceiling:
@@ -2362,9 +2363,10 @@ class SignalCopierEngine:
                 )
 
         # B-03: apply contract multiplier to buying power check
-        contract_multiplier, spec_error = _get_contract_multiplier(order_signal)
+        mult, spec_error, spec_note = _get_contract_multiplier(order_signal)
         if spec_error is not None:
             return False, self._reject(account, order_signal, spec_error)
+        contract_multiplier = mult
         notional = abs(quantity) * abs(order_signal.price) * contract_multiplier
         if notional > balance.buying_power:
             return False, self._reject(
@@ -2501,9 +2503,10 @@ class SignalCopierEngine:
                 "reservation",
             )
         # B-03: apply contract multiplier to capital allocation
-        contract_multiplier, spec_error = _get_contract_multiplier(order_signal)
+        mult, spec_error, spec_note = _get_contract_multiplier(order_signal)
         if spec_error is not None:
             return False, 0.0, self._reject(account, order_signal, spec_error)
+        contract_multiplier = mult
         notional = abs(quantity) * abs(order_signal.price) * contract_multiplier
 
         owner_gated = self.max_owner_notional_exposure is not None
