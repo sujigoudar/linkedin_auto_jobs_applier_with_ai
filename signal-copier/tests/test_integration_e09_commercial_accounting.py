@@ -4,7 +4,7 @@ Verifies that account liquidation circuit breaker (minimum equity threshold)
 properly prevents entries and flows through to commercial platform's
 accounting/P&L tracking system.
 """
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 import pytest
 
 from app.models import (
@@ -16,7 +16,6 @@ from app.models import (
     OrderStatus,
     AccountBalance,
 )
-from app.engine import SignalCopierEngine
 from app.brokers.paper import PaperBroker
 from app.db import SignalStore
 from app.daily_loss_limiter import DailyLossLimiter
@@ -227,63 +226,52 @@ class TestE09CommercialAccountingIntegration:
         self, signal_store, paper_broker, account_with_min_equity
     ):
         """Multiple fills should properly reduce available equity for liquidation checks."""
-        limiter = DailyLossLimiter(signal_store)
         signal_store._broker_adapters = {"paper": paper_broker}
         paper_broker.fee_per_fill = 100.0
 
-        # Initial balance: $100k
-        initial_balance = AccountBalance(
-            account_id=account_with_min_equity.account_id,
-            equity=100000.0,
-            buying_power=100000.0,
+        # Simulate first order: BTC at 50k, quantity 0.5
+        # Cost: 0.5 * 50k + 100 = $25,100
+        signal1 = Signal(
+            source="test",
+            symbol="BTC/USD",
+            side=Side.BUY,
+            asset_class=AssetClass.CRYPTO,
+            price=50000.0,
+            quantity=0.5,
         )
 
-        with patch.object(
-            paper_broker, "get_account_balance", new_callable=AsyncMock
-        ) as mock_balance:
-            # Simulate first order: BTC at 50k, quantity 0.5
-            # Cost: 0.5 * 50k + 100 = $25,100
-            signal1 = Signal(
-                source="test",
-                symbol="BTC/USD",
-                side=Side.BUY,
-                asset_class=AssetClass.CRYPTO,
-                price=50000.0,
-                quantity=0.5,
-            )
+        result1 = await paper_broker.place_order(
+            signal1, account_with_min_equity, 0.5, "BTC/USD"
+        )
+        assert result1.status == OrderStatus.FILLED
+        assert result1.fee == 100.0
 
-            result1 = await paper_broker.place_order(
-                signal1, account_with_min_equity, 0.5, "BTC/USD"
-            )
-            assert result1.status == OrderStatus.FILLED
-            assert result1.fee == 100.0
+        # After first fill, cash should be reduced
+        cash_after_first = paper_broker._cash_for(account_with_min_equity.account_id)
+        assert cash_after_first == 100000.0 - 25100.0  # $74,900
 
-            # After first fill, cash should be reduced
-            cash_after_first = paper_broker._cash_for(account_with_min_equity.account_id)
-            assert cash_after_first == 100000.0 - 25100.0  # $74,900
+        # Simulate second order: ETH at 3k, quantity 1.0
+        # Cost: 1.0 * 3000 + 100 = $3,100
+        signal2 = Signal(
+            source="test",
+            symbol="ETH/USD",
+            side=Side.BUY,
+            asset_class=AssetClass.CRYPTO,
+            price=3000.0,
+            quantity=1.0,
+        )
 
-            # Simulate second order: ETH at 3k, quantity 1.0
-            # Cost: 1.0 * 3000 + 100 = $3,100
-            signal2 = Signal(
-                source="test",
-                symbol="ETH/USD",
-                side=Side.BUY,
-                asset_class=AssetClass.CRYPTO,
-                price=3000.0,
-                quantity=1.0,
-            )
+        result2 = await paper_broker.place_order(
+            signal2, account_with_min_equity, 1.0, "ETH/USD"
+        )
+        assert result2.status == OrderStatus.FILLED
+        assert result2.fee == 100.0
 
-            result2 = await paper_broker.place_order(
-                signal2, account_with_min_equity, 1.0, "ETH/USD"
-            )
-            assert result2.status == OrderStatus.FILLED
-            assert result2.fee == 100.0
-
-            # After second fill
-            cash_after_second = paper_broker._cash_for(
-                account_with_min_equity.account_id
-            )
-            assert cash_after_second == cash_after_first - 3100.0  # $71,800
+        # After second fill
+        cash_after_second = paper_broker._cash_for(
+            account_with_min_equity.account_id
+        )
+        assert cash_after_second == cash_after_first - 3100.0  # $71,800
 
     @pytest.mark.asyncio
     async def test_liquidation_threshold_disabled_allows_all_entries(
