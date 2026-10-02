@@ -147,7 +147,6 @@
 # `mutmut run` fresh is the natural next step before chasing the
 # remaining survivors further.
 #
-<<<<<<< HEAD
 # Track 52 (2026-10-01): widened to the realized/unrealized P&L
 # computation and position-pricing slice -- app/economics.py (the
 # authoritative replay-based realized P&L, cost basis, and the two
