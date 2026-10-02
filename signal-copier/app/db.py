@@ -2107,6 +2107,18 @@ CREATE TABLE IF NOT EXISTS runner_state (
 CREATE INDEX IF NOT EXISTS ix_runner_state_account_id ON runner_state(account_id);
 CREATE INDEX IF NOT EXISTS ix_runner_state_symbol ON runner_state(symbol);
 CREATE INDEX IF NOT EXISTS ix_runner_state_lifecycle_id ON runner_state(lifecycle_id);
+
+CREATE TABLE IF NOT EXISTS trading_halts (
+    halt_id TEXT PRIMARY KEY,
+    scope TEXT NOT NULL CHECK(scope IN ('account','portfolio','owner')),
+    scope_id TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    source TEXT NOT NULL,
+    created_at TIMESTAMP NOT NULL,
+    cleared_at TIMESTAMP NULL,
+    cleared_by TEXT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_trading_halts_active ON trading_halts(scope, scope_id, cleared_at);
 """
 
 
@@ -11282,3 +11294,124 @@ class SignalStore:
         }
 
     # ---------- End WC-31 ----------
+
+    # WC-32: Trading halts (risk control entry blocking)
+    # ===================================================
+
+    def set_trading_halt(self, scope: str, scope_id: str, reason: str, source: str) -> str:
+        """WC-32: Set a trading halt at account/portfolio/owner scope (idempotent).
+
+        If an active halt already exists for this scope/scope_id, return its existing id.
+        Otherwise create a new halt and return its id.
+
+        Args:
+            scope: One of "account", "portfolio", "owner".
+            scope_id: The target id (physical_account_id, portfolio_id, or "owner").
+            reason: Human-readable reason for the halt (e.g., "daily loss limit breached").
+            source: Who/what triggered the halt (e.g., "owner", "daily_loss_limiter", "system").
+
+        Returns:
+            halt_id (string UUID hex).
+        """
+        # Check for existing active halt
+        with self._connect() as conn:
+            row = conn.execute(
+                """SELECT halt_id FROM trading_halts
+                   WHERE scope = ? AND scope_id = ? AND cleared_at IS NULL
+                   LIMIT 1""",
+                (scope, scope_id),
+            ).fetchone()
+            if row is not None:
+                return row[0]
+
+        # Create new halt
+        halt_id = str(uuid.uuid4().hex)
+        now = datetime.now(timezone.utc).isoformat()
+
+        with self._connect() as conn:
+            conn.execute(
+                """INSERT INTO trading_halts
+                   (halt_id, scope, scope_id, reason, source, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (halt_id, scope, scope_id, reason, source, now),
+            )
+        return halt_id
+
+    def clear_trading_halt(self, scope: str, scope_id: str, cleared_by: str) -> bool:
+        """WC-32: Clear (deactivate) a trading halt.
+
+        Returns True if a halt was found and cleared, False if none existed.
+
+        Args:
+            scope: One of "account", "portfolio", "owner".
+            scope_id: The target id.
+            cleared_by: Who cleared the halt (e.g., "owner").
+
+        Returns:
+            True if halt was cleared, False if none found.
+        """
+        now = datetime.now(timezone.utc).isoformat()
+
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """UPDATE trading_halts
+                   SET cleared_at = ?, cleared_by = ?
+                   WHERE scope = ? AND scope_id = ? AND cleared_at IS NULL""",
+                (now, cleared_by, scope, scope_id),
+            )
+            return cursor.rowcount > 0
+
+    def list_active_trading_halts(self) -> list[dict]:
+        """WC-32: List all currently active (not cleared) trading halts.
+
+        Returns:
+            List of dicts with keys: halt_id, scope, scope_id, reason, source, created_at.
+        """
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT halt_id, scope, scope_id, reason, source, created_at
+                   FROM trading_halts
+                   WHERE cleared_at IS NULL
+                   ORDER BY created_at DESC"""
+            ).fetchall()
+
+        return [
+            {
+                "halt_id": row[0],
+                "scope": row[1],
+                "scope_id": row[2],
+                "reason": row[3],
+                "source": row[4],
+                "created_at": row[5],
+            }
+            for row in rows
+        ]
+
+    def active_halt_for(self, scope: str, scope_id: str) -> dict | None:
+        """WC-32: Check if there is an active halt for this scope/scope_id.
+
+        Returns:
+            Dict with halt details if found, None otherwise.
+        """
+        with self._connect() as conn:
+            row = conn.execute(
+                """SELECT halt_id, scope, scope_id, reason, source, created_at
+                   FROM trading_halts
+                   WHERE scope = ? AND scope_id = ? AND cleared_at IS NULL
+                   LIMIT 1""",
+                (scope, scope_id),
+            ).fetchone()
+
+        if row is None:
+            return None
+
+        return {
+            "halt_id": row[0],
+            "scope": row[1],
+            "scope_id": row[2],
+            "reason": row[3],
+            "source": row[4],
+            "created_at": row[5],
+        }
+
+    # ---------- End WC-32 ----------

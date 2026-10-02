@@ -7167,6 +7167,105 @@ async def set_margin_regime(
     }
 
 
+# WC-32: Risk halts (trading entry blocking by scope)
+@app.get("/risk-halts")
+async def list_risk_halts(_owner: dict = Depends(require_owner_read)) -> dict:
+    """List all active trading halts (owner-only).
+
+    Returns:
+    {
+        "halts": [
+            {
+                "halt_id": "...",
+                "account_id": "physical_account_id or scope:scope_id for portfolio/owner",
+                "scope": "account" | "portfolio" | "owner",
+                "scope_id": "...",
+                "reason": "...",
+                "source": "...",
+                "created_at": "2026-10-02T...",
+            }
+        ]
+    }
+    """
+    halts = store.list_active_trading_halts()
+    return {
+        "halts": [
+            {
+                "halt_id": halt["halt_id"],
+                "account_id": halt["scope_id"] if halt["scope"] == "account" else f"{halt['scope']}:{halt['scope_id']}",
+                "scope": halt["scope"],
+                "scope_id": halt["scope_id"],
+                "reason": halt["reason"],
+                "source": halt["source"],
+                "created_at": halt["created_at"],
+            }
+            for halt in halts
+        ]
+    }
+
+
+@app.post("/risk-halts")
+async def set_risk_halt(
+    body: dict,
+    _owner: dict = Depends(require_owner),
+) -> dict:
+    """Set a trading halt (owner-only, owner-sourced).
+
+    Body:
+    {
+        "scope": "account" | "portfolio" | "owner",
+        "scope_id": "...",
+        "reason": "..."
+    }
+
+    Returns the halt details with halt_id.
+    """
+    scope = body.get("scope")
+    scope_id = body.get("scope_id")
+    reason = body.get("reason")
+
+    if not scope or scope not in ("account", "portfolio", "owner"):
+        raise HTTPException(status_code=400, detail="scope must be 'account', 'portfolio', or 'owner'")
+    if not scope_id:
+        raise HTTPException(status_code=400, detail="scope_id is required")
+    if not reason:
+        raise HTTPException(status_code=400, detail="reason is required")
+
+    halt_id = store.set_trading_halt(scope=scope, scope_id=scope_id, reason=reason, source="owner")
+    halt = store.active_halt_for(scope, scope_id)
+
+    return {
+        "halt_id": halt_id,
+        "account_id": scope_id if scope == "account" else f"{scope}:{scope_id}",
+        "scope": scope,
+        "scope_id": scope_id,
+        "reason": halt["reason"] if halt else reason,
+        "source": "owner",
+        "created_at": halt["created_at"] if halt else datetime.now(timezone.utc).isoformat(),
+    }
+
+
+@app.post("/risk-halts/{account_id}/clear")
+async def clear_risk_halt(
+    account_id: str,
+    _owner: dict = Depends(require_owner),
+) -> dict:
+    """Clear a trading halt for an account (owner-only).
+
+    Returns:
+    {
+        "cleared": true if halt was found and cleared, false otherwise,
+        "account_id": "..."
+    }
+
+    404 if no halt exists for this account.
+    """
+    cleared = store.clear_trading_halt("account", account_id, cleared_by="owner")
+    if not cleared:
+        raise HTTPException(status_code=404, detail=f"No active halt found for account {account_id}")
+    return {"cleared": True, "account_id": account_id}
+
+
 def _orders_response(signal_id: str, results) -> dict:
     return {
         "signal_id": signal_id,

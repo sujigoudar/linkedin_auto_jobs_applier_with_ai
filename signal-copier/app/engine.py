@@ -644,6 +644,174 @@ class SignalCopierEngine:
             )
             return results
 
+    async def _derive_admission_inputs(self, signal: Signal, single_candidates: list) -> AdmissionInputs:
+        """WC-32: Derive real admission inputs evaluated per candidate.
+
+        For each candidate account, determines halt status, margin regime, uncertain
+        effect, and budget state. Per-candidate exclusions are recorded as decision
+        traces. Returns AdmissionInputs with only eligible candidates remaining.
+
+        Args:
+            signal: The signal being processed.
+            single_candidates: List of DestinationAccount candidates.
+
+        Returns:
+            AdmissionInputs with real values computed from store/broker state.
+        """
+        # Authorization and interpretation are signal-wide (not per-candidate)
+        auth = "authorized" if self.routing.pool_for(signal.source, signal.symbol) is not None else "unauthorized"
+        interp = "entry"
+
+        # Per-candidate evaluation: filter out blocked candidates and record traces
+        eligible_accounts = []
+        excluded_candidates = []
+
+        for rank, account in enumerate(single_candidates):
+            excluded_reasons = []
+            physical_account_id = account.account_id
+
+            # Check halt status (account, portfolio, owner)
+            # 1. Check account halt
+            account_halt = self.store.active_halt_for("account", physical_account_id)
+            if account_halt:
+                excluded_reasons.append("HALTED")
+
+            # 2. Check portfolio halt (look up portfolio_id from portfolio_backings)
+            if not account_halt:
+                # Find portfolio for this physical_account_id
+                portfolio_row = None
+                try:
+                    with self.store._connect() as conn:
+                        portfolio_row = conn.execute(
+                            "SELECT portfolio_id FROM portfolio_backings WHERE physical_account_id = ? LIMIT 1",
+                            (physical_account_id,)
+                        ).fetchone()
+                except Exception:
+                    pass  # No portfolio backing found
+
+                if portfolio_row:
+                    portfolio_id = portfolio_row[0]
+                    portfolio_halt = self.store.active_halt_for("portfolio", portfolio_id)
+                    if portfolio_halt:
+                        excluded_reasons.append("HALTED")
+
+            # 3. Check owner halt
+            if not excluded_reasons:
+                owner_halt = self.store.active_halt_for("owner", "owner")
+                if owner_halt:
+                    excluded_reasons.append("HALTED")
+
+            # 4. Check daily loss limit breach (sets a halt if breached)
+            if not excluded_reasons:
+                daily_loss_limit_pct = account.daily_loss_limit_percent or config.DEFAULT_DAILY_LOSS_LIMIT_PERCENT
+                if daily_loss_limit_pct:
+                    loss_check_error = await self.daily_loss_limiter.check_daily_loss_limit(account, daily_loss_limit_pct)
+                    if loss_check_error:
+                        # Persist a halt for this account
+                        self.store.set_trading_halt("account", physical_account_id, loss_check_error, source="daily_loss_limiter")
+                        excluded_reasons.append("HALTED")
+
+            # Check margin regime
+            if not excluded_reasons:
+                regime_row = self.store.get_margin_regime(physical_account_id)
+                if regime_row:
+                    regime = regime_row["regime"]
+                else:
+                    # Determine regime based on broker environment
+                    try:
+                        broker = self.brokers.get(account.broker)
+                        if broker:
+                            env = broker.venue_environment(account)
+                            if env in ("paper", "sandbox"):
+                                regime = "not_applicable_paper"  # Paper/sandbox don't have regime
+                            else:
+                                regime = "unknown"  # Live environment with no regime row → blocked
+                        else:
+                            regime = "unknown"  # No broker available
+                    except Exception:
+                        regime = "unknown"
+
+                if regime == "unknown":
+                    excluded_reasons.append("REGIME_UNKNOWN")
+
+            # Check uncertain effect (unresolved command ledger entries)
+            if not excluded_reasons:
+                unresolved = self.store.list_unresolved_command_ledger_entries(account.account_id)
+                # If there's any unresolved ENTRY or CLOSE, fail closed
+                for entry in unresolved:
+                    if entry.command_type in (CommandType.ENTRY, CommandType.CLOSE):
+                        excluded_reasons.append("UNCERTAIN_EFFECT")
+                        break
+
+            # Check budget state
+            if not excluded_reasons:
+                scope = BudgetScope(
+                    owner="owner",  # Default owner id (may be overridden by config)
+                    physical_account_id=physical_account_id,
+                    portfolio_id=None,
+                    sleeve_id=None,
+                    provider=signal.source,
+                    analyst=signal.analyst,
+                    underlying=signal.symbol,
+                    cluster=None,
+                )
+
+                try:
+                    remaining_dict = self.hierarchical_budget.remaining(scope)
+                    # Check if any level has zero or negative remaining cents
+                    for _level, remaining_cents in remaining_dict.items():
+                        if remaining_cents is not None and remaining_cents <= 0:
+                            excluded_reasons.append("BUDGET_NOT_ADMISSIBLE")
+                            break
+                except Exception:
+                    excluded_reasons.append("BUDGET_NOT_ADMISSIBLE")
+
+            # Record decision trace for this candidate
+            if excluded_reasons:
+                # Candidate is excluded
+                reason_str = "|".join(excluded_reasons)
+                self.store.insert_decision_trace(
+                    signal_id=signal.id,
+                    physical_account_id=physical_account_id,
+                    candidate_rank=rank,
+                    feasible=False,
+                    reason=reason_str,
+                    selected=False,
+                )
+                excluded_candidates.append((account, reason_str))
+            else:
+                # Candidate is eligible
+                eligible_accounts.append(account.account_id)
+
+        # Determine overall values for the admission gate.
+        # The gate blocks only if NO candidates remain (all excluded) with a given blocking reason.
+        overall_halt = "clear"
+        overall_regime = "legacy_pdt_verified"
+        overall_uncertain = False
+        overall_budget = "enough"
+
+        # Only set blocking reasons if all candidates are excluded
+        if not eligible_accounts:
+            for _, reason_str in excluded_candidates:
+                if "HALTED" in reason_str:
+                    overall_halt = "account_halt"
+                if "REGIME_UNKNOWN" in reason_str:
+                    overall_regime = "unknown"
+                if "UNCERTAIN_EFFECT" in reason_str:
+                    overall_uncertain = True
+                if "BUDGET_NOT_ADMISSIBLE" in reason_str:
+                    overall_budget = "not_enough"
+
+        return AdmissionInputs(
+            authorization=auth,
+            interpretation=interp,
+            eligible_physical_accounts=eligible_accounts,
+            budget_state=overall_budget,
+            margin_regime=overall_regime,
+            halt=overall_halt,
+            uncertain_effect=overall_uncertain,
+        )
+
     async def _handle_signal(self, signal: Signal, dry_run: bool = False) -> list[OrderResult]:
         # Cross-process/cross-host fencing (app/writer_lease.py): checked
         # before anything else in this method, including the SIG-01
@@ -831,37 +999,28 @@ class SignalCopierEngine:
             # is ambiguous (exit-or-short-entry, resolved per account in WP-09)
             # and ADD is an entry-sized order, so both are admitted as entries.
             _entry_like_intents = (Intent.ENTRY_LONG, Intent.ENTRY_SHORT, Intent.SELL, Intent.ADD)
+
+            # Check if allocation intent already exists (recovery/replay scenario)
+            # This must be checked BEFORE the admission gate, since recovered intents
+            # bypass the gate (the risk was already accepted in the earlier run).
+            existing_allocation = None
             if single_candidates and signal.side != Side.CLOSE and signal.intent in _entry_like_intents:
-                # Build admission inputs from real state
-                auth = "authorized" if self.routing.pool_for(signal.source, signal.symbol) is not None else "unauthorized"
-                interp = "entry"
-                eligible_accounts = [a.account_id for a in single_candidates]
+                existing_allocation = self.store.get_allocation_intent(signal.id)
 
-                # Check budget state using existing allocator logic (pre-check)
-                # For now, assume budget is "enough" (will be refined in step 4)
-                budget_state = "enough"
-
-                # Check margin regime for each account
-                # Paper accounts and accounts without regime row are "cash" mode
-                margin_regime = "legacy_pdt_verified"  # Default; will be "unknown" if any account has unresolved regime
-
-                # Check for existing halt state on risk gates
-                halt = "clear"  # Default; would be set by risk gates if active
-
-                # Check for uncertain effect (unresolved order in command ledger)
-                uncertain_effect = False
-
-                # Call admission evaluation
-                admission_inputs = AdmissionInputs(
-                    authorization=auth,
-                    interpretation=interp,
-                    eligible_physical_accounts=eligible_accounts,
-                    budget_state=budget_state,
-                    margin_regime=margin_regime,
-                    halt=halt,
-                    uncertain_effect=uncertain_effect,
-                )
+            # Apply admission gate only for NEW entries (no existing allocation intent)
+            if single_candidates and signal.side != Side.CLOSE and signal.intent in _entry_like_intents and existing_allocation is None:
+                # WC-32: Derive real admission inputs from store/broker state
+                admission_inputs = await self._derive_admission_inputs(signal, single_candidates)
                 admission_decision = evaluate_admission(admission_inputs)
+
+                # Save original candidates before filtering (needed if all are excluded)
+                original_candidates = single_candidates
+
+                # Filter single_candidates to only include eligible candidates
+                single_candidates = [
+                    a for a in single_candidates
+                    if a.account_id in admission_inputs.eligible_physical_accounts
+                ]
 
                 # If not admitted, reject all candidates
                 if not admission_decision.admit_new_entry:
@@ -872,8 +1031,8 @@ class SignalCopierEngine:
                         blocking_reasons_str,
                     )
                     # Traces already persisted from identity collapse step
-                    # Reject all candidates
-                    for account in single_candidates:
+                    # Reject all original candidates (not just filtered ones)
+                    for account in original_candidates:
                         result = OrderResult(
                             account_id=account.account_id,
                             status=OrderStatus.REJECTED,

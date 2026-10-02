@@ -167,7 +167,7 @@ async def test_multiple_candidates_selects_one_account(store):
 
 @pytest.mark.asyncio
 async def test_unresolved_ledger_row_blocks_with_UNCERTAIN_EFFECT(store):
-    """Test: unresolved command ledger entry tracking for account."""
+    """Test: unresolved command ledger entry blocks entry via admission gate (WC-32)."""
     accounts = [
         DestinationAccount(account_id="a1", broker="paper"),
     ]
@@ -189,7 +189,7 @@ async def test_unresolved_ledger_row_blocks_with_UNCERTAIN_EFFECT(store):
         terminal_evidence={"reason": "test_unresolved"},
     )
 
-    # Send a new signal - it may be blocked if the unresolved entry prevents new orders
+    # Send a new signal - should be blocked by admission gate due to unresolved entry
     signal = Signal(
         source="test",
         symbol="AAPL",
@@ -199,34 +199,39 @@ async def test_unresolved_ledger_row_blocks_with_UNCERTAIN_EFFECT(store):
 
     results = await engine.handle_signal(signal)
 
-    # At least verify the signal was processed (may be blocked or accepted)
-    assert len(results) > 0, "Signal should produce results"
+    # Signal should be rejected due to UNCERTAIN_EFFECT blocking reason
+    assert len(results) == 1, "Signal should produce one result"
+    assert results[0].status == OrderStatus.REJECTED
+    assert "admission rejected" in results[0].message.lower()
+    assert "uncertain_effect" in results[0].message.lower()
 
 
 @pytest.mark.asyncio
 async def test_budget_exhausted_blocks_with_BUDGET_NOT_ADMISSIBLE(store):
-    """Test: resource reservation blocks entry when budget is exhausted."""
+    """Test: entry is rejected by admission gate when owner budget is exhausted (WC-32)."""
     accounts = [
         DestinationAccount(account_id="a1", broker="paper"),
     ]
     rules = [RoutingRule(source="test", destinations=["a1"])]
     engine, broker = _engine(store, accounts, rules)
 
-    # Set a very small budget to force exhaustion
-    store.set_strategy_budget("test_strategy", max_notional=1.0)  # Only $1 available
+    # Set owner budget to 0 cents (exhausted) to force rejection
+    store.set_owner_limit("owner", max_notional_cents=0)
 
     signal = Signal(
         source="test",
         symbol="AAPL",
         side=Side.BUY,
-        quantity=100.0,  # Request 100 shares, each ~$150 = $15k, way over budget
+        quantity=100.0,
     )
 
     results = await engine.handle_signal(signal)
 
-    # The large order should be rejected due to budget
-    # (actual outcome depends on admission gate implementation)
-    assert len(results) > 0, "Signal should produce results"
+    # Signal should be rejected due to BUDGET_NOT_ADMISSIBLE blocking reason
+    assert len(results) == 1, "Signal should produce one result"
+    assert results[0].status == OrderStatus.REJECTED
+    assert "admission rejected" in results[0].message.lower()
+    assert "budget" in results[0].message.lower()
 
 
 @pytest.mark.asyncio
