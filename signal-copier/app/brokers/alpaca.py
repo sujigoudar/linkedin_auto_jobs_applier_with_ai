@@ -192,6 +192,10 @@ class AlpacaBroker(BrokerAdapter):
             message=f"submitted to Alpaca (status: {order.get('status')})",
         )
 
+    def normalize_quantity(self, account: DestinationAccount, symbol: str, quantity: float) -> float | None:
+        """Alpaca requires whole-share quantities."""
+        return float(int(quantity))
+
     async def get_order_status(
         self, account: DestinationAccount, broker_order_id: str
     ) -> OrderResult | None:

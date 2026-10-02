@@ -1225,6 +1225,15 @@ class SignalCopierEngine:
 
             try:
                 order_signal, quantity = working_signal, size_for_account(working_signal, account)
+                # WP-17 (B-04): normalize quantity to venue precision after sizing
+                normalized_qty = broker.normalize_quantity(account, symbol, quantity)
+                if normalized_qty is None:
+                    raise UnsizedEntryError(f"quantity step unknown for {symbol} on {account.broker}")
+                if normalized_qty <= 0:
+                    raise UnsizedEntryError(
+                        f"quantity {quantity} rounds to {normalized_qty:.8g} below venue minimum for {symbol}"
+                    )
+                quantity = normalized_qty
             except UnsizedEntryError as e:
                 result = OrderResult(
                     account_id=account.account_id,
@@ -2517,6 +2526,8 @@ class SignalCopierEngine:
         # WP-02 (C-02): strip stop_loss/take_profit/targets from close
         # signals to prevent adapters from building reverse-side bracket
         # legs that would open new positions after the close executes.
+        # WP-14 (C-03/C-04): set intent=EXIT so adapters emit the correct
+        # close intent (e.g., "Sell to Close" for Tastytrade, "flat" for NinjaTrader).
         resolved_signal = Signal(
             source=signal.source,
             symbol=signal.symbol,
@@ -2528,6 +2539,7 @@ class SignalCopierEngine:
             id=signal.id,
             received_at=signal.received_at,
             raw=signal.raw,
+            intent=Intent.EXIT,
         )
         return resolved_signal, quantity
 
@@ -3028,6 +3040,15 @@ class SignalCopierEngine:
 
         try:
             quantity = size_for_account(signal, account)
+            # WP-17 (B-04): normalize quantity to venue precision after sizing
+            normalized_qty = broker.normalize_quantity(account, symbol, quantity)
+            if normalized_qty is None:
+                raise UnsizedEntryError(f"quantity step unknown for {symbol} on {account.broker}")
+            if normalized_qty <= 0:
+                raise UnsizedEntryError(
+                    f"quantity {quantity} rounds to {normalized_qty:.8g} below venue minimum for {symbol}"
+                )
+            quantity = normalized_qty
         except UnsizedEntryError as e:
             return _ManagedOrderOutcome(
                 OrderResult(

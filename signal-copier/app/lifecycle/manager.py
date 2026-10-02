@@ -1784,6 +1784,8 @@ class PositionLifecycleManager:
     async def _submit_exit_order(
         self, broker: BrokerAdapter, account: DestinationAccount, lifecycle: PositionLifecycle, quantity: float, reason: str
     ) -> OrderResult:
+        # WP-14 (C-03/C-04): set intent=EXIT so adapters emit the correct
+        # close intent (e.g., "Sell to Close" for Tastytrade, "flat" for NinjaTrader).
         exit_signal = Signal(
             source="lifecycle_manager",
             symbol=lifecycle.plan.symbol,
@@ -1791,6 +1793,7 @@ class PositionLifecycleManager:
             asset_class=lifecycle.plan.asset_class,
             intent=Intent.EXIT,
             raw={"reason": reason},
+            intent=Intent.EXIT,
         )
         if self.store is not None:
             # DB-01: this Signal's freshly-generated id becomes the
@@ -1852,7 +1855,23 @@ class PositionLifecycleManager:
                 request_fingerprint=ledger_fingerprint,
             )
         try:
-            result = await broker.place_order(exit_signal, account, quantity, lifecycle.plan.symbol)
+            # WP-17 (B-04): normalize quantity to venue precision before exit submission
+            normalized_qty = broker.normalize_quantity(account, lifecycle.plan.symbol, quantity)
+            if normalized_qty is not None:
+                if normalized_qty <= 0:
+                    # Exit quantity rounds to zero or below minimum
+                    result = OrderResult(
+                        account_id=account.account_id,
+                        status=OrderStatus.REJECTED,
+                        signal_id=exit_signal.id,
+                        message=f"exit quantity {quantity} rounds to {normalized_qty:.8g} below venue minimum",
+                    )
+                else:
+                    quantity = normalized_qty
+                    result = await broker.place_order(exit_signal, account, quantity, lifecycle.plan.symbol)
+            else:
+                # Unknown precision, proceed with original quantity
+                result = await broker.place_order(exit_signal, account, quantity, lifecycle.plan.symbol)
         except Exception as exc:
             if ledger_key is not None and self.store is not None:
                 self.store.mark_command_ledger_outcome(
@@ -2106,6 +2125,24 @@ class PositionLifecycleManager:
                 return
 
         try:
+            # WP-17 (B-04): normalize quantity to venue precision before stop submission
+            normalized_qty = broker.normalize_quantity(account, lifecycle.plan.symbol, quantity)
+            if normalized_qty is not None:
+                if normalized_qty <= 0:
+                    # Stop quantity rounds to zero or below minimum
+                    lifecycle.stop.status = ProtectionStatus.UNPROTECTED
+                    lifecycle.stop.protected_quantity = 0.0
+                    lifecycle.stop.confirmed_at = None
+                    logger.warning(
+                        "stop quantity %f rounds to %f below venue minimum for account=%s symbol=%s",
+                        quantity,
+                        normalized_qty,
+                        account.account_id,
+                        lifecycle.plan.symbol,
+                    )
+                    return
+                quantity = normalized_qty
+            # Unknown precision: proceed with original quantity
             result = await broker.place_protective_stop(account, lifecycle.plan.symbol, quantity, price, lifecycle.exit_side)
         except Exception as exc:
             if ledger_key is not None and self.store is not None:

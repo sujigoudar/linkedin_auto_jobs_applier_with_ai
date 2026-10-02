@@ -49,6 +49,17 @@ class BrokerAdapter(abc.ABC):
         # LIMIT/STOP orders require explicit per-adapter support
         return False
 
+    def normalize_quantity(self, account: DestinationAccount, symbol: str, quantity: float) -> float | None:
+        """Normalize quantity to venue precision/lot-step, or return None if unknown.
+
+        Called after risk sizing but before broker submission. Must return the
+        normalized quantity (>= 0) or None if this venue's precision is unknown.
+        Never raise; return None to signal unknown precision instead.
+
+        Default implementation returns quantity unchanged.
+        """
+        return quantity
+
     @abc.abstractmethod
     async def place_order(
         self, signal: Signal, account: DestinationAccount, quantity: float, symbol: str

@@ -141,6 +141,13 @@ class PaperBroker(BrokerAdapter):
         self.fills.append(result)
         return result
 
+    def normalize_quantity(self, account: DestinationAccount, symbol: str, quantity: float) -> float | None:
+        """Paper broker normalizes to 1e-8 (8 decimal places for crypto compatibility)."""
+        import math
+        step = 1e-8
+        normalized = math.floor(quantity / step) * step
+        return max(0.0, normalized)
+
     async def get_account_balance(self, account: DestinationAccount) -> AccountBalance | None:
         """A real, genuinely-computed simulated cash/buying-power figure --
         see this class's own docstring for why that's honest here
