@@ -101,7 +101,7 @@ def live_server(tmp_path):
     )
     base_url = f"http://127.0.0.1:{port}"
     try:
-        for attempt in range(75):
+        for _attempt in range(75):
             try:
                 response = httpx.get(f"{base_url}/health", timeout=1.0)
                 if response.status_code in (200, 503):

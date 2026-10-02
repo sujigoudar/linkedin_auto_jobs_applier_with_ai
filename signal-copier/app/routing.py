@@ -15,6 +15,31 @@ class RoutingRule:
     source: str
     destinations: list[str]
     symbol_filter: Optional[list[str]] = None
+    #: ALLOC-01: "single" (default) -- the rule's destinations are
+    #: ALTERNATIVE places to hold ONE intended trade (listed in priority
+    #: order); exactly one account is selected per signal. "replicate" --
+    #: an explicit, owner-configured instruction that every destination
+    #: receives its own separately authorized copy (the pre-ALLOC-01
+    #: broadcast behavior). Never inferred from the number of accounts.
+    delivery_mode: str = "single"
+
+    def __post_init__(self) -> None:
+        if self.delivery_mode not in DELIVERY_MODES:
+            raise ValueError(f"delivery_mode must be one of {DELIVERY_MODES}, got {self.delivery_mode!r}")
+
+
+DELIVERY_MODES = ("single", "replicate")
+
+
+@dataclass
+class AllocationPool:
+    """The approved eligible destinations for one signal, split by how
+    they may be used: `single` accounts are alternatives (at most ONE
+    may receive the trade), `replicate` accounts each get an explicitly
+    configured separate copy."""
+
+    single: list[DestinationAccount] = field(default_factory=list)
+    replicate: list[DestinationAccount] = field(default_factory=list)
 
 
 @dataclass
@@ -33,6 +58,20 @@ class RoutingConfig:
         # exists to avoid.
         accounts, _trace = self.evaluate(source, symbol, include_disabled=include_disabled)
         return accounts
+
+    def pool_for(self, source: str, symbol: str, *, include_disabled: bool = False) -> AllocationPool:
+        """Splits `evaluate`'s single matching result by each admitting
+        rule's `delivery_mode`, preserving rule order (= priority) then
+        in-rule destination order. One matching implementation only."""
+        _accounts, trace = self.evaluate(source, symbol, include_disabled=include_disabled)
+        pool = AllocationPool()
+        for entry in trace:
+            if not entry["matched"]:
+                continue
+            target = pool.replicate if entry["rule"].delivery_mode == "replicate" else pool.single
+            for account_id in entry["admitted"]:
+                target.append(self.accounts[account_id])
+        return pool
 
     def evaluate(
         self, source: str, symbol: str, *, include_disabled: bool = False
@@ -156,6 +195,7 @@ def load_routing_config(routing_path: Path, accounts_path: Path) -> RoutingConfi
                     source=rule["source"],
                     destinations=rule["destinations"],
                     symbol_filter=rule.get("symbol_filter"),
+                    delivery_mode=rule.get("delivery_mode", "single"),
                 )
             )
 
@@ -186,7 +226,12 @@ def load_routing_config_from_store(store) -> RoutingConfig:
         for row in store.list_config_accounts()
     }
     rules = [
-        RoutingRule(source=row["source"], destinations=row["destinations"], symbol_filter=row["symbol_filter"])
+        RoutingRule(
+            source=row["source"],
+            destinations=row["destinations"],
+            symbol_filter=row["symbol_filter"],
+            delivery_mode=row.get("delivery_mode", "single"),
+        )
         for row in store.list_config_routing_rules()
     ]
     return RoutingConfig(rules=rules, accounts=accounts)

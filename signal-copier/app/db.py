@@ -716,6 +716,32 @@ CREATE INDEX IF NOT EXISTS idx_saved_views_screen ON saved_views (screen);
 -- so a reservation and its originating command share one identifier
 -- end-to-end -- this table's `signal_id` column is a good anchor for
 -- that reconciliation (both should already agree on the same signal).
+-- ALLOC-01: one durable logical allocation decision per trade opportunity,
+-- created BEFORE any account-specific execution. `intent_id` is derived
+-- from (strategy_key, signal_id) -- NOT from an account -- so N eligible
+-- accounts can never each own an independent copy of the same
+-- opportunity. States: claimed (pool recorded, no account chosen) ->
+-- selected (one account bound, pre-submission) -> committed (a
+-- submission was attempted; ANY outcome, incl. unknown, is final for
+-- destination purposes -- never rerouted) | skipped (explained
+-- non-execution, no exposure created). See docs/design/PORTFOLIO_ALLOCATION.md.
+CREATE TABLE IF NOT EXISTS allocation_intents (
+    intent_id TEXT PRIMARY KEY,
+    signal_id TEXT NOT NULL UNIQUE,
+    strategy_key TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    side TEXT NOT NULL,
+    candidates TEXT NOT NULL,
+    selected_account_id TEXT,
+    state TEXT NOT NULL,
+    reason TEXT,
+    trace TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_allocation_intents_state ON allocation_intents (state);
+
 CREATE TABLE IF NOT EXISTS capital_reservations (
     id TEXT PRIMARY KEY,
     account_id TEXT NOT NULL,
@@ -1827,6 +1853,7 @@ CREATE INDEX IF NOT EXISTS ix_margin_call_alerts_account_id ON margin_call_alert
 #: for columns before SQLite 3.35, and this stays compatible with older
 #: builds rather than assuming a version).
 _COLUMN_MIGRATIONS = [
+    ("config_routing_rules", "delivery_mode", "TEXT NOT NULL DEFAULT 'single'"),
     ("signals", "stop_loss", "REAL"),
     ("signals", "take_profit", "REAL"),
     ("signals", "analyst", "TEXT"),
@@ -4246,7 +4273,7 @@ class SignalStore:
     def list_config_routing_rules(self) -> list[dict]:
         with self._connect() as conn:
             rows = conn.execute(
-                "SELECT id, source, destinations, symbol_filter FROM config_routing_rules ORDER BY id"
+                "SELECT id, source, destinations, symbol_filter, delivery_mode FROM config_routing_rules ORDER BY id"
             ).fetchall()
         return [
             {
@@ -4254,33 +4281,209 @@ class SignalStore:
                 "source": r[1],
                 "destinations": json.loads(r[2]),
                 "symbol_filter": json.loads(r[3]) if r[3] else None,
+                "delivery_mode": r[4] or "single",
             }
             for r in rows
         ]
 
     def insert_config_routing_rule(
-        self, source: str, destinations: list[str], symbol_filter: list[str] | None = None
+        self,
+        source: str,
+        destinations: list[str],
+        symbol_filter: list[str] | None = None,
+        delivery_mode: str = "single",
     ) -> int:
         with self._connect() as conn:
             cursor = conn.execute(
-                "INSERT INTO config_routing_rules (source, destinations, symbol_filter) VALUES (?, ?, ?)",
-                (source, json.dumps(destinations), json.dumps(symbol_filter) if symbol_filter else None),
+                "INSERT INTO config_routing_rules (source, destinations, symbol_filter, delivery_mode) VALUES (?, ?, ?, ?)",
+                (source, json.dumps(destinations), json.dumps(symbol_filter) if symbol_filter else None, delivery_mode),
             )
             assert cursor.lastrowid is not None  # see save_order_result's identical comment
             return cursor.lastrowid
 
     def update_config_routing_rule(
-        self, rule_id: int, source: str, destinations: list[str], symbol_filter: list[str] | None = None
+        self,
+        rule_id: int,
+        source: str,
+        destinations: list[str],
+        symbol_filter: list[str] | None = None,
+        delivery_mode: str = "single",
     ) -> None:
         with self._connect() as conn:
             conn.execute(
-                "UPDATE config_routing_rules SET source = ?, destinations = ?, symbol_filter = ? WHERE id = ?",
-                (source, json.dumps(destinations), json.dumps(symbol_filter) if symbol_filter else None, rule_id),
+                "UPDATE config_routing_rules SET source = ?, destinations = ?, symbol_filter = ?, delivery_mode = ? "
+                "WHERE id = ?",
+                (
+                    source,
+                    json.dumps(destinations),
+                    json.dumps(symbol_filter) if symbol_filter else None,
+                    delivery_mode,
+                    rule_id,
+                ),
             )
 
     def delete_config_routing_rule(self, rule_id: int) -> None:
         with self._connect() as conn:
             conn.execute("DELETE FROM config_routing_rules WHERE id = ?", (rule_id,))
+
+    # ------------------------------------------------------------------
+    # ALLOC-01: allocation intents (one logical decision per opportunity)
+    # ------------------------------------------------------------------
+    @contextmanager
+    def _immediate(self, *, attempts: int = 8, backoff: float = 0.05) -> Iterator[sqlite3.Connection]:
+        """Short write transaction opened with BEGIN IMMEDIATE (SQLite
+        allows one writer; a second concurrent writer gets SQLITE_BUSY).
+        Contention is retried with bounded backoff; callers must keep the
+        body short and must never make a broker/network call inside it."""
+        import time
+
+        conn = sqlite3.connect(self.db_path, timeout=5.0)
+        conn.execute("PRAGMA foreign_keys = ON")
+        try:
+            for attempt in range(attempts):
+                try:
+                    conn.execute("BEGIN IMMEDIATE")
+                    break
+                except sqlite3.OperationalError as exc:
+                    if "locked" not in str(exc) and "busy" not in str(exc):
+                        raise
+                    if attempt == attempts - 1:
+                        raise
+                    time.sleep(backoff * (2**attempt))
+            try:
+                yield conn
+            except BaseException:
+                conn.rollback()
+                raise
+            else:
+                conn.commit()
+        finally:
+            conn.close()
+
+    @staticmethod
+    def _intent_row(row: sqlite3.Row | tuple | None) -> dict | None:
+        if row is None:
+            return None
+        return {
+            "intent_id": row[0],
+            "signal_id": row[1],
+            "strategy_key": row[2],
+            "symbol": row[3],
+            "side": row[4],
+            "candidates": json.loads(row[5]),
+            "selected_account_id": row[6],
+            "state": row[7],
+            "reason": row[8],
+            "trace": json.loads(row[9]) if row[9] else None,
+            "created_at": row[10],
+            "updated_at": row[11],
+        }
+
+    _INTENT_COLS = (
+        "intent_id, signal_id, strategy_key, symbol, side, candidates, selected_account_id, state, reason, "
+        "trace, created_at, updated_at"
+    )
+
+    def get_allocation_intent(self, signal_id: str) -> dict | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                f"SELECT {self._INTENT_COLS} FROM allocation_intents WHERE signal_id = ?", (signal_id,)
+            ).fetchone()
+        return self._intent_row(row)
+
+    def claim_allocation_intent(
+        self, signal_id: str, *, strategy_key: str, symbol: str, side: str, candidates: list[str]
+    ) -> dict:
+        """Idempotent across threads and processes: the first claimant
+        creates the row (state 'claimed'); every later claimant for the
+        same signal gets that same row back, including whatever account
+        it is already bound to."""
+        import hashlib
+
+        intent_id = hashlib.sha256(f"{strategy_key}|{signal_id}".encode()).hexdigest()[:32]
+        now = datetime.now(timezone.utc).isoformat()
+        with self._immediate() as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO allocation_intents "
+                "(intent_id, signal_id, strategy_key, symbol, side, candidates, state, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, 'claimed', ?, ?)",
+                (intent_id, signal_id, strategy_key, symbol, side, json.dumps(candidates), now, now),
+            )
+            row = conn.execute(
+                f"SELECT {self._INTENT_COLS} FROM allocation_intents WHERE signal_id = ?", (signal_id,)
+            ).fetchone()
+        intent = self._intent_row(row)
+        assert intent is not None
+        return intent
+
+    def bind_allocation_intent(self, signal_id: str, account_id: str) -> bool:
+        """Atomically bind the intent to ONE account. True when this call
+        bound it or it was already bound to the same account; False when
+        a different account already won or the intent is terminal
+        (skipped). Never rebinds."""
+        now = datetime.now(timezone.utc).isoformat()
+        with self._immediate() as conn:
+            row = conn.execute(
+                "SELECT selected_account_id, state FROM allocation_intents WHERE signal_id = ?", (signal_id,)
+            ).fetchone()
+            if row is None:
+                return False
+            selected, state = row
+            if selected is not None:
+                return selected == account_id and state in ("selected", "committed")
+            if state != "claimed":
+                return False
+            conn.execute(
+                "UPDATE allocation_intents SET selected_account_id = ?, state = 'selected', updated_at = ? "
+                "WHERE signal_id = ?",
+                (account_id, now, signal_id),
+            )
+        return True
+
+    def release_allocation_binding(self, signal_id: str, account_id: str) -> bool:
+        """Undo a binding ONLY when no submission was attempted (state
+        'selected'): used when the chosen account is rejected before it
+        ever reaches a broker. A committed intent is never released."""
+        now = datetime.now(timezone.utc).isoformat()
+        with self._immediate() as conn:
+            cur = conn.execute(
+                "UPDATE allocation_intents SET selected_account_id = NULL, state = 'claimed', updated_at = ? "
+                "WHERE signal_id = ? AND selected_account_id = ? AND state = 'selected'",
+                (now, signal_id, account_id),
+            )
+        return cur.rowcount > 0
+
+    def commit_allocation_intent(self, signal_id: str, account_id: str, *, reason: str | None = None) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        with self._immediate() as conn:
+            conn.execute(
+                "UPDATE allocation_intents SET state = 'committed', reason = COALESCE(?, reason), updated_at = ? "
+                "WHERE signal_id = ? AND selected_account_id = ? AND state IN ('selected', 'committed')",
+                (reason, now, signal_id, account_id),
+            )
+
+    def skip_allocation_intent(self, signal_id: str, *, reason: str, trace: list[dict] | None = None) -> None:
+        """Explained non-execution. Only a not-yet-bound intent can be
+        skipped; an intent already bound/committed keeps its account."""
+        now = datetime.now(timezone.utc).isoformat()
+        with self._immediate() as conn:
+            conn.execute(
+                "UPDATE allocation_intents SET state = 'skipped', reason = ?, trace = ?, updated_at = ? "
+                "WHERE signal_id = ? AND state = 'claimed'",
+                (reason, json.dumps(trace) if trace is not None else None, now, signal_id),
+            )
+
+    def list_allocation_intents(self, *, state: str | None = None, limit: int = 200) -> list[dict]:
+        query = f"SELECT {self._INTENT_COLS} FROM allocation_intents"
+        params: list[Any] = []
+        if state is not None:
+            query += " WHERE state = ?"
+            params.append(state)
+        query += " ORDER BY created_at DESC LIMIT ?"
+        params.append(limit)
+        with self._connect() as conn:
+            rows = conn.execute(query, params).fetchall()
+        return [i for i in (self._intent_row(r) for r in rows) if i is not None]
 
     def list_config_providers(self) -> list[dict]:
         with self._connect() as conn:

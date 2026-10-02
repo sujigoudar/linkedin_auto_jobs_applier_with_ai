@@ -22,7 +22,7 @@ from collections import defaultdict
 from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Literal
 
 import httpx
 from fastapi import Cookie, Depends, FastAPI, Form, Header, HTTPException, Query, Request, Response
@@ -2516,6 +2516,9 @@ class RoutingRuleRequest(BaseModel):
     source: str
     destinations: list[str]
     symbol_filter: list[str] | None = None
+    #: ALLOC-01: "single" selects ONE account from `destinations`
+    #: (priority order); "replicate" is explicit multi-account fan-out.
+    delivery_mode: Literal["single", "replicate"] = "single"
 
 
 @app.get("/routing-rules")
@@ -2525,14 +2528,18 @@ async def list_routing_rules(_owner: dict = Depends(require_owner_read)) -> dict
 
 @app.post("/routing-rules")
 async def create_routing_rule(request: RoutingRuleRequest, _owner: dict = Depends(require_owner)) -> dict:
-    rule_id = store.insert_config_routing_rule(request.source, request.destinations, request.symbol_filter)
+    rule_id = store.insert_config_routing_rule(
+        request.source, request.destinations, request.symbol_filter, request.delivery_mode
+    )
     _reload_routing_config()
     return {"id": rule_id, "status": "created"}
 
 
 @app.put("/routing-rules/{rule_id}")
 async def update_routing_rule(rule_id: int, request: RoutingRuleRequest, _owner: dict = Depends(require_owner)) -> dict:
-    store.update_config_routing_rule(rule_id, request.source, request.destinations, request.symbol_filter)
+    store.update_config_routing_rule(
+        rule_id, request.source, request.destinations, request.symbol_filter, request.delivery_mode
+    )
     _reload_routing_config()
     return {"id": rule_id, "status": "updated"}
 

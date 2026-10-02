@@ -538,7 +538,13 @@ class SignalCopierEngine:
         # DIFFERENT signal ids in the first place) -- see those for what
         # each specifically covers.
         already_processed = self.store.list_orders_for_signal(signal.id)
-        if already_processed:
+        # ALLOC-01: orders that exist only because candidate accounts were
+        # rejected BEFORE submission (intent still 'claimed'/'selected')
+        # are not a completed decision -- resume the allocation instead of
+        # replaying a partial one. A committed/skipped intent (or a signal
+        # with no intent: CLOSE / replicate-only) replays exactly as before.
+        prior_intent = self.store.get_allocation_intent(signal.id)
+        if already_processed and (prior_intent is None or prior_intent["state"] in ("committed", "skipped")):
             logger.info(
                 "signal id=%s already produced %d order result(s); replaying them instead of "
                 "re-submitting to every destination",
@@ -587,16 +593,63 @@ class SignalCopierEngine:
         # an exit block -- a CLOSE signal must still reach an account that
         # already has a position open on it, even while new entries are
         # paused (see RoutingConfig.destinations_for's docstring).
-        destinations = self.routing.destinations_for(
-            signal.source, signal.symbol, include_disabled=signal.side == Side.CLOSE
-        )
+        #
+        # ALLOC-01: for an ENTRY, `single`-mode rules' destinations are
+        # ALTERNATIVES for ONE intended trade (priority order). Exactly one
+        # is selected, BEFORE submission, under a durable allocation intent
+        # created before any account-specific execution. `replicate`-mode
+        # destinations are the only explicit fan-out. A CLOSE keeps its
+        # account-scoped behavior (each account exits only what it owns).
+        single_ids: set[str] = set()
+        allocation_intent: dict | None = None
+        if signal.side == Side.CLOSE:
+            destinations = self.routing.destinations_for(signal.source, signal.symbol, include_disabled=True)
+        else:
+            pool = self.routing.pool_for(signal.source, signal.symbol, include_disabled=False)
+            single_candidates = pool.single
+            replicate_candidates = [a for a in pool.replicate if a.account_id not in {c.account_id for c in single_candidates}]
+            if single_candidates:
+                allocation_intent = self.store.claim_allocation_intent(
+                    signal.id,
+                    strategy_key=signal.source,
+                    symbol=signal.symbol,
+                    side=signal.side.value,
+                    candidates=[a.account_id for a in single_candidates],
+                )
+                bound = allocation_intent["selected_account_id"]
+                if bound is not None:
+                    # Already bound (restart, duplicate delivery, another
+                    # worker): this intent may only ever use that account.
+                    single_candidates = [a for a in single_candidates if a.account_id == bound]
+                    if not single_candidates:
+                        # The bound account left the approved pool (config
+                        # edit). Do NOT pick another: report and stop.
+                        logger.warning(
+                            "allocation intent %s bound to %s which is no longer in the approved pool; "
+                            "not re-selecting",
+                            allocation_intent["intent_id"],
+                            bound,
+                        )
+                single_ids = {a.account_id for a in single_candidates}
+            destinations = [*single_candidates, *replicate_candidates]
         if not destinations:
             logger.info("no destinations configured for source=%s symbol=%s", signal.source, signal.symbol)
+            if allocation_intent is not None:
+                self.store.skip_allocation_intent(signal.id, reason="no permitted destination in the approved pool")
             self._export_routing_outcome(signal, outcome="not_routed")
             return []
 
         results: list[OrderResult] = []
+        committed_account_id: str | None = (
+            allocation_intent["selected_account_id"]
+            if allocation_intent is not None and allocation_intent["state"] in ("selected", "committed")
+            else None
+        )
         for raw_account in destinations:
+            if raw_account.account_id in single_ids and committed_account_id is not None and (
+                raw_account.account_id != committed_account_id
+            ):
+                continue
             effective = self._effective_settings(signal, raw_account)
             if effective.enabled is False and signal.side != Side.CLOSE:
                 # EXE-10: same entry-pause-not-exit-block distinction as
@@ -836,8 +889,22 @@ class SignalCopierEngine:
                     existing_lifecycle = self.lifecycle_manager.get_lifecycle(account.account_id, symbol)
                     if existing_lifecycle is not None and existing_lifecycle.plan.entry_signal_id:
                         order_family_id = existing_lifecycle.plan.entry_signal_id
+                managed_bound = False
+                if order_purpose == "entry" and account.account_id in single_ids:
+                    if not self.store.bind_allocation_intent(signal.id, account.account_id):
+                        logger.info("allocation intent for signal=%s is bound elsewhere; skipping account=%s", signal.id, account.account_id)
+                        continue
+                    managed_bound = True
                 managed_outcome = await self._handle_managed_signal(signal, account, symbol)
                 result = managed_outcome.result
+                if managed_bound:
+                    if managed_outcome.submitted_at is None:
+                        # Rejected before ever reaching a broker: no
+                        # exposure exists, so the next approved
+                        # alternative may be tried.
+                        self.store.release_allocation_binding(signal.id, account.account_id)
+                    else:
+                        committed_account_id = account.account_id
                 # TRK-23: the audit's HIGH-severity gap -- a managed-
                 # lifecycle fill never built/exported an EXECUTION_APPLIED
                 # envelope at all (only its own internal `orders` row via
@@ -1001,6 +1068,21 @@ class SignalCopierEngine:
                     message=rejection.message,
                 )
                 continue
+
+            if account.account_id in single_ids:
+                # ALLOC-01 commit point: bind this intent to ONE account
+                # before the durable command-ledger intent and the broker
+                # call. If another worker/delivery already bound a
+                # different account, this one must not execute.
+                if not self.store.bind_allocation_intent(signal.id, account.account_id):
+                    self.capital_allocator.release(account.account_id, notional)
+                    logger.info(
+                        "allocation intent for signal=%s is bound elsewhere; not executing on account=%s",
+                        signal.id,
+                        account.account_id,
+                    )
+                    continue
+                committed_account_id = account.account_id
 
             # P0-2: pre-effect durable command-ledger intent, written and
             # COMMITTED before the broker is ever called -- see
@@ -1194,6 +1276,19 @@ class SignalCopierEngine:
                 message=result.message,
             )
 
+        if allocation_intent is not None and single_ids:
+            if committed_account_id is not None:
+                self.store.commit_allocation_intent(signal.id, committed_account_id)
+            else:
+                self.store.skip_allocation_intent(
+                    signal.id,
+                    reason="no approved account could take this trade: "
+                    + "; ".join(f"{r.account_id}: {r.message}" for r in results if r.account_id in single_ids),
+                    trace=[
+                        {"account_id": r.account_id, "status": r.status.value, "message": r.message}
+                        for r in results
+                    ],
+                )
         return results
 
     #: Sentinel `OrderResult.account_id` for a signal held out of live
