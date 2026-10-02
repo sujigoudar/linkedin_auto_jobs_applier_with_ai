@@ -18,31 +18,21 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
-def reset_engine_state():
-    """Prevent test state leakage by resetting engine state before each
-    test. The engine holds multiple shared instances that persist across
-    test fixtures."""
+def reset_capital_allocator_state():
+    """Prevent test state leakage by resetting capital allocator
+    pending reservations before each test. The engine holds a shared
+    CapitalAllocator instance that persists across test fixtures."""
     try:
         import app.main as main_module
-        if hasattr(main_module, 'engine'):
-            # Reset capital allocator pending reservations
-            if hasattr(main_module.engine, 'capital_allocator'):
-                main_module.engine.capital_allocator._pending.clear()
-            # Reset plain close locks to prevent any accumulated state
-            if hasattr(main_module.engine, '_plain_close_locks'):
-                main_module.engine._plain_close_locks.clear()
+        if hasattr(main_module, 'engine') and hasattr(main_module.engine, 'capital_allocator'):
+            main_module.engine.capital_allocator._pending.clear()
     except Exception:
         pass
     yield
     try:
         import app.main as main_module
-        if hasattr(main_module, 'engine'):
-            # Reset capital allocator pending reservations
-            if hasattr(main_module.engine, 'capital_allocator'):
-                main_module.engine.capital_allocator._pending.clear()
-            # Reset plain close locks to prevent any accumulated state
-            if hasattr(main_module.engine, '_plain_close_locks'):
-                main_module.engine._plain_close_locks.clear()
+        if hasattr(main_module, 'engine') and hasattr(main_module.engine, 'capital_allocator'):
+            main_module.engine.capital_allocator._pending.clear()
     except Exception:
         pass
 
