@@ -807,6 +807,15 @@ class DestinationAccount:
     #: persisted per account to remain unique across restarts.
     #: Only used when broker='paper'; None/unused for other brokers.
     paper_order_id_sequence: Optional[int] = None
+    #: WP-16 (B-01): Position sizing mode for this account.
+    #: - "multiplier" (default): uses fixed_quantity if set, else signal.quantity * multiplier
+    #: - "fixed": uses fixed_quantity only, rejects if not set
+    #: - "risk_fraction": dynamic sizing based on risk fraction and stop loss
+    sizing_mode: str = "multiplier"
+    #: WP-16 (B-01): Risk fraction for dynamic risk-fraction sizing.
+    #: When sizing_mode="risk_fraction", quantity = floor(equity * risk_fraction / (|price - stop_loss| * multiplier)).
+    #: `None` (the default) means risk_fraction sizing is not available for this account.
+    risk_fraction: Optional[float] = None
 
     def __post_init__(self) -> None:
         if self.management_recipe is None:
