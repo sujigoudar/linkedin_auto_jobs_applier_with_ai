@@ -21,59 +21,9 @@ depends_on = None
 
 
 def upgrade() -> None:
-    """Create physical_accounts and margin_regimes tables."""
-    # Physical accounts table (WC-02 stub for WC-09 foreign key reference)
-    op.create_table(
-        "physical_accounts",
-        sa.Column(
-            "physical_account_id",
-            sa.String(255),
-            primary_key=True,
-            comment="Canonical account identifier (broker + broker_account_id or config_account_id with evidence tier)",
-        ),
-        sa.Column(
-            "broker",
-            sa.String(255),
-            nullable=False,
-            comment="Broker name (alpaca, ibkr, oanda, etc.)",
-        ),
-        sa.Column(
-            "broker_account_id",
-            sa.String(255),
-            nullable=True,
-            comment="Broker-reported account ID; NULL means unmapped (evidence_tier=declared)",
-        ),
-        sa.Column(
-            "environment",
-            sa.String(50),
-            nullable=True,
-            comment="Execution environment: paper|live|sandbox|unknown",
-        ),
-        sa.Column(
-            "base_currency",
-            sa.String(3),
-            nullable=False,
-            comment="ISO 4217 currency code (USD, EUR, JPY, etc.)",
-        ),
-        sa.Column(
-            "margin_type",
-            sa.String(50),
-            nullable=True,
-            comment="Account margin type: cash|margin|retirement|unknown",
-        ),
-        sa.Column(
-            "restriction_state",
-            sa.String(50),
-            nullable=True,
-            comment="Trading restriction: none|pdt_restricted|closing_only|unknown",
-        ),
-        sa.Column(
-            "created_at",
-            sa.DateTime(timezone=True),
-            server_default=sa.func.now(),
-            nullable=False,
-        ),
-    )
+    """Create the margin_regimes table."""
+    # physical_accounts is created by 0047 (WC-02); this revision only adds
+    # margin_regimes, which references it.
     op.create_index("ix_physical_accounts_broker", "physical_accounts", ["broker"])
 
     # Margin regimes table (WC-09 main table)
@@ -116,6 +66,5 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    """Drop margin_regimes and physical_accounts tables."""
+    """Drop the margin_regimes table (physical_accounts belongs to 0047)."""
     op.drop_table("margin_regimes")
-    op.drop_table("physical_accounts")

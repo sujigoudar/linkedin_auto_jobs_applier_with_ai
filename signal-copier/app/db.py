@@ -2052,6 +2052,37 @@ CREATE TABLE IF NOT EXISTS margin_regimes (
     FOREIGN KEY (physical_account_id) REFERENCES physical_accounts(physical_account_id)
 );
 CREATE INDEX IF NOT EXISTS ix_margin_regimes_regime ON margin_regimes(regime);
+-- WC-06: Durable intents and outbox for crash recovery
+CREATE TABLE IF NOT EXISTS order_intents (
+    intent_id TEXT PRIMARY KEY,
+    opportunity_id TEXT NOT NULL UNIQUE,
+    physical_account_id TEXT NOT NULL,
+    binding_id TEXT NOT NULL,
+    client_correlation_id TEXT NOT NULL,
+    policy_hash TEXT NOT NULL,
+    quantity INTEGER NOT NULL,
+    price_constraints TEXT,
+    protection_recipe TEXT,
+    reservation_id TEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_order_intents_opportunity ON order_intents(opportunity_id);
+CREATE INDEX IF NOT EXISTS ix_order_intents_account ON order_intents(physical_account_id);
+CREATE INDEX IF NOT EXISTS ix_order_intents_binding ON order_intents(binding_id);
+CREATE INDEX IF NOT EXISTS ix_order_intents_reservation ON order_intents(reservation_id);
+CREATE TABLE IF NOT EXISTS outbox (
+    item_id TEXT PRIMARY KEY,
+    intent_id TEXT NOT NULL,
+    state TEXT NOT NULL DEFAULT 'outboxed',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    claimed_at TIMESTAMP,
+    claimed_by TEXT,
+    response TEXT,
+    response_recorded_at TIMESTAMP,
+    FOREIGN KEY(intent_id) REFERENCES order_intents(intent_id)
+);
+CREATE INDEX IF NOT EXISTS ix_outbox_state_created ON outbox(state, created_at);
+CREATE INDEX IF NOT EXISTS ix_outbox_intent ON outbox(intent_id);
 """
 
 

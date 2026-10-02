@@ -59,13 +59,7 @@ def upgrade() -> None:
             nullable=False,
         ),
         sa.UniqueConstraint("portfolio_id", "physical_account_id", name="uq_backing_portfolio_account"),
-    )
-    op.create_foreign_key(
-        "fk_portfolio_backings_portfolio_id",
-        "portfolio_backings",
-        "portfolios",
-        ["portfolio_id"],
-        ["portfolio_id"],
+        sa.ForeignKeyConstraint(["portfolio_id"], ["portfolios.portfolio_id"], name="fk_portfolio_backings_portfolio_id"),
     )
     op.create_index("idx_portfolio_backings_portfolio", "portfolio_backings", ["portfolio_id"])
     op.create_index("idx_portfolio_backings_account", "portfolio_backings", ["physical_account_id"])
@@ -95,13 +89,7 @@ def upgrade() -> None:
             server_default=sa.func.now(),
             nullable=False,
         ),
-    )
-    op.create_foreign_key(
-        "fk_strategy_sleeves_portfolio_id",
-        "strategy_sleeves",
-        "portfolios",
-        ["portfolio_id"],
-        ["portfolio_id"],
+        sa.ForeignKeyConstraint(["portfolio_id"], ["portfolios.portfolio_id"], name="fk_strategy_sleeves_portfolio_id"),
     )
     op.create_index("idx_strategy_sleeves_portfolio", "strategy_sleeves", ["portfolio_id"])
     op.create_index("idx_strategy_sleeves_provider", "strategy_sleeves", ["provider"])
@@ -171,20 +159,8 @@ def upgrade() -> None:
             sa.Text,
             nullable=True,
         ),
-    )
-    op.create_foreign_key(
-        "fk_budget_reservations_portfolio_id",
-        "budget_reservations",
-        "portfolios",
-        ["portfolio_id"],
-        ["portfolio_id"],
-    )
-    op.create_foreign_key(
-        "fk_budget_reservations_sleeve_id",
-        "budget_reservations",
-        "strategy_sleeves",
-        ["sleeve_id"],
-        ["sleeve_id"],
+        sa.ForeignKeyConstraint(["portfolio_id"], ["portfolios.portfolio_id"], name="fk_budget_reservations_portfolio_id"),
+        sa.ForeignKeyConstraint(["sleeve_id"], ["strategy_sleeves.sleeve_id"], name="fk_budget_reservations_sleeve_id"),
     )
     op.create_index("idx_budget_reservations_owner", "budget_reservations", ["owner"])
     op.create_index("idx_budget_reservations_account", "budget_reservations", ["physical_account_id"])
