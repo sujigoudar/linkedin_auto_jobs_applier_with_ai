@@ -1733,7 +1733,23 @@ registry and command authority against new integration boundaries
 - **ALLOC-05: an ambiguous entry submission keeps its capital/strategy
   reservation** until resolved, instead of releasing it immediately.
 
+### Fixed
+- A managed-lifecycle provider CLOSE was journaled with `side='close'`, which every
+  P&L/episode/capital-gate replay skipped: the account looked still-open, the
+  capital gate rejected new entries on a flat book, and provider scorecards lost
+  every CLOSE-exited trade. The row now carries the resolved exit side.
+- Strategy-level exposure (ALLOC-03) never decreased after a stop-out or a manual
+  close because those exits carry a synthetic source; fills are now attributed to
+  the entry signal's source via `family_id`.
+
+### Audit
+- `docs/audit/SOLUTION_GAP_ANALYSIS.md` — whole-solution gap analysis (166
+  findings, 27 P0) with raw per-domain evidence under `docs/audit/raw/`.
+
 ### Added
+- `GET /command-ledger/unresolved` and `POST /command-ledger/resolve`: operator
+  visibility and resolution (`not_placed` with evidence) for ambiguous
+  submissions whose capital reservation is held.
 - `allocation_intents` table (alembic 0037): one durable decision per entry
   signal; selection before submission, never rerouted after an attempt.
 - `strategy_budgets` and `GET/PUT/DELETE /strategy-budgets`: a global

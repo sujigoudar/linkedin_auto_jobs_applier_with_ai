@@ -2720,3 +2720,42 @@
   - tests/test_alloc08_managed_and_properties.py::test_property_single_mode_never_exceeds_one_destination_or_ceilings
   evidence: 40 examples per run; bounded state space
   notes: not a proof
+- id: ALLOC-11
+  group: Q
+  scenario: Managed provider CLOSE is journaled with its resolved side and unlocks the capital gate
+  initial_state: managed account, max_notional_exposure set
+  event_sequence: BUY 10 @50 with stop; provider CLOSE @60; new entry
+  expected_invariant: orders row side='sell'; incomplete_symbols empty; open qty 0; next entry admitted
+  status: covered
+  impl_status: implemented
+  tests:
+  - tests/test_alloc11_journal_and_ledger_fixes.py::test_managed_provider_close_is_journaled_with_resolved_side_and_unlocks_the_gate
+  evidence: E-01 fix; previously reproduced the lock-out
+  notes: existing rows not backfilled
+- id: ALLOC-12
+  group: Q
+  scenario: Stop-out and manual close reduce strategy exposure
+  initial_state: managed account, strategy tv
+  event_sequence: entry; paper stop fill via on_stop_filled; or close_position(manual_exit)
+  expected_invariant: confirmed_strategy_notional('tv') == 0 after the exit
+  status: covered
+  impl_status: implemented
+  tests:
+  - tests/test_alloc11_journal_and_ledger_fixes.py::test_stop_out_reduces_strategy_exposure
+  - tests/test_alloc11_journal_and_ledger_fixes.py::test_manual_close_reduces_strategy_exposure
+  evidence: 'E-04 fix: attribution by family_id'
+  notes: ''
+- id: ALLOC-13
+  group: O
+  scenario: Unresolved ambiguous submission is visible and resolvable by the operator
+  initial_state: real app, paper broker patched to lose the response
+  event_sequence: webhook entry -> ERROR; GET unresolved; POST resolve not_placed; POST again
+  expected_invariant: listed once; reservation released exactly once; second resolve 409; invalid outcome
+    422; auth required
+  status: covered
+  impl_status: partial
+  tests:
+  - tests/test_alloc11_journal_and_ledger_fixes.py::test_unresolved_ledger_rows_are_listed_and_resolvable
+  - tests/test_alloc11_journal_and_ledger_fixes.py::test_ledger_endpoints_require_owner_auth
+  evidence: 'D-13/F-05: API only; no reconciler pass, no console screen'
+  notes: adapter definite-reject classification still open (B-05/C-20)

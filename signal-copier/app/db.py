@@ -8888,7 +8888,8 @@ class SignalStore:
         with self._connect() as conn:
             rows = conn.execute(
                 "SELECT DISTINCT o.account_id FROM orders o JOIN signals s ON o.signal_id = s.id "
-                "WHERE o.status = 'filled' AND s.source = ?",
+                "LEFT JOIN signals fs ON fs.id = o.family_id "
+                "WHERE o.status = 'filled' AND COALESCE(fs.source, s.source) = ?",
                 (source,),
             ).fetchall()
         return [r[0] for r in rows]
@@ -8907,7 +8908,13 @@ class SignalStore:
         if source is None:
             query = query.format(join="", extra="")
         else:
-            query = query.format(join="JOIN signals s ON o.signal_id = s.id", extra="AND s.source = ?")
+            # A lifecycle- or operator-initiated exit carries a synthetic
+            # source ("lifecycle_manager", "manual_exit"); its economic owner
+            # is the entry signal named by `family_id`.
+            query = query.format(
+                join="JOIN signals s ON o.signal_id = s.id LEFT JOIN signals fs ON fs.id = o.family_id",
+                extra="AND COALESCE(fs.source, s.source) = ?",
+            )
             params.append(source)
         with self._connect() as conn:
             rows = conn.execute(query, params).fetchall()

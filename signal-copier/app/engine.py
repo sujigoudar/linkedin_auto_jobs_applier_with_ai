@@ -966,7 +966,11 @@ class SignalCopierEngine:
                     result,
                     broker=account.broker,
                     symbol=symbol,
-                    side=signal.side,
+                    # The journal must carry the resolved BUY/SELL (the same
+                    # value the export already uses): a `close` side is
+                    # skipped by every replay, which blanks realized P&L,
+                    # marks the symbol unresolved and locks the capital gate.
+                    side=export_side if export_side is not None else signal.side,
                     requested_quantity=None,
                     applied_quantity=managed_outcome.applied_quantity,
                     confirmed_cumulative_fill=managed_outcome.confirmed_cumulative_fill,

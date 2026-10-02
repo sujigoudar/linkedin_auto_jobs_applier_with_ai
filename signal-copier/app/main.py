@@ -71,7 +71,16 @@ from app.metrics import render_metrics
 from app.errors import SignalValidationError
 from app.lifecycle.manager import PositionLifecycleManager
 from app.lifecycle.models import ProtectionStatus
-from app.models import AccountBalance, AssetClass, ManagementRecipe, Side, Signal, SourceEvent, SourceEventKind
+from app.models import (
+    AccountBalance,
+    AssetClass,
+    CommandLedgerEntry,
+    ManagementRecipe,
+    Side,
+    Signal,
+    SourceEvent,
+    SourceEventKind,
+)
 from app.parser_tooling import (
     ExtractedFields,
     MessageType,
@@ -2588,6 +2597,59 @@ async def list_allocation_intents(
     """ALLOC-01 audit view: every logical allocation decision (which
     account was selected, or why the trade was skipped)."""
     return {"allocation_intents": store.list_allocation_intents(state=state, limit=max(1, min(limit, 500)))}
+
+
+def _command_ledger_entry_to_dict(entry: CommandLedgerEntry) -> dict:
+    return {
+        "idempotency_key": entry.idempotency_key,
+        "intent_id": entry.intent_id,
+        "command_type": entry.command_type.value,
+        "account_id": entry.account_id,
+        "environment": entry.environment,
+        "uncertainty_state": entry.uncertainty_state.value,
+        "remote_identifiers": entry.remote_identifiers,
+        "terminal_evidence": entry.terminal_evidence,
+        "created_at": entry.created_at.isoformat(),
+        "resolved_at": entry.resolved_at.isoformat() if entry.resolved_at else None,
+    }
+
+
+@app.get("/command-ledger/unresolved")
+async def list_unresolved_command_ledger(
+    account_id: str | None = None, _owner: dict = Depends(require_owner_read)
+) -> dict:
+    """Every financial command whose outcome at the venue is not known
+    (pending submission, submitted but unconfirmed, or ambiguous). An
+    ambiguous ENTRY keeps its capital reservation until resolved here."""
+    entries = store.list_unresolved_command_ledger_entries(account_id=account_id)
+    return {"unresolved": [_command_ledger_entry_to_dict(e) for e in entries]}
+
+
+class ResolveUnknownSubmissionRequest(BaseModel):
+    idempotency_key: str
+    #: Only "not_placed" releases a reservation: the operator has confirmed
+    #: with the venue that no order or fill exists. A fill that did happen
+    #: must be recorded through reconciliation, never asserted here.
+    outcome: Literal["not_placed"]
+    evidence: str = Field(min_length=3, max_length=2000)
+
+
+@app.post("/command-ledger/resolve")
+async def resolve_unknown_submission_endpoint(
+    request: ResolveUnknownSubmissionRequest, _owner: dict = Depends(require_owner)
+) -> dict:
+    resolved = engine.resolve_unknown_submission(
+        request.idempotency_key, outcome=request.outcome, evidence=request.evidence
+    )
+    if not resolved:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"command '{request.idempotency_key}' is not an unresolved ambiguous ENTRY "
+                "(unknown key, already resolved, or not an entry command)"
+            ),
+        )
+    return {"idempotency_key": request.idempotency_key, "status": "resolved", "outcome": request.outcome}
 
 
 class RoutingSimulateRequest(BaseModel):
