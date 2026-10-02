@@ -58,9 +58,16 @@ def resolve_chromium_executable() -> str | None:
 
 
 def _free_port() -> int:
-    with closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
+    """Find a free port, with retry logic for TIME_WAIT state."""
+    for _ in range(5):
+        try:
+            with closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as s:
+                s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                s.bind(("127.0.0.1", 0))
+                return s.getsockname()[1]
+        except OSError:
+            time.sleep(0.1)
+    raise RuntimeError("Could not find a free port after 5 attempts")
 
 
 @pytest.fixture
@@ -94,21 +101,27 @@ def live_server(tmp_path):
     )
     base_url = f"http://127.0.0.1:{port}"
     try:
-        for _ in range(75):
+        for attempt in range(75):
             try:
                 response = httpx.get(f"{base_url}/health", timeout=1.0)
                 if response.status_code in (200, 503):
                     break
-            except httpx.TransportError:
+            except (httpx.TransportError, httpx.ConnectError):
                 pass
             time.sleep(0.2)
         else:
             proc.terminate()
+            try:
+                proc.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                proc.kill()
             raise RuntimeError("live_server did not become reachable in time")
         yield base_url
     finally:
         proc.terminate()
         try:
-            proc.wait(timeout=5)
+            proc.wait(timeout=3)
         except subprocess.TimeoutExpired:
             proc.kill()
+            proc.wait(timeout=1)
+        time.sleep(0.1)
