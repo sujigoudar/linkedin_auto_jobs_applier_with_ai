@@ -340,7 +340,13 @@ CREATE TABLE IF NOT EXISTS config_accounts (
     -- WP-38 (G-C-24): monotonic counter for paper broker order IDs,
     -- persisted per account to remain unique across restarts.
     -- Only used when broker='paper'; NULL/unused for other brokers.
-    paper_order_id_sequence INTEGER
+    paper_order_id_sequence INTEGER,
+    -- B-01: sizing strategy for this account. One of "multiplier" (default),
+    -- "fixed", or "risk_fraction".
+    sizing_mode TEXT NOT NULL DEFAULT 'multiplier',
+    -- B-01: for sizing_mode="risk_fraction", the fraction of account equity
+    -- to risk per trade (e.g., 0.01 for 1%). NULL means not in use.
+    risk_fraction REAL
 );
 
 CREATE TABLE IF NOT EXISTS config_routing_rules (
@@ -2238,6 +2244,10 @@ _COLUMN_MIGRATIONS = [
     # app/models.py's DestinationAccount for the full circuit breaker design.
     ("config_accounts", "daily_loss_limit_percent", "DECIMAL(5, 2)"),
     ("config_accounts", "min_equity_threshold", "DECIMAL(18, 8)"),
+    # WP-16 (B-01): risk-fraction sizing mode -- see DestinationAccount's
+    # sizing_mode and risk_fraction docstrings.
+    ("config_accounts", "sizing_mode", "TEXT NOT NULL DEFAULT 'multiplier'"),
+    ("config_accounts", "risk_fraction", "REAL"),
 ]
 
 
@@ -2391,6 +2401,9 @@ class SignalStore:
         # persistence (these specs are runtime-only fields on Signal but need
         # to be recoverable for UI interpretation, so serialize them into raw).
         # Serialize contract specs into raw["contract_spec"] for persistence
+        # WP-44: serialize contract specs into raw["contract_spec"] for
+        # persistence (these specs are runtime-only fields on Signal but need
+        # to be recoverable for UI interpretation, so serialize them into raw).
         raw_data = signal.raw.copy()
         contract_spec = {}
         if signal.option is not None:
@@ -4675,6 +4688,8 @@ class SignalStore:
                           management_recipe, qualification_level, exclusive_writer_qualified,
                           daily_loss_limit_percent, min_equity_threshold
                           allow_short, currency, max_gross_leverage, daily_loss_limit_percent, min_equity_threshold
+                          daily_loss_limit_percent, min_equity_threshold, currency, max_gross_leverage,
+                          allow_short, sizing_mode, risk_fraction
                    FROM config_accounts ORDER BY account_id"""
             ).fetchall()
         return [
@@ -4704,6 +4719,11 @@ class SignalStore:
                 "max_gross_leverage": r[14],
                 "daily_loss_limit_percent": r[15],
                 "min_equity_threshold": r[16],
+                "currency": r[14],
+                "max_gross_leverage": r[15],
+                "allow_short": bool(r[16]),
+                "sizing_mode": r[17] or "multiplier",
+                "risk_fraction": r[18],
             }
             for r in rows
         ]
@@ -4731,6 +4751,11 @@ class SignalStore:
         min_equity_threshold: float | None = None,
         sizing_mode: str | None = None,  # WP-16: forward-compatible, not stored yet
         risk_fraction: float | None = None,  # WP-16: forward-compatible, not stored yet
+        currency: str | None = None,
+        max_gross_leverage: float | None = None,
+        allow_short: bool = False,
+        sizing_mode: str = "multiplier",
+        risk_fraction: float | None = None,
     ) -> None:
         with self._connect() as conn:
             conn.execute(
@@ -4742,6 +4767,9 @@ class SignalStore:
                     exclusive_writer_qualified, allow_short, currency, max_gross_leverage,
                     daily_loss_limit_percent, min_equity_threshold)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    exclusive_writer_qualified, daily_loss_limit_percent, min_equity_threshold, currency,
+                    max_gross_leverage, allow_short, sizing_mode, risk_fraction)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT (account_id) DO UPDATE SET
                      broker = excluded.broker, multiplier = excluded.multiplier,
                      fixed_quantity = excluded.fixed_quantity, symbol_map = excluded.symbol_map,
@@ -4756,6 +4784,13 @@ class SignalStore:
                      max_gross_leverage = excluded.max_gross_leverage,
                      daily_loss_limit_percent = excluded.daily_loss_limit_percent,
                      min_equity_threshold = excluded.min_equity_threshold""",
+                     daily_loss_limit_percent = excluded.daily_loss_limit_percent,
+                     min_equity_threshold = excluded.min_equity_threshold,
+                     currency = excluded.currency,
+                     max_gross_leverage = excluded.max_gross_leverage,
+                     allow_short = excluded.allow_short,
+                     sizing_mode = excluded.sizing_mode,
+                     risk_fraction = excluded.risk_fraction""",
                 (
                     account_id,
                     broker,
@@ -4779,6 +4814,13 @@ class SignalStore:
                     max_gross_leverage,
                     daily_loss_limit_percent,
                     min_equity_threshold,
+                    daily_loss_limit_percent,
+                    min_equity_threshold,
+                    currency,
+                    max_gross_leverage,
+                    int(allow_short),
+                    sizing_mode,
+                    risk_fraction,
                 ),
             )
             # Note: sizing_mode and risk_fraction are forward-compatible fields accepted

@@ -2509,11 +2509,23 @@ class AccountRequest(BaseModel):
     #: WP-16: position sizing mode (accept for forward compatibility; storage in WP-16)
     sizing_mode: str | None = None
     #: WP-16: risk fraction for sizing (accept for forward compatibility; storage in WP-16)
+    daily_loss_limit_percent: float | None = Field(default=None, ge=0, le=100)
+    min_equity_threshold: float | None = Field(default=None, gt=0)
+    currency: str | None = None
+    max_gross_leverage: float | None = Field(default=None, gt=0)
+    allow_short: bool = False
+    #: B-01: sizing strategy for this account: "multiplier" (default),
+    #: "fixed", or "risk_fraction".
+    sizing_mode: str = Field(default="multiplier", pattern="^(multiplier|fixed|risk_fraction)$")
+    #: B-01: for sizing_mode="risk_fraction", the fraction of equity to risk
+    #: per trade (e.g., 0.01 for 1%). Must be between 0 and 1.
     risk_fraction: float | None = Field(default=None, gt=0, le=1)
 
     _reject_bool_multiplier = field_validator(
         "multiplier", "fixed_quantity", "max_notional_exposure", "risk_percent_of_equity",
         "max_gross_leverage", "daily_loss_limit_percent", "min_equity_threshold", "risk_fraction", mode="before"
+        "daily_loss_limit_percent", "min_equity_threshold", "max_gross_leverage", "risk_fraction",
+        mode="before"
     )(_reject_bool_scaling_value)
 
     @field_validator("management_recipe")
@@ -2568,11 +2580,23 @@ class AccountPatchRequest(BaseModel):
     #: WP-16: position sizing mode (accept for forward compatibility; storage in WP-16)
     sizing_mode: str | None = None
     #: WP-16: risk fraction for sizing (accept for forward compatibility; storage in WP-16)
+    daily_loss_limit_percent: float | None = Field(default=None, ge=0, le=100)
+    min_equity_threshold: float | None = Field(default=None, gt=0)
+    currency: str | None = None
+    max_gross_leverage: float | None = Field(default=None, gt=0)
+    allow_short: bool | None = None
+    #: B-01: sizing strategy for this account: "multiplier" (default),
+    #: "fixed", or "risk_fraction".
+    sizing_mode: str | None = Field(default=None, pattern="^(multiplier|fixed|risk_fraction)$")
+    #: B-01: for sizing_mode="risk_fraction", the fraction of equity to risk
+    #: per trade (e.g., 0.01 for 1%). Must be between 0 and 1.
     risk_fraction: float | None = Field(default=None, gt=0, le=1)
 
     _reject_bool_multiplier = field_validator(
         "multiplier", "fixed_quantity", "max_notional_exposure", "risk_percent_of_equity",
         "max_gross_leverage", "daily_loss_limit_percent", "min_equity_threshold", "risk_fraction", mode="before"
+        "daily_loss_limit_percent", "min_equity_threshold", "max_gross_leverage", "risk_fraction",
+        mode="before"
     )(_reject_bool_scaling_value)
 
     @field_validator("management_recipe")

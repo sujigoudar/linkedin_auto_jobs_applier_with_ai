@@ -817,6 +817,13 @@ class DestinationAccount:
     #: WP-16 (B-01): Risk fraction for dynamic risk-fraction sizing.
     #: When sizing_mode="risk_fraction", quantity = floor(equity * risk_fraction / (|price - stop_loss| * multiplier)).
     #: `None` (the default) means risk_fraction sizing is not available for this account.
+    #: B-01: sizing strategy for this account. One of "multiplier" (default,
+    #: use fixed_quantity or signal.quantity * multiplier), "fixed" (use
+    #: fixed_quantity only), or "risk_fraction" (size based on risk_fraction,
+    #: equity, signal.price, and signal.stop_loss).
+    sizing_mode: str = "multiplier"
+    #: B-01: for sizing_mode="risk_fraction", the fraction of account equity
+    #: to risk per trade (e.g., 0.01 for 1%). None means this mode is not in use.
     risk_fraction: Optional[float] = None
 
     def __post_init__(self) -> None:

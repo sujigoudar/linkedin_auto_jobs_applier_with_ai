@@ -444,6 +444,9 @@
   }
 
 <<<<<<< HEAD
+<<<<<<< HEAD
+=======
+>>>>>>> dbe41be (WP-16: Add risk-fraction sizing mode for dynamic position sizing)
   // WP-44: interpret and format the signal for plain-language display.
   function interpretSignal(s) {
     if (!s.intent) return "—";
@@ -522,6 +525,7 @@
     // halts/unresolved commands/alerts → TR-20
     if (msg.includes("halt") || msg.includes("unresolved") || msg.includes("alert")) {
       return "#/operations";  // TR-20 (operations center)
+<<<<<<< HEAD
 =======
   function interpretSignal(s) {
     // WP-44: Plain-language signal interpretation for TR-04.
@@ -601,6 +605,8 @@
     if (/halt|unresolved|alert/i.test(lowerMessage)) {
       return "#/operations";
 >>>>>>> 02eef07 (WP-44: Plain-language signal interpretation and Why/Fix links on rejections)
+=======
+>>>>>>> dbe41be (WP-16: Add risk-fraction sizing mode for dynamic position sizing)
     }
 
     return null;
@@ -612,10 +618,14 @@
     return reasons.map((o) => {
       const fixRoute = fixRouteForReason(o.message);
 <<<<<<< HEAD
+<<<<<<< HEAD
       const fixLink = fixRoute ? ` <a href="${escapeAttr(fixRoute)}" class="inline-link">Fix</a>` : "";
 =======
       const fixLink = fixRoute ? ` <a href="${fixRoute}" class="inline-link">Fix</a>` : "";
 >>>>>>> 02eef07 (WP-44: Plain-language signal interpretation and Why/Fix links on rejections)
+=======
+      const fixLink = fixRoute ? ` <a href="${escapeAttr(fixRoute)}" class="inline-link">Fix</a>` : "";
+>>>>>>> dbe41be (WP-16: Add risk-fraction sizing mode for dynamic position sizing)
       return `<span class="mono">${escapeHtml(o.account_id)}</span>: ${escapeHtml(o.message)}${fixLink}`;
     }).join("<br>");
   }
@@ -637,10 +647,14 @@
       destinationsCell(ordersForSignal),
       orderResultCell(ordersForSignal),
 <<<<<<< HEAD
+<<<<<<< HEAD
       interpretSignal(s),  // WP-44: "Interpreted as" column
 =======
       interpretSignal(s),
 >>>>>>> 02eef07 (WP-44: Plain-language signal interpretation and Why/Fix links on rejections)
+=======
+      interpretSignal(s),  // WP-44: "Interpreted as" column
+>>>>>>> dbe41be (WP-16: Add risk-fraction sizing mode for dynamic position sizing)
       rejectionReasonCell(ordersForSignal),
     ];
   }
