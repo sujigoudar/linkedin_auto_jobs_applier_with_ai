@@ -2083,6 +2083,27 @@ CREATE TABLE IF NOT EXISTS outbox (
 );
 CREATE INDEX IF NOT EXISTS ix_outbox_state_created ON outbox(state, created_at);
 CREATE INDEX IF NOT EXISTS ix_outbox_intent ON outbox(intent_id);
+-- WC-08: Runner state tracking for pyramiding and staged entries
+CREATE TABLE IF NOT EXISTS runner_state (
+    id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    lifecycle_id TEXT NOT NULL,
+    owned_quantity INTEGER NOT NULL,
+    entry_price_cents INTEGER NOT NULL,
+    high_water_cents INTEGER NOT NULL,
+    giveback_cents INTEGER NOT NULL,
+    protective_floor_cents INTEGER NOT NULL DEFAULT 0,
+    original_risk_cents INTEGER NOT NULL DEFAULT 0,
+    deadline_utc TIMESTAMP,
+    created_at_utc TIMESTAMP NOT NULL,
+    updated_at_utc TIMESTAMP NOT NULL,
+    FOREIGN KEY (account_id) REFERENCES config_accounts(account_id),
+    UNIQUE (account_id, symbol, lifecycle_id)
+);
+CREATE INDEX IF NOT EXISTS ix_runner_state_account_id ON runner_state(account_id);
+CREATE INDEX IF NOT EXISTS ix_runner_state_symbol ON runner_state(symbol);
+CREATE INDEX IF NOT EXISTS ix_runner_state_lifecycle_id ON runner_state(lifecycle_id);
 """
 
 
