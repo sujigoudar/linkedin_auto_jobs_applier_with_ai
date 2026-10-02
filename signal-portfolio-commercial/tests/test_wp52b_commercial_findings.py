@@ -352,53 +352,70 @@ class TestGC24EventIdDedup:
         assert existing.payload_hash == "hash1"
 
     def test_gc24_different_payload_parked(self, db_session):
-        """G-C-24: Different payload for same event_id is parked with reason."""
-        # Create initial event
-        event1 = InboxEvent(
-            event_id="exec-456",
-            tenant_id="tenant1",
-            event_type="EXECUTION_APPLIED",
-            source_stream="signal-copier:acct1",
-            producer_generation=1,
-            export_sequence=2,
-            envelope_json='{"data": "payload-A"}',
-            payload_hash="hash-A",
-            received_at="2026-10-01T12:00:00Z",
-            applied_at="2026-10-01T12:00:00Z",
+        """G-C-24: a reused event_id with a DIFFERENT payload is an integrity
+        incident (never last-write-wins) and must not stall the stream: the
+        next, well-formed event still ingests through the real service path."""
+        from datetime import datetime, timezone
+
+        from signal_platform_contracts import (
+            Environment,
+            EventEnvelope,
+            EventType,
+            ExecutionAppliedPayload,
+            InstrumentIdentity,
+            PrivateAccountIdentity,
+            build_subject,
+            compute_payload_hash,
         )
-        db_session.add(event1)
+
+        from app.services.integration_inbox import (
+            EventIntegrityError,
+            ingest_export_event,
+            register_export_stream,
+        )
+
+        _seed_tenant_and_user(db_session, tenant_id="tenant-a", user_id="user-a")
+        stream = "signal-copier:gc24"
+        register_export_stream(db_session, tenant_id="tenant-a", source_stream=stream, environment="LOCAL_SIM")
         db_session.commit()
 
-        # Attempt to add event with same ID but different payload
-        # This should be detected and parked with a reason (G-C-24 fix)
-        event2_parked = InboxEvent(
-            event_id="exec-456",  # Same ID
-            tenant_id="tenant1",
-            event_type="EXECUTION_APPLIED",
-            source_stream="signal-copier:acct1",
-            producer_generation=1,
-            export_sequence=3,  # Next in sequence
-            envelope_json='{"data": "payload-B"}',  # Different payload
-            payload_hash="hash-B",  # Different payload hash
-            received_at="2026-10-01T12:00:01Z",
-            applied_at=None,  # Not applied because it's an integrity error
-            parked_reason="event_integrity_error:reused_id_with_different_payload",
-        )
-        db_session.add(event2_parked)
+        def envelope(event_id: str, export_sequence: int, broker_order_id: str) -> str:
+            instrument = InstrumentIdentity(
+                instrument_id="AAPL", venue="NASDAQ", market_type="equity", currency="USD",
+                multiplier="1", quantity_convention="shares",
+            )
+            account = PrivateAccountIdentity(account_id="acct1")
+            payload = ExecutionAppliedPayload(
+                account=account, instrument=instrument, side="buy", filled_quantity="10",
+                filled_price="150.00", fee=None, broker="paper", broker_order_id=broker_order_id,
+            ).model_dump(mode="json")
+            now = datetime.now(timezone.utc)
+            return EventEnvelope(
+                event_type=EventType.EXECUTION_APPLIED, event_id=event_id,
+                producer_id="signal-copier-instance-1", source_stream=stream,
+                export_sequence=export_sequence,
+                subject=build_subject(account=account, instrument=instrument),
+                event_time=now, effective_time=now, availability_time=now, receipt_time=now,
+                environment=Environment.LOCAL_SIM, evidence_class=EvidenceClass.INTERNAL_PAPER,
+                payload_hash=compute_payload_hash(payload), payload=payload,
+            ).model_dump_json()
+
+        first = ingest_export_event(db_session, envelope("exec-456", 0, "paper-1"))
         db_session.commit()
+        first_hash = first.payload_hash
 
-        # Verify both events exist (G-C-24 fix: parked instead of stalling)
-        # The second one should be parked (has parked_reason set)
-        events = db_session.query(InboxEvent).filter_by(event_id="exec-456").all()
-        assert len(events) >= 1  # At least first event exists
+        # Same event_id, different payload: refused as an integrity incident,
+        # and the stored row keeps its ORIGINAL payload (no last-write-wins).
+        with pytest.raises(EventIntegrityError):
+            ingest_export_event(db_session, envelope("exec-456", 1, "paper-2"))
+        db_session.rollback()
+        stored = db_session.get(InboxEvent, "exec-456")
+        assert stored is not None and stored.payload_hash == first_hash
 
-        parked = db_session.query(InboxEvent).filter_by(
-            event_id="exec-456", parked_reason="event_integrity_error:reused_id_with_different_payload"
-        ).first()
-        if parked:  # If the parked version was added
-            assert parked.parked_reason is not None
-            assert "integrity_error" in parked.parked_reason.lower()
-
+        # The stream is not stalled: the next well-formed event still ingests.
+        nxt = ingest_export_event(db_session, envelope("exec-457", 1, "paper-3"))
+        db_session.commit()
+        assert nxt.event_id == "exec-457" and nxt.parked_reason is None
 
 class TestGC25RoutingOutcomePerAccount:
     """G-C-25: Routing outcome stored per-account, not overwritten."""
