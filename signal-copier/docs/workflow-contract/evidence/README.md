@@ -34,3 +34,13 @@ This checks that:
 - All results are PASS (until more scenarios are tested, expect INCOMPLETE status)
 
 Until all scenarios are tested, this will report INCOMPLETE — which is the honest state.
+
+## Regenerating executed_tests.json
+
+Evidence is only written when explicitly requested (a plain `pytest -q` never
+rewrites the committed file with a partial run):
+
+    python -m pytest -q --scenario-evidence=docs/workflow-contract/evidence/executed_tests.json
+    python docs/workflow-contract/build_traceability.py --executed docs/workflow-contract/evidence/executed_tests.json
+    python docs/workflow-contract/validate_evidence.py docs/workflow-contract/requirements_traceability.json --evidence-root .
+    python docs/workflow-contract/make_release_evidence.py

@@ -85,12 +85,20 @@ def pytest_configure(config: Any) -> None:
     _plugin_state["config"] = config
     _plugin_state["catalog_ids"] = _load_catalog_ids(config)
 
-    # Get output path
-    evidence_option = config.getoption("--scenario-evidence", None)
-    if evidence_option:
+    # Output path: evidence is written ONLY when asked for, so an ordinary
+    # `pytest -q` (CI, a developer's partial run) never rewrites the committed
+    # docs/workflow-contract/evidence/executed_tests.json with a partial run.
+    # Ask with `--scenario-evidence=PATH` or `SCENARIO_EVIDENCE_OUT=PATH`
+    # (value "1"/"default" selects the committed path).
+    import os
+
+    evidence_option = config.getoption("--scenario-evidence", None) or os.environ.get("SCENARIO_EVIDENCE_OUT")
+    if evidence_option in ("1", "default"):
+        _plugin_state["output_path"] = Path(config.rootdir) / "docs" / "workflow-contract" / "evidence" / "executed_tests.json"
+    elif evidence_option:
         _plugin_state["output_path"] = Path(evidence_option)
     else:
-        _plugin_state["output_path"] = Path(config.rootdir) / "docs" / "workflow-contract" / "evidence" / "executed_tests.json"
+        _plugin_state["output_path"] = None
 
 
 def pytest_collection_finish(session: Any) -> None:
