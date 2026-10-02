@@ -722,12 +722,24 @@ class SignalCopierEngine:
                         broker = self.brokers.get(account.broker)
                         if broker:
                             env = broker.venue_environment(account)
-                            if env in ("paper", "sandbox"):
-                                regime = "not_applicable_paper"  # Paper/sandbox don't have regime
+                            if env == "live":
+                                # A live venue with no declared regime blocks
+                                # new exposure (spec I17, §9).
+                                regime = "unknown"
                             else:
-                                regime = "unknown"  # Live environment with no regime row → blocked
+                                # paper/sandbox carry no PDT/intraday regime.
+                                # An adapter that cannot name its environment
+                                # ("unknown") is kept off live routes by the
+                                # WP-33 environment-qualification gate, not by
+                                # relabelling it as a margin-regime block.
+                                regime = f"not_applicable_{env}"
                         else:
-                            regime = "unknown"  # No broker available
+                            # No adapter registered for this account's broker:
+                            # the regime cannot be evaluated at all, and the
+                            # entry path below reports the missing adapter as
+                            # an ERROR (its existing contract). Do not relabel
+                            # a configuration error as a margin-regime block.
+                            regime = "not_evaluated_no_adapter"
                     except Exception:
                         regime = "unknown"
 
@@ -737,9 +749,17 @@ class SignalCopierEngine:
             # Check uncertain effect (unresolved command ledger entries)
             if not excluded_reasons:
                 unresolved = self.store.list_unresolved_command_ledger_entries(account.account_id)
-                # If there's any unresolved ENTRY or CLOSE, fail closed
+                # Spec §6.3: an UNCERTAIN effect is a submission whose broker
+                # outcome is genuinely unknown (UNKNOWN_AMBIGUOUS, or a
+                # PENDING_SUBMISSION row with no response yet). A
+                # SUBMITTED_UNCONFIRMED row is a KNOWN accepted order with a
+                # broker id: its exposure is already held by the capital
+                # reservation, so it is not an uncertain effect.
                 for entry in unresolved:
-                    if entry.command_type in (CommandType.ENTRY, CommandType.CLOSE):
+                    if entry.command_type in (CommandType.ENTRY, CommandType.CLOSE) and entry.uncertainty_state in (
+                        UncertaintyState.UNKNOWN_AMBIGUOUS,
+                        UncertaintyState.PENDING_SUBMISSION,
+                    ):
                         excluded_reasons.append("UNCERTAIN_EFFECT")
                         break
 
@@ -802,10 +822,16 @@ class SignalCopierEngine:
                 if "BUDGET_NOT_ADMISSIBLE" in reason_str:
                     overall_budget = "not_enough"
 
+        # NO_ELIGIBLE_ROUTE means no candidate existed at all. When candidates
+        # existed but every one was excluded, the real exclusion reasons are
+        # the blockers; hand the gate the original candidate ids so it does
+        # not add a misleading NO_ELIGIBLE_ROUTE on top of them.
+        gate_candidates = eligible_accounts or [a.account_id for a in single_candidates]
+
         return AdmissionInputs(
             authorization=auth,
             interpretation=interp,
-            eligible_physical_accounts=eligible_accounts,
+            eligible_physical_accounts=gate_candidates,
             budget_state=overall_budget,
             margin_regime=overall_regime,
             halt=overall_halt,
@@ -3952,7 +3978,15 @@ class SignalCopierEngine:
         if not admitted:
             assert rejection is not None  # _try_reserve_capital always sets this when admitted is False
             # TRK-22: same convention -- capital admission is refused before
-            # any broker call.
+            # any broker call. The command-ledger row opened above (for
+            # idempotency) must not linger as PENDING_SUBMISSION: nothing was
+            # submitted, so it is a confirmed rejection with zero broker effect
+            # (otherwise WC-32's UNCERTAIN_EFFECT gate would block the account).
+            self.store.mark_command_ledger_outcome(
+                ledger_key,
+                uncertainty_state=UncertaintyState.REJECTED_CONFIRMED,
+                terminal_evidence={"reason": "capital_admission_refused", "message": rejection.message},
+            )
             return _ManagedOrderOutcome(rejection, None, None)
 
         self.lifecycle_manager.start_plan(plan)
@@ -4418,12 +4452,6 @@ class SignalCopierEngine:
         # order journal to correctly attribute the close to this signal.
         result = replace(result, signal_id=signal.id)
 
-        # Also ensure filled_price is set from the original signal price if available.
-        # The internal exit_signal created by _submit_exit_order has no price, so
-        # filled_price would be None; we need to use the price from the original
-        # CLOSE signal to ensure economics calculations work correctly.
-        if result.status == OrderStatus.FILLED and result.filled_price is None and signal.price is not None:
-            result = replace(result, filled_price=signal.price)
 
         # TRK-22: AUD-01's distinct-field quantity model for this managed
         # close -- see this method's own docstring for why `request_exit`'s
@@ -4569,14 +4597,6 @@ class SignalCopierEngine:
             # whatever id happened to come back from deeper in the call.
             result = replace(result, signal_id=close_signal.id)
 
-            # Also ensure filled_price is set for a filled close order.
-            # The internal exit_signal created by _submit_exit_order has no price, so
-            # filled_price would be None; use the entry price if available to ensure
-            # economics calculations work correctly.
-            if result.status == OrderStatus.FILLED and result.filled_price is None:
-                # Try to get the entry price from the lifecycle
-                if lifecycle_before_close is not None and lifecycle_before_close.entry_price is not None:
-                    result = replace(result, filled_price=lifecycle_before_close.entry_price)
 
             # DB-0X: real family link back to this position's own entry
             # (see app/lifecycle/models.py's `PositionPlan.entry_signal_id`)

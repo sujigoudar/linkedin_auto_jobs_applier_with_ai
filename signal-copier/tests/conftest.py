@@ -39,6 +39,28 @@ def reset_capital_allocator_state():
     except Exception:
         pass
 
+@pytest.fixture(autouse=True)
+def reset_shared_paper_broker():
+    """app.main builds ONE module-level PaperBroker that the engine, the
+    lifecycle manager and the daily-loss limiter all share. Its simulated
+    cash, positions and last-fill quote prices therefore leaked from one
+    TestClient-based test into the next (a later priceless BUY was gated by
+    an earlier test's fill price and depleted cash). Swap in a fresh
+    PaperBroker before every test; the registries all hold the same dict, so
+    replacing the entry is enough."""
+    try:
+        import sys
+
+        main_module = sys.modules.get("app.main")
+        if main_module is not None and "paper" in getattr(main_module, "brokers", {}):
+            from app.brokers.paper import PaperBroker
+
+            main_module.brokers["paper"] = PaperBroker()
+    except Exception:
+        pass
+    yield
+
+
 _SIGNAL_COPIER_DIR = Path(__file__).resolve().parent.parent
 
 

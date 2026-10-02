@@ -22,8 +22,12 @@ from app.models import DestinationAccount, Side, Signal
 
 
 @pytest.mark.asyncio
-async def test_e16_paper_broker_exit_without_price_returns_none():
-    """E-16: PaperBroker exits without signal price should have filled_price=None, not 0.0."""
+async def test_e16_paper_broker_exit_without_price_fills_at_last_simulated_price_never_zero():
+    """E-16: a PaperBroker exit with no signal price must never report a
+    fabricated 0.0. The simulator's own last known market for the symbol (the
+    entry fill at 50.0 here) is a genuine simulated figure, so the exit fills
+    there and says so; only a symbol the simulator has never priced yields
+    None (see the entry-without-price test below)."""
     broker = PaperBroker()
     account = DestinationAccount(account_id="acct1", broker="paper")
 
@@ -38,8 +42,9 @@ async def test_e16_paper_broker_exit_without_price_returns_none():
     )
     exit_result = await broker.place_order(exit_signal, account, 10.0, "AAPL")
 
-    # E-16 fix: filled_price should be None, not 0.0
-    assert exit_result.filled_price is None, f"Expected None but got {exit_result.filled_price}"
+    assert exit_result.filled_price == 50.0, f"Expected the last simulated price 50.0, got {exit_result.filled_price}"
+    assert exit_result.filled_price != 0.0
+    assert "last simulated price" in exit_result.message
 
 
 @pytest.mark.asyncio

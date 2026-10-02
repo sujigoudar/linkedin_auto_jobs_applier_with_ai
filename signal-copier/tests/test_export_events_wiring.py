@@ -54,7 +54,7 @@ async def test_a_real_fill_produces_a_real_undelivered_export_event(store):
     )
     engine = SignalCopierEngine(routing=routing, brokers={"paper": paper}, store=store)
 
-    signal = Signal(source="tradingview", symbol="BTCUSDT", side=Side.BUY, quantity=2.0)
+    signal = Signal(source="tradingview", symbol="BTCUSDT", side=Side.BUY, quantity=2.0, price=100.0)
     results = await engine.handle_signal(signal)
     assert results[0].status == OrderStatus.FILLED
 
@@ -93,7 +93,7 @@ async def test_a_rejected_order_produces_no_execution_applied_event(store):
     )
     engine = SignalCopierEngine(routing=routing, brokers={"paper": paper}, store=store)
 
-    signal = Signal(source="tradingview", symbol="BTCUSDT", side=Side.BUY, quantity=1.0)
+    signal = Signal(source="tradingview", symbol="BTCUSDT", side=Side.BUY, quantity=1.0, price=100.0)
     results = await engine.handle_signal(signal)
     assert results == []
     undelivered = store.list_undelivered_export_events()
@@ -121,7 +121,7 @@ async def test_a_missing_broker_error_produces_no_execution_applied_event(store)
     )
     engine = SignalCopierEngine(routing=routing, brokers={"paper": paper}, store=store)
 
-    signal = Signal(source="tradingview", symbol="BTCUSDT", side=Side.BUY, quantity=1.0)
+    signal = Signal(source="tradingview", symbol="BTCUSDT", side=Side.BUY, quantity=1.0, price=100.0)
     results = await engine.handle_signal(signal)
     assert results[0].status == OrderStatus.ERROR
     undelivered = store.list_undelivered_export_events()
@@ -143,8 +143,8 @@ async def test_two_fills_on_the_same_account_get_increasing_export_sequences(sto
     )
     engine = SignalCopierEngine(routing=routing, brokers={"paper": paper}, store=store)
 
-    await engine.handle_signal(Signal(source="tradingview", symbol="BTCUSDT", side=Side.BUY, quantity=1.0))
-    await engine.handle_signal(Signal(source="tradingview", symbol="BTCUSDT", side=Side.BUY, quantity=1.0))
+    await engine.handle_signal(Signal(source="tradingview", symbol="BTCUSDT", side=Side.BUY, quantity=1.0, price=100.0))
+    await engine.handle_signal(Signal(source="tradingview", symbol="BTCUSDT", side=Side.BUY, quantity=1.0, price=100.0))
 
     undelivered = store.list_undelivered_export_events()
     executions = _by_type(undelivered, EventType.EXECUTION_APPLIED)
@@ -177,7 +177,7 @@ async def test_the_produced_envelope_is_accepted_end_to_end_by_the_real_relay_wo
         accounts=accounts,
     )
     engine = SignalCopierEngine(routing=routing, brokers={"paper": paper}, store=store)
-    signal = Signal(source="tradingview", symbol="BTCUSDT", side=Side.BUY, quantity=1.0)
+    signal = Signal(source="tradingview", symbol="BTCUSDT", side=Side.BUY, quantity=1.0, price=100.0)
     results = await engine.handle_signal(signal)
     expected_execution_event_id = f"execution-applied:acct1:{results[0].broker_order_id}"
     expected_receipt_event_id = f"source-receipt:{signal.id}"

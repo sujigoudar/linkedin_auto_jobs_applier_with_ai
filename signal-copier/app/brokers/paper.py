@@ -140,7 +140,18 @@ class PaperBroker(BrokerAdapter):
         # exits via the lifecycle manager's simulate_price hook, not here.
         # Keep the original signal.price for filled_price reporting
         signal_price = signal.price
-        price = signal_price or 0.0  # Use 0.0 for calculations but keep original for reporting
+        # WP-25 / TRK-23: a signal without a price fills at the simulator's own
+        # last known market for the symbol (the last simulated tick, else the
+        # last paper fill) -- a genuine simulated figure, deterministic and
+        # recorded, never an invented one. When nothing is known the fill
+        # price stays None and no cash moves (the position is still booked).
+        fill_price: float | None = signal_price
+        price_note = ""
+        if fill_price is None:
+            fill_price = self._last_simulated_price.get(symbol) or self._last_fill_prices.get(symbol.upper())
+            if fill_price is not None:
+                price_note = " at last simulated price"
+        price = fill_price or 0.0  # 0.0 only when NO price is known at all
 
         if signal.side.value == "buy":
             # BUY: check if we have enough cash
@@ -235,8 +246,8 @@ class PaperBroker(BrokerAdapter):
             signal_id=signal.id,
             broker_order_id=order_id,
             filled_quantity=quantity,
-            filled_price=signal_price,
-            message="filled by paper broker",
+            filled_price=fill_price,
+            message=f"filled by paper broker{price_note}",
             executed_at=datetime.now(timezone.utc),  # WP-27: E-07 real fill timestamp
             fee=self.fee_per_fill,
             fee_currency="USD",  # Paper broker uses USD convention
