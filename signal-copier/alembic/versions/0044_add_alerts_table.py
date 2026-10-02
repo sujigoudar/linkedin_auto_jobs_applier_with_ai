@@ -50,7 +50,7 @@ def upgrade() -> None:
         "ix_alerts_unacknowledged",
         "alerts",
         ["acknowledged_at"],
-        sqlite_where="acknowledged_at IS NULL",
+        sqlite_where=sa.text("acknowledged_at IS NULL"),
     )
 
 
