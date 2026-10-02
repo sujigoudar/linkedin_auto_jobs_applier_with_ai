@@ -3,7 +3,7 @@
 Tests for minimum equity threshold enforcement that prevents new entries
 when account equity falls below configured minimum.
 """
-from unittest.mock import MagicMock, Mock, patch
+from unittest.mock import MagicMock
 
 import pytest
 

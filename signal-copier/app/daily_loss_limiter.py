@@ -5,7 +5,7 @@ Implements fail-closed: rejects new entries if daily loss limit breached.
 """
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import date
 from typing import Optional
 
 from app.db import SignalStore
