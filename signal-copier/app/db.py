@@ -2235,20 +2235,22 @@ class SignalStore:
             }
         if signal.future is not None:
             contract_spec["future"] = {
-                "contract": signal.future.contract,
+                "root": signal.future.root,
                 "expiry": signal.future.expiry,
                 "multiplier": signal.future.multiplier,
+                "venue": signal.future.venue,
             }
         if signal.fx is not None:
             contract_spec["fx"] = {
                 "base_currency": signal.fx.base_currency,
                 "quote_currency": signal.fx.quote_currency,
-                "lot_size": signal.fx.lot_size,
+                "unit": signal.fx.unit,
             }
         if signal.crypto_derivative is not None:
             contract_spec["crypto_derivative"] = {
-                "underlying": signal.crypto_derivative.underlying,
-                "leverage": signal.crypto_derivative.leverage,
+                "instrument_kind": signal.crypto_derivative.instrument_kind,
+                "margin_currency": signal.crypto_derivative.margin_currency,
+                "settlement_currency": signal.crypto_derivative.settlement_currency,
             }
         if contract_spec:
             raw_data["contract_spec"] = contract_spec
