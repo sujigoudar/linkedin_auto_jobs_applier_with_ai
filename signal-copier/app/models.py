@@ -365,6 +365,14 @@ class OrderResult:
     #: actual fill value (* quantity). Positive = slippage against the trade.
     #: None when this broker doesn't report slippage data.
     slippage: Optional[float] = None
+    #: E-11: Currency in which filled_price is quoted for this order
+    #: (ISO 4217 code, e.g., 'USD', 'JPY', 'EUR', 'BTC'). NULL when the
+    #: adapter doesn't report it or this order wasn't filled. Never guessed
+    #: from symbol syntax — must come from the broker or adapter's own
+    #: instrumentation data. See app/models.py's DestinationAccount.currency
+    #: for the account's base currency (distinct from each order's individual
+    #: price currency).
+    price_currency: Optional[str] = None
 
 
 @dataclass
@@ -396,6 +404,12 @@ class AccountBalance:
     #: Margin currently held against open positions, if this is a margin
     #: account and the broker reports it.
     maintenance_margin: Optional[float] = None
+    #: E-11: Base currency for this account (ISO 4217 code, e.g., 'USD',
+    #: 'EUR', 'JPY'). The currency in which cash, equity, buying_power,
+    #: and maintenance_margin are expressed. NULL when the broker doesn't
+    #: report it. See DestinationAccount.currency for the operator's
+    #: configuration of the same fact.
+    currency: Optional[str] = None
 
     def to_dict(self) -> dict:
         return {
@@ -404,6 +418,7 @@ class AccountBalance:
             "equity": self.equity,
             "buying_power": self.buying_power,
             "maintenance_margin": self.maintenance_margin,
+            "currency": self.currency,
         }
 
 
@@ -714,6 +729,14 @@ class DestinationAccount:
     #: are rejected if account equity would fall below this level. `None`
     #: (the default) disables this check. See app/daily_loss_limiter.py.
     min_equity_threshold: Optional[float] = None
+    #: E-11/B-10: Base currency for this account (ISO 4217 code, e.g.,
+    #: 'USD', 'EUR', 'JPY'). Used for multi-currency support: the currency
+    #: in which cash, equity, and P&L are expressed. `None` means not
+    #: declared; operators must explicitly configure this when trading
+    #: multiple currencies on the same account. See OrderResult.price_currency
+    #: for each individual order's price currency (distinct from the account
+    #: base currency).
+    currency: Optional[str] = None
 
     def __post_init__(self) -> None:
         if self.management_recipe is None:

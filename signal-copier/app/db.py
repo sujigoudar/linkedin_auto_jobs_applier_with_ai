@@ -245,6 +245,11 @@ CREATE TABLE IF NOT EXISTS orders (
     fee DECIMAL(18, 8),
     fee_currency TEXT,
     slippage DECIMAL(18, 8),
+    -- E-11/B-10: the currency in which filled_price is quoted for this order.
+    -- ISO 4217 code (e.g., 'USD', 'JPY' for USDJPY, 'BTC' for BTC/USD pairs, etc.).
+    -- NULL means this row predates the column or the price currency was not tracked.
+    -- Never fabricated/guessed from symbol syntax; must come from broker or adapter.
+    price_currency TEXT,
     FOREIGN KEY (signal_id) REFERENCES signals (id)
 );
 
@@ -316,7 +321,12 @@ CREATE TABLE IF NOT EXISTS config_accounts (
     exclusive_writer_qualified INTEGER NOT NULL DEFAULT 0,
     -- E04 (bounded): daily loss limit circuit breaker for risk control
     daily_loss_limit_percent DECIMAL(5, 2),
-    min_equity_threshold DECIMAL(18, 8)
+    min_equity_threshold DECIMAL(18, 8),
+    -- E-11/B-10: account base currency for multi-currency support.
+    -- ISO 4217 code (e.g., 'USD', 'EUR', 'JPY'). NULL means not declared;
+    -- assume USD for backward compatibility only when reading existing
+    -- configurations. Never fabricated/defaulted server-side for new accounts.
+    currency TEXT
 );
 
 CREATE TABLE IF NOT EXISTS config_routing_rules (
@@ -1999,6 +2009,16 @@ _COLUMN_MIGRATIONS = [
     ("orders", "fee", "DECIMAL(18, 8)"),
     ("orders", "fee_currency", "TEXT"),
     ("orders", "slippage", "DECIMAL(18, 8)"),
+    # E-11/B-10: multi-currency support -- account base currency and
+    # per-order price currency. See app/models.py's DestinationAccount and
+    # OrderResult docstrings for full semantics. NULL for pre-existing
+    # rows; new rows should populate these honestly (never fabricated from
+    # symbol syntax). config_accounts.currency: ISO 4217 code for this
+    # account's base currency (e.g., 'USD', 'EUR'). orders.price_currency:
+    # ISO 4217 code for the currency in which filled_price is quoted on
+    # this specific order.
+    ("config_accounts", "currency", "TEXT"),
+    ("orders", "price_currency", "TEXT"),
 ]
 
 
