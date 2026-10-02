@@ -42,8 +42,10 @@ anything past Track 29 has landed since this snapshot was written.
 
 ## What's genuinely landed and working, as of HEAD
 
-- Alembic head is `0034`. Full `pytest -q` suite: **2374 passed, 0 failed**
-  (after Track 64's 64 new mutation-regression tests for certification modules
+- Alembic head is `0034`. Full `pytest -q` suite: **2465 passed, 0 failed**
+  (after Track 69's 91 new mutation-regression tests for configuration/infrastructure modules
+  covering app/config.py, app/config_admin.py, app/rate_limit.py, app/logging_config.py,
+  Track 64's 64 new mutation-regression tests for certification modules
   covering app/certification.py and app/certification_evidence.py, Track 65's
   28 new mutation-regression tests for backtest utility modules covering
   app/backtest/replay.py, app/backtest/models.py, app/backtest/cost_stress.py,

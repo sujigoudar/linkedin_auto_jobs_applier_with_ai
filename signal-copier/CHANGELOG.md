@@ -7,6 +7,81 @@ does not yet cut versioned releases (see `docs/process/RELEASE.md`), so
 entries are grouped by theme and rough chronological wave instead of by
 version number. Newest wave first.
 
+## [Unreleased] — Track 69: mutation-testing regression tests for configuration and infrastructure modules (2026-10-02)
+
+Comprehensive targeted regression testing for configuration and infrastructure
+modules: `app/config.py` (environment configuration, defaults, secrets),
+`app/config_admin.py` (configuration seeding from YAML), `app/rate_limit.py`
+(request rate limiting per IP), and `app/logging_config.py` (structured
+logging, secret redaction). Follows Track 60-71 mutation-testing pattern with
+focused coverage on configuration safety, fail-closed defaults, rate limit
+values, and infrastructure correctness.
+
+### Mutation Testing Design
+
+Mutation resistance established via 91 targeted regression tests organized
+into 11 test classes covering configuration and infrastructure safety:
+
+**app/config.py — Boolean Defaults** (7 tests, `TestConfigDefaultDefaults`):
+- Safety-critical flags default to false (STANDBY_MODE, FORCE_SECURE_COOKIES, 
+  LEGACY_DASHBOARD_ENABLED, CCXT_SANDBOX, SCHWAB_ACKNOWLEDGE_NO_SANDBOX, 
+  ROBINHOOD_ACKNOWLEDGE_TOS_RISK)
+- SIGNAL_CORRELATION_ENABLED defaults to true (enabled by default)
+
+**app/config.py — Numeric Defaults** (22 tests, `TestConfigNumericDefaults`):
+- Timing values: SESSION_TTL_SECONDS (12h), WRITER_LEASE_SECONDS (30s),
+  WRITER_LEASE_RENEW_SECONDS (10s), RECONCILE_INTERVAL_SECONDS (30s),
+  PRICE_MONITOR_INTERVAL_SECONDS (15s), EQUITY_SNAPSHOT_INTERVAL_SECONDS (5m),
+  PROVIDER_SCOUT_INTERVAL_SECONDS (24h), NOTIFICATION_BRIDGE_STALE_THRESHOLD_SECONDS (5m),
+  SIGNAL_CORRELATION_TIMESTAMP_WINDOW_SECONDS (900s), MANAGED_EXIT_DUPLICATE_WINDOW_SECONDS (900s),
+  RELAY_POLL_INTERVAL_SECONDS (1s)
+- Thresholds and sizing: PROVIDER_VALUE_MIN_SAMPLE_SIZE (10),
+  PROVIDER_VALUE_WIN_RATE_THRESHOLD (0.4), PROVIDER_VALUE_PROFIT_FACTOR_THRESHOLD (1.0),
+  SIGNAL_CORRELATION_PRICE_TOLERANCE_PCT (0.005), EXPORT_OUTBOX_SIZE_CEILING_BYTES (256MB),
+  RELAY_BATCH_SIZE (100), IBKR_PORT (7497), IBKR_CLIENT_ID (1)
+
+**app/config.py — String Defaults** (6 tests, `TestConfigStringDefaults`):
+- Exchange and identity: CCXT_EXCHANGE_ID (binance), RELAY_PRODUCER_ID (signal-copier-local),
+  RELAY_EVIDENCE_CLASS (INTERNAL_PAPER), RELAY_ENVIRONMENT (LOCAL_SIM), LOG_LEVEL (INFO)
+- Signing secret placeholder in development
+
+**app/config.py — Empty String Defaults** (12 tests, `TestConfigEmptyStringDefaults`):
+- Fail-closed: WEBHOOK_SHARED_SECRET, OWNER_PASSWORD, OWNER_PASSWORD_HASH,
+  SESSION_SECRET, WRITER_SITE_ID, RELAY_INGRESS_URL, source tokens
+  (TELEGRAM_BOT_TOKEN, DISCORD_BOT_TOKEN, SLACK_BOT_TOKEN, TWITTER_BEARER_TOKEN,
+  TWILIO_AUTH_TOKEN, WHATSAPP_APP_SECRET)
+
+**app/config.py — List Parsing** (6 tests, `TestConfigListParsing`):
+- Comma-separated list parsing: TWITTER_RULES, TWILIO_ALLOWED_FROM_NUMBERS,
+  WHATSAPP_ALLOWED_FROM_NUMBERS, CCXT_EXCHANGES
+- Whitespace handling: correctly strips spaces from parsed values
+
+**app/config_admin.py — Seeding Logic** (7 tests, `TestConfigAdminSeedingLogic`):
+- Early-exit guards: returns false if accounts exist, already seeded, nothing to import
+- Import correctness: marks as seeded, imports accounts and routing rules
+- Success detection: returns true on successful import
+
+**app/rate_limit.py — Rate Limits** (4 tests, `TestRateLimitValues`):
+- Rate limit strings: INGRESS_RATE_LIMIT (30/minute), CATALOG_FIT_SIM_RATE_LIMIT (20/minute)
+- Limiter initialization and rate hierarchy validation
+
+**app/logging_config.py — Secret Redaction** (8 tests, `TestLoggingSecretRedaction`):
+- Substring matching: password, secret, token, api_key, auth, apikey
+- Case-insensitivity: PASSWORD and password both redacted
+- No false positives: non-secret fields left untouched
+
+**app/logging_config.py — Configuration** (6 tests, `TestLoggingConfiguration`):
+- JSON and console renderer selection based on configuration
+- Context binding and cleanup (even on exception)
+- Redaction processor integration
+
+**Module-Level Exports** (6 tests, `TestConfigExportToModuleLevel`):
+- Config values exported to module level match _settings
+
+**Boundary Conditions** (8 tests, `TestConfigBoundaryConditions`):
+- Timing relationships: writer lease renew < lease, price < equity snapshot, price < reconcile
+- Valid ranges: win_rate in [0, 1], price_tolerance > 0, all timings/sizes > 0
+
 ## [Unreleased] — Track 65: mutation-testing regression tests for backtest utility modules (2026-10-02)
 
 Comprehensive targeted regression testing for critical backtest utility
