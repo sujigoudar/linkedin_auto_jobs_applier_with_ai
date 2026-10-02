@@ -239,10 +239,10 @@ class TestComplexGapScenarios:
 
     def test_short_gap_through_target_outside_range(self):
         """Short: gap through target at open, target is outside bar range."""
-        bar = _bar(70, 75, 69, 72)  # open=70 gaps through target=60 (target below range)
-        result = simulate_bar_fill(Side.SELL, bar, stop_price=105, target_price=60)
+        bar = _bar(30, 55, 40, 52)  # open=30 gaps through target=35 (target below range [40,55])
+        result = simulate_bar_fill(Side.SELL, bar, stop_price=105, target_price=35)
         assert result.outcome == BarOutcome.TARGET_ONLY
-        assert result.fill_price == 70  # gap-through uses bar.open since target not in [69,75]
+        assert result.fill_price == 30  # gap-through uses bar.open since target not in [40,55]
 
 
 class TestSideValidation:
