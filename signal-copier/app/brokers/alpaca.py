@@ -305,7 +305,9 @@ class AlpacaBroker(BrokerAdapter):
     #: finishes cancelling it.
     _TERMINAL_CANCELLED_STATUSES = frozenset({"canceled", "expired"})
 
-    async def cancel_order(self, account: DestinationAccount, broker_order_id: str) -> bool:
+    async def cancel_order(
+        self, account: DestinationAccount, broker_order_id: str, symbol: str | None = None
+    ) -> bool:
         try:
             api_key, api_secret, base_url = self._credentials_for(account)
         except RuntimeError:
@@ -371,6 +373,7 @@ class AlpacaBroker(BrokerAdapter):
         broker_order_id: str,
         new_quantity: float,
         new_price: float | None = None,
+        symbol: str | None = None,
     ) -> OrderResult | None:
         try:
             api_key, api_secret, base_url = self._credentials_for(account)

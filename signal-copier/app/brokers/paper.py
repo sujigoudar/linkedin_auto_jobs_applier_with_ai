@@ -220,11 +220,18 @@ class PaperBroker(BrokerAdapter):
             message=f"paper stop resting: {quantity} @ {stop_price}",
         )
 
+<<<<<<< HEAD
     async def cancel_order(self, account: DestinationAccount, broker_order_id: str) -> bool:
         # D-01: Handle both stop orders and take-profit (target exit) orders
         stop_found = self._stop_orders.pop(broker_order_id, None) is not None
         target_found = self._target_exit_orders.pop(broker_order_id, None) is not None
         return stop_found or target_found
+=======
+    async def cancel_order(
+        self, account: DestinationAccount, broker_order_id: str, symbol: str | None = None
+    ) -> bool:
+        return self._stop_orders.pop(broker_order_id, None) is not None
+>>>>>>> ece696e (WP-23: recovery edges for lost entries, venue adoption, and partial coverage)
 
     async def replace_stop_quantity(
         self,
@@ -232,6 +239,7 @@ class PaperBroker(BrokerAdapter):
         broker_order_id: str,
         new_quantity: float,
         new_price: float | None = None,
+        symbol: str | None = None,
     ) -> OrderResult | None:
         stop = self._stop_orders.get(broker_order_id)
         if stop is None:

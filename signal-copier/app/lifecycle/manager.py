@@ -359,11 +359,11 @@ class PositionLifecycleManager:
     async def retry_unprotected_positions(self) -> int:
         """Independent of any new fill increment (PRO-04): re-attempt
         protection for every open, genuinely-owned lifecycle that isn't
-        currently STOP_CONFIRMED. A definitive stop-placement/replace
-        failure used to only ever get retried by the NEXT confirmed fill
-        increment (see resolve_pending_entry) — a position that's already
-        fully filled would never see one, leaving it unprotected
-        indefinitely with no other recovery path. app/reconciliation.py
+        currently STOP_CONFIRMED or that has uncovered_quantity > 0 (WP-23 D-15).
+        A definitive stop-placement/replace failure used to only ever get
+        retried by the NEXT confirmed fill increment (see resolve_pending_entry)
+        — a position that's already fully filled would never see one, leaving it
+        unprotected indefinitely with no other recovery path. app/reconciliation.py
         calls this every pass, so a real protection deficit gets a bounded,
         periodic retry rather than depending on unrelated future activity.
         Safe to call repeatedly: an already-protected lifecycle, or one
@@ -373,7 +373,9 @@ class PositionLifecycleManager:
         for lifecycle in list(self._lifecycles.values()):
             if lifecycle.closed or lifecycle.confirmed_owned_quantity <= 0:
                 continue
-            if lifecycle.stop.status == ProtectionStatus.STOP_CONFIRMED:
+            # WP-23 D-15: retry when status is not confirmed OR when uncovered_quantity > 0
+            is_protected = lifecycle.stop.status == ProtectionStatus.STOP_CONFIRMED and lifecycle.uncovered_quantity <= 1e-9
+            if is_protected:
                 continue
             if lifecycle.pending_exit is not None and not lifecycle.pending_exit.remainder_resolved:
                 continue  # deferred to that exit's own resolution, same as _replace_stop_price's own guard
@@ -917,6 +919,38 @@ class PositionLifecycleManager:
 
         self._persist(lifecycle)
         return lifecycle
+
+    async def adopt_venue_ownership(
+        self, account: DestinationAccount, symbol: str, venue_owned_quantity: float
+    ) -> None:
+        """WP-23 D-16: recovery case where the venue owns more than we're
+        tracking. Update the confirmed_owned_quantity to match the venue and
+        ensure proper protection is in place. This can happen after a crash
+        between fill confirmation and stop placement, or when the entry
+        remained in process memory only (e.g. IBKR).
+
+        Args:
+            account: The destination account
+            symbol: The trading symbol
+            venue_owned_quantity: The total quantity the venue reports (must be > confirmed_owned)
+        """
+        self.lease_guard.require_active()
+        lifecycle = self._lifecycles.get((account.account_id, symbol))
+        if lifecycle is None:
+            return
+        broker = self.brokers.get(account.broker)
+
+        async with self.arbiter.transition(account.account_id, symbol) as tx:
+            lifecycle.confirmed_owned_quantity = venue_owned_quantity
+            tx.set_owned(venue_owned_quantity)
+            if lifecycle.stop.desired_price is None and lifecycle.plan.initial_stop is not None:
+                lifecycle.stop.desired_price = lifecycle.plan.initial_stop
+
+        self._persist(lifecycle)
+
+        # Ensure protection is placed for the adopted quantity
+        if broker is not None and lifecycle.plan.initial_stop is not None:
+            await self._replace_stop_price(lifecycle, account, source="recovery")
 
     def register_pending_entry(
         self,
@@ -2308,7 +2342,7 @@ class PositionLifecycleManager:
                 logger.info("duplicate replace command idempotency_key=%s -- replaying tracked state", ledger_key)
                 return _order_result_from_ledger_entry(account.account_id, entry)
         try:
-            result = await broker.replace_stop_quantity(account, broker_order_id, new_quantity, new_price)
+            result = await broker.replace_stop_quantity(account, broker_order_id, new_quantity, new_price, symbol=symbol)
         except Exception as exc:
             if ledger_key is not None and self.store is not None:
                 self.store.mark_command_ledger_outcome(
@@ -2358,7 +2392,7 @@ class PositionLifecycleManager:
                 logger.info("duplicate cancel command idempotency_key=%s -- replaying tracked state", ledger_key)
                 return entry.uncertainty_state == UncertaintyState.CONFIRMED
         try:
-            cancelled = await broker.cancel_order(account, broker_order_id)
+            cancelled = await broker.cancel_order(account, broker_order_id, symbol=symbol)
         except Exception as exc:
             if ledger_key is not None and self.store is not None:
                 self.store.mark_command_ledger_outcome(

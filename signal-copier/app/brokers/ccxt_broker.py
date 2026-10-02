@@ -269,6 +269,7 @@ class CCXTBroker(BrokerAdapter):
             message="ccxt stop resting",
         )
 
+<<<<<<< HEAD
     async def find_order_by_client_id(self, account: DestinationAccount, client_order_id: str) -> str | None:
         """Look up an order by its client-assigned id.
 
@@ -307,8 +308,16 @@ class CCXTBroker(BrokerAdapter):
             return None
 
     async def cancel_order(self, account: DestinationAccount, broker_order_id: str) -> bool:
+=======
+    async def cancel_order(
+        self, account: DestinationAccount, broker_order_id: str, symbol: str | None = None
+    ) -> bool:
+>>>>>>> ece696e (WP-23: recovery edges for lost entries, venue adoption, and partial coverage)
         exchange = self._exchange_for(account)
-        symbol = self._order_symbols.get(broker_order_id)
+        # Prefer the passed symbol parameter (from lifecycle manager) over the cached one
+        # to ensure we use the most current symbol information
+        if symbol is None:
+            symbol = self._order_symbols.get(broker_order_id)
         try:
             if symbol is not None:
                 await exchange.cancel_order(broker_order_id, symbol)

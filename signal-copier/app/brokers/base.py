@@ -120,10 +120,13 @@ class BrokerAdapter(abc.ABC):
         must not treat the position as protected."""
         return None
 
-    async def cancel_order(self, account: DestinationAccount, broker_order_id: str) -> bool:
+    async def cancel_order(
+        self, account: DestinationAccount, broker_order_id: str, symbol: str | None = None
+    ) -> bool:
         """Cancel a previously placed order (e.g. an existing protective stop,
         before replacing it). Return False if cancellation isn't supported or
-        confirmed — the caller must not assume it worked."""
+        confirmed — the caller must not assume it worked. Symbol is optional
+        and used by brokers (e.g. ccxt) that require it for order cancellation."""
         return False
 
     async def replace_stop_quantity(
@@ -132,10 +135,12 @@ class BrokerAdapter(abc.ABC):
         broker_order_id: str,
         new_quantity: float,
         new_price: float | None = None,
+        symbol: str | None = None,
     ) -> OrderResult | None:
         """Resize (and optionally reprice) an existing stop order in place.
         Return None if this broker has no verified in-place replace — the
-        caller falls back to cancel-then-resubmit instead."""
+        caller falls back to cancel-then-resubmit instead. Symbol is optional
+        and used by brokers (e.g. ccxt) that require it for order replacement."""
         return None
 
     async def find_order_by_client_id(

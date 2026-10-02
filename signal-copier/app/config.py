@@ -458,6 +458,15 @@ class _Settings(BaseSettings):
     # within" is a reasonable prior here too, not independently derived.
     MANAGED_EXIT_DUPLICATE_WINDOW_SECONDS: float = 900.0
 
+    # WP-23: grace period for a lost-response managed entry (pending, no
+    # order id, broker_owned == 0) before it is auto-resolved. After this
+    # many seconds, such an entry is treated as never having reached the
+    # venue and resolved with 0 quantity filled and remainder cancelled.
+    # Default 5 minutes -- long enough to distinguish transient timeouts
+    # from actual lost entries, short enough to unblock the account in
+    # a reasonable time.
+    LOST_ENTRY_GRACE_SECONDS: int = 300
+
 
 _settings = _Settings()
 
@@ -561,6 +570,7 @@ SIGNAL_CORRELATION_PRICE_TOLERANCE_PCT = _settings.SIGNAL_CORRELATION_PRICE_TOLE
 SIGNAL_CORRELATION_TIMESTAMP_WINDOW_SECONDS = _settings.SIGNAL_CORRELATION_TIMESTAMP_WINDOW_SECONDS
 SIGNAL_CORRELATION_ENABLED = _settings.SIGNAL_CORRELATION_ENABLED
 MANAGED_EXIT_DUPLICATE_WINDOW_SECONDS = _settings.MANAGED_EXIT_DUPLICATE_WINDOW_SECONDS
+LOST_ENTRY_GRACE_SECONDS = _settings.LOST_ENTRY_GRACE_SECONDS
 
 DEFAULT_DAILY_LOSS_LIMIT_PERCENT = _settings.DEFAULT_DAILY_LOSS_LIMIT_PERCENT
 DEFAULT_MIN_EQUITY_THRESHOLD = _settings.DEFAULT_MIN_EQUITY_THRESHOLD

@@ -2374,6 +2374,57 @@ async def preview_position_stop_change(
     return lifecycle_manager.preview_stop_change(account_id, symbol, price)
 
 
+@app.post("/lifecycles/{account_id}/{symbol}/unregister")
+async def unregister_lifecycle(
+    account_id: str,
+    symbol: str,
+    _owner: dict = Depends(require_owner),
+) -> dict:
+    """WP-23 D-14/D-20: owner endpoint to unregister a managed-lifecycle plan
+    that has no open position (confirmed_owned_quantity == 0) and no live stop
+    order. Used to recover from lost-response entry scenarios where a plan was
+    created but never filled and has been blocking the account/symbol from
+    re-entry forever.
+
+    Returns 404 if no lifecycle exists for this account/symbol.
+    Returns 409 if the lifecycle still holds a position or has an active stop.
+    Returns 200 with success details on unregistration."""
+    if account_id not in routing_config.accounts:
+        raise HTTPException(status_code=404, detail=f"no account '{account_id}'")
+
+    if lifecycle_manager is None:
+        raise HTTPException(status_code=409, detail="managed lifecycles not configured")
+
+    lifecycle = lifecycle_manager.get_lifecycle(account_id, symbol)
+    if lifecycle is None:
+        raise HTTPException(status_code=404, detail=f"no open lifecycle for {account_id}/{symbol}")
+
+    # Check preconditions: no owned position, no live stop
+    if lifecycle.confirmed_owned_quantity > 1e-9:
+        raise HTTPException(
+            status_code=409,
+            detail=f"lifecycle for {account_id}/{symbol} still holds {lifecycle.confirmed_owned_quantity:.6f} "
+            "— unregister requires confirmed_owned_quantity == 0",
+        )
+
+    if lifecycle.stop.broker_order_id is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=f"lifecycle for {account_id}/{symbol} has a live stop order (id={lifecycle.stop.broker_order_id}) "
+            "— cancel it first or wait for it to fill",
+        )
+
+    # Unregister by calling the internal cleanup
+    lifecycle_manager.unregister_plan(account_id, symbol)
+
+    return {
+        "account_id": account_id,
+        "symbol": symbol,
+        "status": "unregistered",
+        "message": f"lifecycle for {account_id}/{symbol} successfully unregistered",
+    }
+
+
 @app.get("/brokers")
 async def list_broker_capabilities(_owner: dict = Depends(require_owner_read)) -> dict:
     """Every registered broker's actual, code-verified capabilities — not a

@@ -231,6 +231,9 @@ class OrderReconciler:
         corrected += await self._reconcile_pending_entries()
         corrected += await self._reconcile_unknown_submissions()
         if self.lifecycle_manager is not None:
+            # WP-23 D-14: resolve old lost entries (pending with no order id,
+            # broker_owned == 0, age > LOST_ENTRY_GRACE_SECONDS)
+            corrected += await self._resolve_lost_entries()
             # PRO-04: retry protection for any owned-but-unprotected
             # lifecycle every pass, independent of whether a new fill
             # increment ever arrives to trigger it otherwise.
@@ -250,6 +253,7 @@ class OrderReconciler:
             corrected += await self._reconcile_broker_positions()
         return corrected
 
+<<<<<<< HEAD
     async def _reconcile_pending_child_orders(self) -> int:
         """D-01: Poll bracket child leg orders (stop/take_profit) for
         plain accounts. When a child order fills, apply the exit to
@@ -335,6 +339,83 @@ class OrderReconciler:
             corrected += 1
 
         return corrected
+=======
+    async def _resolve_lost_entries(self) -> int:
+        """WP-23 D-14: resolve pending entries that have no order ID, no broker
+        ownership, and have exceeded the grace period (LOST_ENTRY_GRACE_SECONDS).
+        These are lost-response entries that never reached the venue and should
+        be auto-resolved to allow the account/symbol to be used again."""
+        from app import config
+
+        assert self.lifecycle_manager is not None  # only caller checks this
+        resolved = 0
+
+        for account_id, symbol, broker_name, pending in self.lifecycle_manager.list_pending_entries():
+            # Only handle entries with no broker_order_id (lost-response case)
+            if pending.broker_order_id is not None:
+                continue
+
+            # Check if this entry has been pending for longer than the grace period
+            lifecycle = self.lifecycle_manager.get_lifecycle(account_id, symbol)
+            if lifecycle is None or lifecycle.pending_entry is None:
+                continue
+
+            # Try to get the entry order's created_at time from the orders table
+            # to determine if it has exceeded the grace period
+            broker = self.brokers.get(broker_name)
+            if broker is None:
+                continue
+
+            account = DestinationAccount(account_id=account_id, broker=broker_name)
+
+            # Check broker position: only resolve if broker_owned == 0
+            try:
+                broker_owned = await broker.get_broker_position(account, symbol)
+            except Exception:
+                logger.exception(
+                    "get_broker_position failed checking lost entry for account=%s symbol=%s",
+                    account_id,
+                    symbol,
+                )
+                continue
+
+            if broker_owned is not None and broker_owned != 0:
+                continue  # Entry may still be filling, don't resolve yet
+
+            # Get the entry order from the orders table to check its age
+            # Look for the most recent entry order for this account/symbol
+            entry_orders = self.store.list_orders_for_signal(lifecycle.plan.entry_signal_id)
+            if not entry_orders:
+                # No order row found; can't determine age reliably
+                continue
+
+            entry_order = entry_orders[0]  # Most recent
+            try:
+                created_at = datetime.fromisoformat(entry_order["created_at"])
+                age_seconds = (datetime.now(timezone.utc) - created_at.replace(tzinfo=timezone.utc)).total_seconds()
+
+                if age_seconds > config.LOST_ENTRY_GRACE_SECONDS:
+                    logger.warning(
+                        "resolving lost entry for account=%s symbol=%s (age=%.0f s, grace=%.0f s)",
+                        account_id,
+                        symbol,
+                        age_seconds,
+                        config.LOST_ENTRY_GRACE_SECONDS,
+                    )
+                    await self.lifecycle_manager.resolve_pending_entry(
+                        account, symbol, 0.0, remainder_cancelled=True
+                    )
+                    resolved += 1
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "error checking age of lost entry for account=%s symbol=%s",
+                    account_id,
+                    symbol,
+                )
+                continue
+
+        return resolved
+>>>>>>> ece696e (WP-23: recovery edges for lost entries, venue adoption, and partial coverage)
 
     async def _reconcile_broker_positions(self) -> int:
         assert self.lifecycle_manager is not None  # only caller (reconcile_once) checks this first
@@ -423,7 +504,30 @@ class OrderReconciler:
                 continue
 
             deficit = lifecycle.confirmed_owned_quantity - broker_owned_abs
+
+            # WP-23 D-16: handle venue > tracked adoption
+            if deficit < -1e-9:
+                # The venue owns MORE than we're tracking: adopt the difference
+                # as owned and re-protect (log + TODO WP-34 alert)
+                adopted_quantity = broker_owned_abs - lifecycle.confirmed_owned_quantity
+                logger.warning(
+                    "adopting additional quantity from venue for account=%s symbol=%s: "
+                    "venue owns %.6f but tracked %.6f, adopting difference %.6f",
+                    lifecycle.plan.account_id,
+                    lifecycle.plan.symbol,
+                    broker_owned_abs,
+                    lifecycle.confirmed_owned_quantity,
+                    adopted_quantity,
+                )
+                # TODO: WP-34 alert for venue > tracked adoption
+                await self.lifecycle_manager.adopt_venue_ownership(
+                    account, lifecycle.plan.symbol, broker_owned_abs
+                )
+                corrected += 1
+                continue
+
             if deficit <= 1e-9:
+<<<<<<< HEAD
                 continue  # matches (or the venue reports MORE than tracked -- a different, unmodeled anomaly)
 
             # WP-19: Poll the stop before attributing a deficit to a stop fill.
@@ -456,6 +560,11 @@ class OrderReconciler:
                 await self.lifecycle_manager.resize_stop_to_owned(account, lifecycle.plan.symbol, broker_owned_abs)
 
             # Apply the correction (if no stop to resize, or after resizing/cancelling)
+=======
+                continue  # matches
+
+            # deficit > 0: venue owns less than tracked, apply as a stop fill
+>>>>>>> ece696e (WP-23: recovery edges for lost entries, venue adoption, and partial coverage)
             await self.lifecycle_manager.on_stop_filled(account, lifecycle.plan.symbol, filled_quantity=deficit)
             corrected += 1
         return corrected
