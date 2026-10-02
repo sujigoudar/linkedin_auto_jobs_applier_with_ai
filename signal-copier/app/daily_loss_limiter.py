@@ -12,6 +12,7 @@ Min equity threshold checks use broker.get_account_balance() to fetch current eq
 """
 from __future__ import annotations
 
+from datetime import date
 from typing import Any, Optional
 
 from app.models import DestinationAccount
