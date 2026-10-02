@@ -435,7 +435,9 @@ class OrderReconciler:
             if not is_terminal and filled <= pending.confirmed_filled_quantity:
                 continue  # a repeated observation of the same progress -- nothing new to act on
 
-            await self.lifecycle_manager.resolve_pending_exit(account, symbol, filled, remainder_cancelled=is_terminal)
+            await self.lifecycle_manager.resolve_pending_exit(
+                account, symbol, filled, remainder_cancelled=is_terminal, filled_price=result.filled_price
+            )
             resolved += 1
 
         return resolved

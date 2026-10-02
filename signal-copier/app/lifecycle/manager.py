@@ -1041,19 +1041,13 @@ class PositionLifecycleManager:
         # closing the gap the accounting-ledger review flagged ("managed
         # lifecycle exits, including stops ... are not necessarily
         # represented the same way [as ordinary order-history closes]").
-        # `filled_price`, if the caller (app/reconciliation.py) has a real
-        # broker-reported one, is used as-is; otherwise this falls back to
-        # the position's own last REAL observed price
-        # (`PositionLifecycle.last_observed_price`, PU-A3) -- a genuine,
-        # already-known value, never an invented one -- and, failing that,
-        # to the stop order's own last broker-confirmed resting price
-        # (also real, just possibly a few ticks from the true fill). `None`
-        # (never a fabricated number) if neither exists yet.
+        # E-05: `filled_price` is only used if the caller (app/reconciliation.py)
+        # has a real broker-reported one. When inferring a stop from a position
+        # deficit (no broker-reported price), we keep `exit_price=None` to
+        # honestly disclose unknown price rather than guessing from a stale
+        # last_observed_price or stop's resting price (which may not match
+        # the true fill in a gap-through scenario).
         exit_price = filled_price
-        if exit_price is None:
-            exit_price = lifecycle.last_observed_price
-        if exit_price is None:
-            exit_price = lifecycle.stop.broker_confirmed_price
         was_trailing = bool(lifecycle.plan.trailing and lifecycle.plan.trailing.active)
         self._apply_exit_fill(
             lifecycle,
@@ -1330,7 +1324,12 @@ class PositionLifecycleManager:
             return exit_result
 
     async def resolve_pending_exit(
-        self, account: DestinationAccount, symbol: str, confirmed_filled_quantity: float, remainder_cancelled: bool
+        self,
+        account: DestinationAccount,
+        symbol: str,
+        confirmed_filled_quantity: float,
+        remainder_cancelled: bool,
+        filled_price: float | None = None,
     ) -> None:
         """Call once the broker's final word on a PENDING exit (from
         `request_exit`) is known: how much of it actually filled, and whether
@@ -1355,7 +1354,11 @@ class PositionLifecycleManager:
         the remaining, still-uncertain quantity keeps the reservation open
         so nothing else can claim those shares (see `request_exit`'s
         docstring for why the design's worked partial-fill example -- 8 of
-        15 confirmed, 7 still open -- restores against 54, not 47)."""
+        15 confirmed, 7 still open -- restores against 54, not 47).
+
+        `filled_price` is the broker's reported fill price for this exit (if
+        known). When None, the row is saved with `filled_price=None` (honestly
+        unknown) rather than guessed from a fallback chain."""
         self.lease_guard.require_active()
         broker = self.brokers.get(account.broker)
         async with self.arbiter.transition(account.account_id, symbol) as tx:
@@ -1372,15 +1375,15 @@ class PositionLifecycleManager:
                     lifecycle.confirmed_owned_quantity = tx.owned
                 pending.confirmed_filled_quantity = confirmed_filled_quantity
                 if delta > 0:
-                    # No real fill price is available at this reconciliation
-                    # layer (see this method's own docstring) -- `exit_price`
-                    # stays honestly None rather than guessed.
+                    # Thread the broker's reported fill price when available;
+                    # it stays None (honestly unknown) if not provided.
                     self._apply_exit_fill(
                         lifecycle,
                         account,
                         symbol,
                         delta,
                         exit_kind=pending.source,
+                        exit_price=filled_price,
                         broker_order_id=pending.broker_order_id,
                         reason=pending.reason,
                     )
@@ -1424,6 +1427,7 @@ class PositionLifecycleManager:
                 symbol,
                 delta,
                 exit_kind=pending.source,
+                exit_price=filled_price,
                 broker_order_id=pending.broker_order_id,
                 reason=pending.reason,
             )

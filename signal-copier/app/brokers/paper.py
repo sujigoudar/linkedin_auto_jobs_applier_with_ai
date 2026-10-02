@@ -90,14 +90,16 @@ class PaperBroker(BrokerAdapter):
     ) -> OrderResult:
         book = self.positions.setdefault(account.account_id, {})
         current = book.get(symbol, 0.0)
-        price = signal.price or 0.0
+        # E-16: managed exits have no price on the signal; return None for
+        # unknown price rather than 0.0 (which would be journaled as real).
+        price = signal.price
 
         if signal.side.value == "buy":
             book[symbol] = current + quantity
-            self._apply_fill_to_cash(account.account_id, Side.BUY, quantity, price)
+            self._apply_fill_to_cash(account.account_id, Side.BUY, quantity, price or 0.0)
         elif signal.side.value == "sell":
             book[symbol] = current - quantity
-            self._apply_fill_to_cash(account.account_id, Side.SELL, quantity, price)
+            self._apply_fill_to_cash(account.account_id, Side.SELL, quantity, price or 0.0)
         else:  # close
             # A real cash effect exists here too (closing a position is a
             # real opposing fill), but this branch has no opposing
@@ -120,7 +122,7 @@ class PaperBroker(BrokerAdapter):
             message="filled by paper broker",
             fee=self.fee_per_fill,
             fee_currency="USD",  # Paper broker uses USD convention
-            slippage=0.0,  # Paper broker fills exactly at signal price
+            slippage=0.0,  # Paper broker fills exactly at signal price when available
         )
         self.fills.append(result)
         return result
