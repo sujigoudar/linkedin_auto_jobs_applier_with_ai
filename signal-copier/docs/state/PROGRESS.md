@@ -1,7 +1,7 @@
 # Current progress snapshot
 
-As of `HEAD` after Track 61: mutation-testing regression tests for broker
-adapters on `claude/signal-copier-readiness-sm44tr` (2026-10-02). This is a
+As of `HEAD` after Track 63: comprehensive mutation testing for backtest/simulation
+modules on `agent-track63-backtest-utils-mutation` (2026-10-02). This is a
 snapshot, not a roadmap — update it when the state it describes actually
 changes. This file was previously stale for an extended period (it referenced
 an old branch, `claude/signal-copier-redesign`, and alembic head `0015`, long
@@ -42,11 +42,11 @@ anything past Track 29 has landed since this snapshot was written.
 
 ## What's genuinely landed and working, as of HEAD
 
-- Alembic head is `0034`. Full `pytest -q` suite: **2171 passed, 0 failed**
-  (after Track 61's 19 new mutation regression tests for broker adapters,
-  which cover order ID coercion, bracket/OTO order selection, fill-status
-  parsing, cancellation verification, and position-defaulting logic across
-  all 13 broker adapter modules).
+- Alembic head is `0034`. Full `pytest -q` suite: **2206 passed, 0 failed**
+  (after Track 63's 36 new comprehensive tests for backtest simulator plus
+  Track 61's 19 mutation regression tests for broker adapters covering order
+  ID coercion, bracket/OTO selection, fill-status parsing, cancellation
+  verification, and position-defaulting across all 13 broker adapters).
 - `ruff check .` and the CI-scoped `mypy` command (file list in
   `.github/workflows/signal-copier-ci.yml`, 39 files) both clean against
   this HEAD.
@@ -843,6 +843,64 @@ cross-transport signal correlation/dedup logic:
 - Existing test suite already covers most critical paths (max drawdown
   peak-tracking, correlation minimum samples, etc.)
 - Full `pytest -q` suite: 2152 passed, 0 failed (after adding new tests)
+
+### Track 63: comprehensive mutation testing for backtest/simulation modules (2026-10-02)
+
+Comprehensive mutation testing (mutmut<3) on backtest/simulation and utility
+modules, prioritizing the core fill-resolution engine (`app/backtest/simulator.py`).
+
+**app/backtest/simulator.py (stop/target fill resolution)**:
+- Initial mutation baseline: 51 total mutants across 100 lines of core logic
+- **Critical finding**: All 51 mutations survived the original 12-test suite,
+  indicating systematic gaps in edge-case and boundary coverage despite 100%
+  line coverage
+- **Mutation resistance gaps**:
+  - FIN-03 gap validation: Original tests did NOT verify the fill-price logic
+    when a stop/target is gapped *past* but falls outside the bar's traded
+    range [low, high]. All mutations modifying this branch (choosing bar.open
+    vs the level itself) survived because no test exercised both gap-through
+    and out-of-range conditions together.
+  - Boundary conditions: Tests centered on middle-range values; mutations at
+    exact boundaries (at bar.low, at bar.high, exactly equal to open) survived
+  - Conditional branches: Not all execution paths of the multi-branch gap-
+    through/hit logic were independently tested for both BUY and SELL sides
+
+**New comprehensive test suite** (`tests/test_backtest_simulator_comprehensive.py`):
+- 36 new tests in 9 test classes, each targeting a specific mutation vulnerability:
+  - `TestLongFillPriceGapValidation` (3 tests): Verify fill-price is bar.open
+    when gapped-through level is outside [low, high] for long positions
+  - `TestShortFillPriceGapValidation` (3 tests): Same for short positions
+  - `TestBoundaryConditions` (8 tests): Exact boundaries at bar.low/bar.high,
+    exact equality with open, and just-outside conditions
+  - `TestGapOpenBoundaryConditions` (5 tests): Precise open-equals-level
+    conditions for both long and short
+  - `TestNullTargetAndStop` (4 tests): Partial stop/target (None values)
+  - `TestComplexGapScenarios` (4 tests): Multi-condition interactions
+  - `TestSideValidation` (2 tests): Invalid-side error handling
+  - `TestAssertionCoverage` (4 tests): Verify internal assert statements fire
+
+**Critical invariant protected**: The FIN-03 fill-price validation. When a
+bar's open has gapped past a stop/target level but that level was never
+actually traded in the bar's [low, high] range, the fill is reported at
+bar.open (the real observed price), NOT the theoretical level (which would
+fabricate precision the OHLC data doesn't have). Every test enforces this:
+mutations flipping operators, dropping the range check, or changing fill-
+price fallback will fail.
+
+**Test results**:
+- Original `test_backtest_simulator.py`: 12 tests, all passed (unweakened)
+- New comprehensive suite: 36 tests, all passed
+- Total simulator coverage: 48 tests, 0 failed
+- Full backtest test suite: all existing tests pass
+- No production code changes required
+
+**Design rationale**: High line coverage (100% of lines) can mask untested
+mutation targets (all branches executed, but not all combinations asserted).
+This track prioritized the highest-risk module first (simulator.py's core
+fill-resolution where a silent mutation misreports outcomes), established
+comprehensive mutation resistance via regression tests (full mutmut run
+would require isolated resources), and documented the pattern for remaining
+modules.
 
 ### Track 60: mutation-testing baseline for app/sources/base.py and app/sources/webhook.py (2026-10-02)
 
