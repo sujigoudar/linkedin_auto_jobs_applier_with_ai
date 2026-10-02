@@ -1,7 +1,7 @@
-"""Add allow_short field to config_accounts and Side.SHORT to signal side enum.
+"""Add allow_short field to config_accounts and Intent enum to signals.
 
 Revision ID: 0038
-Revises: 0036
+Revises: 0037
 Create Date: 2026-10-02 00:00:00.000000
 
 """
@@ -11,7 +11,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision = "0038"
-down_revision = "0036"
+down_revision = "0037"
 branch_labels = None
 depends_on = None
 

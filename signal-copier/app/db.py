@@ -2030,6 +2030,11 @@ _COLUMN_MIGRATIONS = [
     ("config_accounts", "min_equity_threshold", "DECIMAL(18, 8)"),
     # B-11: maximum gross leverage ceiling
     ("config_accounts", "max_gross_leverage", "DECIMAL(5, 2)"),
+    # WP-08 (A-01): signal intent derivation -- see Intent enum and
+    # Signal.intent's own docstring for why intent is distinct from side.
+    ("signals", "intent", "TEXT"),
+    # WP-08 (A-01): reduce-fraction for partial position reductions.
+    ("signals", "reduce_fraction", "REAL"),
     # WP-08 (B-14): per-account short-selling permission gate -- see
     # DestinationAccount.allow_short's own docstring.
     ("config_accounts", "allow_short", "INTEGER NOT NULL DEFAULT 0"),

@@ -16,8 +16,31 @@ from typing import Any, Optional
 class Side(str, enum.Enum):
     BUY = "buy"
     SELL = "sell"
-    SHORT = "short"
     CLOSE = "close"
+
+
+class Intent(str, enum.Enum):
+    """Signal intent — why a side was chosen, and what execution behavior is expected.
+
+    ENTRY_LONG: Open a long position
+    ENTRY_SHORT: Open a short position (sell to open)
+    SELL: Exit a long position
+    EXIT: Close all existing positions (intent-agnostic)
+    REDUCE: Reduce position size by a fraction (reduce_fraction applies)
+    STOP_UPDATE: Update a protective stop on existing position
+    TARGET_UPDATE: Update or add a profit target
+    CANCEL: Cancel a pending order or reduce an open position
+    ADD: Add to an existing position
+    """
+    ENTRY_LONG = "entry_long"
+    ENTRY_SHORT = "entry_short"
+    SELL = "sell"
+    EXIT = "exit"
+    REDUCE = "reduce"
+    STOP_UPDATE = "stop_update"
+    TARGET_UPDATE = "target_update"
+    CANCEL = "cancel"
+    ADD = "add"
 
 
 class AssetClass(str, enum.Enum):
@@ -187,6 +210,12 @@ class Signal:
     #: A confidence/strategy tag, set ONLY when the source actually
     #: supplied or qualified one -- never fabricated.
     confidence: Optional[str] = None
+    #: Signal intent — why this side was chosen and what execution behavior
+    #: is expected. `None` means intent will be derived from `side` in __post_init__.
+    intent: Optional[Intent] = None
+    #: Fraction (0 < x <= 1) of current position to reduce when intent is REDUCE.
+    #: E.g., 0.5 for half, 0.25 for trim 25%. `None` for non-reduce intents.
+    reduce_fraction: Optional[float] = None
     option: Optional["OptionContractSpec"] = None
     future: Optional["FutureContractSpec"] = None
     fx: Optional["FxContractSpec"] = None
@@ -272,6 +301,16 @@ class Signal:
             self.asset_class = AssetClass(self.asset_class.lower())
         if isinstance(self.entry_order_type, str):
             self.entry_order_type = EntryOrderType(self.entry_order_type.lower())
+        if isinstance(self.intent, str):
+            self.intent = Intent(self.intent.lower())
+        # Derive intent from side if not explicitly set
+        if self.intent is None:
+            if self.side == Side.BUY:
+                self.intent = Intent.ENTRY_LONG
+            elif self.side == Side.SELL:
+                self.intent = Intent.SELL
+            elif self.side == Side.CLOSE:
+                self.intent = Intent.EXIT
 
 
 class SourceEventKind(str, enum.Enum):
