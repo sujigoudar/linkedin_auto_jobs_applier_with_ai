@@ -7,7 +7,63 @@ does not yet cut versioned releases (see `docs/process/RELEASE.md`), so
 entries are grouped by theme and rough chronological wave instead of by
 version number. Newest wave first.
 
-<<<<<<< HEAD
+## [Unreleased] — Track 68: comprehensive mutation testing for database and data model modules (2026-10-02)
+
+Targeted mutation testing for core data model modules (Signal, OrderResult, 
+AccountBalance), database connection tracking (SourceConnection, BrokerConnection), 
+and trade lifecycle management (TradeEpisode). This work follows the Track 60-67 
+regression test pattern with hand-written tests for mutation-critical patterns 
+rather than relying on mutant survival rates alone.
+
+### Added
+- `tests/test_track68_database_models_mutation.py`: 112 new regression tests covering:
+  - **Enum value discrimination** (27 tests)
+    - Side (BUY/SELL), AssetClass (EQUITY/OPTION/CRYPTO/FOREX/COMMODITY), OrderStatus (PENDING/FILLED/CANCELLED/REJECTED)
+    - Enum member count verification to detect drift
+  - **Signal model conversion logic** (10 tests)
+    - `Signal.__post_init__` string-to-enum conversions (side, asset_class, entry_order_type)
+    - Correct enum instance assignment and case-insensitivity handling
+  - **Signal default values** (7 tests)
+    - UUID uniqueness on each creation, timezone enforcement (UTC)
+    - Mutable default safety (dict/list not shared across instances)
+  - **OrderResult validation** (6 tests)
+    - Required field enforcement (id, signal_id, side, quantity_type, status)
+    - Optional field semantics (filled_quantity defaults to None, not 0)
+  - **AccountBalance optional fields** (5 tests)
+    - None vs 0 distinction for financial fields (requires honest None for unknown)
+  - **DestinationAccount defaults** (10 tests)
+    - Multiplier/enabled/managed_lifecycle state management
+    - Recipe derivation from managed_lifecycle flag
+  - **Connection model enums** (9 tests)
+    - ConnectionState (UNCONFIGURED/CONNECTED/DEGRADED/ERROR/DISCONNECTED)
+    - AuthorizationState (UNAUTHORIZED/AUTHORIZED/EXPIRED/REVOKED)
+  - **Credential validation** (8 tests)
+    - `looks_like_raw_credential` heuristic (length, whitespace, punctuation)
+    - Rejection of hardcoded secrets vs acceptance of env var references
+  - **Connection registration** (9 tests)
+    - Required field enforcement (connection_id, connection_type)
+    - Whitespace-only rejection, credential type validation
+  - **Terminal uncertainty states** (6 tests)
+    - CONFIRMED and REJECTED_CONFIRMED membership verification
+    - Non-terminal states excluded from terminal set
+  - **Comparison operators** (4 tests)
+    - Enum equality/inequality semantics (== vs !=)
+  - **Boolean flag effects** (3 tests)
+    - enabled/managed_lifecycle/exclusive_writer_qualified state discrimination
+  - **Default capabilities** (3 tests)
+    - All-false dict, key set verification, dict isolation per call
+  - **Schema migration head** (3 tests)
+    - Alembic code head determinism and correctness
+
+### Changed
+- No production code changes. All existing database model logic passes the new
+  regression tests. Test count: 112 passed.
+
+### Verified
+- Full `pytest -q tests/test_track68_database_models_mutation.py`: **112 passed** in 0.61s
+- `ruff check`: All linting checks passed
+- Type checking: No type errors in test file
+
 ## [Unreleased] — Track 60: mutation-testing baseline for app/sources/base.py and app/sources/webhook.py (2026-10-02)
 
 Targeted mutation testing baseline pass on the signal-ingestion boundary
