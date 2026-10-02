@@ -2522,6 +2522,7 @@ class SignalCopierEngine:
             symbol=signal.symbol,
             side=closing_side,
             asset_class=signal.asset_class,
+            intent=Intent.EXIT,
             quantity=quantity,
             price=signal.price,
             id=signal.id,

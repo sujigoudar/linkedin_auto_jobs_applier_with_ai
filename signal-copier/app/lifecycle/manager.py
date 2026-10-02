@@ -91,6 +91,7 @@ from app.models import (
     CommandLedgerEntry,
     CommandType,
     DestinationAccount,
+    Intent,
     OrderResult,
     OrderStatus,
     Signal,
@@ -1788,6 +1789,7 @@ class PositionLifecycleManager:
             symbol=lifecycle.plan.symbol,
             side=lifecycle.exit_side,
             asset_class=lifecycle.plan.asset_class,
+            intent=Intent.EXIT,
             raw={"reason": reason},
         )
         if self.store is not None:

@@ -28,7 +28,7 @@ from datetime import datetime, timezone
 import httpx
 
 from app.brokers.base import BrokerAdapter
-from app.models import DestinationAccount, OrderResult, OrderStatus, Signal
+from app.models import DestinationAccount, Intent, OrderResult, OrderStatus, Signal
 
 
 class NinjaTraderBroker(BrokerAdapter):
@@ -69,9 +69,15 @@ class NinjaTraderBroker(BrokerAdapter):
                 message="'close' side reached the broker directly without engine-level resolution (see SignalCopierEngine._resolve_close); this broker only accepts buy/sell",
             )
 
+        # Check if this is an exit order based on signal intent
+        if signal.intent == Intent.EXIT:
+            sentiment = "flat"
+        else:
+            sentiment = "long" if signal.side.value == "buy" else "short"
+
         payload = {
             "action": signal.side.value,
-            "sentiment": "long" if signal.side.value == "buy" else "short",
+            "sentiment": sentiment,
             "quantity": quantity,
             "price": signal.price or 0,
             "time": datetime.now(timezone.utc).isoformat(),
