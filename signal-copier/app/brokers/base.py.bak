@@ -48,7 +48,6 @@ class BrokerAdapter(abc.ABC):
         method's only job is to talk to the broker/exchange and report what
         happened.
         """
-        ...
 
     async def close(self) -> None:
         """Release any held connection/session (an httpx client, an

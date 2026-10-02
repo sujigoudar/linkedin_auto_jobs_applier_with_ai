@@ -12,6 +12,145 @@ Everything in this file. This is pre-1.0, development-branch software;
 nothing here has shipped to a live production deployment
 (`docs/process/RELEASE.md`).
 
+### 2026-10-02 — Track 69: comprehensive mutation-testing regression suite for configuration and infrastructure
+
+Comprehensive mutation-testing regression suite for signal-portfolio-commercial's
+configuration and infrastructure modules: `app/config.py` and `app/rate_limit.py`.
+Following the Track 60-63 mutation-testing pattern established in signal-copier,
+this suite targets specific high-severity mutations that would silently misbehave
+if critical operators, conditions, or default values change.
+
+#### Added
+- `tests/test_track69_config_infra_mutation.py`: 38 new targeted regression tests
+  covering:
+  - **config.py defaults** (12 tests): ENVIRONMENT defaults, placeholder secrets,
+    boolean flags, numeric intervals, empty vs unconfigured. Mutation targets:
+    changed defaults (e.g., ENVIRONMENT from LOCAL_SIM to COMMERCIAL_LIVE --
+    fail-closed guard), dropped fields, type conversions, boolean inversions.
+    Tests verify ENVIRONMENT defaults to LOCAL_SIM (never COMMERCIAL_LIVE),
+    all placeholder secrets detected, empty strings distinguish unconfigured
+    features, numeric defaults match spec.
+  - **config.py placeholder secret validation** (3 tests): Secret registry
+    validation, value matching, non-empty verification. Mutation targets:
+    dropped secret checks (would allow startup with default test credentials),
+    membership comparison flips (in vs not-in), empty/None distinction.
+  - **config.py placeholder secret detection** (6 tests): Placeholder detection
+    for all four secrets (JWT, relay, catalog-fit-sim, Stripe), multiple
+    placeholder detection. Mutation targets: dropped condition checks, flipped
+    string comparisons, operator flips (== vs !=). Tests verify each placeholder
+    value detected individually, multiple placeholders detected collectively.
+  - **config.py type conversions** (4 tests): Type preservation for string,
+    float, and boolean configuration values. Mutation targets: type conversions
+    dropping, string-to-bool parsing flips, numeric coercions. Tests verify
+    types preserved correctly through environment variable parsing.
+  - **config.py string defaults** (4 tests): Database URL non-emptiness,
+    unconfigured features use empty string, JSON parsing. Mutation targets:
+    dropped checks, empty vs None distinction, string literal changes.
+  - **rate_limit.py initialization** (5 tests): Limiter initialization, key
+    function (get_remote_address), rate limit format and value. Mutation
+    targets: dropped initialization steps, wrong key function, format string
+    mutations, numeric rate limit changes.
+  - **rate_limit.py documentation** (2 tests): In-memory storage validation,
+    architecture documentation. Mutation targets: implementation type changes,
+    storage backend swaps.
+  - **rate_limit.py boundary conditions** (2 tests): Reasonable rate limit range,
+    upstream service comparison. Mutation targets: numeric boundary flips.
+
+#### Test results
+- Full `pytest -q` on Track 69 suite: **38 passed** in 0.28s
+- `ruff check tests/test_track69_config_infra_mutation.py`: **All checks passed**
+- `mypy` on test file: **Success: no issues found**
+
+#### Design rationale
+Each test is designed to fail under a targeted, high-severity mutation pattern:
+1. Default value changes (ENVIRONMENT from LOCAL_SIM to COMMERCIAL_LIVE)
+2. Placeholder secret detection (dropped checks would allow test credentials in prod)
+3. Boundary conditions and type conversions
+4. Fail-closed configuration guards ensuring safe defaults
+5. Rate limiter isolation and key function correctness
+
+Tests were hand-written from code review of configuration-safety and
+infrastructure-stability risks to establish mutation resistance ahead of
+resource-constrained full `mutmut run` (same pattern as Tracks 60-67).
+
+No production code changes required; all existing code passes new regression
+tests. Existing configuration and rate-limiting tests remain unmodified,
+unweakened, and all pass.
+
+### 2026-10-02 — Track 67: comprehensive mutation-testing regression suite for commercial services
+
+Comprehensive mutation-testing regression suite for signal-portfolio-commercial's
+highest-risk service modules: `app/services/publication.py`, `app/services/
+business_economics.py`, and `app/services/ledger.py`. Following the Track 60-63
+mutation-testing pattern established in signal-copier, this suite targets
+specific high-severity mutations that would silently misbehave if critical
+operators, conditions, or boundaries change.
+
+#### Added
+- `tests/test_track67_commercial_mutation.py`: 32 new targeted regression tests
+  covering:
+  - **publication.py idempotency** (4 tests): Idempotent enqueue with conflict
+    detection. Mutation targets: dropped `if` condition on body_hash comparison,
+    flipped conflict-raise logic. Tests verify exact-key exact-body idempotency,
+    conflict detection on key-reuse with different body, conflict error
+    messages preserving both hashes for diagnostics.
+  - **publication.py state transitions** (7 tests): State machine validation with
+    defined frozenset transitions. Mutation targets: wrong frozenset membership,
+    flipped transition allowance logic, dropped membership checks. Tests verify
+    all defined transitions (DRAFT→ELIGIBLE, DRAFT→SUPERSEDED, etc.),
+    verify forbidden transitions reject, verify UNKNOWN→RECONCILING-only
+    (spec violation if direct to ACKNOWLEDGED/REJECTED allowed), verify
+    absorbing states (SUPERSEDED, TERMINAL) trap further transitions.
+  - **business_economics.py unit contribution** (4 tests): Mutation targets:
+    operator flips (- vs + on costs), boundary conditions (<= vs <). Tests
+    verify all costs subtract correctly, zero contribution is warning,
+    positive boundary (0.01) is not warning, negative contribution is warning.
+  - **business_economics.py break-even** (4 tests): Mutation targets: division
+    operator check (/ vs *), non-positive check dropped (would attempt
+    division by zero). Tests verify correct division, fractional division
+    (non-integer quotient), warning on zero contribution, warning on negative
+    contribution.
+  - **business_economics.py revenue boundaries** (5 tests): Mutation targets:
+    subscription state membership (in vs not-in), tenant scoping (== vs !=).
+    Tests verify ACTIVE_PAID revenue recognized, PAST_DUE recognized,
+    CANCEL_AT_PERIOD_END recognized, DISPUTED never recognized, tenant
+    isolation enforced.
+  - **business_economics.py margin calculation** (5 tests): Mutation targets:
+    comparison operators (<= vs <, >= vs >), period boundary semantics,
+    margin formula (+ vs -), missing-cost reporting. Tests verify period_end
+    before period_start rejected, subscriptions ending exactly at period_end
+    included, costs overlapping period included, margin correctly subtracts
+    cost from revenue, currencies with revenue but no cost reported as
+    missing (never computed as revenue-minus-zero).
+  - **ledger.py append_entry** (3 tests): Mutation targets: field assignment
+    drops or typos, fee None vs 0 distinction (spec: unknown fee is None,
+    not Decimal(0)). Tests verify all fields recorded, fee None when omitted,
+    fee Decimal("0") when explicitly passed, distinction preserved.
+
+#### Test results
+- Full `pytest -q` on Track 67 suite: **32 passed**
+- Full `pytest -q` on existing publication/business_economics/ledger tests:
+  **33 passed** (existing tests unaffected)
+- `ruff check tests/test_track67_commercial_mutation.py`: **All checks passed**
+- `mypy` on test file: **Success: no issues found**
+
+#### Design rationale
+Each test is designed to fail under a targeted, high-severity mutation pattern:
+1. Boundary conditions at operator limits (== vs !=, < vs <=, > vs >=)
+2. Arithmetic operator flips (+ vs -, * vs /)
+3. Condition/membership drops (if conditions, frozenset membership checks)
+4. Boolean logic flips (and vs or, dropped not)
+5. Default value changes (None vs 0, empty vs full frozenset)
+
+Tests were hand-written from code review of highest-risk business logic
+(idempotency, financial calculations, state machines) to establish mutation
+resistance ahead of full `mutmut run` (resource constraints on shared dev box
+prevented completion, same pattern as Tracks 60-61 in signal-copier).
+
+No production code changes required; all existing code passes new regression
+tests. `tests/test_publication.py`, `tests/test_business_economics.py`, and
+`tests/test_ledger.py` remain unmodified, unweakened, and all pass.
+
 ### 2026-10-01 — Track 53: mutation-testing pass (permissions, staff_access)
 
 Widens Track 39's mutation-testing pass onto the role-based permission-

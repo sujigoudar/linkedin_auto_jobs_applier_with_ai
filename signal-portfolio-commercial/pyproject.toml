@@ -27,3 +27,60 @@ ignore = ["B008"]
 [tool.mypy]
 python_version = "3.11"
 ignore_missing_imports = true
+
+[tool.mutmut]
+# Scoped mutation testing configuration for signal-portfolio-commercial
+# (parallel to signal-copier's own only_mutate configuration).
+# Identifies the highest-risk financial, authorization, and data-integrity
+# modules where silent mutations (operator flips, condition drops, boundary
+# condition changes) would cause the most severe failures. Uses hand-written,
+# targeted regression tests (Tracks 67, 69, and planned extensions) rather than
+# full mutmut runs, given container resource constraints. Same deliberate,
+# one-module-at-a-time approach as signal-copier: not every module at once,
+# but the documented highest-risk slices first.
+#
+# Currently covered (Track 67, 69):
+#   - app/services/publication.py (idempotency, state transitions)
+#   - app/services/business_economics.py (financial calculations)
+#   - app/services/ledger.py (journal correctness)
+#   - app/config.py (secure defaults, placeholder secret detection)
+#   - app/rate_limit.py (rate limiting isolation)
+#
+# Planned extensions (by financial/authorization risk tier):
+#   Tier 1 (critical authorization/billing):
+#   - app/services/auth.py (credential validation, token logic)
+#   - app/services/permissions.py (authorization gates)
+#   - app/services/customer_billing.py (subscription calculations)
+#   - app/services/rights_registry.py (rights grant validation)
+#
+#   Tier 2 (financial integrity):
+#   - app/services/customer_managed_programs.py (copy program lifecycle)
+#   - app/services/portfolio_rights.py (portfolio authorization)
+#   - app/services/customer_performance_state.py (performance calculations)
+#   - app/services/price_version.py (price versioning logic)
+#
+#   Tier 3 (data integrity/event processing):
+#   - app/services/integration_inbox.py (event ingest validation)
+#   - app/services/publisher_writer_claim.py (claim validation)
+#   - app/services/trading_authority.py (trading permission checks)
+#
+# source_paths must cover the whole importable "app" package (mutmut copies
+# it verbatim into mutants/app/ so the test suite's `import app.main` etc.
+# still resolves); only_mutate is what actually narrows the scope to the
+# listed files -- every other file under app/ is copied unmutated.
+source_paths = ["app"]
+only_mutate = [
+    "app/config.py", "app/rate_limit.py",
+    "app/services/auth.py", "app/services/permissions.py",
+    "app/services/business_economics.py", "app/services/ledger.py",
+    "app/services/publication.py", "app/services/customer_billing.py",
+    "app/services/rights_registry.py", "app/services/customer_managed_programs.py",
+    "app/services/portfolio_rights.py", "app/services/customer_performance_state.py",
+    "app/services/price_version.py", "app/services/integration_inbox.py",
+    "app/services/publisher_writer_claim.py", "app/services/trading_authority.py",
+    "app/services/relay_auth.py", "app/services/local_auth.py",
+]
+pytest_add_cli_args_test_selection = [
+    "tests/test_track67_commercial_mutation.py",
+    "tests/test_track69_config_infra_mutation.py",
+]

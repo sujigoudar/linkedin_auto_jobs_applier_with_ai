@@ -147,6 +147,32 @@
 # `mutmut run` fresh is the natural next step before chasing the
 # remaining survivors further.
 #
+# Track 52 (2026-10-01): widened to the realized/unrealized P&L
+# computation and position-pricing slice -- app/economics.py (the
+# authoritative replay-based realized P&L, cost basis, and the two
+# win-rate metrics -- see its own docstring's "two win rates, not one"
+# distinction), app/account_economics_v2.py (the additive extended-
+# economics view that deliberately never recomputes economics.py's own
+# numbers a second way -- see its own "build alongside, never recompute
+# a second way" invariant), and app/pricing.py (the live PriceMonitor
+# background loop that feeds on_price_update/last_observed_price, the
+# only genuine source account_economics_v2.py's unrealized P&L is
+# allowed to use). A silently-wrong mutation in any of these three is
+# exactly a silently-wrong number the account owner is shown and
+# trusts, per this track's own stated priority. Test selection below is
+# each module's own direct importers only (grep -rl "from app.<module>"
+# tests/), same scoping discipline as every prior track above -- plus
+# tests/test_equity_history.py for economics.py specifically, since
+# that file's own test_realized_pnl_matches_compute_account_economics_
+# exactly is a load-bearing cross-check that economics.py's
+# realized_pnl and equity_history's own snapshot stay numerically
+# identical (the exact invariant account_economics_v2.py's docstring
+# cites) -- a mutation that broke that equality would be a genuine,
+# high-severity gap this scoping would otherwise miss. See
+# docs/state/PROGRESS.md for the resulting mutation scores and what
+# was fixed vs. documented as an equivalent-mutant/defensive-branch
+# survivor.
+#
 # Track 49 (2026-10-01): widened per the same "mutation covering needs
 # to cover every module" instruction to the next highest-financial-risk
 # pair -- app/qualification.py (the live-routing qualification gate: the
@@ -167,6 +193,45 @@
 # docs/state/PROGRESS.md for the resulting mutation score, what was
 # genuinely fixed vs. left as a documented equivalent-mutant survivor.
 #
+# Track 54 (2026-10-01): widened per the same "mutation covering needs
+# to cover every module" instruction to app/brokers/paper.py (the
+# in-memory PaperBroker -- the reference managed-lifecycle broker every
+# paper-trading account actually executes against today, including its
+# genuinely-computed simulated cash/buying-power bookkeeping -- see the
+# module's own docstring) and app/brokers/base.py (the BrokerAdapter
+# base class every execution destination implements: the capability-
+# introspection properties that gate live admission, e.g.
+# app/qualification.py's feedback-dependent floor and
+# app/lifecycle/manager.py's `validate_plan`). Test selection: each
+# file's own dedicated unit-test files
+# (tests/test_paper_broker.py, tests/test_paper_broker_lifecycle_capabilities.py,
+# tests/test_account_balance_capability.py,
+# tests/test_adp02_adp06_bracket_capability_verification.py) plus two
+# already-present files that also directly exercise these two modules
+# (tests/test_broker_capability_gate.py, tests/test_asset_class_gate.py
+# -- both already in the list above from an earlier track, kept as-is).
+# Same CLI mismatch prior widening tracks hit: this host's globally
+# installed `mutmut` resolves to a repackaged build that calls itself
+# "2.5.1" but has a different, 3.x-shaped CLI (`mutmut run` there takes
+# only `--max-children`/`[MUTANT_NAMES]` and silently ignores
+# `only_mutate`/`pytest_add_cli_args_test_selection` from this table,
+# mutating every file under `source_paths` instead). Worked around the
+# same way: an isolated venv with the real PyPI `mutmut<3` (2.5.1)
+# pinned, which DOES read `only_mutate`/`pytest_add_cli_args_test_selection`
+# from this table and also exposes the classic `--paths-to-mutate`/
+# `--runner` flags -- the actual invocation used here was
+# `mutmut run --paths-to-mutate="app/brokers/paper.py,app/brokers/base.py" \
+#   --runner="python -m pytest -x -q tests/test_paper_broker.py \
+#   tests/test_paper_broker_lifecycle_capabilities.py \
+#   tests/test_account_balance_capability.py \
+#   tests/test_adp02_adp06_bracket_capability_verification.py \
+#   tests/test_broker_capability_gate.py tests/test_asset_class_gate.py"`
+# (the explicit flags take priority over this table's `only_mutate`/
+# `pytest_add_cli_args_test_selection` for a scoped single-pass run, same
+# as every prior track's own workaround). See docs/state/PROGRESS.md for
+# the resulting mutation score and what was genuinely fixed vs. left as
+# a documented equivalent-mutant survivor.
+#
 # source_paths must cover the whole importable "app" package (mutmut
 # copies it verbatim into mutants/app/ so the test suite's `import
 # app.main` etc. still resolves) plus alembic/ (app/db.py stamps
@@ -178,7 +243,14 @@ source_paths = ["app", "alembic"]
 only_mutate = [
     "app/auth.py", "app/engine.py", "app/lifecycle/manager.py", "app/lifecycle/close_arbiter.py",
     "app/writer_lease.py", "app/command_ledger.py", "app/reconciliation.py",
+    "app/economics.py", "app/account_economics_v2.py", "app/pricing.py",
     "app/qualification.py", "app/export_events.py",
+    "app/brokers/paper.py", "app/brokers/base.py",
+    "app/routing.py", "app/capital_allocator.py", "app/risk.py", "app/quantity.py",
+    "app/statistics.py", "app/signal_correlation.py",
+    "app/telegram_collectors.py", "app/unified_collectors.py", "app/provider_catalog.py",
+    "app/provider_scout.py", "app/certification_scorecard.py", "app/shadow_mode.py",
+    "app/phone_escalation.py", "app/execution_quality.py", "app/metrics.py", "app/equity_history.py",
 ]
 pytest_add_cli_args_test_selection = [
     "tests/test_owner_auth.py", "tests/test_sms_twilio_sender_authorization.py",
@@ -217,8 +289,24 @@ pytest_add_cli_args_test_selection = [
     "tests/test_health_truthfulness.py",
     "tests/test_relay_scheduler.py",
     "tests/test_tr13_tr16_trading_screens.py",
+    "tests/test_e06_account_economics.py",
+    "tests/test_e06_economics_endpoint.py",
+    "tests/test_equity_history.py",
+    "tests/test_account_economics_v2.py",
+    "tests/test_account_economics_v2_endpoint.py",
+    "tests/test_price_monitor.py",
+    "tests/test_pu_a1_mae_mfe_tracking.py",
     "tests/test_route_qualification.py",
     "tests/test_export_events.py",
+    "tests/test_paper_broker.py",
+    "tests/test_paper_broker_lifecycle_capabilities.py",
+    "tests/test_account_balance_capability.py",
+    "tests/test_adp02_adp06_bracket_capability_verification.py",
+    "tests/test_telegram_collectors_registry.py", "tests/test_provider_source_connection_catalog.py",
+    "tests/test_provider_scout.py", "tests/test_e05_execution_quality.py",
+    "tests/test_c23_metrics_endpoint.py", "tests/test_equity_history_endpoint.py",
+    "tests/test_t13_phone_escalation.py", "tests/test_track37_phone_escalation_correlation_wiring.py",
+    "tests/test_trk62_sources_providers_mutation.py",
 ]
 
 # C38 (bounded): static analysis -- ruff (lint) + mypy (type checking).

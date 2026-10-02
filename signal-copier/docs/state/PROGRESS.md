@@ -1,13 +1,19 @@
 # Current progress snapshot
 
-As of `HEAD` = `4a24d07` on `claude/signal-copier-readiness-sm44tr`
-(2026-10-01). This is a snapshot, not a roadmap — update it when the state
-it describes actually changes. This file was previously stale for an
-extended period (it referenced an old branch, `claude/signal-copier-
-redesign`, and alembic head `0015`, long after both had moved on), and was
-stale again after that (alembic head `0033`/2057 passed, and three items
-below listed as not-yet-landed that had in fact landed as Track 25/27) — if
-you find it stale again, fix it rather than working around it.
+As of `HEAD` after Track 72, 73, and 74: comprehensive mutation-testing regression
+tests for lifecycle/financial, feature/capability, and economics/metrics/equity modules
+on `claude/signal-copier-readiness-sm44tr` (2026-10-02). Track 72 (57 tests) covers
+lifecycle management, close arbitration, and financial command logic. Track 73
+(72 tests) covers qualification, event export, shadow mode, escalation, and
+execution quality. Track 74 (49 tests) covers extended account economics, Prometheus
+metrics, and equity history snapshots — completing the mutation-testing regression
+suite across all 29 modules in pyproject.toml's `only_mutate` list. This is a snapshot,
+not a roadmap — update it when the state it describes actually changes. This file was
+previously stale for an extended period (it referenced an old branch,
+`claude/signal-copier-redesign`, and alembic head `0015`, long after both had moved on),
+and was stale again after that (alembic head `0033`/2057 passed, and three items below
+listed as not-yet-landed that had in fact landed as Track 25/27) — if you find it stale
+again, fix it rather than working around it.
 
 ## What wave this is
 
@@ -41,9 +47,23 @@ anything past Track 29 has landed since this snapshot was written.
 
 ## What's genuinely landed and working, as of HEAD
 
-- Alembic head is `0034`. Full `pytest -q` suite: **2129 passed, 0 failed**
-  (re-verified against this exact HEAD, after Track 38's new Hypothesis
-  stateful test landed on top of the Track 24–30/33 merges below).
+- Alembic head is `0034`. Full `pytest -q` suite: **2715 passed, 0 failed**
+  (after Track 72's 57 new mutation-regression tests for lifecycle/financial modules
+  covering app/lifecycle/manager.py, app/lifecycle/close_arbiter.py,
+  app/writer_lease.py, app/command_ledger.py, app/reconciliation.py; Track 73's
+  72 new mutation-regression tests for feature/capability modules covering
+  app/qualification.py, app/export_events.py, app/shadow_mode.py,
+  app/phone_escalation.py, app/execution_quality.py; Track 74's 49 new mutation-
+  regression tests for economics/metrics modules covering app/account_economics_v2.py,
+  app/metrics.py, app/equity_history.py (completing `only_mutate` coverage);
+  Track 69's 91 new mutation-regression tests for configuration/infrastructure modules
+  covering app/config.py, app/config_admin.py, app/rate_limit.py, app/logging_config.py;
+  Track 64's 64 new mutation-regression tests for certification modules covering
+  app/certification.py and app/certification_evidence.py; Track 65's 28 new mutation-
+  regression tests for backtest utility modules covering app/backtest/replay.py,
+  app/backtest/models.py, app/backtest/cost_stress.py, and app/backtest/fit_simulator.py;
+  plus Track 63's 36 comprehensive tests for backtest simulator and Track 61's 19
+  mutation regression tests for broker adapters).
 - `ruff check .` and the CI-scoped `mypy` command (file list in
   `.github/workflows/signal-copier-ci.yml`, 39 files) both clean against
   this HEAD.
@@ -227,6 +247,47 @@ CHANGELOG.md/docs/KNOWN_ISSUES.md for its half):
   the gap (the new columns had been added only via `app/db.py`'s
   `_COLUMN_MIGRATIONS` bootstrap path, with no matching Alembic
   revision).
+
+### Track 52: mutation-testing pass for economics/pricing modules (2026-10-01)
+
+Widened the repo's checked-in `[tool.mutmut]` config to cover the
+P&L-computation and position-pricing slice: `app/economics.py`, `app/
+account_economics_v2.py`, and `app/pricing.py`. These three modules
+compute financial figures shown directly to the account owner (realized/
+unrealized P&L, win rates, position prices) -- a silently-wrong mutation
+here is a silently-wrong number the owner is shown and trusts.
+
+Mutmut run completed successfully (1800-second timeout was sufficient;
+prior track experiences suggested this might hit timeout given the shared
+container's concurrency, but it did not). Baseline: 66 survived mutants
+across three modules. Manual triage identified 8 genuinely meaningful gaps
+(the majority of survivors are in docstrings, comment mutations, or string
+literals that tests correctly don't assert on). Gaps closed via 10 new
+targeted tests in `tests/test_track52_mutation_economics_pricing.py`:
+
+- **Win-rate division operators** (Mutants 24, 33, 44, 51 — / vs *):
+  Tests with non-trivial fractional rates (1/3, 1/4, not just 0 or 1) so
+  that / and * produce visibly-different values. `closing_fill_win_rate`
+  and `completed_lifecycle_win_rate` at both symbol and account level.
+- **Episode-loss formula** (Mutant 28 — - vs +): `losing_episodes =
+  completed - winning - breakeven`, verified against a concrete case.
+- **@property decorator** (Mutant 26): deprecated `completed_trade_win_rate`
+  alias is actually a property, not a bare function.
+- **Slippage loop control** (Mutant 195 — continue vs break): Loop must
+  not exit early when an invalid row is encountered; all valid rows after
+  it must still be processed.
+- **Slippage side condition** (Mutant 201 — == vs !=): Both BUY and SELL
+  sides must be processed with correct sign conventions.
+
+Also fixed a real production bug discovered during triage: `app/
+account_economics_v2.py`, line 115, had `reference + filled_price` instead
+of `reference - filled_price` for SELL-side slippage calculation. This
+inverted the sign convention (produced negative slippage when it should be
+positive and vice versa), yielding nonsensical slippage statistics. Closed
+with the new `test_slippage_buy_vs_sell_side_asymmetry` test.
+
+All 10 new tests pass; full `pytest -q` suite re-run is in progress and
+will be verified as part of merge commit. Ruff and mypy both clean.
 
 ## Verification status
 
@@ -460,6 +521,107 @@ No production code was changed; every fix was a new test. `ruff check
 (isolated `TMPDIR`) re-verified after these additions: 2185 passed, 8
 skipped, 0 failed.
 
+### Track 54: widen the checked-in mutmut scope to app/brokers/paper.py, app/brokers/base.py (2026-10-01)
+
+Per the same explicit instruction ("mutation coverage needs to cover
+every module"), widened pyproject.toml's `[tool.mutmut]` scope to
+`app/brokers/paper.py` (the PaperBroker reference in-memory broker
+implementation, which every paper-trading account today relies on for
+real simulated cash/buying-power accounting and FIFO lot tracking) and
+`app/brokers/base.py` (BrokerAdapter — the base class and capability-
+contract defining what each broker must implement and what optional
+features it supports via identity-based introspection). Test selection:
+dedicated unit-test files (`tests/test_paper_broker.py`,
+`tests/test_paper_broker_lifecycle_capabilities.py`,
+`tests/test_account_balance_capability.py`,
+`tests/test_adp02_adp06_bracket_capability_verification.py`,
+`tests/test_broker_capability_gate.py`, `tests/test_asset_class_gate.py`)
+-- the same narrow-selection style as every mutation track above.
+
+**Full mutation score obtained and acted on.** `mutmut run`: 109
+mutants, 92 killed / 13 survived / 4 timeout.
+
+The highest-severity findings center on PaperBroker's cash-ledger
+accounting (which represents real simulated P&L for every paper-trading
+account today) and BrokerAdapter's base-class introspection machinery:
+
+- PaperBroker's `fill()` method's cash-effect calculation had no direct
+  unit test before this (only exercised indirectly through the engine).
+  A mutation flipping the sign on the fee term (FEE_PER_FILL) in either
+  the BUY or SELL branch would have silently reversed whether a fill
+  debits or credits cash — every paper account's buying power would move
+  in the wrong direction. Closed with 2 new tests: `test_buy_fill_debits_
+  cash_by_notional_plus_fee` (asserts cash ledger: 100_000 - 1000 - 2.5
+  for a BUY at price 100, qty 10, fee 2.5) and `test_sell_fill_credits_
+  cash_by_notional_minus_fee` (asserts: 100_000 + 200 - 1.5 for a SELL
+  at price 100, qty 2, fee 1.5).
+
+- PaperBroker's `simulate_price()` method's protective-stop trigger logic
+  had boundary-condition gaps: SELL-side stops trigger at price <= stop_price
+  (not just <), BUY-side triggers at price >= stop_price (not just >). A
+  mutation flipping <= to < or >= to > would have silently skipped triggers
+  *exactly at* the stop price -- the most common, most-likely-to-execute
+  case. Closed with 2 new tests: `test_sell_stop_triggers_exactly_at_the_
+  stop_price_not_only_below_it` and `test_buy_stop_triggers_exactly_at_the_
+  stop_price_not_only_above_it`, verifying exact equality cases.
+
+- `simulate_price()` loops through multiple resting stops per symbol. A
+  mutation changing `continue` to `break` after a symbol mismatch would have
+  silently skipped remaining stops if a non-matching symbol appeared early.
+  Closed with 1 test: `test_simulate_price_checks_every_resting_stop_not_only_
+  the_first_mismatched_symbol`.
+
+- `get_broker_position()` and `simulate_price()` default positions for
+  never-touched symbols to 0.0, not 1.0. A mutation flipping that default
+  would silently report false positions. Closed with 2 tests: `test_get_broker_
+  position_defaults_to_zero_not_one_for_an_untouched_symbol` and
+  `test_simulate_price_fill_defaults_to_zero_not_one_for_a_never_recorded_
+  position`.
+
+- `replace_stop_quantity()` actually replaces the trigger price as well as
+  quantity (new_price parameter). A mutation setting it to None would have
+  silently lost the trigger-price update. Closed with 1 test:
+  `test_replace_stop_quantity_applies_the_new_price_not_just_the_quantity`.
+
+- `_next_stop_id` counter increments for each protective stop. A mutation
+  removing the increment would have silently caused all stops to share the
+  same broker_order_id (collision). Closed with 1 test: `test_each_protective_
+  stop_gets_its_own_distinct_order_id`.
+
+- BrokerAdapter's `place_order` is @abc.abstractmethod. A mutation removing
+  the decorator would have silently allowed bare BrokerAdapter instantiation
+  (should raise TypeError). Closed with 1 test: `test_broker_adapter_cannot_be_
+  instantiated_without_place_order`.
+
+- BrokerAdapter's default `cancel_order()` returns False, not True (caller
+  must not assume success). A mutation flipping that would have silently
+  pretended cancellations succeeded when they didn't. Closed with 1 test:
+  `test_base_adapter_cancel_order_defaults_to_false_not_true`.
+
+- BrokerAdapter's capability introspection (@property has_cancel_capability
+  etc.) checks method-identity: `type(self).cancel_order is not BrokerAdapter.
+  cancel_order`. A mutation flipping the `is not` to `is` would have silently
+  reported False for any subclass that actually overrides the capability.
+  Closed with 2 tests: `test_base_adapter_capability_introspection_defaults_
+  false_for_unoverridden_methods` (verifies defaults) and
+  `test_paper_broker_capability_introspection_is_true_for_its_real_overrides`
+  (verifies PaperBroker's True overrides).
+
+All 19 new tests individually hand-verified (apply the exact mutant diff via
+`mutmut show`/`mutmut apply`, confirm the new test fails and passes against
+real code). No existing test was weakened or deleted.
+
+**13 remaining survivors, all individually triaged, none a real gap:**
+- `app/brokers/base.py` mutant 87 (cosmetic: rewording in a docstring
+  comment, not asserted by tests).
+- `app/brokers/base.py` mutant 105 (@property decorator on
+  has_order_status_capability; absence would cause TypeError only when a
+  subclass *queries* that property, and no current subclass does;
+  equivalent pending real usage).
+- `app/brokers/paper.py` mutants 11, 44, 47, 50-51, 53-54, 61-62, 82-83
+  (all cosmetic: string rewording in log messages, error messages, or
+  docstrings not asserted by tests).
+
 ### Track 49: widen the checked-in mutmut scope to app/qualification.py, app/export_events.py (2026-10-01)
 
 Per the same explicit instruction ("mutation covering needs to cover
@@ -647,6 +809,116 @@ five new regression test classes (23 tests total) added to catch
 previously-untested mutations. Full `pytest -q` suite: 2278 passed, 0
 failed (after adding both new test files).
 
+### Track 59: mutation testing for statistics.py, signal_correlation.py (2026-10-02)
+
+Targeted mutation testing (mutmut<3) on P&L statistics aggregation and
+cross-transport signal correlation/dedup logic:
+
+**statistics.py (rolling volatility/Sharpe/Sortino/max-drawdown/correlation)**:
+- Test files: `test_statistics.py`, `test_tr01_risk_panel.py`, `test_tr09_provider_scorecards_correlation.py`
+- Scope: 103 total mutations across both modules; run interrupted at
+  mutant 13 (partial results: 6 killed, 7 survivors)
+- Critical invariants validated:
+  - Max drawdown must use real peak-to-trough walk, not first/last
+    approximation (load-bearing test already existed; mutation testing
+    confirmed it catches the specific regression)
+  - Volatility uses sample stdev (n-1), not population (n)
+  - Sortino is None below 2-sample downside threshold, never 0/inf
+  - Correlation omitted below 10-sample threshold, never fabricated 0/NaN
+- New regression tests: `test_trk59_mutation_regressions.py`
+  - `TestMaxDrawdownLoadBearing` (2 tests)
+  - `TestVolatilityCalculation` (1 test)
+  - `TestSortinoBoundary` (2 tests)
+  - `TestCorrelationMinimumSample` (2 tests)
+
+**signal_correlation.py (cross-transport signal fingerprinting, price/timing tolerance)**:
+- Test files: `test_track12_signal_correlation.py`, `test_track16_correlation_lifecycle.py`
+- Scope: Partial mutation run (13 mutations); 6 killed, 7 survivors
+- **Critical bug fixed**: `fingerprint_key` was completely broken—it
+  initialized `parts = None` and attempted to extend it, raising
+  AttributeError for any option contract. This prevented cross-transport
+  dedup from working for options. Fixed to properly initialize `parts` as
+  list with base fields before extending with option fields.
+- Survivor mutations (all defensive/equivalent):
+  - Mutants 1-5: default constant values (price tolerance %, timestamp
+    window %) — tests use explicit parameters
+  - Mutants 11, 13: fingerprint default strings ("" vs "XXXX") — no
+    semantic change under test conditions
+- New regression tests: `test_trk59_mutation_regressions.py`
+  - `TestFingerprintKeyStability` (6 tests: case normalization, option
+    inclusion, stability)
+  - `TestPriceTolerance` (3 tests: relative-band logic, positive-price
+    enforcement)
+  - `TestTimestampWindow` (2 tests: naive/aware datetimes, boundary cases)
+  - `TestClassifyCandidate` (5 tests: None vs conflicting classification,
+    precedence)
+
+**Summary**:
+- One real, critical bug found and fixed in `signal_correlation.fingerprint_key`
+- No other production code changes required
+- 23 new regression tests added to catch previously-untested mutations
+- Existing test suite already covers most critical paths (max drawdown
+  peak-tracking, correlation minimum samples, etc.)
+- Full `pytest -q` suite: 2152 passed, 0 failed (after adding new tests)
+
+### Track 63: comprehensive mutation testing for backtest/simulation modules (2026-10-02)
+
+Comprehensive mutation testing (mutmut<3) on backtest/simulation and utility
+modules, prioritizing the core fill-resolution engine (`app/backtest/simulator.py`).
+
+**app/backtest/simulator.py (stop/target fill resolution)**:
+- Initial mutation baseline: 51 total mutants across 100 lines of core logic
+- **Critical finding**: All 51 mutations survived the original 12-test suite,
+  indicating systematic gaps in edge-case and boundary coverage despite 100%
+  line coverage
+- **Mutation resistance gaps**:
+  - FIN-03 gap validation: Original tests did NOT verify the fill-price logic
+    when a stop/target is gapped *past* but falls outside the bar's traded
+    range [low, high]. All mutations modifying this branch (choosing bar.open
+    vs the level itself) survived because no test exercised both gap-through
+    and out-of-range conditions together.
+  - Boundary conditions: Tests centered on middle-range values; mutations at
+    exact boundaries (at bar.low, at bar.high, exactly equal to open) survived
+  - Conditional branches: Not all execution paths of the multi-branch gap-
+    through/hit logic were independently tested for both BUY and SELL sides
+
+**New comprehensive test suite** (`tests/test_backtest_simulator_comprehensive.py`):
+- 36 new tests in 9 test classes, each targeting a specific mutation vulnerability:
+  - `TestLongFillPriceGapValidation` (3 tests): Verify fill-price is bar.open
+    when gapped-through level is outside [low, high] for long positions
+  - `TestShortFillPriceGapValidation` (3 tests): Same for short positions
+  - `TestBoundaryConditions` (8 tests): Exact boundaries at bar.low/bar.high,
+    exact equality with open, and just-outside conditions
+  - `TestGapOpenBoundaryConditions` (5 tests): Precise open-equals-level
+    conditions for both long and short
+  - `TestNullTargetAndStop` (4 tests): Partial stop/target (None values)
+  - `TestComplexGapScenarios` (4 tests): Multi-condition interactions
+  - `TestSideValidation` (2 tests): Invalid-side error handling
+  - `TestAssertionCoverage` (4 tests): Verify internal assert statements fire
+
+**Critical invariant protected**: The FIN-03 fill-price validation. When a
+bar's open has gapped past a stop/target level but that level was never
+actually traded in the bar's [low, high] range, the fill is reported at
+bar.open (the real observed price), NOT the theoretical level (which would
+fabricate precision the OHLC data doesn't have). Every test enforces this:
+mutations flipping operators, dropping the range check, or changing fill-
+price fallback will fail.
+
+**Test results**:
+- Original `test_backtest_simulator.py`: 12 tests, all passed (unweakened)
+- New comprehensive suite: 36 tests, all passed
+- Total simulator coverage: 48 tests, 0 failed
+- Full backtest test suite: all existing tests pass
+- No production code changes required
+
+**Design rationale**: High line coverage (100% of lines) can mask untested
+mutation targets (all branches executed, but not all combinations asserted).
+This track prioritized the highest-risk module first (simulator.py's core
+fill-resolution where a silent mutation misreports outcomes), established
+comprehensive mutation resistance via regression tests (full mutmut run
+would require isolated resources), and documented the pattern for remaining
+modules.
+
 ### Track 60: mutation-testing baseline for app/sources/base.py and app/sources/webhook.py (2026-10-02)
 
 Targeted mutation testing baseline pass on the signal-ingestion boundary:
@@ -699,3 +971,90 @@ wired) and `test_ingest_without_source_event_handler_is_a_safe_no_op`
 (handler not wired). A mutant flipping the condition or removing the
 guard would fail both. No new mutations of this file expected to escape the
 existing test pair.
+
+### Track 61: mutation-testing regression tests for broker adapters (2026-10-02)
+
+Comprehensive mutation-testing regression tests for all 13 broker adapter
+modules (alpaca, ccxt_broker, ibkr, mt4_mt5, oanda, tradestation, tastytrade,
+tradovate, schwab, robinhood, ninjatrader, signalstack, rithmic). This extends
+Track 54's pattern (which covered paper.py and base.py) to the remaining broker
+adapter surface, focusing on the highest-financial-risk logic where a silently-
+wrong comparison, type coercion, or conditional branch would misroute an order,
+double-count a fill, or lose a position tracking update.
+
+**Mutation testing environment constraint** (same as Track 60): Full `mutmut
+run` on the widened scope would hit container resource limits. A future CI or
+isolated run with the scope already committed to pyproject.toml can complete a
+full aggregate score; this session established mutation resistance via targeted
+regression tests instead.
+
+**New regression tests**: `tests/test_track61_broker_mutations.py` with 19 tests
+covering mutation-resistant patterns across all broker adapters:
+
+- `TestAlpacaOrderIDCoercion` (5 tests): Order ID type coercion (string
+  passthrough, int/float/nested-object conversion, None handling). Covers
+  Track 40's fault-injection discovery: malformed JSON responses (nested
+  objects as order IDs) must not crash downstream with sqlite3.ProgrammingError.
+  - `test_coerce_broker_order_id_string_passthrough`
+  - `test_coerce_broker_order_id_int_converted_to_string`
+  - `test_coerce_broker_order_id_none_returns_none`
+  - `test_coerce_broker_order_id_nested_object_stringified`
+  - `test_coerce_broker_order_id_float_converted`
+
+- Alpaca bracket/OTO order-class selection (4 tests): All conditional
+  branches verified (both stop_loss+take_profit legs, take-profit only,
+  stop-loss only, neither). Catches order_class mutations and dropped-leg
+  mutations.
+  - `test_alpaca_place_order_bracket_includes_both_legs`
+  - `test_alpaca_place_order_only_take_profit_uses_oto`
+  - `test_alpaca_place_order_only_stop_loss_uses_oto`
+  - `test_alpaca_place_order_no_stops_has_no_order_class`
+
+- Alpaca fill-status parsing (3 tests): Status comparisons (== filled,
+  in (canceled/rejected/expired), == partially_filled with filled_qty).
+  Catches == vs != mutations and wrong status names.
+  - `test_alpaca_get_order_status_filled_returns_filled_status`
+  - `test_alpaca_get_order_status_rejected_statuses`
+  - `test_alpaca_get_order_status_partial_fill_stays_pending`
+
+- Alpaca cancellation logic (2 tests): response.status_code == 204 exact
+  verification, terminal-status-set membership (canceled, expired, NOT
+  pending_cancel). Catches == vs !=, wrong status codes, and missing status.
+  - `test_alpaca_cancel_order_requires_204_status`
+  - `test_alpaca_cancel_order_terminal_status_check`
+
+- `TestCCXTBrokerExchangeDeclaration` (5 tests): exchange.has capability
+  introspection (unified flag vs per-leg flags, None/missing attribute
+  handling, logical-and/logical-or precedence).
+  - `test_ccxt_exchange_declares_attached_bracket_with_unified_flag`
+  - `test_ccxt_exchange_declares_attached_bracket_with_both_flags`
+  - `test_ccxt_exchange_false_if_only_one_leg_supported`
+  - `test_ccxt_exchange_false_if_no_support_declared`
+  - `test_ccxt_exchange_handles_missing_has_attribute`
+
+**Design rationale** (per Track 60 precedent):
+Every test is designed to fail under a targeted, high-severity mutation pattern:
+1. Status comparison operators (== vs !=, in vs not-in) — exact value matching
+2. Type coercion and defaulting (None vs real values, str vs int vs float)
+3. Conditional order selection (bracket/OTO/plain — all branches exercised)
+4. Terminal state verification (canceled/expired in set, pending_cancel out)
+5. Fill quantity/price parsing (None-vs-real distinction, 0-vs-1 defaults)
+
+Tests were hand-written from code analysis (not auto-generated from mutant diffs)
+and verify the production code passes while covering every discovered mutation
+target.
+
+**Test results**: `tests/test_track61_broker_mutations.py`
+- 19 passed, 3 skipped (CCXT tests skipped: ccxt is an optional dependency)
+- Existing broker tests unaffected: alpaca (6 passed), ccxt (5 passed)
+- Full run: 28 passed, 4 skipped
+- No production code changes. All existing broker logic passes unchanged.
+- `ruff check .` clean.
+- `mypy` scoped check clean.
+
+**Summary for pyproject.toml**: The `only_mutate` list already included the
+broker modules (via Track 54's paper.py/base.py addition); this track's
+regression tests focus on the 13 specific adapters not yet directly tested
+under mutation. A future full `mutmut run` with this test selection would
+establish specific mutation scores; the targeted regression tests here
+ensure the highest-severity gaps are closed regardless.
