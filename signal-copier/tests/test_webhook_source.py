@@ -191,3 +191,169 @@ async def test_ingest_without_source_event_handler_is_a_safe_no_op():
     await source.ingest({"symbol": "ETHUSDT", "side": "sell"})
 
     assert len(received) == 1
+
+
+# -- Mutation resistance: critical boundary conditions and guard logic --------
+
+
+def test_empty_symbol_raises():
+    """Empty string symbol must be rejected, not treated as falsy-but-present."""
+    source = WebhookSource(on_signal=None)
+    with pytest.raises(SignalValidationError):
+        source.parse({"symbol": "", "side": "buy"})
+
+
+def test_empty_side_raises():
+    """Empty string side must be rejected, not treated as falsy-but-present."""
+    source = WebhookSource(on_signal=None)
+    with pytest.raises(SignalValidationError):
+        source.parse({"symbol": "BTCUSDT", "side": ""})
+
+
+def test_invalid_asset_class_raises():
+    """Invalid asset_class must raise, not silently default."""
+    source = WebhookSource(on_signal=None)
+    with pytest.raises(SignalValidationError):
+        source.parse({"symbol": "BTCUSDT", "side": "buy", "asset_class": "invalid_class"})
+
+
+def test_parse_reads_alert_id_fallback_for_message_id():
+    """'alert_id' should be read as fallback to 'message_id'."""
+    source = WebhookSource(on_signal=None)
+    signal = source.parse({"symbol": "BTCUSDT", "side": "buy", "alert_id": "alert-456"})
+    assert signal.message_id == "alert-456"
+
+
+def test_parse_reads_id_fallback_for_message_id():
+    """'id' should be read as final fallback to 'message_id'."""
+    source = WebhookSource(on_signal=None)
+    signal = source.parse({"symbol": "BTCUSDT", "side": "buy", "id": "id-789"})
+    assert signal.message_id == "id-789"
+
+
+def test_parse_message_id_priority_over_alert_id():
+    """'message_id' should take priority over 'alert_id' when both present."""
+    source = WebhookSource(on_signal=None)
+    signal = source.parse({
+        "symbol": "BTCUSDT",
+        "side": "buy",
+        "message_id": "msg-123",
+        "alert_id": "alert-456"
+    })
+    assert signal.message_id == "msg-123"
+
+
+def test_parse_alert_id_priority_over_id():
+    """'alert_id' should take priority over 'id' when both present."""
+    source = WebhookSource(on_signal=None)
+    signal = source.parse({
+        "symbol": "BTCUSDT",
+        "side": "buy",
+        "alert_id": "alert-456",
+        "id": "id-789"
+    })
+    assert signal.message_id == "alert-456"
+
+
+def test_target_fraction_boundary_exactly_one():
+    """Target fraction of exactly 1.0 should be accepted."""
+    source = WebhookSource(on_signal=None)
+    signal = source.parse({
+        "symbol": "BTCUSDT",
+        "side": "buy",
+        "targets": [{"price": 70000, "fraction": 1.0}]
+    })
+    assert signal.targets[0].fraction == 1.0
+
+
+def test_target_with_zero_fraction_raises():
+    """Target fraction of 0 should be rejected (must be > 0)."""
+    source = WebhookSource(on_signal=None)
+    with pytest.raises(SignalValidationError):
+        source.parse({
+            "symbol": "BTCUSDT",
+            "side": "buy",
+            "targets": [{"price": 70000, "fraction": 0}]
+        })
+
+
+def test_target_with_negative_fraction_raises():
+    """Target fraction of negative value should be rejected."""
+    source = WebhookSource(on_signal=None)
+    with pytest.raises(SignalValidationError):
+        source.parse({
+            "symbol": "BTCUSDT",
+            "side": "buy",
+            "targets": [{"price": 70000, "fraction": -0.5}]
+        })
+
+
+def test_target_quantity_optional():
+    """Target quantity should be optional (None when not provided)."""
+    source = WebhookSource(on_signal=None)
+    signal = source.parse({
+        "symbol": "BTCUSDT",
+        "side": "buy",
+        "targets": [{"price": 70000}]
+    })
+    assert signal.targets[0].quantity is None
+
+
+def test_target_label_optional():
+    """Target label should be optional (None when not provided)."""
+    source = WebhookSource(on_signal=None)
+    signal = source.parse({
+        "symbol": "BTCUSDT",
+        "side": "buy",
+        "targets": [{"price": 70000}]
+    })
+    assert signal.targets[0].label is None
+
+
+def test_case_insensitive_side():
+    """Side parsing should be case-insensitive (buy, BUY, Buy, etc.)."""
+    source = WebhookSource(on_signal=None)
+    for side_str in ["buy", "BUY", "Buy", "bUy"]:
+        signal = source.parse({"symbol": "BTCUSDT", "side": side_str})
+        assert signal.side == Side.BUY
+
+    for side_str in ["sell", "SELL", "Sell", "sELl"]:
+        signal = source.parse({"symbol": "BTCUSDT", "side": side_str})
+        assert signal.side == Side.SELL
+
+    for side_str in ["close", "CLOSE", "Close", "cLOsE"]:
+        signal = source.parse({"symbol": "BTCUSDT", "side": side_str})
+        assert signal.side == Side.CLOSE
+
+
+def test_case_insensitive_asset_class():
+    """Asset class parsing should be case-insensitive."""
+    source = WebhookSource(on_signal=None)
+    for ac_str in ["crypto", "CRYPTO", "Crypto", "cRYPTO"]:
+        signal = source.parse({"symbol": "BTCUSDT", "side": "buy", "asset_class": ac_str})
+        assert signal.asset_class == AssetClass.CRYPTO
+
+    for ac_str in ["equity", "EQUITY", "Equity", "eQUITY"]:
+        signal = source.parse({"symbol": "AAPL", "side": "buy", "asset_class": ac_str})
+        assert signal.asset_class == AssetClass.EQUITY
+
+
+@pytest.mark.asyncio
+async def test_ingest_returns_signal():
+    """Ingest should return the parsed signal."""
+    async def on_signal(signal):
+        pass
+
+    source = WebhookSource(on_signal=on_signal)
+    signal = await source.ingest({"symbol": "ETHUSDT", "side": "sell"})
+    assert signal.symbol == "ETHUSDT"
+    assert signal.side == Side.SELL
+
+
+def test_parse_populates_raw_fields():
+    """Parse should populate both 'raw' and 'raw_source_event' with the payload."""
+    source = WebhookSource(on_signal=None)
+    payload = {"symbol": "BTCUSDT", "side": "buy", "quantity": 1.5}
+    signal = source.parse(payload)
+    assert signal.raw == payload
+    assert signal.raw_source_event == payload

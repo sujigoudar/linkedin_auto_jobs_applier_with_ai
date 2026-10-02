@@ -9,7 +9,6 @@ previously caught:
 - release operator (- vs +)
 """
 import asyncio
-
 from app.capital_allocator import CapitalAllocator, ExposureReport
 
 ACCOUNT_ID = "acct1"
