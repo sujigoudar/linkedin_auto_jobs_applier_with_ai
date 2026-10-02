@@ -12,6 +12,71 @@ Everything in this file. This is pre-1.0, development-branch software;
 nothing here has shipped to a live production deployment
 (`docs/process/RELEASE.md`).
 
+### 2026-10-02 — Track 69: comprehensive mutation-testing regression suite for configuration and infrastructure
+
+Comprehensive mutation-testing regression suite for signal-portfolio-commercial's
+configuration and infrastructure modules: `app/config.py` and `app/rate_limit.py`.
+Following the Track 60-63 mutation-testing pattern established in signal-copier,
+this suite targets specific high-severity mutations that would silently misbehave
+if critical operators, conditions, or default values change.
+
+#### Added
+- `tests/test_track69_config_infra_mutation.py`: 38 new targeted regression tests
+  covering:
+  - **config.py defaults** (12 tests): ENVIRONMENT defaults, placeholder secrets,
+    boolean flags, numeric intervals, empty vs unconfigured. Mutation targets:
+    changed defaults (e.g., ENVIRONMENT from LOCAL_SIM to COMMERCIAL_LIVE --
+    fail-closed guard), dropped fields, type conversions, boolean inversions.
+    Tests verify ENVIRONMENT defaults to LOCAL_SIM (never COMMERCIAL_LIVE),
+    all placeholder secrets detected, empty strings distinguish unconfigured
+    features, numeric defaults match spec.
+  - **config.py placeholder secret validation** (3 tests): Secret registry
+    validation, value matching, non-empty verification. Mutation targets:
+    dropped secret checks (would allow startup with default test credentials),
+    membership comparison flips (in vs not-in), empty/None distinction.
+  - **config.py placeholder secret detection** (6 tests): Placeholder detection
+    for all four secrets (JWT, relay, catalog-fit-sim, Stripe), multiple
+    placeholder detection. Mutation targets: dropped condition checks, flipped
+    string comparisons, operator flips (== vs !=). Tests verify each placeholder
+    value detected individually, multiple placeholders detected collectively.
+  - **config.py type conversions** (4 tests): Type preservation for string,
+    float, and boolean configuration values. Mutation targets: type conversions
+    dropping, string-to-bool parsing flips, numeric coercions. Tests verify
+    types preserved correctly through environment variable parsing.
+  - **config.py string defaults** (4 tests): Database URL non-emptiness,
+    unconfigured features use empty string, JSON parsing. Mutation targets:
+    dropped checks, empty vs None distinction, string literal changes.
+  - **rate_limit.py initialization** (5 tests): Limiter initialization, key
+    function (get_remote_address), rate limit format and value. Mutation
+    targets: dropped initialization steps, wrong key function, format string
+    mutations, numeric rate limit changes.
+  - **rate_limit.py documentation** (2 tests): In-memory storage validation,
+    architecture documentation. Mutation targets: implementation type changes,
+    storage backend swaps.
+  - **rate_limit.py boundary conditions** (2 tests): Reasonable rate limit range,
+    upstream service comparison. Mutation targets: numeric boundary flips.
+
+#### Test results
+- Full `pytest -q` on Track 69 suite: **38 passed** in 0.28s
+- `ruff check tests/test_track69_config_infra_mutation.py`: **All checks passed**
+- `mypy` on test file: **Success: no issues found**
+
+#### Design rationale
+Each test is designed to fail under a targeted, high-severity mutation pattern:
+1. Default value changes (ENVIRONMENT from LOCAL_SIM to COMMERCIAL_LIVE)
+2. Placeholder secret detection (dropped checks would allow test credentials in prod)
+3. Boundary conditions and type conversions
+4. Fail-closed configuration guards ensuring safe defaults
+5. Rate limiter isolation and key function correctness
+
+Tests were hand-written from code review of configuration-safety and
+infrastructure-stability risks to establish mutation resistance ahead of
+resource-constrained full `mutmut run` (same pattern as Tracks 60-67).
+
+No production code changes required; all existing code passes new regression
+tests. Existing configuration and rate-limiting tests remain unmodified,
+unweakened, and all pass.
+
 ### 2026-10-02 — Track 67: comprehensive mutation-testing regression suite for commercial services
 
 Comprehensive mutation-testing regression suite for signal-portfolio-commercial's
