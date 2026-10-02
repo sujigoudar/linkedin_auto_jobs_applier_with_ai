@@ -431,6 +431,12 @@ class _Settings(BaseSettings):
     # the same reasoning documented once, not duplicated here.
     NOTIFICATION_BRIDGE_STALE_THRESHOLD_SECONDS: float = 300.0
 
+    # A-09: Chase guard — max age/deviation for provider prices before rejecting
+    # as stale. None means no check (always accept). Max age in seconds.
+    SIGNAL_MAX_PRICE_AGE_SECONDS: float | None = None
+    # Max price deviation as a percentage (0-100). None means no check.
+    SIGNAL_MAX_PRICE_DEVIATION_PCT: float | None = None
+
     # Track 12: cross-transport signal correlation (app/signal_correlation.py).
     # See that module's own DEFAULT_PRICE_TOLERANCE_PCT/
     # DEFAULT_TIMESTAMP_WINDOW_SECONDS docstrings for the same reasoning
@@ -565,6 +571,9 @@ CATALOG_FIT_SIM_SIGNING_SECRET_PREVIOUS = _settings.CATALOG_FIT_SIM_SIGNING_SECR
 EXPORT_OUTBOX_SIZE_CEILING_BYTES = _settings.EXPORT_OUTBOX_SIZE_CEILING_BYTES
 
 NOTIFICATION_BRIDGE_STALE_THRESHOLD_SECONDS = _settings.NOTIFICATION_BRIDGE_STALE_THRESHOLD_SECONDS
+
+SIGNAL_MAX_PRICE_AGE_SECONDS = _settings.SIGNAL_MAX_PRICE_AGE_SECONDS
+SIGNAL_MAX_PRICE_DEVIATION_PCT = _settings.SIGNAL_MAX_PRICE_DEVIATION_PCT
 
 SIGNAL_CORRELATION_PRICE_TOLERANCE_PCT = _settings.SIGNAL_CORRELATION_PRICE_TOLERANCE_PCT
 SIGNAL_CORRELATION_TIMESTAMP_WINDOW_SECONDS = _settings.SIGNAL_CORRELATION_TIMESTAMP_WINDOW_SECONDS

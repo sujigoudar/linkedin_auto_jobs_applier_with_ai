@@ -64,7 +64,7 @@ from __future__ import annotations
 import math
 
 from app.errors import SignalValidationError
-from app.models import AssetClass, Side, Signal
+from app.models import AssetClass, Intent, Side, Signal
 from app.sources.base import SourceAdapter
 
 #: Exact strings TradVueAutoJournal.cs's `assetClass` local variable can
@@ -119,6 +119,8 @@ class NinjaTraderSource(SourceAdapter):
             raise SignalValidationError(f"unrecognized asset_class {raw_asset_class!r}")
 
         side = Side.CLOSE if action == "exit" else (Side.BUY if direction == "Long" else Side.SELL)
+        # A-07: Mark exits with Intent.EXIT
+        intent = Intent.EXIT if action == "exit" else None
 
         return Signal(
             source=self.name,
@@ -127,6 +129,7 @@ class NinjaTraderSource(SourceAdapter):
             asset_class=asset_class,
             quantity=float(qty),
             price=float(price),
+            intent=intent,
             raw=payload,
         )
 
