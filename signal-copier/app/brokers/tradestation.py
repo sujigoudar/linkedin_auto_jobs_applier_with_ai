@@ -194,6 +194,11 @@ class TradeStationBroker(BrokerAdapter):
         )
 
     async def get_order_status(self, account: DestinationAccount, broker_order_id: str) -> OrderResult | None:
+        """C-13: Get order status including filled quantity for partial fills.
+
+        TradeStation's FLP (partial fill then UROut) must report the actual
+        filled quantity, not just the terminal status code.
+        """
         try:
             creds = self._credentials_for(account)
             token = await self._access_token_for(account, creds)
@@ -213,7 +218,8 @@ class TradeStationBroker(BrokerAdapter):
         orders = response.json().get("Orders") or []
         if not orders:
             return None
-        code = str(orders[0].get("Status", "")).lower()
+        order = orders[0]
+        code = str(order.get("Status", "")).lower()
 
         if code in _FILLED_CODES:
             new_status = OrderStatus.FILLED
@@ -222,11 +228,16 @@ class TradeStationBroker(BrokerAdapter):
         else:
             return None  # still working -- nothing new to report
 
+        # C-13: Read filled quantity from the order response (FilledQuantity or ExecQuantity)
+        filled_qty = order.get("FilledQuantity") or order.get("ExecQuantity")
+        filled_quantity = float(filled_qty) if filled_qty is not None else None
+
         return OrderResult(
             account_id=account.account_id,
             status=new_status,
             signal_id="",  # filled in by the reconciler from its own stored order row
             broker_order_id=broker_order_id,
+            filled_quantity=filled_quantity,
             message=f"TradeStation order status: {code}",
         )
 
