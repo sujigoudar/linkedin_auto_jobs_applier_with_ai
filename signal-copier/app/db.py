@@ -4691,6 +4691,7 @@ class SignalStore:
                           daily_loss_limit_percent, min_equity_threshold, currency, max_gross_leverage,
                           allow_short, sizing_mode, risk_fraction
                           management_recipe, qualification_level, exclusive_writer_qualified, allow_short
+                          daily_loss_limit_percent, min_equity_threshold, currency, max_gross_leverage, allow_short
                    FROM config_accounts ORDER BY account_id"""
             ).fetchall()
         return [
@@ -4726,6 +4727,9 @@ class SignalStore:
                 "sizing_mode": r[17] or "multiplier",
                 "risk_fraction": r[18],
                 "allow_short": bool(r[12]),
+                "currency": r[14],
+                "max_gross_leverage": r[15],
+                "allow_short": bool(r[16]),
             }
             for r in rows
         ]
@@ -4759,6 +4763,9 @@ class SignalStore:
         sizing_mode: str = "multiplier",
         risk_fraction: float | None = None,
         allow_short: bool = False,  # WP-08: allow_short setting
+        currency: str | None = None,
+        max_gross_leverage: float | None = None,
+        allow_short: bool = False,
     ) -> None:
         with self._connect() as conn:
             conn.execute(
@@ -4775,6 +4782,9 @@ class SignalStore:
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     exclusive_writer_qualified, allow_short)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    exclusive_writer_qualified, daily_loss_limit_percent, min_equity_threshold, currency,
+                    max_gross_leverage, allow_short)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT (account_id) DO UPDATE SET
                      broker = excluded.broker, multiplier = excluded.multiplier,
                      fixed_quantity = excluded.fixed_quantity, symbol_map = excluded.symbol_map,

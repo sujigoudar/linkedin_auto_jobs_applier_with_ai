@@ -1157,6 +1157,165 @@ async def system_readiness(_owner: dict = Depends(require_owner_read)) -> dict:
         "reason": "No qualification/release-approval taxonomy exists yet in this build. FOLLOW-UP: integrate with the P0-7 qualification/release-state work once it lands.",
     }
 
+    # --- per-account readiness checklist (WP-45) ---
+    account_readiness_items: list[dict] = []
+    for account_id, account in routing_config.accounts.items():
+        items: list[dict[str, Any]] = []
+        broker = brokers.get(account.broker)
+
+        # 1. Sizing configured
+        sizing_ok = False
+        sizing_reason = "No sizing configured"
+        if account.fixed_quantity is not None:
+            sizing_ok = True
+            sizing_reason = f"fixed_quantity={account.fixed_quantity}"
+        elif account.multiplier != 1.0:
+            sizing_ok = True
+            sizing_reason = f"multiplier={account.multiplier}"
+        # Check for sizing_mode if it exists
+        elif hasattr(account, "sizing_mode") and account.sizing_mode == "risk_fraction" and hasattr(account, "risk_fraction") and account.risk_fraction is not None:
+            sizing_ok = True
+            sizing_reason = f"sizing_mode=risk_fraction, risk_fraction={account.risk_fraction}"
+
+        items.append({
+            "key": "sizing",
+            "status": "ok" if sizing_ok else "blocked",
+            "reason": sizing_reason,
+            "fix_route": "#/trade/accounts" if not sizing_ok else None,
+        })
+
+        # 2. Loss limit configured
+        loss_limit_ok = account.daily_loss_limit_percent is not None
+        items.append({
+            "key": "loss_limit",
+            "status": "ok" if loss_limit_ok else "not_tracked",
+            "reason": (f"daily_loss_limit_percent={account.daily_loss_limit_percent}%"
+                      if loss_limit_ok else "no daily loss limit configured (optional)"),
+            "fix_route": "#/trade/accounts" if not loss_limit_ok else None,
+        })
+
+        # 3. Buying power or ceiling available
+        buying_power_ok = False
+        buying_power_reason = ""
+        if broker is None:
+            buying_power_reason = f"no broker adapter registered for '{account.broker}'"
+        elif broker.has_balance_capability:
+            buying_power_ok = True
+            buying_power_reason = "adapter has balance capability"
+        elif account.max_notional_exposure is not None:
+            buying_power_ok = True
+            buying_power_reason = f"max_notional_exposure={account.max_notional_exposure}"
+        else:
+            buying_power_reason = "adapter has no balance capability and no max_notional_exposure set"
+
+        items.append({
+            "key": "buying_power",
+            "status": "ok" if buying_power_ok else "blocked" if broker is not None else "blocked",
+            "reason": buying_power_reason,
+            "fix_route": "#/trade/accounts" if not buying_power_ok else None,
+        })
+
+        # 4. Adapter can route entries
+        entries_ok = broker is not None and broker.entries_admissible()
+        broker_name = broker.name if broker is not None else "unknown"
+        items.append({
+            "key": "entries_admissible",
+            "status": "ok" if entries_ok else "blocked",
+            "reason": (f"{broker_name} adapter can route entries"
+                      if entries_ok else f"{broker_name} adapter cannot route entries"),
+            "fix_route": None if entries_ok else "#/trade/accounts",
+        })
+
+        # 5. Venue environment known
+        venue_env = "not_tracked"
+        venue_env_reason = "adapter does not expose venue environment"
+        if broker is not None and hasattr(broker, "venue_environment"):
+            try:
+                ve = broker.venue_environment(account)
+                if ve and ve != "unknown":
+                    venue_env = "ok"
+                    venue_env_reason = f"venue environment: {ve}"
+            except Exception:
+                venue_env_reason = "could not determine venue environment"
+
+        items.append({
+            "key": "venue_environment",
+            "status": "ok" if venue_env == "ok" else venue_env,
+            "reason": venue_env_reason,
+            "fix_route": None,
+        })
+
+        # 6. Route qualification
+        # Paper accounts are always "ok"; otherwise check release-approved
+        route_qual_ok = False
+        route_qual_reason = ""
+        if broker is not None and account.broker == "paper":
+            route_qual_ok = True
+            route_qual_reason = "paper broker (always approved)"
+        elif broker is None:
+            route_qual_reason = f"no broker adapter registered for '{account.broker}'"
+        else:
+            # Check if any route for this account/broker is release-approved
+            # For now, check default equity asset class
+            is_approved = store.is_route_release_approved(
+                adapter_type=broker.__class__.__name__.replace("Broker", "").lower(),
+                route_key=account.broker,
+                asset_class="equity",
+                product_type="default"
+            )
+            if is_approved:
+                route_qual_ok = True
+                route_qual_reason = "route is release-approved"
+            else:
+                route_qual_reason = "route not yet release-approved"
+
+        items.append({
+            "key": "route_qualification",
+            "status": "ok" if route_qual_ok else "blocked" if broker is None else "blocked",
+            "reason": route_qual_reason,
+            "fix_route": None,
+        })
+
+        # 7. Alerts path configured
+        alerts_ok = bool(getattr(config, "ALERT_WEBHOOK_URL", ""))
+        items.append({
+            "key": "alerts_path",
+            "status": "ok" if alerts_ok else "not_tracked",
+            "reason": "ALERT_WEBHOOK_URL is configured" if alerts_ok else "ALERT_WEBHOOK_URL not configured (optional)",
+            "fix_route": None,
+        })
+
+        # 8. Writer lease active
+        writer_lease_ok = trading_authority["status"] == "held"
+        items.append({
+            "key": "writer_lease",
+            "status": "ok" if writer_lease_ok else trading_authority["status"],
+            "reason": trading_authority["reason"],
+            "fix_route": None,
+        })
+
+        # 9. Margin tracking
+        margin_ok = "not_tracked"
+        margin_reason = "margin tracking not yet verified"
+        # Try to get latest balance for this account
+        margin_data = [a for a in account_rows if a.get("account_id") == account_id]
+        if margin_data and margin_data[0].get("status") == "fresh":
+            # Would need to check balance.maintenance_margin from get_account_balance
+            # For now, mark as not_tracked since we can't tell from the summary
+            margin_reason = "margin capability not exposed in readiness summary"
+
+        items.append({
+            "key": "margin_tracking",
+            "status": margin_ok,
+            "reason": margin_reason,
+            "fix_route": None,
+        })
+
+        account_readiness_items.append({
+            "account_id": account_id,
+            "items": items,
+        })
+
     relay_down = bool(config.RELAY_INGRESS_URL) and health_body.get("relay_ok") is False
     rollup = _compute_readiness_rollup(
         standby_mode=config.STANDBY_MODE,
@@ -1181,6 +1340,7 @@ async def system_readiness(_owner: dict = Depends(require_owner_read)) -> dict:
         "release_status": release_status,
         "rollup": rollup,
         "standby_mode": config.STANDBY_MODE,
+        "accounts": account_readiness_items,
     }
 
 
@@ -2521,6 +2681,15 @@ class AccountRequest(BaseModel):
     #: per trade (e.g., 0.01 for 1%). Must be between 0 and 1.
     risk_fraction: float | None = Field(default=None, gt=0, le=1)
     #: WP-08/B-14: whether this account is allowed to open short positions
+    #: WP-30: daily loss limit as a percentage (e.g., 5 for 5%)
+    daily_loss_limit_percent: float | None = Field(default=None, gt=0, le=100)
+    #: WP-30: minimum equity threshold (in account currency)
+    min_equity_threshold: float | None = Field(default=None, gt=0)
+    #: WP-28: account base currency (ISO 4217 code)
+    currency: str | None = None
+    #: WP-32: maximum gross leverage ceiling
+    max_gross_leverage: float | None = Field(default=None, gt=0)
+    #: WP-09: whether this account is allowed to open short positions
     allow_short: bool = False
 
     _reject_bool_multiplier = field_validator(
@@ -2594,6 +2763,16 @@ class AccountPatchRequest(BaseModel):
     #: per trade (e.g., 0.01 for 1%). Must be between 0 and 1.
     risk_fraction: float | None = Field(default=None, gt=0, le=1)
     allow_short: bool | None = None  #: WP-08/B-14: whether this account is allowed to open short positions
+    #: WP-30: daily loss limit as a percentage (e.g., 5 for 5%)
+    daily_loss_limit_percent: float | None = Field(default=None, gt=0, le=100)
+    #: WP-30: minimum equity threshold (in account currency)
+    min_equity_threshold: float | None = Field(default=None, gt=0)
+    #: WP-28: account base currency (ISO 4217 code)
+    currency: str | None = None
+    #: WP-32: maximum gross leverage ceiling
+    max_gross_leverage: float | None = Field(default=None, gt=0)
+    #: WP-09: whether this account is allowed to open short positions
+    allow_short: bool | None = None
 
     _reject_bool_multiplier = field_validator(
         "multiplier", "fixed_quantity", "max_notional_exposure", "risk_percent_of_equity",
@@ -2677,6 +2856,11 @@ async def create_or_update_account(request: AccountRequest, _owner: dict = Depen
         min_equity_threshold=request.min_equity_threshold,
         sizing_mode=request.sizing_mode,
         risk_fraction=request.risk_fraction,
+        daily_loss_limit_percent=request.daily_loss_limit_percent,
+        min_equity_threshold=request.min_equity_threshold,
+        currency=request.currency,
+        max_gross_leverage=request.max_gross_leverage,
+        allow_short=request.allow_short,
     )
     _reload_routing_config()
     return {"account_id": request.account_id, "status": "saved"}
@@ -2791,6 +2975,11 @@ async def patch_account(account_id: str, request: AccountPatchRequest, _owner: d
         sizing_mode=merged.get("sizing_mode"),
         risk_fraction=merged.get("risk_fraction"),
         allow_short=merged["allow_short"],
+        daily_loss_limit_percent=merged.get("daily_loss_limit_percent"),
+        min_equity_threshold=merged.get("min_equity_threshold"),
+        currency=merged.get("currency"),
+        max_gross_leverage=merged.get("max_gross_leverage"),
+        allow_short=merged.get("allow_short", False),
     )
     _reload_routing_config()
     return {"account_id": account_id, "status": "patched"}

@@ -322,6 +322,7 @@
 
   function shell() {
     return `
+      <section class="tr-panel" id="tr16-autonomy"><h2>Ready to run on its own?</h2><div class="tr-panel-body"></div></section>
       <section class="tr-panel" id="tr16-status"><h2>Operational readiness</h2><div class="tr-panel-body"></div></section>
       <section class="tr-panel" id="tr16-dimensions"><h2>Readiness dimensions</h2><div class="tr-panel-body"></div></section>
       <section class="tr-panel" id="tr16-p01"><h2>Site role/writer identity</h2><div class="tr-panel-body"></div></section>
@@ -436,8 +437,100 @@
     });
   }
 
+  function renderAutonomy(container, readiness) {
+    if (!container) return;
+    if (!readiness || !readiness.accounts) {
+      StateMatrix.render(container, {
+        state: "error",
+        message: "Could not load per-account readiness data.",
+      });
+      return;
+    }
+
+    const accounts = readiness.accounts || [];
+    if (accounts.length === 0) {
+      StateMatrix.render(container, {
+        state: "empty",
+        message: "No accounts configured.",
+      });
+      return;
+    }
+
+    // Collect all blocked items across all accounts
+    const blockedItems = [];
+    accounts.forEach((acc) => {
+      const blocked = (acc.items || []).filter((item) => item.status === "blocked");
+      blocked.forEach((item) => {
+        blockedItems.push({
+          account_id: acc.account_id,
+          key: item.key,
+          reason: item.reason,
+          fix_route: item.fix_route,
+        });
+      });
+    });
+
+    // Status: green if no blocked items, red otherwise
+    const isReady = blockedItems.length === 0;
+    const statusColor = isReady ? "ok" : "crit";
+    const statusLabel = isReady ? "Ready to run on its own" : `${blockedItems.length} blocker(s)`;
+
+    let html = `
+      <div style="margin-bottom: 1rem;">
+        ${pill(statusLabel, statusColor)}
+        ${isReady ? "<p>All configured accounts are ready for autonomous trading.</p>" : ""}
+      </div>
+    `;
+
+    if (blockedItems.length > 0) {
+      html += `<p class="section-note">The following items must be addressed before autonomous trading:</p><ul>`;
+      blockedItems.forEach((item) => {
+        const fixText = item.fix_route ? ` <a href="${item.fix_route}" class="fix-link">Fix</a>` : "";
+        html += `<li><strong>${escapeHtml(item.account_id)}</strong>: ${escapeHtml(item.key)} — ${escapeHtml(item.reason)}${fixText}</li>`;
+      });
+      html += "</ul>";
+    }
+
+    // Detail table for all accounts
+    html += `<p class="section-note" style="margin-top: 1rem;">Per-account readiness checklist:</p>`;
+    const rows = accounts.map((acc) => {
+      const blockedCount = (acc.items || []).filter((item) => item.status === "blocked").length;
+      const notTrackedCount = (acc.items || []).filter((item) => item.status === "not_tracked").length;
+      const okCount = (acc.items || []).filter((item) => item.status === "ok").length;
+      const statusPill = blockedCount > 0 ? pill(`${blockedCount} blocked`, "crit") :
+                        notTrackedCount > 0 ? pill(`all ok / ${notTrackedCount} not tracked`, "warn") :
+                        pill("all ok", "ok");
+
+      const detailItems = (acc.items || [])
+        .map((item) => {
+          const tone = item.status === "ok" ? "ok" : item.status === "blocked" ? "crit" : "neutral";
+          const fixLink = item.fix_route ? ` <a href="${item.fix_route}" class="fix-link">Fix</a>` : "";
+          return `${escapeHtml(item.key)}: ${pill(item.status, tone)} ${escapeHtml(item.reason)}${fixLink}`;
+        })
+        .join("<br>");
+
+      return [
+        escapeHtml(acc.account_id),
+        statusPill,
+        detailItems,
+      ];
+    });
+
+    html += table(
+      ["Account", "Status", "Items"],
+      rows,
+      "No accounts."
+    );
+
+    StateMatrix.render(container, {
+      state: "ready",
+      html: html,
+    });
+  }
+
   async function load(ctx) {
     const els = {
+      autonomy: ctx.container.querySelector("#tr16-autonomy .tr-panel-body"),
       status: ctx.container.querySelector("#tr16-status .tr-panel-body"),
       dimensions: ctx.container.querySelector("#tr16-dimensions .tr-panel-body"),
       role: ctx.container.querySelector("#tr16-p01 .tr-panel-body"),
@@ -510,6 +603,9 @@
       "beforeend",
       `<p class="section-note">This is a ROLLUP of the six independent readiness dimensions in the panel below -- STANDBY, then NOT READY, then DEGRADED, then ACTIVE (see GET /system/readiness / app/main.py's <code>_compute_readiness_rollup</code>). A subsystem being reachable does NOT by itself mean ACTIVE: every dimension below stays visible in its own row even when this rollup reads ACTIVE, and an unconfirmed stop or an absent trading authority forces NOT READY here regardless of how healthy the others look.</p>`
     );
+
+    // --- Autonomy checklist (top panel) ---
+    renderAutonomy(els.autonomy, readiness);
 
     // --- Readiness dimensions: each rendered as its own labeled row, never
     // folded into the single rollup above -- this is the direct fix for
