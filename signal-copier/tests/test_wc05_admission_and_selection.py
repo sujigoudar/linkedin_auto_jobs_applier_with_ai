@@ -10,7 +10,6 @@ Reference vectors: docs/workflow-contract/generated/admission.jsonl (4,608 cases
 from __future__ import annotations
 
 import json
-import uuid
 from pathlib import Path
 
 import pytest
