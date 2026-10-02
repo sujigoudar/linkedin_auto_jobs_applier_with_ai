@@ -102,7 +102,7 @@ from app.services.catalog_fit_sim_auth import (
     StaleCatalogFitSimTimestampError,
     verify_catalog_fit_sim_signature,
 )
-from app.risk import size_for_account, symbol_for_account
+from app.risk import UnsizedEntryError, size_for_account, symbol_for_account
 from app.routing import RoutingConfig, RoutingRule, load_routing_config_from_store
 from app.sources.text_parser import DispositionOutcome, classify_batch, classify_text_signal
 from app.sources.discord import DiscordSource
@@ -1741,10 +1741,10 @@ async def get_capital_allocation(_owner: dict = Depends(require_owner_read)) -> 
 # plus the one case (no quantity on the signal at all) app/risk.py's own
 # `size_for_account` special-cases to a 1.0 base.
 _SIZING_PREVIEW_SCENARIOS: list[dict[str, Any]] = [
-    {"label": "No quantity on signal (defaults to 1.0)", "quantity": None},
     {"label": "Small signal (quantity 1)", "quantity": 1.0},
     {"label": "Typical signal (quantity 5)", "quantity": 5.0},
     {"label": "Large signal (quantity 25)", "quantity": 25.0},
+    {"label": "Very large signal (quantity 100)", "quantity": 100.0},
 ]
 
 
@@ -1800,8 +1800,11 @@ async def get_sizing_preview(
             deployed = exposure.notional
             reserved = engine.capital_allocator.pending_reservation(account_id)
             max_exposure = account.max_notional_exposure
-            expected_quantity = size_for_account(real_signal, account)
-            notional = expected_quantity * real_signal.price if real_signal.price is not None else None
+            try:
+                expected_quantity = size_for_account(real_signal, account)
+            except UnsizedEntryError:
+                expected_quantity = None
+            notional = expected_quantity * real_signal.price if expected_quantity is not None and real_signal.price is not None else None
             # A ceiling check against a known-incomplete `deployed` figure
             # would understate real exposure -- report unknown rather than
             # a falsely-reassuring `False` (see ExposureReport.has_unresolved).
@@ -1834,7 +1837,7 @@ async def get_sizing_preview(
         deployed = exposure.notional
         reserved = engine.capital_allocator.pending_reservation(account_id)
         max_exposure = account.max_notional_exposure
-        scenario_rows = []
+        scenario_rows: list[dict[str, Any]] = []
         for scenario in _SIZING_PREVIEW_SCENARIOS:
             hypothetical_signal = Signal(
                 source="__tr12_sizing_preview__",
@@ -1842,8 +1845,11 @@ async def get_sizing_preview(
                 side=Side.BUY,
                 quantity=scenario["quantity"],
             )
-            expected_quantity = size_for_account(hypothetical_signal, account)
-            notional = expected_quantity * price if price is not None else None
+            try:
+                expected_quantity = size_for_account(hypothetical_signal, account)
+            except UnsizedEntryError:
+                expected_quantity = None
+            notional = expected_quantity * price if expected_quantity is not None and price is not None else None
             would_exceed_ceiling = (
                 None
                 if exposure.has_unresolved
@@ -1862,18 +1868,17 @@ async def get_sizing_preview(
                     "would_exceed_ceiling": would_exceed_ceiling,
                 }
             )
-        accounts_out.append(
-            {
-                "account_id": account_id,
-                "fixed_quantity": account.fixed_quantity,
-                "multiplier": account.multiplier,
-                "deployed_notional": deployed,
-                "reserved_notional": reserved,
-                "max_notional_exposure": max_exposure,
-                "unresolved_symbols": exposure.unresolved_symbols,
-                "scenarios": scenario_rows,
-            }
-        )
+        account_row: dict[str, Any] = {
+            "account_id": account_id,
+            "fixed_quantity": account.fixed_quantity,
+            "multiplier": account.multiplier,
+            "deployed_notional": deployed,
+            "reserved_notional": reserved,
+            "max_notional_exposure": max_exposure,
+            "unresolved_symbols": exposure.unresolved_symbols,
+            "scenarios": scenario_rows,
+        }
+        accounts_out.append(account_row)
     return {"price": price, "accounts": accounts_out}
 
 
@@ -2456,14 +2461,48 @@ async def list_accounts(_owner: dict = Depends(require_owner_read)) -> dict:
     return {"accounts": store.list_config_accounts()}
 
 
+class AccountPatchRequest(BaseModel):
+    """Partial account update: every field is optional (None = unchanged).
+    Use this for partial updates; POST /accounts is full-replace only."""
+    account_id: str | None = None
+    broker: str | None = None
+    multiplier: float | None = Field(default=None, gt=0)
+    fixed_quantity: float | None = Field(default=None, gt=0)
+    symbol_map: dict[str, str] | None = None
+    enabled: bool | None = None
+    managed_lifecycle: bool | None = None
+    max_notional_exposure: float | None = Field(default=None, gt=0)
+    risk_percent_of_equity: float | None = Field(default=None, gt=0, le=1)
+    management_recipe: str | None = None
+    qualification_level: str | None = None
+    exclusive_writer_qualified: bool | None = None
+
+    _reject_bool_multiplier = field_validator(
+        "multiplier", "fixed_quantity", "max_notional_exposure", "risk_percent_of_equity", mode="before"
+    )(_reject_bool_scaling_value)
+
+    @field_validator("management_recipe")
+    @classmethod
+    def _validate_management_recipe(cls, v: str | None) -> str | None:
+        if v is None:
+            return v
+        try:
+            ManagementRecipe(v)
+        except ValueError as exc:
+            raise ValueError(
+                f"management_recipe must be one of {[m.value for m in ManagementRecipe]}"
+            ) from exc
+        return v
+
+
 @app.post("/accounts")
 async def create_or_update_account(request: AccountRequest, _owner: dict = Depends(require_owner)) -> dict:
-    """Create or update (by `account_id`) a destination account. Takes
-    effect on the very next signal — no restart. This does NOT set broker
-    credentials: those remain environment variables per the project's
-    "never store secrets in config" rule (see README.md's Security
-    notes) — create the account here, then set that broker's
-    `{BROKER}_{ACCOUNT_ID}_...` env vars separately.
+    """Create or update (by `account_id`) a destination account with full-replace semantics
+    (all fields required; omitted fields revert to defaults). Use PATCH /accounts/{account_id}
+    for partial updates. Takes effect on the very next signal — no restart. This does NOT set
+    broker credentials: those remain environment variables per the project's "never store secrets
+    in config" rule (see README.md's Security notes) — create the account here, then set that
+    broker's `{BROKER}_{ACCOUNT_ID}_...` env vars separately.
 
     EXE-10: changing `broker` on an account that has real exposure
     (`account_id` still shows up in list_open_positions or an open
@@ -2513,6 +2552,81 @@ async def delete_account(account_id: str, _owner: dict = Depends(require_owner))
     store.delete_config_account(account_id)
     _reload_routing_config()
     return {"account_id": account_id, "status": "deleted"}
+
+
+@app.patch("/accounts/{account_id}")
+async def patch_account(account_id: str, request: AccountPatchRequest, _owner: dict = Depends(require_owner)) -> dict:
+    """Partial account update: merge non-None fields with the stored row.
+    Takes effect on the very next signal — no restart.
+
+    F-03: applies the same exposure guards as POST (broker change,
+    managed_lifecycle change mid-position)."""
+    # Load stored account
+    stored = next((a for a in store.list_config_accounts() if a["account_id"] == account_id), None)
+    if stored is None:
+        raise HTTPException(status_code=404, detail=f"account '{account_id}' not found")
+
+    # Merge non-None fields from request with stored values
+    merged = {**stored}
+    if request.broker is not None:
+        merged["broker"] = request.broker
+    if request.multiplier is not None:
+        merged["multiplier"] = request.multiplier
+    if request.fixed_quantity is not None:
+        merged["fixed_quantity"] = request.fixed_quantity
+    if request.symbol_map is not None:
+        merged["symbol_map"] = request.symbol_map
+    if request.enabled is not None:
+        merged["enabled"] = request.enabled
+    if request.managed_lifecycle is not None:
+        merged["managed_lifecycle"] = request.managed_lifecycle
+    if request.max_notional_exposure is not None:
+        merged["max_notional_exposure"] = request.max_notional_exposure
+    if request.risk_percent_of_equity is not None:
+        merged["risk_percent_of_equity"] = request.risk_percent_of_equity
+    if request.management_recipe is not None:
+        merged["management_recipe"] = request.management_recipe
+    if request.qualification_level is not None:
+        merged["qualification_level"] = request.qualification_level
+    if request.exclusive_writer_qualified is not None:
+        merged["exclusive_writer_qualified"] = request.exclusive_writer_qualified
+
+    # Apply exposure guards: broker change or managed_lifecycle change
+    if merged["broker"] != stored["broker"] and _account_has_exposure(account_id):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"account '{account_id}' has an open position/lifecycle tracked against broker "
+                f"'{stored['broker']}' -- refusing to change its broker to '{merged['broker']}' and strand it"
+            ),
+        )
+
+    if merged["managed_lifecycle"] != stored["managed_lifecycle"] and _account_has_exposure(account_id):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"account '{account_id}' has exposure (open position/lifecycle) -- "
+                f"refusing to change managed_lifecycle while exposed"
+            ),
+        )
+
+    # Persist merged values
+    store.upsert_config_account(
+        account_id=merged["account_id"],
+        broker=merged["broker"],
+        multiplier=merged["multiplier"],
+        fixed_quantity=merged["fixed_quantity"],
+        symbol_map=merged["symbol_map"],
+        enabled=merged["enabled"],
+        managed_lifecycle=merged["managed_lifecycle"],
+        max_notional_exposure=merged["max_notional_exposure"],
+        risk_percent_of_equity=merged["risk_percent_of_equity"],
+        management_recipe=merged["management_recipe"],
+        qualification_level=merged["qualification_level"],
+        exclusive_writer_qualified=merged["exclusive_writer_qualified"],
+    )
+    _reload_routing_config()
+    return {"account_id": account_id, "status": "patched"}
 
 
 def _account_has_exposure(account_id: str) -> bool:

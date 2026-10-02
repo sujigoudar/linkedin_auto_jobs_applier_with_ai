@@ -4,6 +4,12 @@ from __future__ import annotations
 from app.models import DestinationAccount, Signal
 
 
+class UnsizedEntryError(ValueError):
+    """Raised when an entry signal has no quantity and the account has no fixed_quantity."""
+
+    pass
+
+
 def size_for_account(signal: Signal, account: DestinationAccount) -> float:
     """Decide how much to trade on this account for this signal.
 
@@ -12,11 +18,19 @@ def size_for_account(signal: Signal, account: DestinationAccount) -> float:
     sizing); otherwise the source's quantity is scaled by the account's
     multiplier (useful for copying a master account into a smaller/larger
     sub-account proportionally).
+
+    Raises:
+        UnsizedEntryError: When both account.fixed_quantity and signal.quantity
+            are None (refuses to default to 1.0).
     """
     if account.fixed_quantity is not None:
         return account.fixed_quantity
-    base_quantity = signal.quantity if signal.quantity is not None else 1.0
-    return base_quantity * account.multiplier
+    if signal.quantity is not None:
+        return signal.quantity * account.multiplier
+    raise UnsizedEntryError(
+        f"entry has no quantity and account '{account.account_id}' has no fixed_quantity "
+        "(refusing to default to 1.0)"
+    )
 
 
 def symbol_for_account(signal: Signal, account: DestinationAccount) -> str:

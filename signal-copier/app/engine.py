@@ -155,7 +155,7 @@ from app.models import (
     UncertaintyState,
 )
 from app.providers import ProviderRegistry, SettingsOverride
-from app.risk import size_for_account, symbol_for_account
+from app.risk import UnsizedEntryError, size_for_account, symbol_for_account
 from app.routing import RoutingConfig
 from app.shadow_mode import evaluate_shadow, to_result_row
 from app.writer_lease import NullLeaseGuard, WriterLeaseGuard
@@ -1015,7 +1015,33 @@ class SignalCopierEngine:
                 )
                 continue
 
-            order_signal, quantity = signal, size_for_account(signal, account)
+            try:
+                order_signal, quantity = signal, size_for_account(signal, account)
+            except UnsizedEntryError as e:
+                result = OrderResult(
+                    account_id=account.account_id,
+                    status=OrderStatus.REJECTED,
+                    signal_id=signal.id,
+                    message=str(e),
+                )
+                self.store.save_order_result(
+                    result,
+                    broker=account.broker,
+                    symbol=symbol,
+                    side=signal.side,
+                    requested_quantity=None,
+                    purpose=order_purpose,
+                    family_id=order_family_id,
+                )
+                results.append(result)
+                self._export_routing_outcome(
+                    signal,
+                    outcome=_OUTCOME_BY_ORDER_STATUS[result.status],
+                    account=account,
+                    order_status=result.status,
+                    message=result.message,
+                )
+                continue
 
             if (order_signal.stop_loss is not None or order_signal.take_profit is not None) and not broker.supports_native_bracket:
                 # This account isn't managed_lifecycle, so nothing will submit a
@@ -2640,7 +2666,19 @@ class SignalCopierEngine:
                 None,
             )
 
-        quantity = size_for_account(signal, account)
+        try:
+            quantity = size_for_account(signal, account)
+        except UnsizedEntryError as e:
+            return _ManagedOrderOutcome(
+                OrderResult(
+                    account_id=account.account_id,
+                    status=OrderStatus.REJECTED,
+                    signal_id=signal.id,
+                    message=str(e),
+                ),
+                None,
+                None,
+            )
         # Multi-provider representability: a signal with an ORDERED
         # `targets` collection (see `Signal.targets`'s own docstring) is
         # now representable here directly -- one `Target(action=SELL)`
