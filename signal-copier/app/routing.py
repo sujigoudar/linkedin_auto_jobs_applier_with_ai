@@ -204,6 +204,7 @@ def load_routing_config(routing_path: Path, accounts_path: Path) -> RoutingConfi
                 ),
                 qualification_level=spec.get("qualification_level"),
                 exclusive_writer_qualified=spec.get("exclusive_writer_qualified", False),
+<<<<<<< HEAD
                 daily_loss_limit_percent=spec.get("daily_loss_limit_percent"),
                 min_equity_threshold=spec.get("min_equity_threshold"),
 <<<<<<< HEAD
@@ -214,6 +215,9 @@ def load_routing_config(routing_path: Path, accounts_path: Path) -> RoutingConfi
                 sizing_mode=spec.get("sizing_mode", "multiplier"),
                 risk_fraction=spec.get("risk_fraction"),
 >>>>>>> dbe41be (WP-16: Add risk-fraction sizing mode for dynamic position sizing)
+=======
+                allow_short=spec.get("allow_short", False),  # WP-08: allow_short setting
+>>>>>>> 30cc4ad (WP-43: TR-11 precedence and intent resolution in the simulator)
             )
 
     rules: list[RoutingRule] = []
@@ -252,6 +256,7 @@ def load_routing_config_from_store(store) -> RoutingConfig:
             management_recipe=ManagementRecipe(row["management_recipe"]) if row.get("management_recipe") else None,
             qualification_level=row.get("qualification_level"),
             exclusive_writer_qualified=bool(row.get("exclusive_writer_qualified", False)),
+<<<<<<< HEAD
             daily_loss_limit_percent=row.get("daily_loss_limit_percent"),
             min_equity_threshold=row.get("min_equity_threshold"),
 <<<<<<< HEAD
@@ -264,6 +269,9 @@ def load_routing_config_from_store(store) -> RoutingConfig:
             sizing_mode=row.get("sizing_mode", "multiplier"),
             risk_fraction=row.get("risk_fraction"),
 >>>>>>> dbe41be (WP-16: Add risk-fraction sizing mode for dynamic position sizing)
+=======
+            allow_short=bool(row.get("allow_short", False)),  # WP-08: allow_short setting
+>>>>>>> 30cc4ad (WP-43: TR-11 precedence and intent resolution in the simulator)
         )
         for row in store.list_config_accounts()
     }

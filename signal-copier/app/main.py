@@ -2520,6 +2520,8 @@ class AccountRequest(BaseModel):
     #: B-01: for sizing_mode="risk_fraction", the fraction of equity to risk
     #: per trade (e.g., 0.01 for 1%). Must be between 0 and 1.
     risk_fraction: float | None = Field(default=None, gt=0, le=1)
+    #: WP-08/B-14: whether this account is allowed to open short positions
+    allow_short: bool = False
 
     _reject_bool_multiplier = field_validator(
         "multiplier", "fixed_quantity", "max_notional_exposure", "risk_percent_of_equity",
@@ -2591,6 +2593,7 @@ class AccountPatchRequest(BaseModel):
     #: B-01: for sizing_mode="risk_fraction", the fraction of equity to risk
     #: per trade (e.g., 0.01 for 1%). Must be between 0 and 1.
     risk_fraction: float | None = Field(default=None, gt=0, le=1)
+    allow_short: bool | None = None  #: WP-08/B-14: whether this account is allowed to open short positions
 
     _reject_bool_multiplier = field_validator(
         "multiplier", "fixed_quantity", "max_notional_exposure", "risk_percent_of_equity",
@@ -2787,6 +2790,7 @@ async def patch_account(account_id: str, request: AccountPatchRequest, _owner: d
         min_equity_threshold=merged.get("min_equity_threshold"),
         sizing_mode=merged.get("sizing_mode"),
         risk_fraction=merged.get("risk_fraction"),
+        allow_short=merged["allow_short"],
     )
     _reload_routing_config()
     return {"account_id": account_id, "status": "patched"}
@@ -3121,6 +3125,72 @@ class RoutingSimulateRequest(BaseModel):
     analyst: str | None = None
     quantity: float | None = None
     price: float | None = None
+    intent: str | None = None  #: WP-43: optional intent (buy/sell/short/close/reduce) for per-account resolution
+
+
+def resolve_account_intent(
+    intent_str: str | None,
+    account_symbol: str,
+    symbol: str,
+    account: Any,  # DestinationAccount
+    has_long_position: bool,
+) -> str:
+    """WP-43: Resolve the intent that a given account would execute for this signal.
+
+    Pure function that determines, for a given account and a given intent/side,
+    what actual intent the engine would resolve to. Used by the TR-11 simulator
+    to show per-account intent resolution.
+
+    Rules (from WP-09/WP-43):
+    - "buy" intent → "entry_long"
+    - "close" intent → "exit"
+    - "reduce" intent → "reduce"
+    - "short" intent → "entry_short" if account.allow_short else "rejected: allow_short=false"
+    - "sell" intent (implicit, ambiguous):
+      * If account holds same-symbol long → "exit"
+      * Else if account.allow_short → "entry_short"
+      * Else → "rejected: sell with no long position and allow_short=false"
+
+    Args:
+        intent_str: Optional intent string from request ("buy", "sell", "short", "close", "reduce", or None)
+        account_symbol: The symbol after account symbol_map resolution
+        symbol: The original symbol from the signal
+        account: DestinationAccount
+        has_long_position: Whether account currently holds a same-symbol long position
+
+    Returns:
+        Resolved intent string: "entry_long", "entry_short", "exit", "reduce", or "rejected: <reason>"
+    """
+    if not intent_str:
+        # No intent specified; assume "buy" intent from side
+        return "entry_long"
+
+    intent_lower = intent_str.strip().lower()
+
+    # Handle each intent value
+    if intent_lower == "buy":
+        return "entry_long"
+    elif intent_lower == "close":
+        return "exit"
+    elif intent_lower == "reduce":
+        return "reduce"
+    elif intent_lower == "short":
+        # Explicit short entry intent
+        if account.allow_short:
+            return "entry_short"
+        else:
+            return "rejected: allow_short=false"
+    elif intent_lower == "sell":
+        # Implicit sell — ambiguous, needs position-based resolution
+        if has_long_position:
+            return "exit"
+        elif account.allow_short:
+            return "entry_short"
+        else:
+            return "rejected: sell with no long position and allow_short=false"
+    else:
+        # Unknown intent value
+        return f"rejected: unknown intent '{intent_str}'"
 
 
 @app.post("/routing-rules/simulate")
@@ -3201,6 +3271,7 @@ async def simulate_routing_rules(request: RoutingSimulateRequest, _owner: dict =
             "symbol_filter": rule.symbol_filter,
             "delivery_mode": rule.delivery_mode,
             "matched": entry["matched"],
+            "precedence": entry["precedence"],  # WP-07: 0-based evaluation order
         }
         if entry["matched"]:
             row["admitted_accounts"] = entry["admitted"]
@@ -3239,6 +3310,14 @@ async def simulate_routing_rules(request: RoutingSimulateRequest, _owner: dict =
         broker = brokers.get(account.broker)
         broker_registered = broker is not None
         asset_class_ok = broker is not None and broker.can_trade_asset_class(request.asset_class)
+
+        # WP-43: Resolve the intent this account would execute for this signal
+        account_symbol = symbol_for_account(synthetic_signal, account)
+        position = store.get_position(account.account_id, account_symbol)
+        has_long_position = position > 0
+        resolved_intent = resolve_account_intent(
+            request.intent, account_symbol, request.symbol, account, has_long_position
+        )
 
         capital_check: dict[str, Any]
         capital_admitted = True
@@ -3328,6 +3407,11 @@ async def simulate_routing_rules(request: RoutingSimulateRequest, _owner: dict =
             "capital_reservation": capital_check,
             "allocation": {"status": allocation_status},
             "would_receive_this_signal": would_receive,
+            "intent_resolution": {  # WP-43: per-account intent resolution
+                "resolved_intent": resolved_intent,
+                "allow_short": account.allow_short,
+                "has_long_position": has_long_position,
+            },
         })
 
     return {
