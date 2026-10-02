@@ -23,7 +23,7 @@ def test_sms_ingress_fails_closed_with_no_authorized_senders_configured(client, 
     monkeypatch.setattr(app_config, "TWILIO_ALLOWED_FROM_NUMBERS", [])
 
     with client:
-        response = client.post("/sms/twilio", data={"Body": "AAPL buy", "From": "+15550001111"})
+        response = client.post("/sms/twilio", data={"Body": "BUY AAPL", "From": "+15550001111"})
 
     assert response.status_code == 503
     assert "TWILIO_ALLOWED_FROM_NUMBERS" in response.json()["detail"]
@@ -40,7 +40,7 @@ def test_sms_ingress_rejects_a_genuine_but_unauthorized_sender(client, monkeypat
     with client:
         response = client.post(
             "/sms/twilio",
-            data={"Body": "AAPL buy", "From": "+15550001111"},  # a real Twilio sender, not the allow-listed one
+            data={"Body": "BUY AAPL", "From": "+15550001111"},  # a real Twilio sender, not the allow-listed one
             headers={"X-Twilio-Signature": "irrelevant-mocked-valid"},
         )
 
@@ -59,7 +59,7 @@ def test_sms_ingress_accepts_an_authorized_sender(client, monkeypatch):
     with client:
         response = client.post(
             "/sms/twilio",
-            data={"Body": "AAPL buy 5", "From": "+15550001111"},
+            data={"Body": "BUY AAPL 5", "From": "+15550001111"},
             headers={"X-Twilio-Signature": "irrelevant-mocked-valid"},
         )
 

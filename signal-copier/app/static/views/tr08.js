@@ -456,18 +456,19 @@
         }
 
         let response;
+        const csrfToken = sessionStorage.getItem("scr_csrf_token") || "";
         if (originalAccount) {
           // Use PATCH for existing account
           response = await fetch(`/accounts/${encodeURIComponent(draft.accountLabel)}`, {
             method: "PATCH",
-            headers: { "Content-Type": "application/json", "X-CSRF-Token": (document.querySelector("meta[name=csrf-token]") || {}).content || "" },
+            headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfToken },
             body: JSON.stringify(payload),
           });
         } else {
           // Use POST for new account
           response = await fetch("/accounts", {
             method: "POST",
-            headers: { "Content-Type": "application/json", "X-CSRF-Token": (document.querySelector("meta[name=csrf-token]") || {}).content || "" },
+            headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfToken },
             body: JSON.stringify(payload),
           });
         }
