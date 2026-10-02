@@ -118,6 +118,9 @@ class PaperBroker(BrokerAdapter):
             filled_quantity=quantity,
             filled_price=price,
             message="filled by paper broker",
+            fee=self.fee_per_fill,
+            fee_currency="USD",  # Paper broker uses USD convention
+            slippage=0.0,  # Paper broker fills exactly at signal price
         )
         self.fills.append(result)
         return result

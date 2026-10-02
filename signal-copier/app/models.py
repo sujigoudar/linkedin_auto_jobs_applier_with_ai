@@ -355,6 +355,16 @@ class OrderResult:
     filled_price: Optional[float] = None
     message: str = ""
     executed_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    #: Broker commission/fee for this order, in account currency.
+    #: None when this broker doesn't report fees or this order wasn't filled.
+    fee: Optional[float] = None
+    #: Currency of fee (ISO 4217 code, e.g., USD).
+    #: Only set when fee is not None.
+    fee_currency: Optional[str] = None
+    #: Difference between expected (signal.price * filled_quantity) and
+    #: actual fill value (* quantity). Positive = slippage against the trade.
+    #: None when this broker doesn't report slippage data.
+    slippage: Optional[float] = None
 
 
 @dataclass

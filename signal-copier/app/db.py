@@ -2779,6 +2779,12 @@ class SignalStore:
         `build_quantity_breakdown`/`acknowledged_quantity_for` are the
         preferred way for a caller to compute these consistently rather
         than re-deriving the rule inline.
+
+        `result.fee`/`result.fee_currency`/`result.slippage` (E10, fee
+        tracking): pass directly from the OrderResult returned by the broker
+        adapter. These are None when the broker doesn't report them -- never
+        fabricated. Fee tracking feeds into daily_pnl aggregation for
+        account economics and performance analytics.
         """
         stored_filled_quantity = applied_quantity if applied_quantity is not None else result.filled_quantity
         with self._connect() as conn:
@@ -2788,8 +2794,8 @@ class SignalStore:
                     broker_order_id, filled_quantity, filled_price, message, executed_at, reserved_notional,
                     submitted_at, protection_confirmed_at, purpose, family_id,
                     confirmed_cumulative_fill, applied_execution_delta, outstanding_possible_fill,
-                    reserved_quantity, acknowledged_quantity)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    reserved_quantity, acknowledged_quantity, fee, fee_currency, slippage)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     result.account_id,
                     broker,
@@ -2813,6 +2819,9 @@ class SignalStore:
                     outstanding_possible_fill,
                     reserved_quantity,
                     acknowledged_quantity,
+                    result.fee,
+                    result.fee_currency,
+                    result.slippage,
                 ),
             )
             if export_envelope is not None:
