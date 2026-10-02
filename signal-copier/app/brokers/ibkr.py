@@ -24,6 +24,14 @@ Setup:
        client_id) registered under a different `name` if you need more than
        one simultaneously — see app/main.py for how brokers are registered.
 
+Account code setup (C-18):
+    This service's own local `account_id` is never assumed to match the IBKR
+    account code. Each account must explicitly supply its IBKR account code
+    via the environment variable:
+        IBKR_{ACCOUNT_ID}_ACCOUNT    -- IBKR's own account code (e.g., "DU12345")
+    A missing IBKR account code is a hard error; the order is rejected rather
+    than silently routed to a default or mismatched account.
+
 Only equities are wired up (a plain market order on a STK contract);
 extend `_contract_for` if you need forex/futures/options routed through
 IBKR specifically.
@@ -43,10 +51,19 @@ awaits the first update, then cancels the subscription itself), reading
 polls to drive managed-lifecycle targets/trailing/stop resizing for IBKR
 positions. `last` needs a live/delayed market-data subscription
 entitlement your account may or may not have; `close` doesn't.
+
+Order status recovery (C-14):
+    When get_order_status is called for an order id not in the current cache
+    (e.g., after a process restart), this adapter queries the broker for open
+    and completed orders to recover the status. If an order cannot be recovered,
+    it returns ERROR status rather than silently returning None, which would
+    leave the position unapplied forever.
 """
 from __future__ import annotations
 
 import math
+import os
+from typing import Any
 
 from app.brokers.base import BrokerAdapter
 from app.models import AssetClass, DestinationAccount, OrderResult, OrderStatus, Signal
@@ -82,6 +99,22 @@ class IBKRBroker(BrokerAdapter):
             self._ib = ib
         return self._ib
 
+    def _broker_account_code_for(self, account: DestinationAccount) -> str:
+        """C-18: Get the actual IBKR account code from environment variable.
+
+        IBKR account codes (e.g., "DU12345") are separate from local account_id
+        and must be explicitly configured via IBKR_{ACCOUNT_ID}_ACCOUNT environment
+        variable. Fail closed if missing.
+        """
+        prefix = f"IBKR_{account.account_id.upper()}"
+        account_code = os.getenv(f"{prefix}_ACCOUNT")
+        if not account_code:
+            raise RuntimeError(
+                f"missing IBKR_{account.account_id.upper()}_ACCOUNT environment variable; "
+                f"IBKR account code must be explicitly configured (separate from local account_id)"
+            )
+        return account_code
+
     async def place_order(
         self, signal: Signal, account: DestinationAccount, quantity: float, symbol: str
     ) -> OrderResult:
@@ -91,6 +124,17 @@ class IBKRBroker(BrokerAdapter):
                 status=OrderStatus.REJECTED,
                 signal_id=signal.id,
                 message="'close' side reached the broker directly without engine-level resolution (see SignalCopierEngine._resolve_close); this broker only accepts buy/sell",
+            )
+
+        # C-18: Get the explicit IBKR account code; fail closed if missing
+        try:
+            broker_account_code = self._broker_account_code_for(account)
+        except RuntimeError as exc:
+            return OrderResult(
+                account_id=account.account_id,
+                status=OrderStatus.ERROR,
+                signal_id=signal.id,
+                message=str(exc),
             )
 
         try:
@@ -110,17 +154,14 @@ class IBKRBroker(BrokerAdapter):
             if signal.stop_loss or signal.take_profit:
                 orders = self._build_bracket(action, quantity, signal.stop_loss, signal.take_profit, ib)
                 for order in orders:
-                    # ADP-05: IB routes a blank `account` to whatever account
-                    # is "current" on this gateway login -- fine for a
-                    # single-account gateway, but a multi-account/FA gateway
-                    # would submit against an unintended default rather than
-                    # the specific account this call names.
-                    order.account = account.account_id
+                    # C-18: use the explicit IBKR account code, not the local account_id
+                    order.account = broker_account_code
                 trades = [ib.placeOrder(contract, o) for o in orders]
                 parent_trade = trades[0]
             else:
                 order = self._ib_async.MarketOrder(action, quantity)
-                order.account = account.account_id
+                # C-18: use the explicit IBKR account code, not the local account_id
+                order.account = broker_account_code
                 parent_trade = ib.placeOrder(contract, order)
         except Exception as exc:  # noqa: BLE001
             return OrderResult(
@@ -145,7 +186,7 @@ class IBKRBroker(BrokerAdapter):
             message=f"submitted to IBKR (status: {parent_trade.orderStatus.status})",
         )
 
-    def _build_bracket(self, action: str, quantity: float, stop_loss, take_profit, ib) -> list:
+    def _build_bracket(self, action: str, quantity: float, stop_loss: float | None, take_profit: float | None, ib: Any) -> list[Any]:
         """A market parent plus whichever exit legs are present, linked via
         parentId with only the last order transmit=True — see module docstring."""
         reverse_action = "SELL" if action == "BUY" else "BUY"
@@ -153,7 +194,7 @@ class IBKRBroker(BrokerAdapter):
             action, quantity, orderId=ib.client.getReqId(), transmit=False
         )
 
-        children = []
+        children: list[Any] = []
         if take_profit:
             children.append(
                 self._ib_async.LimitOrder(
@@ -175,9 +216,23 @@ class IBKRBroker(BrokerAdapter):
     async def get_order_status(
         self, account: DestinationAccount, broker_order_id: str
     ) -> OrderResult | None:
-        trade = self._trades.get(broker_order_id)
+        trade: Any = self._trades.get(broker_order_id)
+
+        # C-14: If order is not in cache (e.g., after restart), try to recover
+        # it from the broker via reqAllOpenOrdersAsync/reqCompletedOrdersAsync
         if trade is None:
-            return None  # order placed before this process started; nothing cached to read
+            trade = await self._recover_order_from_broker(broker_order_id)
+            if trade is None:
+                # Order not found in cache and not found via broker recovery
+                # Return ERROR to indicate we can't determine the status,
+                # rather than None which would leave it forever unapplied
+                return OrderResult(
+                    account_id=account.account_id,
+                    status=OrderStatus.ERROR,
+                    signal_id="",
+                    broker_order_id=broker_order_id,
+                    message=f"IBKR order {broker_order_id} not found in cache or open/completed orders; status unknown after restart",
+                )
 
         status = trade.orderStatus.status
         if status == "Filled":
@@ -215,6 +270,40 @@ class IBKRBroker(BrokerAdapter):
             filled_price=trade.orderStatus.avgFillPrice,
             message=f"IBKR order status: {status}",
         )
+
+    async def _recover_order_from_broker(self, broker_order_id: str) -> Any | None:
+        """C-14: Recover an order from the broker after a restart.
+
+        Queries both open and completed orders to find a Trade by orderId.
+        Returns the Trade if found, None otherwise.
+        """
+        try:
+            ib = await self._connected_ib()
+        except Exception:  # noqa: BLE001
+            return None
+
+        try:
+            # Query open orders
+            open_orders = await ib.reqAllOpenOrdersAsync()
+            order_id_int = int(broker_order_id)
+            for trade in open_orders:
+                if trade.order.orderId == order_id_int:
+                    # Found it in open orders; cache it and return
+                    self._trades[broker_order_id] = trade
+                    return trade
+
+            # Query completed orders (filled/cancelled)
+            completed_orders = await ib.reqCompletedOrdersAsync(apiOnly=False)
+            for trade in completed_orders:
+                if trade.order.orderId == order_id_int:
+                    # Found it in completed orders; cache it and return
+                    self._trades[broker_order_id] = trade
+                    return trade
+        except Exception:  # noqa: BLE001
+            # If broker query fails, return None and let the caller handle it
+            return None
+
+        return None
 
     async def get_last_price(self, account: DestinationAccount, symbol: str) -> float | None:
         # `reqTickersAsync` is ib_async's one-shot snapshot request (verified
