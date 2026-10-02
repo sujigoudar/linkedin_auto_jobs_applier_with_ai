@@ -439,7 +439,7 @@
 
   window.Views = window.Views || {};
   window.Views.tr05 = {
-    title: "Signal detail",
+    title: "Signal evidence and plan preview",
     breadcrumb: "Trade / Signals / Detail",
     scope: "private_owner",
     origin: "private_execution",
