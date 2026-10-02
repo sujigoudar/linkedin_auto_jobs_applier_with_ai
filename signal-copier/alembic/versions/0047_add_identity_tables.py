@@ -23,7 +23,7 @@ def upgrade() -> None:
         "physical_accounts",
         sa.Column("physical_account_id", sa.String(255), primary_key=True),
         sa.Column("broker", sa.String(255), nullable=False),
-        sa.Column("broker_account_id", sa.String(255), nullable=False),
+        sa.Column("broker_account_id", sa.String(255), nullable=True),
         sa.Column(
             "environment",
             sa.String(50),
@@ -40,12 +40,14 @@ def upgrade() -> None:
             "margin_type",
             sa.String(50),
             nullable=False,
+            server_default='unknown',
             comment="'cash', 'margin', 'retirement', or 'unknown'",
         ),
         sa.Column(
             "restriction_state",
             sa.String(50),
             nullable=False,
+            server_default='unknown',
             comment="'none', 'pdt_restricted', 'closing_only', or 'unknown'",
         ),
         sa.Column(

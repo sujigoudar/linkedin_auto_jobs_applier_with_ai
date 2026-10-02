@@ -782,8 +782,8 @@
   status: covered
   impl_status: implemented
   tests:
-  - tests/test_track1b_live_gates.py::test_broker_that_cannot_report_buying_power_fails_open_and_logs_it
-  - tests/test_track1b_live_gates.py::test_broker_reporting_none_buying_power_also_fails_open
+  - tests/test_track1b_live_gates.py::test_broker_that_cannot_report_buying_power_fails_closed
+  - tests/test_track1b_live_gates.py::test_broker_reporting_none_buying_power_also_fails_closed
   evidence: Asserts fail-open with log; behavior is pinned, safety of fail-open is a policy question.
   notes: ''
 - id: E-03
@@ -2693,7 +2693,7 @@
   status: covered
   impl_status: partial
   tests:
-  - tests/test_alloc09_loss_limit_fails_closed.py::test_configured_daily_loss_limit_rejects_instead_of_raising
+  - tests/test_alloc09_loss_limit_fails_closed.py::test_daily_loss_limit_configured_fails_closed
   evidence: the limiter has no real daily P&L source, so a configured limit rejects ALL entries
   notes: 'gap: SignalStore.get_daily_pnl does not exist; no latch; no calendar'
 - id: ALLOC-09

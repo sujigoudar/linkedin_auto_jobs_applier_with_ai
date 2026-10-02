@@ -1906,14 +1906,15 @@ CREATE INDEX IF NOT EXISTS ix_alerts_unacknowledged ON alerts(acknowledged_at) W
 CREATE TABLE IF NOT EXISTS physical_accounts (
     physical_account_id TEXT PRIMARY KEY,
     broker TEXT NOT NULL,
-    broker_account_id TEXT NOT NULL,
+    broker_account_id TEXT,  -- NULL = declared-only (WC-09 evidence_tier 'declared'); never fabricated
     environment TEXT NOT NULL,  -- 'paper', 'live', 'sandbox', 'unknown'
     base_currency TEXT NOT NULL,  -- ISO 4217 code
-    margin_type TEXT NOT NULL,  -- 'cash', 'margin', 'retirement', 'unknown'
-    restriction_state TEXT NOT NULL,  -- 'none', 'pdt_restricted', 'closing_only', 'unknown'
+    margin_type TEXT NOT NULL DEFAULT 'unknown',  -- 'cash', 'margin', 'retirement', 'unknown'
+    restriction_state TEXT NOT NULL DEFAULT 'unknown',  -- 'none', 'pdt_restricted', 'closing_only', 'unknown'
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
     UNIQUE(broker, broker_account_id, environment)
 );
+CREATE INDEX IF NOT EXISTS ix_physical_accounts_broker ON physical_accounts(broker);
 -- Account bindings: credentials/integrations reaching physical accounts
 CREATE TABLE IF NOT EXISTS account_bindings (
     binding_id TEXT PRIMARY KEY,
@@ -2028,18 +2029,7 @@ CREATE TABLE IF NOT EXISTS decision_traces (
 );
 CREATE INDEX IF NOT EXISTS ix_decision_traces_signal_id ON decision_traces(signal_id);
 CREATE INDEX IF NOT EXISTS ix_decision_traces_account_id ON decision_traces(physical_account_id);
--- WC-09: Canonical physical accounts and margin regime tracking
-CREATE TABLE IF NOT EXISTS physical_accounts (
-    physical_account_id TEXT PRIMARY KEY,
-    broker TEXT NOT NULL,
-    broker_account_id TEXT,
-    environment TEXT,
-    base_currency TEXT NOT NULL,
-    margin_type TEXT,
-    restriction_state TEXT,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL
-);
-CREATE INDEX IF NOT EXISTS ix_physical_accounts_broker ON physical_accounts(broker);
+-- WC-09: margin regime tracking (physical_accounts is defined once above, WC-02)
 -- WC-09: Per-account margin regime (legacy_pdt_verified | new_intraday_verified | unknown)
 -- Unknown regime blocks affected new exposure (spec I17, §9, §22 S02/S03).
 -- FINRA replacement intraday-margin standards effective 2026-06-04, phase-in through 2027-10-20.
