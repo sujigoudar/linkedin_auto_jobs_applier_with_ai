@@ -405,7 +405,7 @@ _CHROMIUM_EXECUTABLE = resolve_chromium_executable()
 
 
 @pytest.mark.asyncio
-async def test_tr05_signal_detail_renders_without_error(live_server):
+async def test_tr05_signal_detail_renders_decision_trace(live_server):
     """TR-05 decision view loads without error for real engine-run signal."""
     base_url = live_server
 
@@ -436,23 +436,26 @@ async def test_tr05_signal_detail_renders_without_error(live_server):
     async with async_playwright() as p:
         browser = await p.chromium.launch(executable_path=_CHROMIUM_EXECUTABLE)
         page = await browser.new_page()
-        await page.goto(f"{base_url}/")
+        # Real browser login (the httpx session above is a separate client).
+        await page.goto(base_url)
+        await page.fill("#login-password", "test-owner-pw")
+        await page.click("#login-form button[type=submit]")
+        await page.wait_for_selector("#app:not([hidden])", timeout=10000)
 
-        # Navigate to signal detail (decision view)
+        # Navigate to signal detail (decision view) and wait for the real
+        # decision-trace table: the engine-run signal has exactly one
+        # candidate (acct1) which must be rendered as selected.
         await page.goto(f"{base_url}/#/trade/signals/{signal_id}")
-
-        # Wait for page to load
-        await page.wait_for_timeout(1000)
-
-        # Check that page has loaded without error
+        await page.wait_for_selector("text=selected", timeout=15000)
         body = await page.content()
-        assert body and len(body) > 100
+        assert "acct1" in body
+        assert "No candidates evaluated" not in body
 
         await browser.close()
 
 
 @pytest.mark.asyncio
-async def test_tr16_readiness_loads_successfully(live_server):
+async def test_tr16_system_shows_reservation_and_intent_rows(live_server):
     """TR-16 readiness checklist loads without error."""
     base_url = live_server
 
@@ -464,23 +467,24 @@ async def test_tr16_readiness_loads_successfully(live_server):
     async with async_playwright() as p:
         browser = await p.chromium.launch(executable_path=_CHROMIUM_EXECUTABLE)
         page = await browser.new_page()
-        await page.goto(f"{base_url}/")
+        # Real browser login (the httpx session above is a separate client).
+        await page.goto(base_url)
+        await page.fill("#login-password", "test-owner-pw")
+        await page.click("#login-form button[type=submit]")
+        await page.wait_for_selector("#app:not([hidden])", timeout=10000)
 
-        # Navigate to TR-16
-        await page.goto(f"{base_url}/#/trade/readiness")
-
-        # Wait for page to load
-        await page.wait_for_timeout(1000)
-
-        # Check that page has loaded
+        # Navigate to TR-16 (`#/trade/system`) and wait for the two new
+        # readiness rows backed by GET /system/readiness["workflow"].
+        await page.goto(f"{base_url}/#/trade/system")
+        await page.wait_for_selector("text=All budget reservations are current.", timeout=15000)
         body = await page.content()
-        assert body and len(body) > 100
+        assert "All dispatched intents have recorded responses." in body
 
         await browser.close()
 
 
 @pytest.mark.asyncio
-async def test_tr20_operations_loads_successfully(live_server):
+async def test_tr20_operations_shows_reservations_and_intents_panel(live_server):
     """TR-20 operations center loads without error."""
     base_url = live_server
 
@@ -492,16 +496,18 @@ async def test_tr20_operations_loads_successfully(live_server):
     async with async_playwright() as p:
         browser = await p.chromium.launch(executable_path=_CHROMIUM_EXECUTABLE)
         page = await browser.new_page()
-        await page.goto(f"{base_url}/")
+        # Real browser login (the httpx session above is a separate client).
+        await page.goto(base_url)
+        await page.fill("#login-password", "test-owner-pw")
+        await page.click("#login-form button[type=submit]")
+        await page.wait_for_selector("#app:not([hidden])", timeout=10000)
 
-        # Navigate to TR-20
+        # Navigate to TR-20 and wait for the new panel, fed by
+        # GET /operations/reservation-health and /operations/intent-health.
         await page.goto(f"{base_url}/#/trade/operations")
-
-        # Wait for page to load
-        await page.wait_for_timeout(1000)
-
-        # Check that page has loaded
+        await page.wait_for_selector("text=Reservations & intents", timeout=15000)
+        await page.wait_for_selector("text=Budget reservations", timeout=15000)
         body = await page.content()
-        assert body and len(body) > 100
+        assert "Execution intents" in body
 
         await browser.close()

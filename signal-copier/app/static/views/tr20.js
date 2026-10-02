@@ -207,8 +207,7 @@
         html += budgetRows.join("");
       }
 
-      el.innerHTML = html;
-      StateMatrix.render(el, { state: "ready" });
+      StateMatrix.render(el, { state: "ready", html });
       return { intents: intentsData, budgets: budgetsData };
     } catch (err) {
       StateMatrix.render(el, { state: "error", errorMessage: err.message });
@@ -236,8 +235,10 @@
 
       const staleUnknownHeld = (reservationHealth && reservationHealth.stale_unknown_held) || 0;
       const dispatchingWithoutResponse = (intentHealth && intentHealth.dispatching_without_response) || 0;
-      const totalHeld = (reservationHealth && reservationHealth.total_held) || 0;
-      const totalDispatched = (intentHealth && intentHealth.total_dispatched) || 0;
+      const resCounts = (reservationHealth && reservationHealth.counts_by_state) || {};
+      const totalHeld = (resCounts.HELD || 0) + (resCounts.UNKNOWN_HELD || 0);
+      const outboxCounts = (intentHealth && intentHealth.outbox_counts_by_state) || {};
+      const totalDispatched = (outboxCounts.dispatching || 0) + (outboxCounts.submitted || 0);
 
       const html = `
         <div class="econ-stats">
@@ -270,8 +271,7 @@
         </div>
       `;
 
-      el.innerHTML = html;
-      StateMatrix.render(el, { state: "ready" });
+      StateMatrix.render(el, { state: "ready", html });
       return { reservations: staleUnknownHeld, intents: dispatchingWithoutResponse };
     } catch (err) {
       StateMatrix.render(el, { state: "error", errorMessage: err.message });
