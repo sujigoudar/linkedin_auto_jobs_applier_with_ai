@@ -147,6 +147,7 @@ from app.models import (
     AssetClass,
     CommandType,
     DestinationAccount,
+    Intent,
     OrderResult,
     OrderStatus,
     Side,
@@ -732,6 +733,67 @@ class SignalCopierEngine:
                 ),
             )
 
+            # WP-09: Resolve SELL signals against the account's book
+            # When intent is SELL (ambiguous exit), check if the account holds a
+            # same-symbol LONG. If yes, convert to EXIT. If no, check allow_short.
+            working_signal = signal
+            if signal.intent == Intent.SELL:
+                symbol = symbol_for_account(signal, account)
+                # Check for open position: plain or managed
+                position_quantity = self.store.get_position(account.account_id, symbol)
+                existing_lifecycle = self.lifecycle_manager.get_lifecycle(account.account_id, symbol)
+                has_managed_lifecycle = (
+                    existing_lifecycle is not None
+                    and existing_lifecycle.plan.side == Side.BUY
+                )
+
+                if position_quantity is not None and position_quantity > 0:
+                    # Account holds a LONG: treat as EXIT
+                    working_signal = replace(working_signal, side=Side.CLOSE)
+                elif has_managed_lifecycle:
+                    # Managed account with open BUY lifecycle: treat as EXIT
+                    working_signal = replace(working_signal, side=Side.CLOSE)
+                elif account.allow_short:
+                    # No long and shorts allowed: convert to ENTRY_SHORT
+                    working_signal = replace(working_signal, intent=Intent.ENTRY_SHORT)
+                else:
+                    # No long and shorts disallowed: REJECTED
+                    result = OrderResult(
+                        account_id=account.account_id,
+                        status=OrderStatus.REJECTED,
+                        signal_id=signal.id,
+                        message=f"sell on account '{account.account_id}' with no long position and allow_short=false",
+                    )
+                    self.store.save_order_result(result, purpose="entry", family_id=signal.id)
+                    results.append(result)
+                    self._export_routing_outcome(
+                        signal,
+                        outcome="rejected",
+                        account=account,
+                        order_status=result.status,
+                        message=result.message,
+                    )
+                    continue
+
+            # WP-09: Reject explicit ENTRY_SHORT on accounts with allow_short=False
+            if working_signal.intent == Intent.ENTRY_SHORT and not account.allow_short:
+                result = OrderResult(
+                    account_id=account.account_id,
+                    status=OrderStatus.REJECTED,
+                    signal_id=signal.id,
+                    message=f"entry short on account '{account.account_id}' with allow_short=false",
+                )
+                self.store.save_order_result(result, purpose="entry", family_id=signal.id)
+                results.append(result)
+                self._export_routing_outcome(
+                    signal,
+                    outcome="rejected",
+                    account=account,
+                    order_status=result.status,
+                    message=result.message,
+                )
+                continue
+
             # DB-0X (order purpose/family): known from the signal itself,
             # before anything broker/lifecycle-specific has happened yet --
             # every save_order_result call in this loop iteration shares
@@ -746,7 +808,7 @@ class SignalCopierEngine:
             # or one of the early rejections below that never reach a
             # broker/lifecycle at all) has no real entry to attribute it
             # to, so it stays honestly `None`.
-            order_purpose = "close" if signal.side == Side.CLOSE else "entry"
+            order_purpose = "close" if working_signal.side == Side.CLOSE else "entry"
             order_family_id: str | None = signal.id if order_purpose == "entry" else None
 
             broker = self.brokers.get(account.broker)
@@ -768,13 +830,13 @@ class SignalCopierEngine:
                 )
                 continue
 
-            if signal.side != Side.CLOSE:
+            if working_signal.side != Side.CLOSE:
                 # Track 1b: refuse a live ENTRY before anything else broker/
                 # asset-class-specific is even checked -- see
                 # `_check_route_qualified`'s own docstring for exactly what
                 # this gates, why CLOSE is exempt, and why PAPER accounts
                 # are exempt.
-                route_qualified, qualification_rejection = self._check_route_qualified(account, signal, broker)
+                route_qualified, qualification_rejection = self._check_route_qualified(account, working_signal, broker)
                 if not route_qualified:
                     assert qualification_rejection is not None
                     self.store.save_order_result(
@@ -796,7 +858,7 @@ class SignalCopierEngine:
             # Daily loss limit check: refuse an ENTRY if account has breached
             # its daily loss ceiling (circuit breaker, fail-closed). CLOSE
             # signals bypass this to allow closing/hedging after loss limits hit.
-            if signal.side != Side.CLOSE:
+            if working_signal.side != Side.CLOSE:
                 daily_loss_limit_percent = account.daily_loss_limit_percent or config.DEFAULT_DAILY_LOSS_LIMIT_PERCENT
                 daily_loss_error = await self.daily_loss_limiter.check_daily_loss_limit(account, daily_loss_limit_percent)
                 if daily_loss_error is not None:
@@ -829,7 +891,7 @@ class SignalCopierEngine:
             # unavailable (all None values), we pass through, as the broker adapter
             # hasn't integrated margin state reporting yet. Only check for entry
             # signals; CLOSE signals are allowed through to permit hedging.
-            if signal.side != Side.CLOSE:
+            if working_signal.side != Side.CLOSE:
                 # Check for unresolved margin call alerts first. If any exist,
                 # block new entries to prevent trading on a margin-call account.
                 unresolved_alerts = self.margin_call_detector.get_unresolved_margin_calls(
@@ -926,7 +988,7 @@ class SignalCopierEngine:
             # is below threshold or cannot be determined, we reject the signal to
             # prevent liquidation. Only check for entry signals; CLOSE signals are
             # allowed through to permit position reduction.
-            if signal.side != Side.CLOSE:
+            if working_signal.side != Side.CLOSE:
                 min_equity_threshold = account.min_equity_threshold
                 if min_equity_threshold is not None:
                     liquidation_error = await self.daily_loss_limiter.check_min_equity_threshold(
@@ -987,14 +1049,14 @@ class SignalCopierEngine:
             # C-01: Reject LIMIT/STOP entries for adapters that don't support them
             # (fail-closed). Until an adapter implements and declares limit/stop
             # support, every entry must be MARKET (the default when unspecified).
-            if signal.side != Side.CLOSE and not broker.can_trade_entry_order_type(signal.entry_order_type):
+            if working_signal.side != Side.CLOSE and not broker.can_trade_entry_order_type(working_signal.entry_order_type):
                 result = OrderResult(
                     account_id=account.account_id,
                     status=OrderStatus.REJECTED,
                     signal_id=signal.id,
                     message=(
                         f"broker '{account.broker}' does not support entry_order_type="
-                        f"'{signal.entry_order_type.value if signal.entry_order_type else 'market'}' — refusing to route this signal here"
+                        f"'{working_signal.entry_order_type.value if working_signal.entry_order_type else 'market'}' — refusing to route this signal here"
                     ),
                 )
                 self.store.save_order_result(
@@ -1019,7 +1081,7 @@ class SignalCopierEngine:
             # protective stops or stranding positions when the flag is
             # changed mid-position.
             use_managed_path = account.managed_lifecycle
-            if signal.side == Side.CLOSE:
+            if working_signal.side == Side.CLOSE:
                 existing_lifecycle = self.lifecycle_manager.get_lifecycle(account.account_id, symbol)
                 use_managed_path = existing_lifecycle is not None
 
@@ -1046,7 +1108,7 @@ class SignalCopierEngine:
                         logger.info("allocation intent for signal=%s is bound elsewhere; skipping account=%s", signal.id, account.account_id)
                         continue
                     managed_bound = True
-                managed_outcome = await self._handle_managed_signal(signal, account, symbol)
+                managed_outcome = await self._handle_managed_signal(working_signal, account, symbol)
                 result = managed_outcome.result
                 if managed_bound:
                     if managed_outcome.submitted_at is None:
@@ -1064,7 +1126,7 @@ class SignalCopierEngine:
                 # majority of real trading activity. `side` must be the
                 # resolved BUY/SELL actually sent to the broker, never
                 # `Side.CLOSE` (see `build_execution_applied_envelope`'s
-                # own docstring) -- for an entry, `signal.side` already is
+                # own docstring) -- for an entry, `working_signal.side` already is
                 # that (a CLOSE signal never reaches this branch as an
                 # entry); for a close, `existing_lifecycle.exit_side`
                 # (captured above, BEFORE a fully-flattening close can
@@ -1077,7 +1139,7 @@ class SignalCopierEngine:
                 # so `_build_export_envelope` would have returned `None`
                 # regardless.
                 export_side = (
-                    signal.side
+                    working_signal.side
                     if order_purpose != "close"
                     else (existing_lifecycle.exit_side if existing_lifecycle is not None else None)
                 )
@@ -1116,7 +1178,7 @@ class SignalCopierEngine:
                     # value the export already uses): a `close` side is
                     # skipped by every replay, which blanks realized P&L,
                     # marks the symbol unresolved and locks the capital gate.
-                    side=export_side if export_side is not None else signal.side,
+                    side=export_side if export_side is not None else working_signal.side,
                     requested_quantity=None,
                     applied_quantity=managed_outcome.applied_quantity,
                     confirmed_cumulative_fill=managed_outcome.confirmed_cumulative_fill,
@@ -1139,14 +1201,14 @@ class SignalCopierEngine:
                 )
                 continue
 
-            if signal.side == Side.CLOSE:
+            if working_signal.side == Side.CLOSE:
                 # DB-0X: a plain (non-managed_lifecycle) account has no
                 # tracked lifecycle object linking this close back to
                 # whichever entry fill(s) produced the position it's
                 # closing -- `_resolve_and_submit_plain_close` itself saves
                 # this order with purpose='close' and family_id=None (the
                 # honest default already set above), not re-derived here.
-                result = await self._resolve_and_submit_plain_close(signal, account, symbol, broker)
+                result = await self._resolve_and_submit_plain_close(working_signal, account, symbol, broker)
                 results.append(result)
                 # A CLOSE signal never gets a SOURCE_RECEIPT (see
                 # build_source_receipt_envelope), so this is a real no-op
@@ -1162,7 +1224,7 @@ class SignalCopierEngine:
                 continue
 
             try:
-                order_signal, quantity = signal, size_for_account(signal, account)
+                order_signal, quantity = working_signal, size_for_account(working_signal, account)
             except UnsizedEntryError as e:
                 result = OrderResult(
                     account_id=account.account_id,
@@ -1174,7 +1236,7 @@ class SignalCopierEngine:
                     result,
                     broker=account.broker,
                     symbol=symbol,
-                    side=signal.side,
+                    side=working_signal.side,
                     requested_quantity=None,
                     purpose=order_purpose,
                     family_id=order_family_id,

@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from app.errors import SignalValidationError
-from app.models import AssetClass, OptionContractSpec, ProfitTarget, Signal, Side  # noqa: F401
+from app.models import AssetClass, Intent, OptionContractSpec, ProfitTarget, Signal, Side  # noqa: F401
 
 #: This parser's own exact interpretation implementation -- see
 #: `Signal.parser_version`'s own docstring. Bump whenever this grammar's
@@ -37,12 +37,23 @@ _SIDE_ALIASES = {
     "short": Side.SELL,
     "close": Side.CLOSE,
     "exit": Side.CLOSE,
+    "trim": Side.CLOSE,
+    "reduce": Side.CLOSE,
+    "take": Side.CLOSE,  # for "take profit on"
 }
 
 #: Symbols that are stop-words and should never be treated as an instrument
 _SYMBOL_STOP_WORDS = {
     "TO", "HALF", "ALL", "AT", "THE", "A", "AND", "OPEN", "CLOSE", "NOW"
 }
+
+#: Keywords that indicate a REDUCE intent (trim/reduce/take profit on)
+_REDUCE_KEYWORDS = {"trim", "reduce", "take"}  # "take" for "take profit on"
+
+#: Pattern to extract reduce_fraction from text like "half", "all", or "25%"
+_REDUCE_FRACTION_PATTERN = re.compile(
+    r"\b(?:half|all|\d+(?:\.\d+)?%)", re.IGNORECASE
+)
 
 #: SIG-XX (this pass): a bare `-?\d+(?:\.\d+)?` stops matching at the first
 #: character it doesn't recognize -- for "1,000" that means it captures
@@ -62,7 +73,8 @@ _NUMBER = r"-?\d[\d,]*(?:\.\d+)?"
 
 _PATTERN = re.compile(
     r"""
-    (?P<side>buy|sell|long|short|close|exit)\s+
+    (?P<side>buy|sell|long|short|close|exit|trim|reduce|take)\s+
+    (?:\s*(?:half|all|\d+(?:\.\d+)?%)\s+)?  # Optional reduce fraction (half/all/N%) - not captured, just skipped
     (?P<symbol>[A-Za-z0-9/.\-]+)
     (?:\s+(?P<quantity>""" + _NUMBER + r""")\s*(?:lots?|units?|shares?)?)?
     (?:\s*@\s*(?P<price>""" + _NUMBER + r"""))?
@@ -77,7 +89,7 @@ _PATTERN = re.compile(
 # and SELL MSFT 5") -- picking just the first one and silently discarding
 # the rest would trade on less than what the message actually said. Refuse
 # rather than guess.
-_SIDE_WORD_PATTERN = re.compile(r"\b(?:buy|sell|long|short|close|exit)\b", re.IGNORECASE)
+_SIDE_WORD_PATTERN = re.compile(r"\b(?:buy|sell|long|short|close|exit|trim|reduce|take)\b", re.IGNORECASE)
 
 #: Every TP mention in the message, each with its own optional level number
 #: (bare "TP"/"TP:" has an empty `num`; "TP1", "TP2", ... carry one) and its
@@ -374,6 +386,67 @@ def _resolve_take_profit_targets(stripped: str) -> str | tuple[str | None, list[
     return (targets_raw[0].value, targets_raw)
 
 
+def _determine_intent_and_reduce_fraction(side: Side, text: str) -> tuple[Intent | None, float | None]:
+    """WP-08: determine intent and reduce_fraction from the side and text.
+
+    Maps side keywords to intent values and extracts reduce_fraction from
+    "half", "all", or "N%" patterns when a reduce verb is detected.
+
+    Returns (intent, reduce_fraction) where intent can be None (to be derived
+    in Signal.__post_init__) and reduce_fraction is None unless the message
+    indicates a partial reduction.
+    """
+    # Map side to intent
+    intent = None
+    if side == Side.BUY:
+        intent = Intent.ENTRY_LONG
+    elif side == Side.SELL:
+        # "short" keyword maps to ENTRY_SHORT intent
+        if "short" in text.lower():
+            intent = Intent.ENTRY_SHORT
+        else:
+            # "sell" by itself is SELL intent (ambiguous, resolved by engine)
+            intent = Intent.SELL
+    elif side == Side.CLOSE:
+        # "close"/"exit"/"flat" → EXIT intent, but could be REDUCE if reducing
+        text_lower = text.lower()
+        if any(kw in text_lower for kw in _REDUCE_KEYWORDS):
+            intent = Intent.REDUCE
+        else:
+            intent = Intent.EXIT
+
+    # Extract reduce_fraction for REDUCE intents or CLOSE with a fraction
+    reduce_fraction = None
+    text_lower = text.lower()
+
+    # Look for reduce fraction indicators ("half", "all", or "N%")
+    if "half" in text_lower:
+        reduce_fraction = 0.5
+    elif "all" in text_lower:
+        reduce_fraction = 1.0
+    else:
+        # Look for a percentage pattern (e.g., "25%")
+        fraction_match = _REDUCE_FRACTION_PATTERN.search(text)
+        if fraction_match:
+            frac_text = fraction_match.group(0).lower()
+            if frac_text.endswith("%"):
+                # Extract percentage and convert to fraction
+                try:
+                    percent_value = float(frac_text[:-1])
+                    reduce_fraction = percent_value / 100.0
+                    # Ensure it's in valid range (0, 1]
+                    if reduce_fraction <= 0 or reduce_fraction > 1.0:
+                        reduce_fraction = None
+                except ValueError:
+                    reduce_fraction = None
+
+    # If a reduce_fraction was found and side is CLOSE, map to REDUCE intent
+    if reduce_fraction is not None and intent == Intent.EXIT:
+        intent = Intent.REDUCE
+
+    return intent, reduce_fraction
+
+
 def classify_text_signal(
     text: str, *, source: str, asset_class: AssetClass = AssetClass.CRYPTO, analyst: str | None = None
 ) -> MessageDisposition:
@@ -506,6 +579,9 @@ def classify_text_signal(
         was_inferred = inferred_asset_class != asset_class
         raw_data["asset_class_inferred"] = was_inferred
 
+    # WP-08: Determine intent and reduce_fraction from side and text
+    intent, reduce_fraction = _determine_intent_and_reduce_fraction(side, text)
+
     signal = Signal(
         source=source,
         symbol=symbol,
@@ -517,6 +593,8 @@ def classify_text_signal(
         stop_loss=_optional_float(match.group("sl")),
         take_profit=_optional_float(take_profit_raw),
         targets=targets,
+        intent=intent,
+        reduce_fraction=reduce_fraction,
         option=option_contract,
         parser_version=PARSER_VERSION,
         raw=raw_data,
