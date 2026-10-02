@@ -2443,6 +2443,38 @@ class SignalCopierEngine:
             if owner_gated:
                 self.capital_allocator.owner_lock.release()
 
+    def _requested_exit_quantity(self, signal: Signal, owned: float) -> float | None:
+        """WP-10 (D-05/D-11): compute the requested exit quantity from a CLOSE signal.
+
+        Returns the requested quantity (to be capped at owned), or None if no
+        explicit request is given (meaning full close). Raises ValueError if an
+        explicit request would be <= 0 (caller should reject).
+
+        Args:
+            signal: The CLOSE signal, which may carry quantity or reduce_fraction
+            owned: The current position size (absolute value)
+
+        Returns:
+            - A positive float if signal.quantity or signal.reduce_fraction is set
+              (the requested quantity before capping)
+            - None if neither is set (full close implied)
+
+        Raises:
+            ValueError: if signal.quantity or signal.reduce_fraction is explicitly set but <= 0
+        """
+        # If signal has an explicit quantity, validate and use it
+        if signal.quantity is not None:
+            if signal.quantity <= 0:
+                raise ValueError(f"CLOSE quantity must be > 0, got {signal.quantity}")
+            return signal.quantity
+        # If signal has a reduce_fraction, validate and compute requested from it
+        if signal.reduce_fraction is not None:
+            if signal.reduce_fraction <= 0:
+                raise ValueError(f"CLOSE reduce_fraction must be > 0, got {signal.reduce_fraction}")
+            return signal.reduce_fraction * owned
+        # No explicit request means full close
+        return None
+
     def _resolve_close(
         self, signal: Signal, account: DestinationAccount, symbol: str, *, position: float | None = None
     ) -> tuple[Signal, float] | None:
@@ -2455,14 +2487,33 @@ class SignalCopierEngine:
         for the same symbol) landed in between, silently resolving this
         close against a quantity reconciliation never actually checked.
         `None` (the default) preserves the original single-read behavior
-        for every other caller."""
+        for every other caller.
+
+        WP-10 (D-05/D-11): honor signal.quantity and signal.reduce_fraction;
+        cap the requested quantity at abs(position), and reject when
+        requested <= 0."""
         if position is None:
             position = self.store.get_position(account.account_id, symbol)
         if abs(position) < 1e-8:  # Use tolerance-based comparison instead of exact equality
             return None
 
         closing_side = Side.SELL if position > 0 else Side.BUY
-        quantity = abs(position)
+        owned = abs(position)
+
+        # WP-10 (D-05/D-11): compute requested quantity
+        try:
+            requested = self._requested_exit_quantity(signal, owned)
+        except ValueError:
+            # Invalid quantity or reduce_fraction: caller should reject this
+            return None
+
+        # Determine final quantity: cap requested at owned, or use full close if no request
+        if requested is not None:
+            quantity = min(requested, owned)
+        else:
+            # No explicit request means full close
+            quantity = owned
+
         # WP-02 (C-02): strip stop_loss/take_profit/targets from close
         # signals to prevent adapters from building reverse-side bracket
         # legs that would open new positions after the close executes.
@@ -2864,7 +2915,34 @@ class SignalCopierEngine:
                         return ownership_rejection
 
                 resolved = self._resolve_close(signal, account, symbol, position=close_position_value)
-                assert resolved is not None and abs(close_position_value) >= 1e-8, f"close_position_value={close_position_value} must be non-zero when no rejection returned"
+                if resolved is None:
+                    # WP-10: _resolve_close returns None for two cases:
+                    # 1. Position is essentially 0 (already returned earlier, shouldn't reach here)
+                    # 2. Requested quantity is <= 0 (explicit rejection)
+                    # Distinguish them by checking if close_position_value is non-zero.
+                    if abs(close_position_value) >= 1e-8:
+                        # Case 2: requested quantity was <= 0
+                        rejection = OrderResult(
+                            account_id=account.account_id,
+                            status=OrderStatus.REJECTED,
+                            signal_id=signal.id,
+                            message=(
+                                f"CLOSE requested quantity is invalid (requested <= 0); "
+                                f"signal.quantity={signal.quantity}, signal.reduce_fraction={signal.reduce_fraction}"
+                            ),
+                        )
+                        self.store.save_order_result(rejection, purpose="close", family_id=None)
+                        return rejection
+                    # Case 1: shouldn't reach here due to earlier check
+                    else:
+                        result = OrderResult(
+                            account_id=account.account_id,
+                            status=OrderStatus.REJECTED,
+                            signal_id=signal.id,
+                            message="no open position to close",
+                        )
+                        self.store.save_order_result(result, purpose="close", family_id=None)
+                        return result
 
                 order_signal, quantity = resolved
                 (
@@ -3462,6 +3540,28 @@ class SignalCopierEngine:
                 None,
             )
 
+        # WP-10 (D-05/D-11): compute requested quantity based on signal.quantity
+        # or signal.reduce_fraction, capped at available
+        try:
+            requested = self._requested_exit_quantity(signal, lifecycle.confirmed_owned_quantity)
+        except ValueError as e:
+            return _ManagedOrderOutcome(
+                OrderResult(
+                    account_id=account.account_id,
+                    status=OrderStatus.REJECTED,
+                    signal_id=signal.id,
+                    message=f"CLOSE requested quantity is invalid: {str(e)}",
+                ),
+                None,
+                None,
+            )
+
+        if requested is not None:
+            exit_quantity = min(requested, available)
+        else:
+            # No explicit request means full close
+            exit_quantity = available
+
         if enforce_provider_ownership:
             # Track 18: managed_lifecycle's own EXE-09 entry gate
             # (`PositionLifecycleManager.validate_plan`) already refuses a
@@ -3522,14 +3622,15 @@ class SignalCopierEngine:
         # fill (see PositionLifecycleManager._apply_exit_fill): it applies the
         # confirmed delta to SignalStore itself, once, whether the exit fills
         # synchronously or is later resolved via resolve_pending_exit --
-        # applying an optimistic `available` guess here too was exactly the
+        # applying an optimistic guess here too was exactly the
         # "PENDING commitment recorded as a completed sale" bug this closes
         # (a partial fill followed by a cancelled remainder used to leave the
         # tracked position flat/wrong forever, since nothing ever corrected
-        # this optimistic write). `available` is unchanged by Track 18's
+        # this optimistic write). `exit_quantity` (computed above from
+        # signal.quantity/reduce_fraction) is unchanged by Track 18's
         # gate above (a binary allow/reject, not a proportional cap -- see
         # that block's own comment for why).
-        result = await self.lifecycle_manager.request_exit(account, symbol, available, source=source)
+        result = await self.lifecycle_manager.request_exit(account, symbol, exit_quantity, source=source)
 
         # TRK-22: AUD-01's distinct-field quantity model for this managed
         # close -- see this method's own docstring for why `request_exit`'s
@@ -3574,9 +3675,9 @@ class SignalCopierEngine:
             # `applied_quantity` stays None; only `resolve_pending_exit`
             # (app/reconciliation.py's polling) can ever apply this one.
             confirmed_cumulative_fill = result.filled_quantity
-            outstanding_possible_fill = available - (confirmed_cumulative_fill or 0.0)
+            outstanding_possible_fill = exit_quantity - (confirmed_cumulative_fill or 0.0)
         applied_execution_delta = applied_quantity if applied_quantity is not None else 0.0
-        acknowledged_quantity = quantity_module.acknowledged_quantity_for(result, available)
+        acknowledged_quantity = quantity_module.acknowledged_quantity_for(result, exit_quantity)
         return _ManagedOrderOutcome(
             result,
             None,
