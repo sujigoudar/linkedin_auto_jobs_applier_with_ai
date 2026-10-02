@@ -1936,6 +1936,80 @@ CREATE TABLE IF NOT EXISTS capability_profiles (
 );
 CREATE INDEX IF NOT EXISTS ix_capability_profiles_physical_account_id ON capability_profiles(physical_account_id);
 CREATE INDEX IF NOT EXISTS ix_capability_profiles_evidence_tier ON capability_profiles(evidence_tier);
+-- WC-03: Hierarchical budget tables
+CREATE TABLE IF NOT EXISTS portfolios (
+    portfolio_id TEXT PRIMARY KEY,
+    owner TEXT NOT NULL,
+    name TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_portfolios_owner ON portfolios(owner);
+-- Portfolio backing: dedicated equity assigned to a portfolio
+CREATE TABLE IF NOT EXISTS portfolio_backings (
+    backing_id TEXT PRIMARY KEY,
+    portfolio_id TEXT NOT NULL,
+    physical_account_id TEXT NOT NULL,
+    dedicated_equity_cents INTEGER NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    FOREIGN KEY(portfolio_id) REFERENCES portfolios(portfolio_id),
+    UNIQUE(portfolio_id, physical_account_id)
+);
+CREATE INDEX IF NOT EXISTS idx_portfolio_backings_portfolio ON portfolio_backings(portfolio_id);
+CREATE INDEX IF NOT EXISTS idx_portfolio_backings_account ON portfolio_backings(physical_account_id);
+-- Strategy sleeves: capital subdivisions within a portfolio
+CREATE TABLE IF NOT EXISTS strategy_sleeves (
+    sleeve_id TEXT PRIMARY KEY,
+    portfolio_id TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    analyst TEXT,
+    name TEXT,
+    max_notional_cents INTEGER,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    FOREIGN KEY(portfolio_id) REFERENCES portfolios(portfolio_id)
+);
+CREATE INDEX IF NOT EXISTS idx_strategy_sleeves_portfolio ON strategy_sleeves(portfolio_id);
+CREATE INDEX IF NOT EXISTS idx_strategy_sleeves_provider ON strategy_sleeves(provider);
+-- Budget reservations: per-opportunity state machine (WC-03, spec §6.2)
+CREATE TABLE IF NOT EXISTS budget_reservations (
+    reservation_id TEXT PRIMARY KEY,
+    opportunity_id TEXT NOT NULL UNIQUE,
+    owner TEXT NOT NULL,
+    physical_account_id TEXT NOT NULL,
+    portfolio_id TEXT,
+    sleeve_id TEXT,
+    provider TEXT NOT NULL,
+    analyst TEXT,
+    underlying TEXT NOT NULL,
+    cluster_id TEXT,
+    needed_cash_cents INTEGER NOT NULL,
+    needed_margin_cents INTEGER NOT NULL,
+    needed_notional_cents INTEGER NOT NULL,
+    needed_planned_risk_cents INTEGER NOT NULL,
+    needed_stress_risk_cents INTEGER,
+    state TEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    evidence TEXT,
+    FOREIGN KEY(portfolio_id) REFERENCES portfolios(portfolio_id),
+    FOREIGN KEY(sleeve_id) REFERENCES strategy_sleeves(sleeve_id)
+);
+CREATE INDEX IF NOT EXISTS idx_budget_reservations_owner ON budget_reservations(owner);
+CREATE INDEX IF NOT EXISTS idx_budget_reservations_account ON budget_reservations(physical_account_id);
+CREATE INDEX IF NOT EXISTS idx_budget_reservations_state ON budget_reservations(state);
+CREATE INDEX IF NOT EXISTS idx_budget_reservations_opportunity ON budget_reservations(opportunity_id);
+-- Owner-level limits on aggregate exposure
+CREATE TABLE IF NOT EXISTS owner_limits (
+    limit_id TEXT PRIMARY KEY,
+    owner TEXT NOT NULL UNIQUE,
+    max_notional_cents INTEGER,
+    max_planned_risk_cents INTEGER,
+    max_stress_risk_cents INTEGER,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_owner_limits_owner ON owner_limits(owner);
 """
 
 
