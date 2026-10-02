@@ -38,7 +38,7 @@ RACES = {
 def rows(axes: dict[str, list[Any]]) -> Iterator[dict[str, Any]]:
     keys=list(axes)
     for values in itertools.product(*(axes[k] for k in keys)):
-        yield dict(zip(keys, values))
+        yield dict(zip(keys, values, strict=True))
 
 def admission_oracle(x: dict[str, Any]) -> dict[str, Any]:
     """Restricted planning-only gate: all unlisted requirements are valid fixture facts."""

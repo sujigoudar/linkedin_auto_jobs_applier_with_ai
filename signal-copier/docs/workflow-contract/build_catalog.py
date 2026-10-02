@@ -382,7 +382,7 @@ assert len(ids)==len(set(ids))
 (ROOT/'SCENARIO_CATALOG.json').write_text(json.dumps({'schema_version':'1.0','status':'ACCEPTANCE_REQUIREMENTS_NOT_EXECUTED_TESTS','scenarios':scenarios},indent=2)+'\n')
 lines=['# Named acceptance scenarios','',f'{len(scenarios)} named Given/When/Then requirements across {len(GROUPS)} categories. **All are NOT_RUN against the application in this package.**',
        '', 'Each scenario must additionally record exact adapter calls (or zero), persisted state, quantities/cash/risk deltas, recovery/deadlines and evidence. Run every applicable declared variant; do not substitute screenshots or mocked helper results for actual wired application behavior.','']
-for prefix,title,text in GROUPS:
+for prefix, title, _text in GROUPS:
     lines.extend([f'## {prefix} — {title}',''])
     for s in [x for x in scenarios if x['id'].startswith(prefix+'-')]:
         lines += [f"### {s['id']} — {s['title']}",f"**Given:** {s['given']}",f"**When:** {s['when']}",f"**Then:** {s['then']}",'']
