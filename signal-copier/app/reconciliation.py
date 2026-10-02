@@ -278,6 +278,22 @@ class OrderReconciler:
             if broker_owned is None:
                 continue  # genuinely unknown -- never treated as confirming zero
 
+            # WP-03: convert broker readback to lifecycle's own orientation.
+            # Broker returns signed quantity (negative for short); lifecycle
+            # always tracks positive owned quantity. For SELL positions
+            # (shorts), invert the sign to match.
+            broker_owned_abs = -broker_owned if lifecycle.plan.side == Side.SELL else broker_owned
+            if broker_owned_abs < 0:
+                # Venue holds the OPPOSITE side of what the plan expects
+                logger.warning(
+                    "broker position readback for account=%s symbol=%s returned opposite side (venue: %s, plan: %s)",
+                    lifecycle.plan.account_id,
+                    lifecycle.plan.symbol,
+                    broker_owned,
+                    "short" if broker_owned < 0 else "long",
+                )
+                continue
+
             if exit_has_no_order_id_to_poll:
                 # Exit-side counterpart of the entry branch below: a
                 # request_exit whose place_order response was lost has no
@@ -290,7 +306,7 @@ class OrderReconciler:
                 pending = lifecycle.pending_exit
                 assert pending is not None  # exit_has_no_order_id_to_poll guarantees this
                 filled = min(
-                    max(0.0, lifecycle.confirmed_owned_quantity - broker_owned), pending.requested_quantity
+                    max(0.0, lifecycle.confirmed_owned_quantity - broker_owned_abs), pending.requested_quantity
                 )
                 await self.lifecycle_manager.resolve_pending_exit(
                     account, lifecycle.plan.symbol, filled, remainder_cancelled=True
@@ -309,15 +325,15 @@ class OrderReconciler:
                 lifecycle.pending_entry is not None
                 and lifecycle.pending_entry.broker_order_id is None
                 and not lifecycle.pending_entry.remainder_resolved
-                and broker_owned > 0
+                and broker_owned_abs > 0
             ):
                 await self.lifecycle_manager.resolve_pending_entry(
-                    account, lifecycle.plan.symbol, broker_owned, remainder_cancelled=True
+                    account, lifecycle.plan.symbol, broker_owned_abs, remainder_cancelled=True
                 )
                 corrected += 1
                 continue
 
-            deficit = lifecycle.confirmed_owned_quantity - broker_owned
+            deficit = lifecycle.confirmed_owned_quantity - broker_owned_abs
             if deficit <= 1e-9:
                 continue  # matches (or the venue reports MORE than tracked -- a different, unmodeled anomaly)
             await self.lifecycle_manager.on_stop_filled(account, lifecycle.plan.symbol, filled_quantity=deficit)
@@ -479,7 +495,20 @@ class OrderReconciler:
             signed_delta = delta if side == Side.BUY else -delta
             confirmed_cumulative_fill = actual_quantity
         elif new_status == OrderStatus.FILLED:
-            actual_quantity = confirmed_quantity if confirmed_quantity is not None else optimistic_quantity
+            # WP-04: adapter reported FILLED but omitted filled_quantity.
+            # Fall back to requested_quantity (mirroring app/engine.py:1285),
+            # then to optimistic_quantity if requested_quantity is also None.
+            if confirmed_quantity is not None:
+                actual_quantity = confirmed_quantity
+            elif order.get("requested_quantity") is not None:
+                actual_quantity = order["requested_quantity"]
+                logger.warning(
+                    "adapter reported FILLED without filled_quantity for order=%s; using requested_quantity=%s",
+                    order["id"],
+                    actual_quantity,
+                )
+            else:
+                actual_quantity = optimistic_quantity
             delta = actual_quantity - optimistic_quantity
             signed_delta = delta if side == Side.BUY else -delta
             confirmed_cumulative_fill = actual_quantity
