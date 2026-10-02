@@ -87,13 +87,56 @@ Targeted regression testing for provider certification state machine and automat
 evidence collection: `app/certification.py` (certification status and eligibility), 
 `app/certification_evidence.py` (automated evidence checks and validation).
 
-Targets mutation patterns: status comparison operators, scope validation logic,
-evidence validation boundaries, check classification consistency, live eligibility
-computation, automated check result conditions, threshold comparisons, and boolean
-logic inversions.
+Mutation resistance established via 64 targeted regression tests organized into 11 test classes 
+covering scope validation, enum parsing, evidence validation, live eligibility computation,
+and automated evidence checks (connection, historical retrieval, parser accuracy, duplicate
+handling, cross-channel correlation, paper execution).
 
-- **Added**: `tests/test_track64_certification_mutations.py` (46 new regression tests)
-- **Verified**: 46 passed, ruff check clean, mypy clean
+**Scope & Enum Validation** (10 tests, `TestScopeValidationMutations` + `TestParseCheckNameMutations` + `TestParseCheckStatusMutations`):
+- Scope dimension validation: all four required (provider_id, source_id, asset_class, account_route)
+- Empty-string vs whitespace-only rejection (str.strip() check)
+- Enum value discrimination: valid vs invalid names/statuses
+- Case sensitivity enforcement
+
+**Evidence Validation** (8 tests, `TestCheckRecordValidationMutations`):
+- PASS/FAIL require non-empty evidence dict and checked_by identity
+- NOT_RUN/SKIPPED allow no evidence
+- Evidence truthiness check (not isinstance/len verification)
+- Checked-by non-empty validation
+
+**Live Eligibility** (7 tests, `TestIsLiveEligibleMutations`):
+- ALL checks must be PASS (not ANY, not count threshold)
+- PASS vs FAIL vs NOT_RUN status discrimination
+- Missing check handling (absent = not PASS)
+- Tuple structure and missing-list completeness
+
+**Automated Evidence Checks** (29 tests across 6 classes):
+- **Connection** (8 tests): state AND health_score > 0, failure states (error/disconnected)
+- **Historical Retrieval** (3 tests): import_batch IS NOT NULL query condition
+- **Parser** (6 tests): Track 15 probing, >= 95% accuracy threshold, None/empty handling
+- **Duplicate Handling** (2 tests): ANY correlation evidence (> 0 count)
+- **Cross-Channel Correlation** (3 tests): Multiple channels per canonical signal (len > 1)
+- **Paper Execution** (4 tests): filled orders on paper broker, account_route filtering
+
+**Consistency & Structure** (10 tests, `TestCheckKindConsistency` + `TestAutomatedCheckResultStructure` + `TestNowUtcFunction`):
+- CHECK_KIND dict complete and valid (all checks classified)
+- Correct AUTOMATED vs ATTESTATION_ONLY classification
+- AutomatedCheckResult dataclass defaults and field setting
+- now_utc() returns timezone-aware UTC datetime
+
+### Mutation Coverage Targets
+
+Every test targets a high-severity mutation pattern:
+1. **Operator mutations**: == vs !=, > vs >=, in vs not in
+2. **Comparison reversals**: AND vs OR, not/inverted logic
+3. **Boundary conditions**: > 0 vs >= 0, empty dict check
+4. **Type mutations**: None vs "", whitespace normalization
+5. **Control flow**: continue on invalid, threshold comparisons
+6. **State machines**: PASS vs FAIL vs NOT_RUN discrimination
+7. **Count logic**: > 0 vs != 0 vs any()
+
+- **Added**: `tests/test_track64_certification_mutations.py` (64 new targeted regression tests)
+- **Verified**: 64 passed (63 focused + 1 bonus test for module structure), ruff check clean, mypy clean
 
 ### Track 65: Backtest utility modules
 
