@@ -330,7 +330,9 @@ CREATE TABLE IF NOT EXISTS config_accounts (
     -- B-11: maximum gross leverage ceiling (e.g., 1.0 = no leverage,
     -- 1.25 = 25% leverage allowed). When set, exposure is refused if it
     -- would exceed max_gross_leverage × (equity − maintenance_margin).
-    max_gross_leverage DECIMAL(5, 2)
+    max_gross_leverage DECIMAL(5, 2),
+    -- B-14: whether this account is allowed to open short positions
+    allow_short INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS config_routing_rules (
@@ -2028,6 +2030,9 @@ _COLUMN_MIGRATIONS = [
     ("config_accounts", "min_equity_threshold", "DECIMAL(18, 8)"),
     # B-11: maximum gross leverage ceiling
     ("config_accounts", "max_gross_leverage", "DECIMAL(5, 2)"),
+    # WP-08 (B-14): per-account short-selling permission gate -- see
+    # DestinationAccount.allow_short's own docstring.
+    ("config_accounts", "allow_short", "INTEGER NOT NULL DEFAULT 0"),
 ]
 
 

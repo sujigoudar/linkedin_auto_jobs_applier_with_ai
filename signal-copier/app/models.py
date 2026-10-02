@@ -16,6 +16,7 @@ from typing import Any, Optional
 class Side(str, enum.Enum):
     BUY = "buy"
     SELL = "sell"
+    SHORT = "short"
     CLOSE = "close"
 
 
@@ -744,6 +745,12 @@ class DestinationAccount:
     #: max_gross_leverage × (equity − maintenance_margin). `None` (the
     #: default) means no leverage limit is enforced. See app/capital_allocator.py.
     max_gross_leverage: Optional[float] = None
+    #: B-14: Whether this account is allowed to open short positions. When
+    #: False (the default for equity/cash accounts), a SELL entry on a flat
+    #: account is rejected, and a SELL entry on an existing long is treated
+    #: as a close/reduce-only against the tracked long position. When True,
+    #: a SELL entry behaves as a new short-side entry (the legacy behavior).
+    allow_short: bool = False
 
     def __post_init__(self) -> None:
         if self.management_recipe is None:
