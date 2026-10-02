@@ -2508,13 +2508,15 @@ class SignalCopierEngine:
             return True, 0.0, None
 
         # B-06: Resolve price using broker quote capability when available
+        price_source = None
         broker = self.brokers.get(account.broker)
         if broker is not None:
-            price, _ = await self._resolve_price_for_gating(broker, order_signal)
+            price, price_source = await self._resolve_price_for_gating(broker, order_signal)
         else:
             # No broker available; use signal price only
             if order_signal.price is not None and math.isfinite(order_signal.price) and order_signal.price > 0:
                 price = order_signal.price
+                price_source = "signal"
             else:
                 price = None
 
@@ -2555,13 +2557,14 @@ class SignalCopierEngine:
                 if account.max_notional_exposure is not None:
                     pending = self.capital_allocator.pending_reservation(account.account_id)
                     if exposure.notional + pending + notional > account.max_notional_exposure:
+                        price_note = f" (price from {price_source})" if price_source else ""
                         return False, notional, self._reject(
                             account,
                             order_signal,
                             f"account '{account.account_id}' notional exposure ceiling "
                             f"({account.max_notional_exposure}) would be exceeded by this entry "
                             f"(confirmed={exposure.notional:.2f}, pending={pending:.2f}, "
-                            f"requested={notional:.2f}) -- refusing",
+                            f"requested={notional:.2f}{price_note}) -- refusing",
                         )
 
                 if account.max_gross_leverage is not None:
