@@ -104,6 +104,17 @@ def pytest_collection_finish(session: Any) -> None:
                 if scenario_id not in _plugin_state["catalog_ids"]:  # type: ignore
                     unknown_ids.add(scenario_id)
 
+    # Remember which scenario ids each collected item carries: TestReport has
+    # no `item` attribute, so pytest_runtest_logreport looks nodeids up here.
+    by_nodeid: dict[str, list[str]] = {}
+    for item in session.items:
+        ids: list[str] = []
+        for marker in item.iter_markers("scenario"):
+            ids.extend(marker.args)
+        if ids:
+            by_nodeid[item.nodeid] = ids
+    _plugin_state["scenario_by_nodeid"] = by_nodeid
+
     if unknown_ids:
         unknown_str = ", ".join(sorted(unknown_ids))
         raise ValueError(
@@ -113,40 +124,36 @@ def pytest_collection_finish(session: Any) -> None:
 
 
 def pytest_runtest_logreport(report: Any) -> None:
-    """Collect test results."""
-    # Only process the final report (call phase)
-    if report.when != "call":
+    """Collect one outcome per scenario-tagged test.
+
+    The call phase decides passed/failed; a setup-phase failure is recorded as
+    "error" and a setup-phase skip as "skipped" (the call phase never runs in
+    those cases). Tests without a scenario marker are not recorded.
+    """
+    by_nodeid = _plugin_state.get("scenario_by_nodeid") or {}
+    scenario_ids = by_nodeid.get(report.nodeid)  # type: ignore[union-attr]
+    if not scenario_ids:
         return
 
-    # Get the item
-    item = report.item if hasattr(report, "item") else None
-    if not item:
+    if report.when == "call":
+        outcome_str = report.outcome if report.outcome in ("passed", "failed", "skipped") else "error"
+    elif report.when == "setup" and report.outcome in ("failed", "skipped"):
+        outcome_str = "error" if report.outcome == "failed" else "skipped"
+    else:
         return
 
-    # Map outcome
-    outcome_str = report.outcome if report.outcome in ("passed", "failed", "skipped") else "error"
+    test_result = {
+        "nodeid": report.nodeid,
+        "outcome": outcome_str,
+        "duration_s": getattr(report, "duration", 0.0),
+        "scenarios": list(scenario_ids),
+    }
+    _plugin_state["test_results"].append(test_result)  # type: ignore
 
-    # Get scenario IDs from markers
-    markers = item.iter_markers("scenario")
-    scenario_ids = []
-    for marker in markers:
-        scenario_ids.extend(marker.args)
-
-    # Record tests with scenario markers
-    if scenario_ids:
-        test_result = {
-            "nodeid": item.nodeid,
-            "outcome": outcome_str,
-            "duration_s": getattr(report, "duration", 0.0),
-            "scenarios": scenario_ids,
-        }
-        _plugin_state["test_results"].append(test_result)  # type: ignore
-
-        # Update scenario tracking
-        for scenario_id in scenario_ids:
-            if scenario_id not in _plugin_state["collected_scenarios"]:  # type: ignore
-                _plugin_state["collected_scenarios"][scenario_id] = set()  # type: ignore
-            _plugin_state["collected_scenarios"][scenario_id].add(item.nodeid)  # type: ignore
+    for scenario_id in scenario_ids:
+        if scenario_id not in _plugin_state["collected_scenarios"]:  # type: ignore
+            _plugin_state["collected_scenarios"][scenario_id] = set()  # type: ignore
+        _plugin_state["collected_scenarios"][scenario_id].add(report.nodeid)  # type: ignore
 
 
 def pytest_sessionfinish(session: Any, exitstatus: int) -> None:

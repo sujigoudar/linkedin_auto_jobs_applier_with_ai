@@ -1,6 +1,6 @@
 {
   "schema_version": "1.0",
-  "generated_at": "1790980906.9356403",
+  "generated_at": "1790981660.378852",
   "total_scenarios": 292,
   "status_counts": {
     "NOT_IMPLEMENTED": 280,
@@ -7596,7 +7596,8 @@
       "status": "TESTED_SIMULATOR",
       "implementation_paths": [],
       "test_paths": [
-        "tests/test_wc12_mutation_harness.py"
+        "tests/test_wc12_mutation_harness.py",
+        "tests/test_wc22_evidence_tooling.py"
       ],
       "evidence_paths": [],
       "blocked_reason": null,
