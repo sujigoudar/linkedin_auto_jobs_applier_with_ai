@@ -2817,6 +2817,38 @@ class SignalCopierEngine:
         if spec_error is not None:
             return False, 0.0, self._reject(account, order_signal, spec_error)
         contract_multiplier = mult
+
+        # A-09: Chase guard - validate price age and deviation before sizing.
+        # Both gates are opt-in (None = disabled) and fail closed when enabled.
+        if config.SIGNAL_MAX_PRICE_AGE_SECONDS is not None:
+            signal_received = order_signal.received_at
+            if signal_received.tzinfo is None:
+                signal_received = signal_received.replace(tzinfo=timezone.utc)
+            age_seconds = (datetime.now(timezone.utc) - signal_received).total_seconds()
+            if age_seconds > config.SIGNAL_MAX_PRICE_AGE_SECONDS:
+                return False, 0.0, self._reject(
+                    account,
+                    order_signal,
+                    f"price too old ({age_seconds:.0f}s > {config.SIGNAL_MAX_PRICE_AGE_SECONDS:.0f}s) "
+                    f"-- rejected by SIGNAL_MAX_PRICE_AGE_SECONDS gate",
+                )
+
+        if (
+            config.SIGNAL_MAX_PRICE_DEVIATION_PCT is not None
+            and broker is not None
+            and order_signal.price is not None
+        ):
+            ref_price = broker.get_reference_price(order_signal.symbol)
+            if ref_price is not None and ref_price > 0:
+                deviation_pct = abs(order_signal.price - ref_price) / ref_price * 100
+                if deviation_pct > config.SIGNAL_MAX_PRICE_DEVIATION_PCT:
+                    return False, 0.0, self._reject(
+                        account,
+                        order_signal,
+                        f"price deviation {deviation_pct:.1f}% exceeds limit {config.SIGNAL_MAX_PRICE_DEVIATION_PCT:.1f}% "
+                        f"(signal={order_signal.price}, reference={ref_price}) -- rejected with price_reference=broker_quote",
+                    )
+
         notional = abs(quantity) * abs(price) * contract_multiplier
 
         owner_gated = self.max_owner_notional_exposure is not None

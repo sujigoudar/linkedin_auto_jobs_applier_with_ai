@@ -96,6 +96,16 @@ class BrokerAdapter(abc.ABC):
         """
         return None
 
+    def get_reference_price(self, symbol: str) -> float | None:
+        """Optional: get a reference price for the symbol (e.g., from the last
+        fill or a broker quote).
+
+        A-09: Chase guard uses this to validate incoming signal prices against
+        broker reference prices. Return the last fill price, broker quote, or
+        None if unavailable. The default here returns None (no reference).
+        """
+        return None
+
     # --- Managed-lifecycle capabilities (app/lifecycle/) ---
     #
     # These back the fallback path for brokers/accounts that can't submit a

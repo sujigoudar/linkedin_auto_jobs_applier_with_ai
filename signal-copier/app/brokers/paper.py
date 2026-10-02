@@ -76,6 +76,8 @@ class PaperBroker(BrokerAdapter):
         self._order_id_sequence: dict[str, int] = {}
         #: account_id -> symbol -> last known price (used to compute equity)
         self._last_prices: dict[str, dict[str, float]] = {}
+        #: A-09: symbol -> most recent fill price for price validation
+        self._last_fill_prices: dict[str, float] = {}
         #: Read-only exposure of `fee_per_fill` -- see class docstring.
         self.fee_per_fill = self.FEE_PER_FILL
         #: WP-25: Track last simulated price per symbol to use for managed exits
@@ -242,6 +244,9 @@ class PaperBroker(BrokerAdapter):
             child_order_ids=child_order_ids,
         )
         self.fills.append(result)
+        # A-09: Track last fill price for this symbol for price validation
+        if price is not None and price > 0:
+            self._last_fill_prices[symbol.upper()] = price
         return result
 
     def normalize_quantity(self, account: DestinationAccount, symbol: str, quantity: float) -> float | None:
@@ -294,6 +299,10 @@ class PaperBroker(BrokerAdapter):
             buying_power=cash,
             maintenance_margin=maintenance_margin_to_report,
         )
+
+    def get_reference_price(self, symbol: str) -> float | None:
+        """A-09: Return the last fill price for this symbol, or None if none exists."""
+        return self._last_fill_prices.get(symbol.upper(), None)
 
     async def place_protective_stop(
         self, account: DestinationAccount, symbol: str, quantity: float, stop_price: float, exit_side: Side
