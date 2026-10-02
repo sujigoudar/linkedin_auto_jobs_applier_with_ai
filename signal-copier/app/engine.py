@@ -877,7 +877,18 @@ class SignalCopierEngine:
 
             symbol = symbol_for_account(signal, account)
 
-            if account.managed_lifecycle:
+            # D-07/F-01: for CLOSE signals, determine the exit path by
+            # lifecycle existence, not by the managed_lifecycle flag.
+            # If a lifecycle exists, it must be closed through the managed
+            # path. Otherwise, use the plain path. This prevents orphaning
+            # protective stops or stranding positions when the flag is
+            # changed mid-position.
+            use_managed_path = account.managed_lifecycle
+            if signal.side == Side.CLOSE:
+                existing_lifecycle = self.lifecycle_manager.get_lifecycle(account.account_id, symbol)
+                use_managed_path = existing_lifecycle is not None
+
+            if use_managed_path:
                 existing_lifecycle = None
                 if order_purpose == "close":
                     # DB-0X: the real family this close belongs to is
@@ -2538,9 +2549,32 @@ class SignalCopierEngine:
         (a synthetic reason string like "manual_exit", never a real
         provider) would incorrectly reject the one action meant to flatten
         the WHOLE pooled position regardless of which provider(s) built
-        it."""
+        it.
+
+        D-07/F-01: Fail closed if a managed lifecycle exists for this
+        account/symbol. The exit path is determined by lifecycle existence,
+        not by the account's managed_lifecycle flag. If a lifecycle exists,
+        the close must be routed through the managed path, not plain."""
         lock = self._plain_close_locks[(account.account_id, symbol)]
         async with lock:
+            # D-07/F-01: refuse if a managed lifecycle exists for this position.
+            # The exit path is determined by lifecycle existence, not the flag.
+            lifecycle = self.lifecycle_manager.get_lifecycle(account.account_id, symbol)
+            if lifecycle is not None:
+                result = OrderResult(
+                    account_id=account.account_id,
+                    status=OrderStatus.REJECTED,
+                    signal_id=signal.id,
+                    message=(
+                        f"account '{account.account_id}' symbol '{symbol}' has an open managed lifecycle -- "
+                        f"this close must be routed through the managed lifecycle path, not plain. "
+                        f"The exit path is determined by lifecycle existence, not by the managed_lifecycle flag. "
+                        f"This should not happen if the managed flag is in sync with lifecycle state; "
+                        f"please check the account configuration and lifecycle state."
+                    ),
+                )
+                self.store.save_order_result(result, purpose="close", family_id=None)
+                return result
             if not self.store.claim_close(account.account_id, symbol):
                 return OrderResult(
                     account_id=account.account_id,
@@ -3350,7 +3384,14 @@ class SignalCopierEngine:
         # that only worked because foreign key enforcement was off.
         self.store.save_signal(close_signal)
 
-        if account.managed_lifecycle:
+        # D-07/F-01: determine the exit path by lifecycle existence, not by
+        # the managed_lifecycle flag. If a lifecycle exists, it must be
+        # closed through the managed path (to handle the protective stop).
+        # Otherwise, use the plain path.
+        lifecycle_before_close = self.lifecycle_manager.get_lifecycle(account.account_id, symbol)
+        use_managed_path = lifecycle_before_close is not None
+
+        if use_managed_path:
             # E06: the resolved opposing side (BUY/SELL), not Side.CLOSE --
             # save_order_result's own docstring says "for a resolved close,
             # side is the opposing buy/sell, not Side.CLOSE" (the plain-
@@ -3359,7 +3400,6 @@ class SignalCopierEngine:
             # tell a managed close's actual trade direction from the
             # `orders` table alone -- exactly what a P&L/execution-journal
             # report needs to reconstruct realized gains correctly.
-            lifecycle_before_close = self.lifecycle_manager.get_lifecycle(account.account_id, symbol)
             resolved_side = lifecycle_before_close.exit_side if lifecycle_before_close is not None else Side.CLOSE
 
             # Track 18: manual flatten is explicitly NOT provider-scoped

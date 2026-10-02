@@ -2509,16 +2509,33 @@ async def create_or_update_account(request: AccountRequest, _owner: dict = Depen
     managed lifecycle) is refused -- the tracked position was recorded
     against the OLD broker; retargeting the account to a different one
     would strand it with nothing that ever placed or can now manage its
-    exit."""
+    exit.
+
+    D-07/F-01: changing `managed_lifecycle` on an account that has real
+    exposure is also refused -- the exit path (managed vs plain) is
+    determined by lifecycle existence, not the flag; changing the flag
+    while a position is open can orphan the resting protective stop or
+    strand a position that cannot be closed (plain → managed flip)."""
     existing = next((a for a in store.list_config_accounts() if a["account_id"] == request.account_id), None)
-    if existing is not None and existing["broker"] != request.broker and _account_has_exposure(request.account_id):
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                f"account '{request.account_id}' has an open position/lifecycle tracked against broker "
-                f"'{existing['broker']}' -- refusing to change its broker to '{request.broker}' and strand it"
-            ),
-        )
+    if existing is not None and _account_has_exposure(request.account_id):
+        if existing["broker"] != request.broker:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"account '{request.account_id}' has an open position/lifecycle tracked against broker "
+                    f"'{existing['broker']}' -- refusing to change its broker to '{request.broker}' and strand it"
+                ),
+            )
+        if existing["managed_lifecycle"] != request.managed_lifecycle:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"account '{request.account_id}' has an open position/lifecycle -- refusing to change "
+                    f"managed_lifecycle from {existing['managed_lifecycle']} to {request.managed_lifecycle} "
+                    f"(the exit path is determined by lifecycle existence, not the flag; flipping it mid-position "
+                    f"orphans the protective stop or strands the position)"
+                ),
+            )
     store.upsert_config_account(
         account_id=request.account_id,
         broker=request.broker,
@@ -3109,6 +3126,29 @@ class ProviderRequest(BaseModel):
 
 @app.post("/providers/{provider_id}")
 async def create_or_update_provider(provider_id: str, request: ProviderRequest, _owner: dict = Depends(require_owner)) -> dict:
+    """Create or update a provider. The provider's `managed_lifecycle`
+    override can affect the effective exit path for all accounts this
+    provider signals to.
+
+    D-07/F-01: refuse to change `managed_lifecycle` on a provider if any
+    account that routes from this provider has real exposure, since that
+    changes the effective exit path and could orphan a protective stop or
+    strand a position."""
+    existing = next(
+        (p for p in store.list_config_providers() if p["provider_id"] == provider_id),
+        None,
+    )
+    if existing is not None and existing.get("managed_lifecycle") != request.managed_lifecycle:
+        # Check if any account routed from this provider has exposure
+        # (we can't filter to specific accounts without knowing routing, so check all)
+        if any(_account_has_exposure(a["account_id"]) for a in store.list_config_accounts()):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"one or more accounts have open positions/lifecycles and route from provider '{provider_id}' -- "
+                    f"refusing to change managed_lifecycle (the exit path is determined by lifecycle existence, not the flag)"
+                ),
+            )
     store.upsert_config_provider(
         provider_id,
         request.display_name,
@@ -3123,6 +3163,27 @@ async def create_or_update_provider(provider_id: str, request: ProviderRequest, 
 
 @app.delete("/providers/{provider_id}")
 async def delete_provider(provider_id: str, _owner: dict = Depends(require_owner)) -> dict:
+    """Delete a provider. A provider deletion that removes a
+    `managed_lifecycle` override from accounts with exposure is refused.
+
+    D-07/F-01: deleting a provider with a `managed_lifecycle` override
+    changes the effective exit path for all routed accounts, potentially
+    orphaning protective stops or stranding positions."""
+    provider = next(
+        (p for p in store.list_config_providers() if p["provider_id"] == provider_id),
+        None,
+    )
+    if provider is not None and provider.get("managed_lifecycle") is not None:
+        # Deletion removes the override, so check if this would affect any exposed accounts
+        if any(_account_has_exposure(a["account_id"]) for a in store.list_config_accounts()):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"one or more accounts have open positions/lifecycles and the provider '{provider_id}' "
+                    f"has a managed_lifecycle override -- refusing to delete it (deletion would change the "
+                    f"effective exit path and potentially orphan protective stops or strand positions)"
+                ),
+            )
     store.delete_config_provider(provider_id)
     _reload_provider_registry()
     return {"provider_id": provider_id, "status": "deleted"}
@@ -3142,6 +3203,25 @@ class AnalystRequest(BaseModel):
 
 @app.post("/providers/{provider_id}/analysts/{analyst_id}")
 async def create_or_update_analyst(provider_id: str, analyst_id: str, request: AnalystRequest, _owner: dict = Depends(require_owner)) -> dict:
+    """Create or update an analyst override for a provider. The analyst's
+    `managed_lifecycle` override can affect the effective exit path.
+
+    D-07/F-01: refuse to change `managed_lifecycle` on an analyst if any
+    account that routes from this provider/analyst has real exposure."""
+    existing = next(
+        (a for a in store.list_config_analysts(provider_id) if a["analyst_id"] == analyst_id),
+        None,
+    )
+    if existing is not None and existing.get("managed_lifecycle") != request.managed_lifecycle:
+        # Check if any account routed from this provider has exposure
+        if any(_account_has_exposure(a["account_id"]) for a in store.list_config_accounts()):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"one or more accounts have open positions/lifecycles and route from provider '{provider_id}' -- "
+                    f"refusing to change analyst '{analyst_id}' managed_lifecycle"
+                ),
+            )
     store.upsert_config_analyst(
         provider_id,
         analyst_id,
@@ -3157,6 +3237,25 @@ async def create_or_update_analyst(provider_id: str, analyst_id: str, request: A
 
 @app.delete("/providers/{provider_id}/analysts/{analyst_id}")
 async def delete_analyst(provider_id: str, analyst_id: str, _owner: dict = Depends(require_owner)) -> dict:
+    """Delete an analyst override. A deletion that removes a
+    `managed_lifecycle` override from accounts with exposure is refused.
+
+    D-07/F-01: deleting an analyst with a managed_lifecycle override
+    changes the effective exit path for all routed accounts."""
+    analyst = next(
+        (a for a in store.list_config_analysts(provider_id) if a["analyst_id"] == analyst_id),
+        None,
+    )
+    if analyst is not None and analyst.get("managed_lifecycle") is not None:
+        # Deletion removes the override, so check if this would affect any exposed accounts
+        if any(_account_has_exposure(a["account_id"]) for a in store.list_config_accounts()):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"one or more accounts have open positions/lifecycles and the analyst '{analyst_id}' "
+                    f"has a managed_lifecycle override -- refusing to delete it"
+                ),
+            )
     store.delete_config_analyst(provider_id, analyst_id)
     _reload_provider_registry()
     return {"provider_id": provider_id, "analyst_id": analyst_id, "status": "deleted"}
