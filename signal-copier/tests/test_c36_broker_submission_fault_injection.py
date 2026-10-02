@@ -52,7 +52,7 @@ def store(tmp_path):
     return SignalStore(tmp_path / "test.db")
 
 
-def _force_release_approved(store, *, adapter_type, route_key, asset_class="equity", product_type="default"):
+def _force_release_approved(store, *, adapter_type, route_key, asset_class="equity", product_type="default", environment="paper"):
     """Track 1b's live-routing qualification gate (app/engine.py's own
     `_check_route_qualified`) refuses ANY live (non-paper) entry whose
     route has no recorded `release_approved` -- same bypass-the-ladder
@@ -70,9 +70,9 @@ def _force_release_approved(store, *, adapter_type, route_key, asset_class="equi
         ]:
             conn.execute(
                 "INSERT OR REPLACE INTO route_qualifications "
-                "(adapter_type, route_key, asset_class, product_type, state, recorded_at, recorded_by, notes) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (adapter_type, route_key, asset_class, product_type, state, now, "test-fixture", "test-only bypass"),
+                "(adapter_type, route_key, asset_class, product_type, environment, state, recorded_at, recorded_by, notes) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (adapter_type, route_key, asset_class, product_type, environment, state, now, "test-fixture", "test-only bypass"),
             )
 
 
@@ -91,13 +91,31 @@ def _engine(store, broker, account):
 def _faulty_transport_alpaca_broker(fault: Exception) -> AlpacaBroker:
     """A real AlpacaBroker whose transport raises `fault` on every
     request -- a genuine connection-level/timeout failure reaching
-    `place_order`'s own POST, not a crafted HTTP response."""
+    `place_order`'s own POST, not a crafted HTTP response. Also mocks
+    get_account_balance to return a valid balance so the buying_power
+    gate passes (WP-32: buying_power check is fail-closed when adapter
+    can't report it, but a mocked transport can't reach the account
+    endpoint either, so we mock it directly)."""
     broker = AlpacaBroker()
 
     def transport(request: httpx.Request) -> httpx.Response:
         raise fault
 
     broker._client = httpx.AsyncClient(transport=httpx.MockTransport(transport))
+
+    # Mock get_account_balance to return a valid balance so WP-32's
+    # buying_power check passes (instead of fail-closed rejection)
+    async def mock_get_account_balance(account):
+        from app.models import AccountBalance
+        return AccountBalance(
+            account_id=account.account_id,
+            cash=100000.0,
+            equity=100000.0,
+            buying_power=100000.0,
+            maintenance_margin=None,
+        )
+
+    broker.get_account_balance = mock_get_account_balance
     return broker
 
 
@@ -111,13 +129,29 @@ def _malformed_success_response_alpaca_broker() -> AlpacaBroker:
     real venue returning this would mean its own API contract drifted
     out from under this adapter -- `place_order` itself does no
     validation on `order` at all (see app/brokers/alpaca.py), so this
-    reaches `OrderResult(broker_order_id=order.get("id"), ...)` as-is."""
+    reaches `OrderResult(broker_order_id=order.get("id"), ...)` as-is.
+    Also mocks get_account_balance to return a valid balance so the
+    buying_power gate passes (WP-32)."""
     broker = AlpacaBroker()
 
     def transport(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={"id": {"unexpected": "nested-object-not-a-string"}}, request=request)
 
     broker._client = httpx.AsyncClient(transport=httpx.MockTransport(transport))
+
+    # Mock get_account_balance to return a valid balance so WP-32's
+    # buying_power check passes
+    async def mock_get_account_balance(account):
+        from app.models import AccountBalance
+        return AccountBalance(
+            account_id=account.account_id,
+            cash=100000.0,
+            equity=100000.0,
+            buying_power=100000.0,
+            maintenance_margin=None,
+        )
+
+    broker.get_account_balance = mock_get_account_balance
     return broker
 
 

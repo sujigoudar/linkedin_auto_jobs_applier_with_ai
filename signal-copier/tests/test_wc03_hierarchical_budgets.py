@@ -27,7 +27,7 @@ from app.workflow.budget import (
     original_planned_loss,
     stress_loss,
 )
-from app.workflow.money import to_cents
+from app.workflow.money import to_cents, to_cents_floor
 from app.workflow.reasons import Reason
 
 
@@ -46,10 +46,10 @@ class TestMoneyConversion:
         assert to_cents("10.00") == 1000
 
     def test_to_cents_from_decimal(self):
-        """Decimal values convert with rounding down."""
-        assert to_cents(Decimal("1.50")) == 150
-        assert to_cents(Decimal("1.501")) == 150  # Rounds down
-        assert to_cents(Decimal("1.509")) == 150  # Rounds down
+        """Decimal values convert with rounding down using to_cents_floor()."""
+        assert to_cents_floor(Decimal("1.50")) == 150
+        assert to_cents_floor(Decimal("1.501")) == 150  # Rounds down
+        assert to_cents_floor(Decimal("1.509")) == 150  # Rounds down
 
     def test_to_cents_negative_rejects(self):
         """Negative values are rejected."""
