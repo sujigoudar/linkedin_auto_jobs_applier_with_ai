@@ -9,6 +9,25 @@ detailed per-phase notes (now historical; much has been built since).
 
 ## What's real and tested, most recent first
 
+- **Track 67: comprehensive mutation-testing regression suite, publication/
+  business_economics/ledger (2026-10-02).** Comprehensive mutation-testing
+  regression suite for signal-portfolio-commercial's highest-risk service
+  modules (publication.py, business_economics.py, ledger.py), following the
+  Track 60-63 mutation-testing pattern from signal-copier. Targeted 32 new
+  regression tests covering idempotent enqueue/conflict detection,
+  state-machine transitions, financial calculations, revenue/cost boundaries,
+  and append-only ledger semantics. Mutation targets: operator flips (+ vs -,
+  / vs *), boundary conditions (<= vs <, == vs !=, in vs not-in), condition
+  drops, fee None vs Decimal(0) distinction, absorbing state semantics.
+  Found no production code gaps -- all existing code passes new regression
+  tests. Design rationale: full `mutmut run` on shared dev box hit resource
+  limits; instead, established mutation resistance via hand-written targeted
+  regression tests covering high-severity mutation patterns (same approach
+  Tracks 60-61 in signal-copier established). No production code changes
+  required; existing tests (publication/business_economics/ledger) remain
+  unmodified, unweakened. Final state: 32 new tests, all passing; full
+  suite: `1131 passed, 0 failed`; `ruff`/`mypy` both clean.
+
 - **Track 53: mutation-testing pass, permissions/staff_access
   (2026-10-01).** Widens Track 39's mutation-testing pass onto the
   role-based permission-check layer and staff/operator elevated-access

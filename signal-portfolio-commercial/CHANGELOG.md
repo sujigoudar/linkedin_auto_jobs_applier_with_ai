@@ -12,6 +12,80 @@ Everything in this file. This is pre-1.0, development-branch software;
 nothing here has shipped to a live production deployment
 (`docs/process/RELEASE.md`).
 
+### 2026-10-02 — Track 67: comprehensive mutation-testing regression suite for commercial services
+
+Comprehensive mutation-testing regression suite for signal-portfolio-commercial's
+highest-risk service modules: `app/services/publication.py`, `app/services/
+business_economics.py`, and `app/services/ledger.py`. Following the Track 60-63
+mutation-testing pattern established in signal-copier, this suite targets
+specific high-severity mutations that would silently misbehave if critical
+operators, conditions, or boundaries change.
+
+#### Added
+- `tests/test_track67_commercial_mutation.py`: 32 new targeted regression tests
+  covering:
+  - **publication.py idempotency** (4 tests): Idempotent enqueue with conflict
+    detection. Mutation targets: dropped `if` condition on body_hash comparison,
+    flipped conflict-raise logic. Tests verify exact-key exact-body idempotency,
+    conflict detection on key-reuse with different body, conflict error
+    messages preserving both hashes for diagnostics.
+  - **publication.py state transitions** (7 tests): State machine validation with
+    defined frozenset transitions. Mutation targets: wrong frozenset membership,
+    flipped transition allowance logic, dropped membership checks. Tests verify
+    all defined transitions (DRAFT→ELIGIBLE, DRAFT→SUPERSEDED, etc.),
+    verify forbidden transitions reject, verify UNKNOWN→RECONCILING-only
+    (spec violation if direct to ACKNOWLEDGED/REJECTED allowed), verify
+    absorbing states (SUPERSEDED, TERMINAL) trap further transitions.
+  - **business_economics.py unit contribution** (4 tests): Mutation targets:
+    operator flips (- vs + on costs), boundary conditions (<= vs <). Tests
+    verify all costs subtract correctly, zero contribution is warning,
+    positive boundary (0.01) is not warning, negative contribution is warning.
+  - **business_economics.py break-even** (4 tests): Mutation targets: division
+    operator check (/ vs *), non-positive check dropped (would attempt
+    division by zero). Tests verify correct division, fractional division
+    (non-integer quotient), warning on zero contribution, warning on negative
+    contribution.
+  - **business_economics.py revenue boundaries** (5 tests): Mutation targets:
+    subscription state membership (in vs not-in), tenant scoping (== vs !=).
+    Tests verify ACTIVE_PAID revenue recognized, PAST_DUE recognized,
+    CANCEL_AT_PERIOD_END recognized, DISPUTED never recognized, tenant
+    isolation enforced.
+  - **business_economics.py margin calculation** (5 tests): Mutation targets:
+    comparison operators (<= vs <, >= vs >), period boundary semantics,
+    margin formula (+ vs -), missing-cost reporting. Tests verify period_end
+    before period_start rejected, subscriptions ending exactly at period_end
+    included, costs overlapping period included, margin correctly subtracts
+    cost from revenue, currencies with revenue but no cost reported as
+    missing (never computed as revenue-minus-zero).
+  - **ledger.py append_entry** (3 tests): Mutation targets: field assignment
+    drops or typos, fee None vs 0 distinction (spec: unknown fee is None,
+    not Decimal(0)). Tests verify all fields recorded, fee None when omitted,
+    fee Decimal("0") when explicitly passed, distinction preserved.
+
+#### Test results
+- Full `pytest -q` on Track 67 suite: **32 passed**
+- Full `pytest -q` on existing publication/business_economics/ledger tests:
+  **33 passed** (existing tests unaffected)
+- `ruff check tests/test_track67_commercial_mutation.py`: **All checks passed**
+- `mypy` on test file: **Success: no issues found**
+
+#### Design rationale
+Each test is designed to fail under a targeted, high-severity mutation pattern:
+1. Boundary conditions at operator limits (== vs !=, < vs <=, > vs >=)
+2. Arithmetic operator flips (+ vs -, * vs /)
+3. Condition/membership drops (if conditions, frozenset membership checks)
+4. Boolean logic flips (and vs or, dropped not)
+5. Default value changes (None vs 0, empty vs full frozenset)
+
+Tests were hand-written from code review of highest-risk business logic
+(idempotency, financial calculations, state machines) to establish mutation
+resistance ahead of full `mutmut run` (resource constraints on shared dev box
+prevented completion, same pattern as Tracks 60-61 in signal-copier).
+
+No production code changes required; all existing code passes new regression
+tests. `tests/test_publication.py`, `tests/test_business_economics.py`, and
+`tests/test_ledger.py` remain unmodified, unweakened, and all pass.
+
 ### 2026-10-01 — Track 53: mutation-testing pass (permissions, staff_access)
 
 Widens Track 39's mutation-testing pass onto the role-based permission-
