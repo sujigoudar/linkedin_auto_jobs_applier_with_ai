@@ -1793,7 +1793,6 @@ class PositionLifecycleManager:
             asset_class=lifecycle.plan.asset_class,
             intent=Intent.EXIT,
             raw={"reason": reason},
-            intent=Intent.EXIT,
         )
         if self.store is not None:
             # DB-01: this Signal's freshly-generated id becomes the

@@ -2539,7 +2539,6 @@ class SignalCopierEngine:
             id=signal.id,
             received_at=signal.received_at,
             raw=signal.raw,
-            intent=Intent.EXIT,
         )
         return resolved_signal, quantity
 

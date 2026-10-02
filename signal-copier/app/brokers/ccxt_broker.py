@@ -283,6 +283,7 @@ class CCXTBroker(BrokerAdapter):
                 # Searching through open orders would require the symbol, which we don't have
                 return None
         except Exception:  # noqa: BLE001 - network error or not supported
+            return None
     def normalize_quantity(self, account: DestinationAccount, symbol: str, quantity: float) -> float | None:
         """Normalize quantity to market's precision/limits, or return None if unknown."""
         import math
