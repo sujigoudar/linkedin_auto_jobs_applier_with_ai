@@ -32,6 +32,7 @@ typecheck:
 	     app/brokers/paper.py app/brokers/ccxt_broker.py app/brokers/signalstack.py app/brokers/ninjatrader.py \
 	     app/config.py app/auth.py app/rate_limit.py app/context/sec_edgar.py app/context/fred.py app/context/fx.py \
 	     app/capital_allocator.py app/provider_value.py app/provider_scout.py \
+	     app/workflow/reasons.py app/workflow/money.py app/workflow/sizing.py \
 	     --follow-imports=silent
 
 # NOT run by CI. The full, non-scoped check across the whole app/
