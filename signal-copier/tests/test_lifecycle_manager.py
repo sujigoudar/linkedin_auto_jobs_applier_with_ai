@@ -299,10 +299,10 @@ async def test_failed_target_exit_is_not_marked_fired_and_can_retry(manager, acc
     )
     await _enter(manager, broker, account, plan, 100.0)
 
-    async def unsupported_replace(account, broker_order_id, new_quantity, new_price=None):
+    async def unsupported_replace(account, broker_order_id, new_quantity, new_price=None, symbol=None):
         return None  # PaperBroker still amends by default -- force the cancel/resubmit fallback path here
 
-    async def failing_cancel(account, broker_order_id):
+    async def failing_cancel(account, broker_order_id, symbol=None):
         return False  # cancellation can't be confirmed -- request_exit refuses to proceed
 
     monkeypatch.setattr(broker, "replace_stop_quantity", unsupported_replace)
@@ -457,7 +457,7 @@ async def test_replace_that_returns_a_new_order_id_updates_tracked_id(manager, a
     await _enter(manager, broker, account, plan, 62.0)
     original_stop_id = manager.get_lifecycle("acct1", "AAPL").stop.broker_order_id
 
-    async def replace_with_new_id(account, broker_order_id, new_quantity, new_price=None):
+    async def replace_with_new_id(account, broker_order_id, new_quantity, new_price=None, symbol=None):
         return OrderResult(
             account_id=account.account_id,
             status=OrderStatus.PENDING,

@@ -106,7 +106,7 @@ class _CancelOnlyBroker(BrokerAdapter):
             broker_order_id=f"stop-{self._next_stop_id}",
         )
 
-    async def cancel_order(self, account, broker_order_id):
+    async def cancel_order(self, account, broker_order_id, symbol=None):
         self.cancel_calls.append(broker_order_id)
         return True
 

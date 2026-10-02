@@ -148,7 +148,7 @@ async def test_place_order_surviving_a_real_transport_fault_retains_recovery_int
 
     try:
         signal = Signal(
-            source="tradingview", symbol="AAPL", side=Side.BUY, quantity=10.0, stop_loss=90.0,
+            source="tradingview", symbol="AAPL", side=Side.BUY, quantity=10.0, price=100.0, stop_loss=90.0,
             asset_class=AssetClass.EQUITY,
         )
         results = await engine.handle_signal(signal)
@@ -182,7 +182,7 @@ async def test_place_order_returning_a_malformed_success_shape_never_silently_as
 
     try:
         signal = Signal(
-            source="tradingview", symbol="AAPL", side=Side.BUY, quantity=10.0, stop_loss=90.0,
+            source="tradingview", symbol="AAPL", side=Side.BUY, quantity=10.0, price=100.0, stop_loss=90.0,
             asset_class=AssetClass.EQUITY,
         )
         results = await engine.handle_signal(signal)
@@ -223,7 +223,7 @@ async def test_reconciler_survives_the_same_malformed_id_without_crashing_the_wh
     _force_release_approved(store, adapter_type="alpaca", route_key="acct_a")
 
     signal = Signal(
-            source="tradingview", symbol="AAPL", side=Side.BUY, quantity=10.0, stop_loss=90.0,
+            source="tradingview", symbol="AAPL", side=Side.BUY, quantity=10.0, price=100.0, stop_loss=90.0,
             asset_class=AssetClass.EQUITY,
         )
     await engine.handle_signal(signal)

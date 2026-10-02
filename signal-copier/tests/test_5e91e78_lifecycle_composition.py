@@ -143,14 +143,14 @@ class ScriptedVenue(PaperBroker):
             )
         return await super().place_protective_stop(account, symbol, quantity, stop_price, exit_side)
 
-    async def replace_stop_quantity(self, account, broker_order_id, new_quantity, new_price=None):
+    async def replace_stop_quantity(self, account, broker_order_id, new_quantity, new_price=None, symbol=None):
         if self.replacement_outcome is not None:
             return OrderResult(
                 account_id=account.account_id, status=self.replacement_outcome,
                 signal_id="", broker_order_id=None, filled_quantity=0.0,
                 message="test venue did not replace the existing stop",
             )
-        return await super().replace_stop_quantity(account, broker_order_id, new_quantity, new_price)
+        return await super().replace_stop_quantity(account, broker_order_id, new_quantity, new_price, symbol)
 
     def owned(self):
         return self.positions.get(ACCOUNT, {}).get(SYMBOL, 0.0)

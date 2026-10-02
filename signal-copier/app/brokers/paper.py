@@ -276,12 +276,19 @@ class PaperBroker(BrokerAdapter):
         equity = cash + position_value
         maintenance_margin = 0.5 * short_notional if short_notional > 0 else 0.0
 
+        # WP-32b: Don't fabricate equity or maintenance_margin. Report None (unknown)
+        # when no positions have been opened yet (no fills), since marking market and
+        # margin calculation apply only to open positions.
+        has_positions = any(positions.values())
+        equity_to_report = equity if has_positions else None
+        maintenance_margin_to_report = maintenance_margin if has_positions and maintenance_margin > 0 else None
+
         return AccountBalance(
             account_id=account.account_id,
             cash=cash,
-            equity=equity,
+            equity=equity_to_report,
             buying_power=cash,
-            maintenance_margin=maintenance_margin if maintenance_margin > 0 else 0.0,
+            maintenance_margin=maintenance_margin_to_report,
         )
 
     async def place_protective_stop(

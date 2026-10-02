@@ -21,15 +21,26 @@ class _SymbolRequiringExchange:
 
     def __init__(self):
         self.cancel_calls = []
+        self.orders = {}
 
     async def create_order(self, symbol, type, side, amount, params):
-        return {"id": "order-1", "status": "open", "filled": 0, "amount": amount}
+        order = {"id": "order-1", "status": "open", "filled": 0, "amount": amount}
+        self.orders["order-1"] = order
+        return order
 
     async def cancel_order(self, order_id, symbol=None):
         self.cancel_calls.append((order_id, symbol))
         if not symbol:
             raise ValueError("exchange requires symbol")
+        # Update the order status to canceled
+        if order_id in self.orders:
+            self.orders[order_id]["status"] = "canceled"
         return {"status": "canceled"}
+
+    async def fetch_order(self, order_id, symbol=None):
+        if not symbol:
+            raise ValueError("exchange requires symbol")
+        return self.orders.get(order_id, {"status": "canceled"})
 
 
 @pytest.fixture
