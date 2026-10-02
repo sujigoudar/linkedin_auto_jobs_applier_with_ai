@@ -9,9 +9,7 @@ previously caught:
 - release operator (- vs +)
 """
 import asyncio
-import pytest
-from app.capital_allocator import CapitalAllocator, ExposureReport, confirmed_open_notional
-from app.db import SignalStore
+from app.capital_allocator import CapitalAllocator, ExposureReport
 
 ACCOUNT_ID = "acct1"
 

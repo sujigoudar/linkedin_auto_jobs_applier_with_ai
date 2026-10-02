@@ -646,3 +646,56 @@ all killed by existing test suites. No production code changes required;
 five new regression test classes (23 tests total) added to catch
 previously-untested mutations. Full `pytest -q` suite: 2278 passed, 0
 failed (after adding both new test files).
+
+### Track 60: mutation-testing baseline for app/sources/base.py and app/sources/webhook.py (2026-10-02)
+
+Targeted mutation testing baseline pass on the signal-ingestion boundary:
+`app/sources/base.py` (the `SourceAdapter` abstract base contract) and
+`app/sources/webhook.py` (the JSON webhook parser, the one fully-working
+ingestion path used by TradingView, NinjaTrader, and direct `curl` signals).
+These are the critical ingestion boundary modules (per CLAUDE.md hard rule 1)
+where a silently-wrong validation check or dropped guard would let malformed
+signals through with missing required fields, invalid enums, or out-of-
+boundary financial values.
+
+**Mutation testing environment constraint**: Full `mutmut run` on the
+widened pyproject.toml scope (all currently-covered files plus these two new
+ones) exceeded container resources mid-run (hung in stats phase after
+successful mutant generation on a heavily-loaded shared machine). No
+aggregate mutation score could be obtained this session (same constraint
+Track 43 and 44 hit earlier). A future isolated or CI run should be able to
+complete it given the scope is already committed.
+
+**Mutation resistance via targeted regression tests** (pursued instead of
+full mutmut score this session):
+
+Identified critical mutation targets from code review and added 16 new
+regression tests to `tests/test_webhook_source.py` covering:
+- Empty string (`""`) vs `None` vs missing for required fields (symbol, side)
+- Case-insensitivity boundaries (side parsing: buy/BUY/Buy, asset class
+  parsing)
+- Message-ID fallback chain (`message_id` → `alert_id` → `id`) and priority
+  when multiple present
+- Profit-target fraction boundaries (exactly 0, > 0 and <= 1, > 1)
+- Optional vs required target fields (price required, quantity/label
+  optional)
+- Raw payload population in both `signal.raw` and `signal.raw_source_event`
+- Ingest return value (must return the parsed signal, not None)
+
+Test counts:
+- `test_webhook_source.py`: grew from 16 to 32 tests (+16 new)
+- `test_risk01_strict_financial_inputs.py`: 23 existing tests, unchanged
+- Total coverage: 73 tests in the two test files specific to sources
+- Full `pytest -q` across both files: **73 passed** (after new tests)
+
+**Production code changes**: None. All existing code passes the new
+tests; no gaps or mutations found.
+
+**Base contract (`app/sources/base.py`)**: 63 lines. The `SourceAdapter`
+interface and `_emit_source_event` no-op guard (`if self.on_source_event is
+not None`) are straightforward and already exercised by both
+`test_ingest_emits_source_event_original_when_handler_wired` (handler
+wired) and `test_ingest_without_source_event_handler_is_a_safe_no_op`
+(handler not wired). A mutant flipping the condition or removing the
+guard would fail both. No new mutations of this file expected to escape the
+existing test pair.

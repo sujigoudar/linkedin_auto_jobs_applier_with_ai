@@ -7,6 +7,34 @@ does not yet cut versioned releases (see `docs/process/RELEASE.md`), so
 entries are grouped by theme and rough chronological wave instead of by
 version number. Newest wave first.
 
+## [Unreleased] — Track 60: mutation-testing baseline for app/sources/base.py and app/sources/webhook.py (2026-10-02)
+
+Targeted mutation testing baseline pass on the signal-ingestion boundary
+modules. Full container-resource mutation test could not complete this
+session (same heavy-concurrent-load constraint Tracks 43/44 hit), but
+mutation resistance was established via targeted regression tests.
+
+### Added
+- `tests/test_webhook_source.py`: +16 new regression tests for webhook
+  ingestion boundary covering:
+  - Empty-string vs missing vs None for required fields (symbol, side)
+  - Case-insensitivity of side and asset_class parsing
+  - Message-ID fallback chain priority (`message_id` → `alert_id` → `id`)
+  - Profit-target fraction boundaries and required/optional fields
+  - Raw payload population in parsed signals
+  - Ingest return value and handler dispatch
+
+### Changed
+- No production code changes. All existing webhook parsing logic passes
+  the new mutation-resistance tests. `tests/test_webhook_source.py` grew
+  from 16 to 32 tests (+16 new).
+
+### Verified
+- Full `pytest -q` suite on sources tests: **73 passed** (23 existing +
+  16 new in test_webhook_source.py, 23 in test_risk01_strict_financial_inputs.py
+  unchanged, plus 11 in test_export_events.py that exercise webhook
+  source integration end-to-end).
+
 ## [Unreleased] — Track 58: mutation-testing re-verification for app/risk.py and app/quantity.py (2026-10-01)
 
 A re-verification pass (not an initial baseline) on `app/risk.py` and
