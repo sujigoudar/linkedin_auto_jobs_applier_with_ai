@@ -1,0 +1,2722 @@
+# Allocation scenario traceability registry.
+# Generated from a read-only review of the code and tests, then validated mechanically by
+# tests/test_alloc10_traceability.py (every referenced test function must exist).
+# status: covered | partial | unit-only | gap. impl_status: implemented | partial | missing.
+# A 'covered' row is covered in an isolated/paper environment only; nothing here is broker-qualified.
+- id: A-01
+  group: A account identity/lifecycle
+  scenario: Signal arrives with no usable account (none configured / all removed)
+  initial_state: Rule exists but its only account was deleted, or no accounts
+  event_sequence: Webhook buy for routed source
+  expected_invariant: Engine returns no orders, no broker call, no crash; signal still journaled
+  status: covered
+  impl_status: implemented
+  tests:
+  - tests/test_config_crud.py::test_deleting_an_account_removes_it_from_routing_immediately
+  evidence: Webhook after account deletion returns orders == [] via real API->engine path.
+  notes: Unit helper test_routing_config_with_only_rules_no_accounts_is_safe (tests/test_track57_routing_mutations.py)
+    not counted.
+- id: A-02
+  group: A account identity/lifecycle
+  scenario: Several accounts on different brokers behind one source; one broker adapter absent
+  initial_state: Rule lists [acct on unregistered broker, acct on paper] (single mode)
+  event_sequence: Buy signal
+  expected_invariant: Missing-broker account yields ERROR result, next alternative still gets the single
+    allocation
+  status: covered
+  impl_status: implemented
+  tests:
+  - tests/test_engine.py::test_missing_broker_reports_error_without_blocking_others
+  evidence: Asserts missing-broker account ERROR and second account FILLED (default single mode).
+  notes: Only paper + nonexistent broker; no test with two real adapters of different families in single
+    mode.
+- id: A-03
+  group: A account identity/lifecycle
+  scenario: Several accounts, one broker family, one signal
+  initial_state: 3 paper accounts in one rule
+  event_sequence: One buy
+  expected_invariant: Exactly one account gets one order
+  status: covered
+  impl_status: implemented
+  tests:
+  - tests/test_alloc01_single_destination.py::test_one_signal_three_eligible_accounts_produces_one_order
+  - tests/test_alloc04_api_end_to_end.py::test_one_webhook_three_eligible_accounts_one_order
+  evidence: Engine-level and webhook->API-level assert a single order on a1 and a committed allocation
+    intent.
+  notes: ''
+- id: A-04
+  group: A account identity/lifecycle
+  scenario: Same real broker account connected twice under two account_ids (duplicate connection)
+  initial_state: Two config accounts carry identical broker credentials/env keys
+  event_sequence: Entry routed to both ids over time
+  expected_invariant: Capacity, ownership and ceilings must not double count one real account
+  status: gap
+  impl_status: missing
+  tests: []
+  evidence: No code detects duplicate underlying broker accounts; credentials are env-var keyed by account_id
+    so duplicates are undetectable by the app.
+  notes: Would double-count buying power and split ownership between ids.
+- id: A-05
+  group: A account identity/lifecycle
+  scenario: Rename an account_id
+  initial_state: Account has positions, rules, intents, ledger rows keyed by old id
+  event_sequence: Owner wants to rename
+  expected_invariant: All references migrate or rename is refused while exposure exists
+  status: gap
+  impl_status: missing
+  tests: []
+  evidence: POST /accounts upserts by account_id; there is no rename endpoint or reference migration,
+    so a rename is a new account that orphans old state.
+  notes: ''
+- id: A-06
+  group: A account identity/lifecycle
+  scenario: Disabled account is skipped for new entries
+  initial_state: Primary disabled, secondary enabled
+  event_sequence: Buy signal
+  expected_invariant: Entry goes to secondary only
+  status: covered
+  impl_status: implemented
+  tests:
+  - tests/test_engine.py::test_disabled_account_is_not_routed_to
+  - tests/test_alloc01_single_destination.py::test_paused_primary_falls_to_secondary_and_close_still_reaches_owner
+  evidence: Disabled-only config routes nothing; paused primary falls to secondary which receives the
+    order.
+  notes: ''
+- id: A-07
+  group: A account identity/lifecycle
+  scenario: Disabled account still receives CLOSE for its open position (entry pause not exit block)
+  initial_state: Account holds AAPL then is flipped enabled=False
+  event_sequence: Provider CLOSE
+  expected_invariant: Exit still executes
+  status: covered
+  impl_status: implemented
+  tests:
+  - tests/test_exe10_config_change_stranding.py::test_audits_exact_case_entry_pause_needs_separate_existing_position_exit_handling
+  evidence: After disabling, CLOSE still produces a broker fill.
+  notes: ''
+- id: A-08
+  group: A account identity/lifecycle
+  scenario: Delete account that still holds an open position or open managed lifecycle
+  initial_state: Position or lifecycle open
+  event_sequence: DELETE /accounts/{id}
+  expected_invariant: 409, config untouched
+  status: covered
+  impl_status: implemented
+  tests:
+  - tests/test_exe10_config_change_stranding.py::test_audits_exact_case_account_deletion_with_owned_position_is_blocked
+  - tests/test_exe10_config_change_stranding.py::test_account_without_exposure_can_still_be_deleted_and_broker_changed
+  evidence: 409 and account retained when position exists; flat account deletes fine.
+  notes: ''
+- id: A-09
+  group: A account identity/lifecycle
+  scenario: Delete account that has only a PENDING order, durable capital reservation, unresolved command-ledger
+    row or bound allocation intent
+  initial_state: Entry submitted, unfilled/unknown, no position row yet
+  event_sequence: DELETE /accounts/{id}
+  expected_invariant: Deletion refused or exposure transferred
+  status: gap
+  impl_status: partial
+  tests: []
+  evidence: _account_has_exposure() checks only list_open_positions and open lifecycles (app/main.py),
+    not pending orders, reservations, ledger or intents.
+  notes: Reconciler would later book a fill for a deleted account id.
+- id: A-10
+  group: A account identity/lifecycle
+  scenario: Change broker of an account with exposure
+  initial_state: Account holds position at broker A
+  event_sequence: POST /accounts with broker B
+  expected_invariant: 409; no stranding
+  status: covered
+  impl_status: implemented
+  tests:
+  - tests/test_exe10_config_change_stranding.py::test_audits_exact_case_account_broker_change_with_exposure_is_blocked
+  evidence: 409 and routing_config still shows original broker.
+  notes: ''
+- id: A-11
+  group: A account identity/lifecycle
+  scenario: Pause vs drain vs delete distinction
+  initial_state: Account has positions and working orders
+  event_sequence: Owner wants no new entries but orderly wind-down
+  expected_invariant: Distinct pause (no entries, exits allowed), drain (also cancel pending entries/manage
+    to flat), delete (blocked until flat)
+  status: gap
+  impl_status: partial
+  tests: []
+  evidence: Only enabled flag (pause) and delete-with-exposure-guard exist; no drain state, pending entries
+    are not cancelled on pause.
+  notes: Pause semantics themselves are covered by A-06/A-07.
+- id: A-13
+  group: A account identity/lifecycle
+  scenario: Account created/edited via API takes effect immediately and survives restart
+  initial_state: Empty config
+  event_sequence: POST /accounts then webhook; reopen store
+  expected_invariant: Usable with no restart; persisted
+  status: covered
+  impl_status: implemented
+  tests:
+  - tests/test_config_crud.py::test_account_created_via_api_is_immediately_usable_no_restart
+  - tests/test_config_crud.py::test_config_persists_across_a_fresh_store_reload
+  - tests/test_config_crud.py::test_account_listed_after_creation
+  evidence: Order fills right after creation; fresh SignalStore sees config.
+  notes: ''
+- id: A-14
+  group: A account identity/lifecycle
+  scenario: Account whose bound allocation intent target is later removed from the rule/pool
+  initial_state: Intent bound to a2, rule edited to drop a2
+  event_sequence: Redelivery of the same signal
+  expected_invariant: Never re-selects another account
+  status: gap
+  impl_status: implemented
+  tests: []
+  evidence: engine logs a warning and does not re-select, but no test exercises the bound-account-left-pool
+    branch.
+  notes: ''
+- id: B-01
+  group: B signals/duplicates/revisions/attribution
+  scenario: Duplicate webhook delivery with Idempotency-Key header
+  initial_state: Order already filled
+  event_sequence: Same key replayed
+  expected_invariant: Original response replayed, no second broker call
+  status: covered
+  impl_status: implemented
+  tests:
+  - tests/test_sig01_duplicate_submission_protection.py::test_webhook_replay_with_the_same_idempotency_key_does_not_resubmit
+  evidence: Second and first responses equal; a different key creates a new signal.
+  notes: ''
+- id: B-02
+  group: B signals/duplicates/revisions/attribution
+  scenario: Duplicate webhook delivery carrying only the payload own event id
+  initial_state: No header
+  event_sequence: Same id twice
+  expected_invariant: Deduped
+  status: covered
+  impl_status: implemented
+  tests:
+  - tests/test_sig01_duplicate_submission_protection.py::test_webhook_dedupes_on_the_payloads_own_event_id_when_no_header_is_sent
+  evidence: Second response equals first; third distinct payload is new.
+  notes: ''
+- id: B-03
+  group: B signals/duplicates/revisions/attribution
+  scenario: Provider retries a webhook with no id and no header (identical content)
+  initial_state: No identity
+  event_sequence: Same body POSTed twice
+  expected_invariant: One order only
+  status: gap
+  impl_status: missing
+  tests:
+  - tests/test_sig01_duplicate_submission_protection.py::test_webhook_without_idempotency_key_still_works_unchanged
+  evidence: That test only proves a single identity-less webhook works; nothing dedupes identical identity-less
+    bodies, so each creates a new signal id and order.
+  notes: Test exists only for the single-delivery case.
+- id: B-04
+  group: B signals/duplicates/revisions/attribution
+  scenario: Same Signal.id re-delivered into handle_signal
+  initial_state: Signal processed
+  event_sequence: handle_signal again
+  expected_invariant: Cached results replayed, no resubmission
+  status: covered
+  impl_status: implemented
+  tests:
+  - tests/test_sig01_duplicate_submission_protection.py::test_handle_signal_replays_cached_results_for_an_already_processed_signal_id
+  - tests/test_alloc01_single_destination.py::test_duplicate_delivery_replays_without_second_order
+  evidence: Second call returns same broker_order_id and place_order not called again; allocation path
+    replays same account.
+  notes: ''
+- id: B-05
+  group: B signals/duplicates/revisions/attribution
+  scenario: Same Telegram message seen by bot and user-account collectors / reconnect redelivery
+  initial_state: Two Signal objects with different ids, same channel/message id
+  event_sequence: Both reach engine
+  expected_invariant: One order
+  status: covered
+  impl_status: implemented
+  tests:
+  - tests/test_telegram_cross_collector_dedup.py::test_bot_and_user_account_collector_both_observing_same_message_produce_one_order
+  - tests/test_telegram_cross_collector_dedup.py::test_reconnect_redelivery_of_the_same_message_by_the_same_collector_does_not_resubmit
+  evidence: place_order called once.
+  notes: ''
+- id: B-06
+  group: B signals/duplicates/revisions/attribution
+  scenario: Cross-transport duplicate (Telegram then Whop/bridge) with matching content
+  initial_state: Different channel/message ids, same parsed content within tolerance
+  event_sequence: Second arrives
+  expected_invariant: No second order; corroboration evidence recorded
+  status: covered
+  impl_status: implemented
+  tests:
+  - tests/test_track12_signal_correlation.py::test_second_transport_corroborating_signal_does_not_submit_a_second_order
+  evidence: One broker order; second result carries first order id.
+  notes: ''
+- id: B-07
+  group: B signals/duplicates/revisions/attribution
+  scenario: Cross-transport signals that disagree (price/side)
+  initial_state: First filled
+  event_sequence: Conflicting second
+  expected_invariant: Held for review, never routed
+  status: covered
+  impl_status: implemented
+  tests:
+  - tests/test_track12_signal_correlation.py::test_second_transport_conflicting_signal_is_held_for_review_not_routed
+  evidence: Second REJECTED with CONFLICTING_SOURCE_DATA; one broker call.
+  notes: ''
+- id: B-08
+  group: B signals/duplicates/revisions/attribution
+  scenario: Cross-transport dedup only works for signals carrying provider identity
+  initial_state: Webhook/TradingView signals have no channel_id/message_id
+  event_sequence: Same alert fired by two alert rules
+  expected_invariant: Ideally deduped
+  status: gap
+  impl_status: missing
+  tests:
+  - tests/test_track12_signal_correlation.py::test_correlation_never_fires_for_signals_with_no_provider_identity
+  - tests/test_telegram_cross_collector_dedup.py::test_signals_with_no_provider_identity_are_never_deduped_against_each_other
+  evidence: Tests pin that identity-less signals produce 2 orders by design; no content-based dedup for
+    them.
+  notes: Design decision, but a real duplicate-order exposure for TradingView-style sources.
+- id: B-09
+  group: B signals/duplicates/revisions/attribution
+  scenario: Two analysts, same ticker, same source
+  initial_state: Source tv with analysts x and y
+  event_sequence: Both send buy
+  expected_invariant: Independent allocation intents; no ticker/time dedup
+  status: partial
+  impl_status: implemented
+  tests:
+  - tests/test_alloc01_single_destination.py::test_independent_signals_are_independent_intents
+  evidence: Asserts two distinct intents exist; does not assert two orders, nor analyst-level ownership.
+  notes: Position ownership/exits are keyed by source, not analyst (see J-02).
+- id: B-10
+  group: B signals/duplicates/revisions/attribution
+  scenario: Analyst-level attribution of fills and exits
+  initial_state: Two analysts under one source on one account/symbol
+  event_sequence: Analyst x exits
+  expected_invariant: Only x share closes
+  status: gap
+  impl_status: missing
+  tests: []
+  evidence: get_provider_position_ownership groups by Signal.source; analyst is used only for settings
+    overrides and reporting.
+  notes: ''
+- id: B-11
+  group: B signals/duplicates/revisions/attribution
+  scenario: Edited entry message (price/size changed) from same provider
+  initial_state: Original entry filled
+  event_sequence: Edit with new revision_id arrives
+  expected_invariant: Original superseded/amended, no second live entry
+  status: gap
+  impl_status: missing
+  tests:
+  - tests/test_telegram_cross_collector_dedup.py::test_an_edit_with_a_distinct_revision_id_is_not_deduped_against_the_original
+  - tests/test_telegram_source.py::test_edited_message_emits_source_event_kind_edit_with_revision_linkage
+  evidence: Dedup test asserts edit yields TWO broker orders; source test only proves the EDIT source
+    event is emitted. No supersede logic exists.
+  notes: 'HIGH: an edit places a second entry.'
+- id: B-12
+  group: B signals/duplicates/revisions/attribution
+  scenario: Notification-bridge edit (same notification key, changed content)
+  initial_state: First notification routed live
+  event_sequence: Edit delivered
+  expected_invariant: Edit recorded as revision, not a second trade
+  status: partial
+  impl_status: partial
+  tests:
+  - tests/test_notification_bridge_api.py::test_same_key_with_changed_content_is_an_edit_not_a_duplicate_or_a_second_signal
+  evidence: Asserts is_edit and revision_seq=2 but classification is still live; order count after edit
+    not asserted.
+  notes: ''
+- id: B-13
+  group: B signals/duplicates/revisions/attribution
+  scenario: Provider changes the stop on an open trade
+  initial_state: Open protected position
+  event_sequence: Stop-update message
+  expected_invariant: Stop amended on managed lifecycle
+  status: gap
+  impl_status: missing
+  tests: []
+  evidence: SourceEventKind.STOP_UPDATE/TARGET_UPDATE exist in the model but app/engine.py never consumes
+    source event kinds; only config-driven trailing logic moves stops.
+  notes: ''
+- id: B-14
+  group: B signals/duplicates/revisions/attribution
+  scenario: Repeated exit/close signals for same position
+  initial_state: Position closed once
+  event_sequence: Same exit via different channel ids / replay
+  expected_invariant: Second does not sell or short
+  status: covered
+  impl_status: implemented
+  tests:
+  - tests/test_trk27_managed_exit_duplicate_episode.py::test_duplicate_exit_with_a_different_channel_and_message_id_is_not_resubmitted
+  - tests/test_track18_position_ownership.py::test_plain_close_with_flat_position_still_rejected
+  - tests/test_plain_close_race.py::test_provider_close_signal_races_manual_close_without_double_selling
+  evidence: Duplicate managed exit not resubmitted; plain close at flat rejected; concurrent provider+manual
+    close sells once.
+  notes: ''
+- id: B-15
+  group: B signals/duplicates/revisions/attribution
+  scenario: Provider partial trim signal ("sold half")
+  initial_state: Open position
+  event_sequence: Trim message
+  expected_invariant: Reduce by stated fraction, repeats idempotent
+  status: gap
+  impl_status: missing
+  tests: []
+  evidence: Side has only BUY/SELL/CLOSE; CLOSE closes the whole provider share. Partial reductions exist
+    only as pre-planned managed targets (reduce_fraction).
+  notes: ''
+- id: B-16
+  group: B signals/duplicates/revisions/attribution
+  scenario: Provider cancels a not-yet-filled entry
+  initial_state: Entry pending/working at broker
+  event_sequence: Cancel message
+  expected_invariant: Pending entry cancelled
+  status: gap
+  impl_status: missing
+  tests: []
+  evidence: 'No cancel path: engine never cancels pending entries; parser treats "cancel" as negation
+    (message ignored).'
+  notes: 'e02 disposition tests: negated commentary ignored.'
+- id: B-17
+  group: B signals/duplicates/revisions/attribution
+  scenario: Exit arrives before any entry (or after failed entry)
+  initial_state: No position
+  event_sequence: CLOSE
+  expected_invariant: REJECTED, no order, no short
+  status: covered
+  impl_status: implemented
+  tests:
+  - tests/test_track16_correlation_lifecycle.py::test_exit_from_account_with_no_open_position_creates_no_order
+  - tests/test_alloc05_unknown_and_exit_scope.py::test_exit_after_failed_entry_sells_nothing_and_creates_no_short
+  evidence: Both assert no FILLED order and no short created.
+  notes: ''
+- id: B-18
+  group: B signals/duplicates/revisions/attribution
+  scenario: Delayed entry arriving after provider already exited the trade
+  initial_state: Provider closed trade; late entry message delivered
+  event_sequence: Entry processed
+  expected_invariant: Skipped as obsolete
+  status: partial
+  impl_status: partial
+  tests:
+  - tests/test_track16_correlation_lifecycle.py::test_stale_entry_signal_is_held_and_never_routed
+  evidence: Only age-based hold for providers with max_entry_age configured; no knowledge that the provider
+    already closed the trade.
+  notes: ''
+- id: B-19
+  group: B signals/duplicates/revisions/attribution
+  scenario: Ambiguous or compound instructions
+  initial_state: Chat text with several TP levels/compound actions
+  event_sequence: Classified
+  expected_invariant: Not routed as a clean signal
+  status: unit-only
+  impl_status: implemented
+  tests:
+  - tests/test_e02_message_disposition.py::test_ambiguous_disposition_for_compound_instructions
+  - tests/test_e02_message_disposition.py::test_ambiguous_disposition_for_unlabeled_repeated_take_profit_levels
+  evidence: Parser/classifier unit tests only; no engine/webhook test of non-routing.
+  notes: ''
+- id: B-20
+  group: B signals/duplicates/revisions/attribution
+  scenario: Negated or past-tense commentary
+  initial_state: Chat text
+  event_sequence: Classified
+  expected_invariant: Ignored, not a trade
+  status: unit-only
+  impl_status: implemented
+  tests:
+  - tests/test_e02_message_disposition.py::test_ignored_disposition_for_negated_commentary
+  - tests/test_e02_message_disposition.py::test_ignored_disposition_for_past_tense_reporting
+  evidence: Classifier-level only.
+  notes: ''
+- id: C-01
+  group: C routing/selection
+  scenario: Zero eligible accounts because every candidate lacks capacity
+  initial_state: Both accounts have tiny max_notional_exposure
+  event_sequence: Buy with price
+  expected_invariant: No order; intent skipped with explanation naming each account
+  status: covered
+  impl_status: implemented
+  tests:
+  - tests/test_alloc01_single_destination.py::test_no_capacity_anywhere_is_explained_skip_with_no_order
+  evidence: All results REJECTED, no broker positions, intent state skipped with reasons.
+  notes: ''
+- id: C-02
+  group: C routing/selection
+  scenario: Zero matching rules (symbol filter excludes the signal)
+  initial_state: Rule filtered to ETHUSDT
+  event_sequence: BTCUSDT signal
+  expected_invariant: No orders
+  status: covered
+  impl_status: implemented
+  tests:
+  - tests/test_engine.py::test_symbol_filter_excludes_non_matching_signal
+  evidence: results == [].
+  notes: ''
+- id: C-03
+  group: C routing/selection
+  scenario: Exactly one eligible account (others paused)
+  initial_state: Primary paused
+  event_sequence: Buy
+  expected_invariant: That one account is selected
+  status: covered
+  impl_status: implemented
+  tests:
+  - tests/test_alloc01_single_destination.py::test_paused_primary_falls_to_secondary_and_close_still_reaches_owner
+  evidence: Only a2 receives the order and later close.
+  notes: ''
+- id: C-04
+  group: C routing/selection
+  scenario: 'Several eligible accounts: one selected deterministically (priority order)'
+  initial_state: 3 accounts in rule order
+  event_sequence: Buy
+  expected_invariant: Highest-priority eligible account selected
+  status: covered
+  impl_status: implemented
+  tests:
+  - tests/test_alloc01_single_destination.py::test_one_signal_three_eligible_accounts_produces_one_order
+  - tests/test_alloc04_api_end_to_end.py::test_one_webhook_three_eligible_accounts_one_order
+  evidence: a1 (first) selected and committed.
+  notes: Priority is simply list order; no weights/round-robin/least-loaded.
+- id: C-05
+  group: C routing/selection
+  scenario: Overlapping rules for one source merge into one ordered pool and dedupe accounts
+  initial_state: Catch-all plus symbol-specific rule
+  event_sequence: Signal matching both
+  expected_invariant: One ordered pool; one selected account; engine and simulator agree
+  status: covered
+  impl_status: implemented
+  tests:
+  - tests/test_tr11_routing_simulator.py::test_simulate_precedence_matches_the_real_engines_own_precedence
+  evidence: Simulator shows pool [catch-all, btc] with catch-all selected and cross-checks the real webhook.
+  notes: ''
+- id: C-06
+  group: C routing/selection
+  scenario: Exclusion rules (exclude symbol/analyst/asset class from an account or rule)
+  initial_state: Rule matches source
+  event_sequence: Signal on excluded symbol
+  expected_invariant: Excluded
+  status: gap
+  impl_status: missing
+  tests:
+  - tests/test_tr11_routing_simulator.py::test_simulate_a_non_matching_symbol_filter_is_reported_as_not_matched
+  evidence: Only an inclusive symbol_filter exists; no exclude list and no analyst-level routing rule.
+  notes: Test covers the inclusive filter only.
+- id: C-07
+  group: C routing/selection
+  scenario: Primary account paused (enabled=False) falls to secondary
+  initial_state: 2 accounts
+  event_sequence: Buy
+  expected_invariant: Secondary chosen
+  status: covered
+  impl_status: implemented
+  tests:
+  - tests/test_alloc01_single_destination.py::test_paused_primary_falls_to_secondary_and_close_still_reaches_owner
+  evidence: See C-03.
+  notes: ''
+- id: C-08
+  group: C routing/selection
+  scenario: Primary has no broker adapter registered
+  initial_state: Primary broker missing
+  event_sequence: Buy
+  expected_invariant: ERROR for primary, secondary takes the trade (no submission happened)
+  status: covered
+  impl_status: implemented
+  tests:
+  - tests/test_engine.py::test_missing_broker_reports_error_without_blocking_others
+  evidence: Both results present; secondary FILLED.
+  notes: ''
+- id: C-09
+  group: C routing/selection
+  scenario: Primary rejected by a pre-submission gate (capacity) -> next alternative
+  initial_state: a1 ceiling too small
+  event_sequence: Buy
+  expected_invariant: a1 REJECTED, a2 filled, a3 untouched
+  status: covered
+  impl_status: implemented
+  tests:
+  - tests/test_alloc01_single_destination.py::test_selection_skips_account_without_capacity_before_submission
+  evidence: Statuses a1 REJECTED, a2 FILLED, no a3 result.
+  notes: Other pre-submission gates (asset class, qualification, buying power, loss limits) fall through
+    by the same loop but are not tested in single mode.
+- id: C-10
+  group: C routing/selection
+  scenario: Primary confirmed REJECTED by broker after submission
+  initial_state: Bound to primary
+  event_sequence: Broker rejects
+  expected_invariant: No automatic failover (design DL-06)
+  status: gap
+  impl_status: implemented
+  tests: []
+  evidence: Code commits the intent at bind so no other account is tried; no test asserts this, only the
+    unknown-outcome variant (I-01).
+  notes: By design per docs/adr/0012; untested.
+- id: C-11
+  group: C routing/selection
+  scenario: Unknown submission outcome must not be rerouted
+  initial_state: Primary raises timeout
+  event_sequence: Entry then redelivery
+  expected_invariant: Intent stays on primary, secondary never tried
+  status: covered
+  impl_status: implemented
+  tests:
+  - tests/test_alloc01_single_destination.py::test_unknown_submission_is_never_rerouted_to_another_account
+  evidence: Result ERROR on a1; intent committed to a1; redelivery only a1.
+  notes: ''
+- id: C-12
+  group: C routing/selection
+  scenario: Restart between selection and order
+  initial_state: Intent bound to a2, no order yet
+  event_sequence: New engine handles same signal
+  expected_invariant: Resumes a2 only
+  status: covered
+  impl_status: implemented
+  tests:
+  - tests/test_alloc01_single_destination.py::test_restart_after_selection_resumes_same_account_only
+  evidence: Only a2 order created.
+  notes: ''
+- id: C-13
+  group: C routing/selection
+  scenario: 'Stale route: CLOSE after rule/account removed from routing'
+  initial_state: Position held on account that was later removed from the rule
+  event_sequence: Provider CLOSE
+  expected_invariant: Exit still reaches owning account
+  status: gap
+  impl_status: missing
+  tests: []
+  evidence: CLOSE destinations come from the current routing rules, not from position/intent ownership;
+    a removed rule leaves the position orphaned.
+  notes: ''
+- id: C-14
+  group: C routing/selection
+  scenario: Rule references account id not configured
+  initial_state: Rule lists unknown id
+  event_sequence: Signal
+  expected_invariant: Skipped silently, others proceed
+  status: unit-only
+  impl_status: implemented
+  tests:
+  - tests/test_routing_evaluate.py::test_evaluate_continues_past_an_unconfigured_account_id_within_one_rule
+  evidence: Routing evaluate unit test only; no config-validation on rule save.
+  notes: ''
+- id: C-15
+  group: C routing/selection
+  scenario: Explicit replicate mode
+  initial_state: Rule delivery_mode=replicate
+  event_sequence: Buy
+  expected_invariant: Every destination gets its own order
+  status: covered
+  impl_status: implemented
+  tests:
+  - tests/test_alloc01_single_destination.py::test_replicate_mode_is_explicit_opt_in
+  - tests/test_alloc04_api_end_to_end.py::test_delivery_mode_round_trips_and_replicate_fans_out
+  - tests/test_engine.py::test_signal_routes_and_sizes_to_multiple_accounts
+  evidence: Three accounts each fill; mode round-trips through API.
+  notes: ''
+- id: C-17
+  group: C routing/selection
+  scenario: Routing simulator is side-effect free and matches live gates
+  initial_state: Configured ceiling
+  event_sequence: POST /routing-rules/simulate
+  expected_invariant: No signal/order created
+  status: covered
+  impl_status: implemented
+  tests:
+  - tests/test_tr11_routing_simulator.py::test_simulate_never_creates_a_signal_or_order
+  - tests/test_tr11_routing_simulator.py::test_simulate_capital_reservation_check_matches_the_real_admission_gate_and_leaves_no_side_effect
+  evidence: Signals/positions unchanged; would_reject agrees with real rejected order.
+  notes: Simulator does not reflect strategy budgets or buying power (not verified).
+- id: D-01
+  group: C routing/selection
+  scenario: Strategy ceiling counted once across accounts
+  initial_state: Strategy budget 1500, two accounts
+  event_sequence: Three entries
+  expected_invariant: Global ceiling not multiplied per account
+  status: covered
+  impl_status: implemented
+  tests:
+  - tests/test_alloc03_strategy_budget.py::test_strategy_ceiling_is_global_not_per_account
+  - tests/test_alloc04_api_end_to_end.py::test_strategy_budget_endpoints_and_enforcement_through_webhook
+  evidence: Second 1000 rejected on BOTH accounts; third 400 fits; same via webhook/API.
+  notes: ''
+- id: D-04
+  group: C routing/selection
+  scenario: Pending (unfilled) order reservation counts against strategy
+  initial_state: Broker returns PENDING
+  event_sequence: Second entry
+  expected_invariant: Rejected until resolved
+  status: covered
+  impl_status: implemented
+  tests:
+  - tests/test_alloc03_strategy_budget.py::test_pending_order_reservation_counts_against_strategy
+  evidence: Reservation 1000 visible, second rejected.
+  notes: ''
+- id: D-05
+  group: C routing/selection
+  scenario: Reservation attributed to the right strategy on release
+  initial_state: Two strategies in one account
+  event_sequence: Release one
+  expected_invariant: Only matching strategy reservation resolved
+  status: unit-only
+  impl_status: implemented
+  tests:
+  - tests/test_alloc03_strategy_budget.py::test_release_resolves_the_matching_strategy_reservation_not_a_lookalike
+  evidence: Allocator/store level; not through engine.
+  notes: ''
+- id: D-06
+  group: C routing/selection
+  scenario: Strategy budget CRUD validation and auth
+  initial_state: Owner session
+  event_sequence: PUT/DELETE/GET budgets
+  expected_invariant: Positive only; owner only
+  status: covered
+  impl_status: implemented
+  tests:
+  - tests/test_alloc03_strategy_budget.py::test_strategy_budget_validation
+  - tests/test_alloc04_api_end_to_end.py::test_allocation_endpoints_require_owner_auth
+  evidence: ValueError on <=0; anon 401/403.
+  notes: ''
+- id: D-07
+  group: C routing/selection
+  scenario: Strategy ceiling atomic across processes
+  initial_state: Six processes, six accounts, ceiling 1000, 400 each
+  event_sequence: Race
+  expected_invariant: Exactly two admitted
+  status: partial
+  impl_status: implemented
+  tests:
+  - tests/test_alloc03_strategy_budget.py::test_cross_process_strategy_admission_is_atomic
+  evidence: Exercises store.reserve_strategy_checked across processes, not full engine admission.
+  notes: ''
+- id: D-08
+  group: C routing/selection
+  scenario: Multiple strategies sharing one account ceiling and own budgets
+  initial_state: Two sources on one account
+  event_sequence: Interleaved entries
+  expected_invariant: Account ceiling shared, strategy ceilings independent
+  status: partial
+  impl_status: implemented
+  tests:
+  - tests/test_alloc05_unknown_and_exit_scope.py::test_exit_never_sells_another_strategys_holdings
+  evidence: Two strategies on one account are tested for exits only; entry-side ceilings are tested with
+    one source.
+  notes: ''
+- id: D-09
+  group: C routing/selection
+  scenario: Named account group / portfolio with shared limits
+  initial_state: Accounts grouped as a portfolio
+  event_sequence: Entries across group
+  expected_invariant: Group-level ceiling and reporting
+  status: gap
+  impl_status: missing
+  tests: []
+  evidence: 'No group/portfolio entity: only per-account ceiling, owner-wide MAX_OWNER_NOTIONAL_EXPOSURE
+    and per-source strategy budget.'
+  notes: ''
+- id: D-10
+  group: C routing/selection
+  scenario: Strategy budget with unresolved exposure data
+  initial_state: Fill row missing price
+  event_sequence: New entry
+  expected_invariant: Blocked, not treated as zero
+  status: gap
+  impl_status: implemented
+  tests: []
+  evidence: Engine blocks on strategy_exposure.has_unresolved; only the per-account version is tested
+    (e03).
+  notes: ''
+- id: D-11
+  group: C routing/selection
+  scenario: Strategy ceiling on managed-lifecycle entries
+  initial_state: Managed account
+  event_sequence: Entry above budget
+  expected_invariant: Rejected
+  status: gap
+  impl_status: partial
+  tests: []
+  evidence: All a3/a4 tests use plain paper accounts; managed path calls _try_reserve_capital per code
+    reading but is unverified.
+  notes: ''
+- id: D-12
+  group: C routing/selection
+  scenario: Strategy confirmed notional after manual flatten / native stop fill
+  initial_state: Strategy opened position, closed outside provider signal
+  event_sequence: Next entry
+  expected_invariant: Ceiling reflects closure
+  status: gap
+  impl_status: partial
+  tests: []
+  evidence: confirmed_strategy_notional replays only FILLED orders joined to the strategy signals; manual
+    closes and broker-side stop fills may not be attributed (unverified).
+  notes: Potential over-counting that blocks entries.
+- id: D-13
+  group: C routing/selection
+  scenario: Owner-wide ceiling sums confirmed+pending across accounts
+  initial_state: Owner ceiling set
+  event_sequence: Entries on two accounts
+  expected_invariant: Combined exposure enforced
+  status: covered
+  impl_status: implemented
+  tests:
+  - tests/test_e03_capital_exposure_gate.py::test_owner_wide_ceiling_sums_exposure_across_every_configured_account
+  - tests/test_e03_capital_exposure_gate.py::test_owner_wide_ceiling_admits_when_combined_exposure_fits
+  evidence: Second account rejected with owner-wide message.
+  notes: ''
+- id: E-01
+  group: E capital/funding/collateral
+  scenario: Entry larger than broker buying power rejected
+  initial_state: Balance-capable broker
+  event_sequence: Entry
+  expected_invariant: Rejected before broker call
+  status: covered
+  impl_status: implemented
+  tests:
+  - tests/test_track1b_live_gates.py::test_entry_rejected_when_notional_exceeds_broker_buying_power
+  - tests/test_track1b_live_gates.py::test_notional_ceiling_passing_does_not_bypass_the_buying_power_check
+  evidence: REJECTED with insufficient buying power; no fills.
+  notes: ''
+- id: E-02
+  group: E capital/funding/collateral
+  scenario: Broker cannot report buying power / reports None
+  initial_state: No balance capability
+  event_sequence: Entry
+  expected_invariant: Policy-defined (currently FAIL OPEN)
+  status: covered
+  impl_status: implemented
+  tests:
+  - tests/test_track1b_live_gates.py::test_broker_that_cannot_report_buying_power_fails_open_and_logs_it
+  - tests/test_track1b_live_gates.py::test_broker_reporting_none_buying_power_also_fails_open
+  evidence: Asserts fail-open with log; behavior is pinned, safety of fail-open is a policy question.
+  notes: ''
+- id: E-03
+  group: E capital/funding/collateral
+  scenario: Unsettled funds / settlement-aware cash (cash account, T+1)
+  initial_state: Cash account with unsettled proceeds
+  event_sequence: Buy using unsettled cash
+  expected_invariant: Reject or size to settled cash
+  status: gap
+  impl_status: missing
+  tests: []
+  evidence: AccountBalance has only cash, equity, buying_power, maintenance_margin; no settled/unsettled
+    concept.
+  notes: ''
+- id: E-04
+  group: E capital/funding/collateral
+  scenario: Pending notional counted exactly once toward an account ceiling
+  initial_state: Pending order with broker id
+  event_sequence: Second entry
+  expected_invariant: Confirmed + pending + new compared once
+  status: covered
+  impl_status: implemented
+  tests:
+  - tests/test_e03_capital_exposure_gate.py::test_pending_with_a_broker_order_id_keeps_its_reservation_and_blocks_a_second_entry
+  - tests/test_capital_allocator.py::test_owner_wide_exposure_adds_pending_reservations_not_subtracts
+  evidence: Second entry rejected while pending; owner-wide adds pending.
+  notes: ''
+- id: E-05
+  group: E capital/funding/collateral
+  scenario: Buying-power check ignores app-side pending reservations / unfilled broker orders
+  initial_state: Two entries in flight, broker bp not yet reduced
+  event_sequence: Second entry
+  expected_invariant: Combined notional must fit buying power
+  status: gap
+  impl_status: partial
+  tests: []
+  evidence: _check_buying_power compares each entry notional only to broker-reported buying_power; it
+    does not subtract pending reservations, so stale bp can admit both.
+  notes: Both in-process race and broker lag.
+- id: E-06
+  group: E capital/funding/collateral
+  scenario: Reservation released after pending order rejected, no leak
+  initial_state: Pending reserved
+  event_sequence: Reconcile to rejected
+  expected_invariant: Capacity freed once
+  status: covered
+  impl_status: implemented
+  tests:
+  - tests/test_e03_capital_exposure_gate.py::test_reservation_releases_once_reconciliation_confirms_the_pending_order_is_rejected
+  - tests/test_capital_allocator.py::test_release_never_goes_negative
+  evidence: Subsequent entry admitted after reconcile.
+  notes: ''
+- id: E-07
+  group: E capital/funding/collateral
+  scenario: 'Reservation after pending order FILLED: no double count with confirmed fills'
+  initial_state: Pending then filled
+  event_sequence: Reconcile
+  expected_invariant: Reservation released as fill becomes confirmed exposure
+  status: gap
+  impl_status: implemented
+  tests: []
+  evidence: No test asserts the filled-resolution release/no double-subtract on the ceiling; only rejected
+    resolution is tested.
+  notes: ''
+- id: E-08
+  group: E capital/funding/collateral
+  scenario: Reservations survive restart
+  initial_state: Unresolved reservation
+  event_sequence: New allocator on same DB
+  expected_invariant: Still reserved until resolved
+  status: covered
+  impl_status: implemented
+  tests:
+  - tests/test_capital_allocator.py::test_reservation_survives_restart_across_two_separate_store_instances
+  - tests/test_capital_allocator.py::test_released_reservation_does_not_survive_restart
+  evidence: Durable rows reloaded; released ones not.
+  notes: ''
+- id: E-09
+  group: E capital/funding/collateral
+  scenario: Unknown (ERROR / PENDING-without-id) entry must keep its reservation until independently resolved
+  initial_state: Broker response lost
+  event_sequence: Entry ERROR or PENDING with no order id
+  expected_invariant: Hold reservation; release exactly once on not_placed evidence
+  status: covered
+  impl_status: implemented
+  tests:
+  - tests/test_alloc05_unknown_and_exit_scope.py::test_unknown_submission_holds_reservation_until_resolved
+  - tests/test_e03_capital_exposure_gate.py::test_pending_with_no_broker_order_id_holds_reservation_until_resolved
+  evidence: Both tests require the ALLOC-05 hold plus engine.resolve_unknown_submission. At research time
+    the working tree already contains both (engine.py ambiguous_submission branch, resolve_unknown_submission)
+    but the tests have not been run; only outcome=not_placed is supported.
+  notes: Before ALLOC-05 the engine released the reservation immediately. A real fill after an unknown
+    plain entry still has no reconciliation path (see J-05). Implemented as ALLOC-05; only outcome='not_placed'
+    can release.
+- id: E-10
+  group: E capital/funding/collateral
+  scenario: Unresolved exposure blocks new admissions instead of counting as zero
+  initial_state: Fill with missing price
+  event_sequence: Entry
+  expected_invariant: Rejected
+  status: covered
+  impl_status: implemented
+  tests:
+  - tests/test_e03_capital_exposure_gate.py::test_unresolved_exposure_blocks_new_admissions_rather_than_counting_as_zero
+  - tests/test_e03_capital_exposure_gate.py::test_resolved_exposure_on_other_accounts_is_unaffected_by_one_accounts_unresolved_symbol
+  evidence: REJECTED, no broker fills.
+  notes: ''
+- id: E-11
+  group: E capital/funding/collateral
+  scenario: Risk-percent-of-equity gate with missing stop / equity
+  initial_state: Gate configured
+  event_sequence: Entry
+  expected_invariant: Fail closed
+  status: covered
+  impl_status: implemented
+  tests:
+  - tests/test_e03_capital_exposure_gate.py::test_risk_basis_rejects_when_no_stop_loss_on_signal
+  - tests/test_e03_capital_exposure_gate.py::test_risk_basis_rejects_when_broker_cannot_report_equity
+  - tests/test_e03_capital_exposure_gate.py::test_risk_basis_rejects_when_risk_to_stop_exceeds_the_percentage_of_equity
+  evidence: Rejections asserted.
+  notes: 'It is a gate: never scales size down.'
+- id: E-12
+  group: E capital/funding/collateral
+  scenario: Margin-call detector gating entries
+  initial_state: Margin data available
+  event_sequence: Entry
+  expected_invariant: Reject when below maintenance
+  status: unit-only
+  impl_status: partial
+  tests:
+  - tests/test_e04_margin_call_detection.py::test_margin_call_detector_detects_margin_call
+  - tests/test_e04_margin_call_detection.py::test_margin_call_detector_fails_closed_on_missing_equity
+  evidence: Detector unit tests only; engine calls it with current_equity=None, maintenance_requirement=None,
+    excess_margin=None (TODO), so it is a no-op in production.
+  notes: ''
+- id: E-14
+  group: E capital/funding/collateral
+  scenario: Per-account ceiling atomic across processes
+  initial_state: Two API/worker processes on one DB
+  event_sequence: Concurrent entries
+  expected_invariant: One admitted
+  status: gap
+  impl_status: partial
+  tests: []
+  evidence: Account/owner locks are in-process asyncio locks and _pending is an in-memory dict; only the
+    strategy ceiling uses a cross-process SQLite transaction.
+  notes: Mitigated by single-writer lease design (DL-29) but not tested together.
+- id: F-01
+  group: F concurrency/fairness
+  scenario: Simultaneous signals same account near ceiling
+  initial_state: Ceiling fits one
+  event_sequence: asyncio.gather two entries
+  expected_invariant: One admitted
+  status: covered
+  impl_status: implemented
+  tests:
+  - tests/test_e03_capital_exposure_gate.py::test_concurrent_entries_for_the_same_account_cannot_both_exceed_the_ceiling
+  - tests/test_capital_allocator.py::test_concurrent_admissions_cannot_both_fit_over_the_ceiling
+  evidence: Statuses [FILLED, REJECTED].
+  notes: In-process only.
+- id: F-02
+  group: F concurrency/fairness
+  scenario: Cross-process race to bind one allocation intent
+  initial_state: 4 processes, one signal
+  event_sequence: Race to bind
+  expected_invariant: Exactly one winner
+  status: covered
+  impl_status: implemented
+  tests:
+  - tests/test_alloc02_cross_process_claim.py::test_many_processes_race_exactly_one_account_wins
+  - tests/test_alloc02_cross_process_claim.py::test_bind_is_idempotent_and_never_rebinds
+  evidence: One winner; one intent row.
+  notes: Store primitive; the whole engine under multi-process load is not tested.
+- id: F-03
+  group: F concurrency/fairness
+  scenario: Skip/release cannot override a bound intent
+  initial_state: Bound intent
+  event_sequence: late skip / release after commit
+  expected_invariant: State preserved
+  status: covered
+  impl_status: implemented
+  tests:
+  - tests/test_alloc02_cross_process_claim.py::test_skip_cannot_override_a_bound_intent
+  - tests/test_alloc02_cross_process_claim.py::test_release_returns_intent_to_claimed_and_allows_other_account
+  evidence: State assertions.
+  notes: ''
+- id: F-04
+  group: F concurrency/fairness
+  scenario: Same signal delivered concurrently twice in-process
+  initial_state: Two tasks, same Signal.id
+  event_sequence: gather
+  expected_invariant: One order
+  status: gap
+  impl_status: implemented
+  tests: []
+  evidence: Replay and ledger idempotency make this likely safe, but no concurrent-delivery test exists
+    (sig01/a1 tests are sequential).
+  notes: ''
+- id: F-05
+  group: F concurrency/fairness
+  scenario: Account lock vs strategy budget lock ordering
+  initial_state: Two strategies, two accounts
+  event_sequence: Concurrent entries
+  expected_invariant: No deadlock, ceilings respected
+  status: gap
+  impl_status: implemented
+  tests: []
+  evidence: Engine takes owner_lock then account_lock then a SQLite txn; no concurrent multi-account/multi-strategy
+    engine test.
+  notes: ''
+- id: F-06
+  group: F concurrency/fairness
+  scenario: Concurrent closes never double sell
+  initial_state: Open position
+  event_sequence: Two closes / provider+manual / two engines
+  expected_invariant: One sell
+  status: covered
+  impl_status: implemented
+  tests:
+  - tests/test_plain_close_race.py::test_two_concurrent_manual_closes_do_not_double_sell
+  - tests/test_plain_close_race.py::test_provider_close_signal_races_manual_close_without_double_selling
+  - tests/test_plain_close_race.py::test_two_independent_engine_instances_sharing_one_store_do_not_double_sell
+  evidence: submitted_sells has a single entry.
+  notes: ''
+- id: F-07
+  group: F concurrency/fairness
+  scenario: Concurrent close reservations never oversell (managed)
+  initial_state: Managed lifecycle
+  event_sequence: Two targets
+  expected_invariant: Reservations bounded by owned
+  status: covered
+  impl_status: implemented
+  tests:
+  - tests/test_lifecycle_manager.py::test_close_arbiter_prevents_overselling_from_two_targets
+  - tests/test_close_arbiter.py::test_concurrent_reservations_never_oversell
+  evidence: Second reservation refused.
+  notes: ''
+- id: F-08
+  group: F concurrency/fairness
+  scenario: Simultaneous identical fill observations
+  initial_state: Managed entry
+  event_sequence: Two observers at once
+  expected_invariant: No duplicate stop/position
+  status: covered
+  impl_status: implemented
+  tests:
+  - tests/test_5e91e78_lifecycle_composition.py::test_simultaneous_identical_fill_observations_do_not_duplicate_stops_or_positions
+  evidence: One stop order, position 30.
+  notes: ''
+- id: F-09
+  group: F concurrency/fairness
+  scenario: Fairness policy between competing signals for scarce capacity
+  initial_state: Capacity for one trade
+  event_sequence: Two strategies compete
+  expected_invariant: Defined (priority/pro-rata/FIFO)
+  status: gap
+  impl_status: missing
+  tests: []
+  evidence: Admission is first-come via lock order; no priority or fairness policy exists.
+  notes: ''
+- id: F-11
+  group: F concurrency/fairness
+  scenario: Writer fencing after promotion
+  initial_state: Two writers
+  event_sequence: Second promoted
+  expected_invariant: First refuses further commands
+  status: covered
+  impl_status: implemented
+  tests:
+  - tests/test_writer_lease_fencing.py::test_fenced_engine_refuses_to_execute_further_commands
+  - tests/test_writer_lease_fencing.py::test_second_promotion_fences_out_the_first_guard_immediately
+  evidence: Fenced engine refuses.
+  notes: ''
+- id: G-01
+  group: G sizing/split/replication
+  scenario: Multiplier scaling per account
+  initial_state: Accounts with multipliers
+  event_sequence: Signal qty 2
+  expected_invariant: qty x multiplier
+  status: covered
+  impl_status: implemented
+  tests:
+  - tests/test_engine.py::test_signal_routes_and_sizes_to_multiple_accounts
+  - tests/test_risk_sizing.py::test_signal_quantity_is_scaled_by_multiplier
+  evidence: Replicated fills 2.0/1.0/5.0 through engine; unit scaling.
+  notes: ''
+- id: G-02
+  group: G sizing/split/replication
+  scenario: Fixed quantity overrides signal quantity
+  initial_state: fixed_quantity set
+  event_sequence: Any qty
+  expected_invariant: Fixed wins
+  status: covered
+  impl_status: implemented
+  tests:
+  - tests/test_engine.py::test_signal_routes_and_sizes_to_multiple_accounts
+  - tests/test_risk_sizing.py::test_fixed_quantity_wins_outright_regardless_of_signal_quantity
+  evidence: acct_flat fills 5.0.
+  notes: ''
+- id: G-03
+  group: G sizing/split/replication
+  scenario: Signal with no quantity defaults to 1 unit/share/contract
+  initial_state: No qty
+  event_sequence: Entry
+  expected_invariant: Probably should refuse or size from policy
+  status: unit-only
+  impl_status: implemented
+  tests:
+  - tests/test_risk_sizing.py::test_default_quantity_when_signal_has_no_quantity_is_exactly_one
+  - tests/test_risk_sizing.py::test_default_quantity_scales_by_multiplier_when_signal_has_no_quantity
+  evidence: Unit asserts the default 1.0; no policy/guard.
+  notes: Behavior is pinned, arguably unsafe for futures/options.
+- id: G-04
+  group: G sizing/split/replication
+  scenario: Rounding to instrument lot / precision (equities fractional, futures integer)
+  initial_state: Multiplier produces fractional qty
+  event_sequence: Entry
+  expected_invariant: Round or refuse per instrument
+  status: partial
+  impl_status: partial
+  tests:
+  - tests/test_tradovate_broker.py::test_a_fractional_contract_quantity_is_rejected_not_silently_truncated
+  - tests/test_rithmic_broker.py::test_a_fractional_contract_quantity_is_rejected_not_silently_truncated
+  evidence: Tradovate and Rithmic adapters refuse fractional contracts; no engine-level rounding and other
+    adapters (Schwab, Tastytrade, TradeStation, OANDA, IBKR) pass quantity through unvalidated.
+  notes: ''
+- id: G-05
+  group: G sizing/split/replication
+  scenario: Minimum notional / minimum lot and zero-share skip after scaling
+  initial_state: Tiny multiplier
+  event_sequence: Entry sizes to ~0
+  expected_invariant: Skip with explained reason
+  status: gap
+  impl_status: missing
+  tests: []
+  evidence: size_for_account returns product with no floor; engine does not skip tiny/zero sized entries.
+    Only exits refuse zero (lm test_request_exit_for_exactly_zero_quantity_is_refused_not_submitted).
+  notes: ''
+- id: G-06
+  group: G sizing/split/replication
+  scenario: Replicate mode explicit; per-account sizing independent
+  initial_state: delivery_mode=replicate
+  event_sequence: Buy
+  expected_invariant: Each account sized separately
+  status: covered
+  impl_status: implemented
+  tests:
+  - tests/test_alloc01_single_destination.py::test_replicate_mode_is_explicit_opt_in
+  - tests/test_alloc04_api_end_to_end.py::test_delivery_mode_round_trips_and_replicate_fans_out
+  evidence: All three fill.
+  notes: ''
+- id: G-07
+  group: G sizing/split/replication
+  scenario: Provider/analyst sizing overrides precedence
+  initial_state: Override rows
+  event_sequence: Signal
+  expected_invariant: analyst > provider > account; disable cannot be re-enabled lower
+  status: covered
+  impl_status: implemented
+  tests:
+  - tests/test_engine_provider_overrides.py::test_analyst_override_wins_over_provider_override
+  - tests/test_risk04_override_precedence_and_crud_validation.py::test_analyst_cannot_re_enable_a_provider_disabled_by_its_owner
+  - tests/test_config_crud.py::test_analyst_override_created_via_api_wins_over_provider
+  evidence: Engine-level quantity assertions and API round trips.
+  notes: ''
+- id: G-10
+  group: G sizing/split/replication
+  scenario: Sizing preview endpoint equals engine sizing
+  initial_state: GET /policies/sizing-preview
+  event_sequence: Preview
+  expected_invariant: Same function
+  status: partial
+  impl_status: implemented
+  tests:
+  - tests/test_tr09_tr12_trading_screens.py::test_new_screens_read_endpoints_reachable_with_a_valid_owner_session
+  evidence: Only reachability/auth of the preview endpoint asserted here; equivalence with live sizing
+    and with single-mode selection not verified.
+  notes: Preview does not model single-destination selection.
+- id: G-11
+  group: G sizing/split/replication
+  scenario: Risk-based or strategy-capital-percentage sizing (scale down to fit)
+  initial_state: Risk % configured
+  event_sequence: Entry too large
+  expected_invariant: Scale down to allowed size
+  status: gap
+  impl_status: missing
+  tests: []
+  evidence: Risk/ceiling features only reject (all-or-nothing); no partial sizing to remaining capacity.
+  notes: ''
+- id: G-12
+  group: G sizing/split/replication
+  scenario: 'Position-size consistency in single mode: sizing uses the SELECTED account only'
+  initial_state: Accounts with different multipliers
+  event_sequence: Single mode buy
+  expected_invariant: Order size from selected account settings
+  status: partial
+  impl_status: implemented
+  tests:
+  - tests/test_alloc01_single_destination.py::test_selection_skips_account_without_capacity_before_submission
+  evidence: Selected account fills; sizing difference between candidates is not asserted.
+  notes: ''
+- id: H-01
+  group: H deferred work/expiry
+  scenario: Stale entry held, never routed
+  initial_state: Provider with max_entry_age_seconds
+  event_sequence: Entry older than max age
+  expected_invariant: REJECTED STALE_SIGNAL, no broker call
+  status: covered
+  impl_status: implemented
+  tests:
+  - tests/test_track16_correlation_lifecycle.py::test_stale_entry_signal_is_held_and_never_routed
+  - tests/test_track16_correlation_lifecycle.py::test_fresh_entry_signal_with_registered_provider_routes_normally
+  evidence: No place_order calls; fresh routes.
+  notes: ''
+- id: H-02
+  group: H deferred work/expiry
+  scenario: Stale exit behavior (hold vs act anyway) end to end
+  initial_state: Provider exit policy set
+  event_sequence: Old exit signal
+  expected_invariant: Per configured policy
+  status: unit-only
+  impl_status: implemented
+  tests:
+  - tests/test_track16_correlation_lifecycle.py::test_stale_exit_hold_default_when_behavior_unset
+  - tests/test_track16_correlation_lifecycle.py::test_stale_exit_act_anyway_proceeds
+  evidence: evaluate_signal_freshness decisions only; engine path asserted only for entries.
+  notes: ''
+- id: H-03
+  group: H deferred work/expiry
+  scenario: Freshness measured from provider timestamp, not received_at
+  initial_state: Source created timestamp present
+  event_sequence: Evaluate
+  expected_invariant: Use provider field; fallback explicit
+  status: unit-only
+  impl_status: implemented
+  tests:
+  - tests/test_track16_correlation_lifecycle.py::test_resolve_effective_timestamp_never_reduces_to_received_at_when_preferred_field_present
+  - tests/test_track16_correlation_lifecycle.py::test_resolve_effective_timestamp_falls_back_explicitly_when_preferred_field_is_none
+  evidence: Resolver unit tests.
+  notes: ''
+- id: H-04
+  group: H deferred work/expiry
+  scenario: Recovered/backlog events never routed live
+  initial_state: Collector replays history
+  event_sequence: Old notification
+  expected_invariant: Recorded import-only
+  status: covered
+  impl_status: implemented
+  tests:
+  - tests/test_notification_bridge_api.py::test_stale_backlog_notification_is_recorded_but_never_routed_live
+  - tests/test_notification_bridge_api.py::test_fresh_notification_within_threshold_still_routes_live
+  evidence: 'Bridge path: classification stale_backlog_import_only, zero orders.'
+  notes: Bridge-specific threshold; other collectors rely on provider freshness config (H-01).
+- id: H-05
+  group: H deferred work/expiry
+  scenario: Signal from provider with no freshness configuration
+  initial_state: Unregistered source
+  event_sequence: Ancient signal
+  expected_invariant: Currently routes unconditionally
+  status: partial
+  impl_status: partial
+  tests:
+  - tests/test_track16_correlation_lifecycle.py::test_signal_with_no_registered_provider_is_never_gated_by_freshness
+  evidence: Test pins that an unregistered source is never age-gated; there is no global default max age.
+  notes: 'Policy gap: age-safety is opt-in.'
+- id: H-06
+  group: H deferred work/expiry
+  scenario: Deferred/retried signals must not refresh their age
+  initial_state: Capital/lock-rejected signal retried later
+  event_sequence: Retry
+  expected_invariant: Age still measured from original time
+  status: gap
+  impl_status: missing
+  tests: []
+  evidence: 'There is no deferred-signal queue or retry of rejected signals at all (engine docstring:
+    no come-back-later queue); relay worker retries exports only, so this invariant is vacuous today.'
+  notes: If a queue is added, age must come from provider timestamp.
+- id: H-07
+  group: H deferred work/expiry
+  scenario: Freshness re-check at submission after lock waits or intent resume
+  initial_state: Bound intent resumed after outage
+  event_sequence: Redelivery hours later
+  expected_invariant: Stale resumed trade not submitted
+  status: gap
+  impl_status: partial
+  tests: []
+  evidence: Freshness evaluated only at the start of handle_signal and only for registered providers;
+    a1 restart test uses no freshness policy. Re-delivery would be re-evaluated on entry, but not asserted.
+  notes: ''
+- id: H-09
+  group: H deferred work/expiry
+  scenario: Unfilled entry order expiry/cancel after N minutes or at entry_expiration
+  initial_state: Working entry order
+  event_sequence: Time passes
+  expected_invariant: Cancel and release reservation
+  status: gap
+  impl_status: missing
+  tests: []
+  evidence: Signal.entry_expiration is exported only; no code cancels stale pending entries; reservation
+    persists until broker reports terminal.
+  notes: ''
+- id: H-10
+  group: H deferred work/expiry
+  scenario: Limit/stop entry order types honored
+  initial_state: Signal entry_order_type=limit
+  event_sequence: Entry
+  expected_invariant: Resting limit order
+  status: gap
+  impl_status: missing
+  tests: []
+  evidence: Brokers send market orders (alpaca/ccxt type market); EntryOrderType is parsed and exported
+    only.
+  notes: 'HIGH: limit signals execute as market.'
+- id: I-01
+  group: I submission/ack/cancel/replace
+  scenario: 'Plain account: response lost / exception after possible acceptance'
+  initial_state: Plain account, broker raises timeout
+  event_sequence: Entry
+  expected_invariant: Ledger UNKNOWN_AMBIGUOUS, no reroute, capacity held, later reconciled by evidence
+  status: partial
+  impl_status: partial
+  tests:
+  - tests/test_p0_2_command_ledger.py::test_ambiguous_broker_exception_lands_the_ledger_row_in_unknown_ambiguous
+  - tests/test_alloc01_single_destination.py::test_unknown_submission_is_never_rerouted_to_another_account
+  evidence: First two assert ERROR + ledger UNKNOWN_AMBIGUOUS + no reroute. Reservation hold/resolution
+    is E-09 (pending-implementation); nothing reconciles a plain no-order-id entry whose order DID fill.
+  notes: Reconciler only polls PENDING orders that have a broker_order_id.
+- id: I-02
+  group: I submission/ack/cancel/replace
+  scenario: Manual resolution of unknown submission by independent evidence
+  initial_state: Unresolved ledger row
+  event_sequence: Operator/reconciler evidence
+  expected_invariant: Release reservation exactly once; reject unsupported outcomes
+  status: covered
+  impl_status: implemented
+  tests:
+  - tests/test_alloc05_unknown_and_exit_scope.py::test_unknown_resolution_rejects_unsupported_outcome
+  - tests/test_alloc05_unknown_and_exit_scope.py::test_unknown_submission_holds_reservation_until_resolved
+  evidence: Tests need engine.resolve_unknown_submission, which was absent at the start of research and
+    is present (outcome=not_placed only) in the working tree now; unverified by a test run.
+  notes: No API/CLI exposes list_unresolved_command_ledger_entries or the resolver, so an operator cannot
+    call it. Implemented as ALLOC-05; only outcome='not_placed' can release.
+- id: I-03
+  group: I submission/ack/cancel/replace
+  scenario: 'Managed entry: response lost after real acceptance'
+  initial_state: Managed account
+  event_sequence: Accepted then timeout
+  expected_invariant: Durable recovery intent; broker readback later protects the fill
+  status: covered
+  impl_status: implemented
+  tests:
+  - tests/test_exe01_submission_response_lost.py::test_audits_exact_case_response_lost_after_acceptance_retains_recovery_intent
+  - tests/test_exe01_submission_response_lost.py::test_pending_entry_with_no_order_id_is_resolved_via_broker_position_readback
+  - tests/test_exe01b_error_result_response_lost.py::test_error_result_pending_entry_is_resolved_via_broker_position_readback
+  - tests/test_c36_broker_submission_fault_injection.py::test_place_order_surviving_a_real_transport_fault_retains_recovery_intent_not_a_silent_assumed_success
+  evidence: Lifecycle keeps pending_entry with no order id; reconciler resolves to 10 and places stop.
+  notes: ''
+- id: I-04
+  group: I submission/ack/cancel/replace
+  scenario: Timeout/error before the request could reach the venue
+  initial_state: Missing credentials / never reached venue
+  event_sequence: Entry/exit
+  expected_invariant: Plan dropped or resolved to zero fill
+  status: covered
+  impl_status: implemented
+  tests:
+  - tests/test_exe01_submission_response_lost.py::test_credentials_failure_before_any_network_call_still_unregisters
+  - tests/test_exe01b_error_result_response_lost.py::test_broker_confirmed_rejection_still_unregisters_the_plan
+  - tests/test_exe01_exit_response_lost.py::test_pending_exit_with_no_order_id_that_never_reached_the_venue_resolves_to_zero_filled
+  evidence: Distinguishes not-sent from sent-unknown.
+  notes: ''
+- id: I-05
+  group: I submission/ack/cancel/replace
+  scenario: 'Managed exit: response lost'
+  initial_state: Managed position
+  event_sequence: Exit timeout
+  expected_invariant: Quantity stays reserved, readback resolves
+  status: covered
+  impl_status: implemented
+  tests:
+  - tests/test_exe01_exit_response_lost.py::test_audits_exact_case_exit_response_lost_keeps_durable_commitment
+  - tests/test_exe01_exit_response_lost.py::test_pending_exit_with_no_order_id_is_resolved_via_broker_position_readback
+  evidence: reserved==10 then resolved to 90.
+  notes: ''
+- id: I-06
+  group: I submission/ack/cancel/replace
+  scenario: 'Plain account: close response lost'
+  initial_state: Plain close submitted, ERROR
+  event_sequence: Retry
+  expected_invariant: No double sell; unresolved intent
+  status: partial
+  impl_status: partial
+  tests:
+  - tests/test_plain_close_race.py::test_two_independent_engine_instances_sharing_one_store_do_not_double_sell
+  - tests/test_p0_2_command_ledger.py::test_ambiguous_broker_exception_lands_the_ledger_row_in_unknown_ambiguous
+  evidence: Double-sell prevention proven for concurrent closes; plain close lost-response resolution
+    not tested (ledger close key exists in engine).
+  notes: ''
+- id: I-07
+  group: I submission/ack/cancel/replace
+  scenario: 'Partial fills: plain account'
+  initial_state: Broker reports partial progress
+  event_sequence: Reconcile
+  expected_invariant: Position equals confirmed fill, not requested
+  status: covered
+  impl_status: implemented
+  tests:
+  - tests/test_aud01_distinct_quantity_model.py::test_partial_fill_leaves_actual_remaining_ownership_at_confirmed_not_requested
+  - tests/test_edd2b70_review_regressions.py::test_plain_buy_partially_filled_then_canceled_leaves_the_confirmed_partial
+  - tests/test_plain_pending_zero_fill.py::test_explicit_zero_fill_on_a_pending_entry_does_not_apply_the_full_quantity
+  evidence: Position 6 not 10; canceled partial retained; explicit zero not coerced to full.
+  notes: ''
+- id: I-08
+  group: I submission/ack/cancel/replace
+  scenario: 'Partial fills: managed entry protected immediately, remainder working'
+  initial_state: Managed
+  event_sequence: Partial then cancel remainder
+  expected_invariant: Protect confirmed quantity only
+  status: covered
+  impl_status: implemented
+  tests:
+  - tests/test_edd2b70_review_regressions.py::test_working_partial_fill_is_protected_while_remainder_stays_open
+  - tests/test_edd2b70_review_regressions.py::test_working_partial_fill_then_remainder_cancelled_protects_only_the_partial
+  - tests/test_managed_entry_immediate_partial_fill.py::test_a_confirmed_partial_fill_in_the_initial_pending_response_is_protected_immediately
+  evidence: Stop sized to confirmed partial.
+  notes: ''
+- id: I-09
+  group: I submission/ack/cancel/replace
+  scenario: Fills arriving while a cancel is in flight (exit)
+  initial_state: Pending exit 15, 8 filled, cancel sent
+  event_sequence: More fills / cancel confirm
+  expected_invariant: Stop restore uses final fills (54 or 51)
+  status: covered
+  impl_status: implemented
+  tests:
+  - tests/test_protection_transfer.py::test_remainder_cancelled_after_8_of_15_fill_restores_stop_to_54_not_47
+  - tests/test_protection_transfer.py::test_more_fills_during_cancellation_restore_to_51_not_54
+  evidence: Exact numeric assertions.
+  notes: ''
+- id: I-10
+  group: I submission/ack/cancel/replace
+  scenario: Entry order cancel (pending entry) initiated by app
+  initial_state: Working entry
+  event_sequence: Operator/provider/timeout cancel
+  expected_invariant: Cancel and reconcile fills during cancel
+  status: gap
+  impl_status: missing
+  tests: []
+  evidence: App only cancels protective stops and exit remainders; there is no entry-cancel flow (see
+    B-16, H-09).
+  notes: ''
+- id: I-11
+  group: I submission/ack/cancel/replace
+  scenario: Duplicate fill callbacks / duplicate reconciliation passes
+  initial_state: Terminal order observed twice
+  event_sequence: Reconcile twice
+  expected_invariant: Applied once
+  status: covered
+  impl_status: implemented
+  tests:
+  - tests/test_aud01_distinct_quantity_model.py::test_rapid_double_reconciliation_pass_does_not_double_count
+  - tests/test_reconciliation.py::test_crash_between_position_correction_and_order_status_update_does_not_reapply
+  - tests/test_ninjatrader_webhook.py::test_a_redelivered_order_id_and_action_pair_is_not_processed_twice
+  evidence: Position 10 not 20; crash window safe; NinjaTrader redelivery deduped.
+  notes: ''
+- id: I-12
+  group: I submission/ack/cancel/replace
+  scenario: Lost cancel response
+  initial_state: Cancel call returns not-confirmed
+  event_sequence: Cancel
+  expected_invariant: Ledger UNKNOWN_AMBIGUOUS, unresolved
+  status: partial
+  impl_status: partial
+  tests:
+  - tests/test_p0_2_command_ledger.py::test_ledgered_cancel_order_with_an_unconfirmed_cancel_lands_the_ledger_row_in_unknown_ambiguous
+  - tests/test_adp04_alpaca_cancel_replace_confirmation.py::test_audits_exact_case_cancel_204_but_still_pending_returns_false
+  evidence: Ledger row stays unresolved and adapter refuses to call 204-but-pending a cancel; nothing
+    later resolves the unknown cancel.
+  notes: ''
+- id: I-13
+  group: I submission/ack/cancel/replace
+  scenario: Replace stop rejected or ambiguous
+  initial_state: Managed stop
+  event_sequence: Replace
+  expected_invariant: Not reported as new coverage
+  status: covered
+  impl_status: implemented
+  tests:
+  - tests/test_5e91e78_lifecycle_composition.py::test_failed_stop_resize_is_not_reported_as_new_confirmed_coverage
+  - tests/test_adp04_alpaca_cancel_replace_confirmation.py::test_audits_exact_case_replace_rejected_in_response_body_is_reported
+  - tests/test_lifecycle_manager.py::test_replace_that_returns_a_new_order_id_updates_tracked_id
+  evidence: Protected quantity never exceeds standing stop.
+  notes: ''
+- id: I-15
+  group: I submission/ack/cancel/replace
+  scenario: Malformed broker success response
+  initial_state: HTTP 200 odd shape
+  event_sequence: Entry
+  expected_invariant: Never assumed filled; reconciler survives
+  status: covered
+  impl_status: implemented
+  tests:
+  - tests/test_c36_broker_submission_fault_injection.py::test_place_order_returning_a_malformed_success_shape_never_silently_assumes_a_clean_fill
+  - tests/test_c36_broker_submission_fault_injection.py::test_reconciler_survives_the_same_malformed_id_without_crashing_the_whole_pass
+  evidence: PENDING with owned 0; pass completes.
+  notes: ''
+- id: J-01
+  group: I submission/ack/cancel/replace
+  scenario: 'Independent same-instrument holdings of two strategies on one account: exit scoped to owner'
+  initial_state: alice bought, bob never did
+  event_sequence: bob CLOSE
+  expected_invariant: bob sells nothing
+  status: covered
+  impl_status: implemented
+  tests:
+  - tests/test_alloc05_unknown_and_exit_scope.py::test_exit_never_sells_another_strategys_holdings
+  - tests/test_track18_position_ownership.py::test_plain_close_from_foreign_provider_rejected_no_provider_position
+  evidence: Position unchanged, REJECTED NO_PROVIDER_POSITION.
+  notes: ''
+- id: J-02
+  group: I submission/ack/cancel/replace
+  scenario: 'Pooled position: provider exit caps to own attributable share'
+  initial_state: A built 100, B built 50
+  event_sequence: B CLOSE
+  expected_invariant: Closes 50 only
+  status: covered
+  impl_status: implemented
+  tests:
+  - tests/test_track18_position_ownership.py::test_plain_close_caps_to_own_attributable_share_when_pooled
+  - tests/test_track18_position_ownership.py::test_managed_close_caps_to_own_attributable_share_when_pooled
+  evidence: Filled 50, remaining 100.
+  notes: Attribution unit is provider/source; per-intent or per-analyst lots are not tracked.
+- id: J-03
+  group: I submission/ack/cancel/replace
+  scenario: Two entries by the SAME strategy on same account/symbol are independent allocations with separate
+    exits
+  initial_state: Two intents same source
+  event_sequence: Exit for first only
+  expected_invariant: Closes first allocation lot only
+  status: gap
+  impl_status: missing
+  tests: []
+  evidence: Plain accounts keep one net position; CLOSE closes the whole source share. Managed lifecycle
+    refuses a second same-symbol entry rather than tracking two (lm test_second_same_symbol_entry_is_refused_not_silently_merged).
+  notes: ''
+- id: J-04
+  group: I submission/ack/cancel/replace
+  scenario: 'SNOW-style: entry rejected pre-submission, later exit'
+  initial_state: Entry blocked by fail-closed gate
+  event_sequence: Provider exit
+  expected_invariant: Sells nothing
+  status: covered
+  impl_status: implemented
+  tests:
+  - tests/test_alloc05_unknown_and_exit_scope.py::test_exit_after_failed_entry_sells_nothing_and_creates_no_short
+  evidence: No FILLED, paper position 0.
+  notes: ''
+- id: J-05
+  group: I submission/ack/cancel/replace
+  scenario: 'SNOW variant: entry outcome unknown (response lost), later exit'
+  initial_state: Entry ERROR but broker filled
+  event_sequence: Provider exit
+  expected_invariant: Reconcile real holding then exit it
+  status: gap
+  impl_status: missing
+  tests: []
+  evidence: Plain-account unknown entries are never reconciled to a position, so the exit is rejected
+    as "no open position" and the real broker holding is orphaned.
+  notes: ''
+- id: J-06
+  group: I submission/ack/cancel/replace
+  scenario: Provider exit versus stop fill race
+  initial_state: Managed position with stop
+  event_sequence: Stop fills then exit arrives
+  expected_invariant: No oversell
+  status: covered
+  impl_status: implemented
+  tests:
+  - tests/test_lifecycle_manager.py::test_exit_after_stop_already_filled_is_rejected_not_oversold
+  - tests/test_lifecycle_manager.py::test_stop_fill_closes_lifecycle
+  - tests/test_trade_episode.py::test_stop_exit_loss_is_counted_against_the_provider
+  evidence: Rejected; lifecycle closed; loss attributed.
+  notes: ''
+- id: J-07
+  group: I submission/ack/cancel/replace
+  scenario: Pre-planned partial targets (trims) with stop resize
+  initial_state: Managed plan with targets
+  event_sequence: Price hits target
+  expected_invariant: Sell fraction, resize stop, never oversell
+  status: covered
+  impl_status: implemented
+  tests:
+  - tests/test_lifecycle_manager.py::test_target_resize_with_partial_fill_matches_worked_example
+  - tests/test_lifecycle_manager.py::test_price_update_fires_target_and_sells
+  - tests/test_lifecycle_manager.py::test_target_does_not_fire_twice
+  - tests/test_pro06_stop_amend_on_partial_exit.py::test_partial_exit_amends_stop_down_instead_of_cancelling
+  evidence: Worked examples and no double fire.
+  notes: ''
+- id: J-08
+  group: I submission/ack/cancel/replace
+  scenario: Second exit while first exit remainder unresolved
+  initial_state: Pending exit
+  event_sequence: Another exit
+  expected_invariant: Refused
+  status: covered
+  impl_status: implemented
+  tests:
+  - tests/test_protection_transfer.py::test_second_exit_is_refused_while_first_remains_unresolved
+  - tests/test_lifecycle_manager.py::test_second_exit_is_refused_while_a_prior_exits_remainder_is_unresolved
+  evidence: Refused with unresolved message.
+  notes: ''
+- id: J-09
+  group: I submission/ack/cancel/replace
+  scenario: Exit of confirmed part while entry still working
+  initial_state: Entry 100, 30 filled
+  event_sequence: Exit 30
+  expected_invariant: Lifecycle not deleted; later fills protected
+  status: covered
+  impl_status: implemented
+  tests:
+  - tests/test_5e91e78_lifecycle_composition.py::test_full_exit_of_confirmed_entry_does_not_delete_a_still_working_entry_lifecycle
+  - tests/test_5e91e78_lifecycle_composition.py::test_entry_growth_does_not_rearm_over_an_unresolved_exit
+  evidence: Lifecycle remains with owned 70 later.
+  notes: ''
+- id: J-10
+  group: I submission/ack/cancel/replace
+  scenario: Manual flatten/close is not provider-scoped
+  initial_state: Pooled 150
+  event_sequence: Dashboard flatten
+  expected_invariant: Closes all
+  status: covered
+  impl_status: implemented
+  tests:
+  - tests/test_track18_position_ownership.py::test_manual_close_position_flattens_pooled_position_regardless_of_provider
+  - tests/test_manual_exit.py::test_flatten_account_endpoint_closes_every_open_symbol
+  evidence: 150 filled to 0.
+  notes: ''
+- id: J-11
+  group: I submission/ack/cancel/replace
+  scenario: Close blocked when tracked quantity disagrees with broker readback
+  initial_state: Tracked != broker
+  event_sequence: CLOSE
+  expected_invariant: Blocked
+  status: covered
+  impl_status: implemented
+  tests:
+  - tests/test_p0_5_close_reconciliation.py::test_mismatched_broker_position_blocks_plain_close
+  - tests/test_p0_5_close_reconciliation.py::test_provider_close_signal_is_also_blocked_by_a_mismatch
+  evidence: Blocked on mismatch.
+  notes: ''
+- id: J-12
+  group: I submission/ack/cancel/replace
+  scenario: 'Broker-side open/close intent: closing sells reach the broker as plain opposite side'
+  initial_state: Tastytrade account
+  event_sequence: CLOSE of long
+  expected_invariant: Closes, does not open short
+  status: gap
+  impl_status: partial
+  tests:
+  - tests/test_tastytrade_broker.py::test_sell_sends_sell_to_open
+  evidence: Adapter always sends "to Open" actions and the engine resolves CLOSE to plain SELL; test pins
+    Sell-to-Open. Documented as unverified for closing.
+  notes: HIGH if Tastytrade is used for plain accounts.
+- id: J-13
+  group: I submission/ack/cancel/replace
+  scenario: Native stop executed while service was down
+  initial_state: Managed position
+  event_sequence: Restart
+  expected_invariant: Ownership reduced by broker readback
+  status: covered
+  impl_status: implemented
+  tests:
+  - tests/test_ops01_ops02_ops03_worker_health_and_reconciliation.py::test_audits_exact_case_startup_must_reconcile_native_stop_execution
+  evidence: Startup reconcile applies deficit.
+  notes: ''
+- id: K-01
+  group: K protection/order-family safety
+  scenario: Initial stop REJECTED must not read as protected
+  initial_state: Managed entry
+  event_sequence: Stop rejected
+  expected_invariant: Status not STOP_CONFIRMED, protected 0
+  status: covered
+  impl_status: implemented
+  tests:
+  - tests/test_5e91e78_lifecycle_composition.py::test_rejected_initial_stop_is_not_reported_confirmed
+  - tests/test_lifecycle_manager.py::test_stop_placement_missing_a_broker_order_id_is_not_confirmed
+  evidence: Asserted statuses.
+  notes: ''
+- id: K-02
+  group: K protection/order-family safety
+  scenario: Protection recovers on next reconciliation without a new fill
+  initial_state: Fully filled but unprotected
+  event_sequence: Reconcile pass
+  expected_invariant: Stop placed
+  status: covered
+  impl_status: implemented
+  tests:
+  - tests/test_5e91e78_lifecycle_composition.py::test_protection_recovers_on_the_next_reconciliation_pass_without_a_new_fill
+  evidence: Status becomes CONFIRMED with 30 protected.
+  notes: ''
+- id: K-03
+  group: K protection/order-family safety
+  scenario: Stop growth with partial fills
+  initial_state: Entry fills in pieces
+  event_sequence: Each increment
+  expected_invariant: Stop quantity equals confirmed owned
+  status: covered
+  impl_status: implemented
+  tests:
+  - tests/test_5e91e78_lifecycle_composition.py::test_control_monotonic_partial_fills_without_exits
+  - tests/test_lifecycle_manager.py::test_partial_fill_sets_confirmed_owned_not_planned_quantity
+  - tests/test_lifecycle_manager.py::test_protection_submitted_and_confirmed_after_fill
+  evidence: standing stop == owned.
+  notes: ''
+- id: K-04
+  group: K protection/order-family safety
+  scenario: Stop resize/replace failure keeps coverage honest
+  initial_state: Stop 30, owned 60
+  event_sequence: Resize fails
+  expected_invariant: protected <= standing stop
+  status: covered
+  impl_status: implemented
+  tests:
+  - tests/test_5e91e78_lifecycle_composition.py::test_failed_stop_resize_is_not_reported_as_new_confirmed_coverage
+  evidence: Asserted.
+  notes: ''
+- id: K-05
+  group: K protection/order-family safety
+  scenario: Stop that fills immediately on submission
+  initial_state: Managed
+  event_sequence: Stop fills instantly
+  expected_invariant: Not counted as coverage
+  status: covered
+  impl_status: implemented
+  tests:
+  - tests/test_lifecycle_manager.py::test_stop_that_fills_immediately_on_submission_is_not_confirmed_coverage
+  evidence: Asserted.
+  notes: ''
+- id: K-06
+  group: K protection/order-family safety
+  scenario: Plain entry with stop on a broker that cannot embed it is refused
+  initial_state: No native bracket
+  event_sequence: Entry with SL
+  expected_invariant: Refused, no order
+  status: covered
+  impl_status: implemented
+  tests:
+  - tests/test_broker_capability_gate.py::test_plain_path_refuses_entry_with_stop_loss_on_a_broker_that_would_drop_it
+  - tests/test_broker_capability_gate.py::test_managed_entry_refused_on_a_broker_with_no_protection_capability
+  evidence: Refusals asserted.
+  notes: ''
+- id: K-07
+  group: K protection/order-family safety
+  scenario: Managed entry without stop is rejected
+  initial_state: Managed
+  event_sequence: No SL
+  expected_invariant: Rejected
+  status: covered
+  impl_status: implemented
+  tests:
+  - tests/test_engine_managed_lifecycle.py::test_managed_entry_without_stop_is_rejected
+  - tests/test_lifecycle_manager.py::test_no_stop_resolved_refuses_entry
+  evidence: Rejected.
+  notes: ''
+- id: K-08
+  group: K protection/order-family safety
+  scenario: Trailing stop never loosens; no re-arm during unresolved exit
+  initial_state: Managed
+  event_sequence: Trail updates
+  expected_invariant: Monotonic
+  status: covered
+  impl_status: implemented
+  tests:
+  - tests/test_lifecycle_manager.py::test_trailing_stop_ratchets_up_and_never_loosens
+  - tests/test_protection_transfer.py::test_trailing_update_does_not_touch_stop_while_pending_exit_unresolved
+  - tests/test_stop_target_events.py::test_loosening_attempt_is_a_no_op_and_logs_no_event
+  evidence: Asserted.
+  notes: ''
+- id: K-09
+  group: K protection/order-family safety
+  scenario: Unprotected owned position surfaces as a metric
+  initial_state: Owned without stop
+  event_sequence: /metrics
+  expected_invariant: Deficit reported
+  status: covered
+  impl_status: implemented
+  tests:
+  - tests/test_c23_prometheus_metrics.py::test_metrics_report_unprotected_owned_position_as_a_deficit
+  evidence: Metric asserted.
+  notes: ''
+- id: K-11
+  group: K protection/order-family safety
+  scenario: Native bracket on plain accounts under partial fills / child order management
+  initial_state: Alpaca/IBKR bracket
+  event_sequence: Partial fill of parent
+  expected_invariant: Children sized to fill
+  status: gap
+  impl_status: partial
+  tests:
+  - tests/test_alpaca_broker.py::test_both_sl_and_tp_sends_bracket_order
+  - tests/test_ibkr_broker.py::test_both_sl_and_tp_builds_three_order_bracket
+  evidence: Adapter payload shape only; partial-fill child sizing and OCO behavior untested and left to
+    broker.
+  notes: ''
+- id: K-12
+  group: K protection/order-family safety
+  scenario: Cancel of protective stop on full close not confirmed (double-exposure risk)
+  initial_state: Managed full close
+  event_sequence: Stop cancel unconfirmed
+  expected_invariant: No second sell / halt
+  status: partial
+  impl_status: partial
+  tests:
+  - tests/test_pro06_stop_amend_on_partial_exit.py::test_full_close_still_uses_cancel_not_amend
+  - tests/test_p0_2_command_ledger.py::test_ledgered_cancel_order_with_an_unconfirmed_cancel_lands_the_ledger_row_in_unknown_ambiguous
+  evidence: Cancel semantics at ledger level; end-to-end behavior after unconfirmed cancel in a full close
+    not isolated.
+  notes: ''
+- id: L-01
+  group: K protection/order-family safety
+  scenario: Option signal routed to equity-only broker is refused
+  initial_state: Alpaca/IBKR
+  event_sequence: Option signal
+  expected_invariant: Rejected
+  status: covered
+  impl_status: implemented
+  tests:
+  - tests/test_asset_class_gate.py::test_option_signal_from_a_mixed_provider_is_refused_on_equity_only_broker
+  evidence: Rejected via engine path.
+  notes: ''
+- id: L-02
+  group: K protection/order-family safety
+  scenario: Option contract parsing (OCC symbol, strategy keyword, big digits not misread as qty)
+  initial_state: Parser
+  event_sequence: Text
+  expected_invariant: Fields extracted
+  status: unit-only
+  impl_status: implemented
+  tests:
+  - tests/test_parser_tooling.py::test_extract_fields_option_contract_from_occ_symbol
+  - tests/test_sig03_mixed_provider_asset_classification.py::test_option_contract_digits_are_not_misread_as_a_huge_quantity
+  evidence: Parser-level.
+  notes: ''
+- id: L-03
+  group: K protection/order-family safety
+  scenario: Option execution on brokers that declare OPTION (Tastytrade, TradeStation)
+  initial_state: Option signal
+  event_sequence: Entry
+  expected_invariant: Correct instrument type, contract symbol, open/close intent
+  status: gap
+  impl_status: missing
+  tests: []
+  evidence: 'No adapter reads Signal.option; Tastytrade hardcodes "instrument-type": "Equity" while declaring
+    OPTION support; no option test in either adapter.'
+  notes: 'HIGH: declared-but-unsupported capability.'
+- id: L-04
+  group: K protection/order-family safety
+  scenario: Option/futures contract multiplier in notional and ceilings
+  initial_state: Option qty 1 at price 2.50
+  event_sequence: Capital gate
+  expected_invariant: Notional = qty x multiplier x price
+  status: gap
+  impl_status: missing
+  tests: []
+  evidence: Notional is abs(quantity) x abs(price) everywhere; OptionContractSpec/FutureContractSpec multipliers
+    are unused.
+  notes: ''
+- id: L-05
+  group: K protection/order-family safety
+  scenario: Naked short option restriction
+  initial_state: SELL option with no covering position
+  event_sequence: Entry
+  expected_invariant: Refuse or require approval
+  status: gap
+  impl_status: missing
+  tests: []
+  evidence: No code mentions naked/short-option checks.
+  notes: ''
+- id: L-06
+  group: K protection/order-family safety
+  scenario: 0DTE restriction / expiry-day handling
+  initial_state: Option expiring today
+  event_sequence: Entry
+  expected_invariant: Policy-defined block or flag
+  status: gap
+  impl_status: missing
+  tests: []
+  evidence: No expiry-aware logic outside correlation fingerprinting.
+  notes: ''
+- id: L-07
+  group: K protection/order-family safety
+  scenario: Multi-leg spreads / dependent positions
+  initial_state: Spread alert
+  event_sequence: Alert
+  expected_invariant: Legs placed atomically or refused
+  status: unit-only
+  impl_status: missing
+  tests:
+  - tests/test_article_classifier.py::test_multi_leg_spread_with_both_legs_resolved_still_not_auto_routed_without_expiry
+  evidence: Article classifier declines to auto-route; Signal supports one option leg only; no execution
+    support.
+  notes: ''
+- id: L-08
+  group: K protection/order-family safety
+  scenario: Option fingerprint includes strike/expiry/right for dedup
+  initial_state: Cross-transport
+  event_sequence: Fingerprint
+  expected_invariant: Different contracts not merged
+  status: unit-only
+  impl_status: implemented
+  tests:
+  - tests/test_track12_signal_correlation.py::test_fingerprint_key_includes_option_strike_expiry_right
+  evidence: Pure function.
+  notes: ''
+- id: L-09
+  group: K protection/order-family safety
+  scenario: Expiry/assignment/exercise lifecycle
+  initial_state: Held option
+  event_sequence: Expiry
+  expected_invariant: Position removed/handled
+  status: gap
+  impl_status: missing
+  tests: []
+  evidence: Nothing in lifecycle or reconciliation models option expiry/assignment.
+  notes: ''
+- id: M-01
+  group: M futures/forex/crypto
+  scenario: Crypto spot via real engine path
+  initial_state: Crypto symbol, paper broker
+  event_sequence: Buy/close
+  expected_invariant: Order, position, close flow
+  status: partial
+  impl_status: implemented
+  tests:
+  - tests/test_alloc01_single_destination.py::test_one_signal_three_eligible_accounts_produces_one_order
+  - tests/test_ccxt_broker.py::test_no_sl_tp_sends_empty_params
+  evidence: Engine path uses PaperBroker; CCXT adapter is tested with a fake exchange object only.
+  notes: ''
+- id: M-02
+  group: M futures/forex/crypto
+  scenario: CCXT SL/TP only when exchange declares support, else refused
+  initial_state: ccxt exchange without bracket support
+  event_sequence: Entry with SL
+  expected_invariant: Refused, not silently dropped
+  status: unit-only
+  impl_status: implemented
+  tests:
+  - tests/test_ccxt_broker.py::test_stop_loss_and_take_profit_refused_when_exchange_does_not_declare_support
+  - tests/test_ccxt_broker.py::test_stop_loss_and_take_profit_passed_as_unified_params_when_exchange_declares_support
+  evidence: Adapter-level.
+  notes: ''
+- id: M-03
+  group: M futures/forex/crypto
+  scenario: Crypto derivatives/perps (leverage, reduce-only, contract size)
+  initial_state: Perp market
+  event_sequence: Entry/close
+  expected_invariant: Reduce-only close, leverage mode explicit
+  status: gap
+  impl_status: missing
+  tests:
+  - tests/test_route_qualification.py::test_ccxt_spot_and_perpetual_routes_are_fully_independent
+  evidence: Qualification keeps spot and perp routes separate, but the adapter has no leverage/reduceOnly/contract-size
+    logic and CryptoDerivativeSpec is unused.
+  notes: ''
+- id: M-04
+  group: M futures/forex/crypto
+  scenario: 'Futures: whole-contract quantity enforced'
+  initial_state: Tradovate/Rithmic
+  event_sequence: Fractional qty
+  expected_invariant: Refused
+  status: unit-only
+  impl_status: implemented
+  tests:
+  - tests/test_tradovate_broker.py::test_a_fractional_contract_quantity_is_rejected_not_silently_truncated
+  - tests/test_rithmic_broker.py::test_a_fractional_contract_quantity_is_rejected_not_silently_truncated
+  evidence: Adapter-level; not via engine.
+  notes: ''
+- id: M-05
+  group: M futures/forex/crypto
+  scenario: Futures contract month/roll/expiry and tick/multiplier mapping
+  initial_state: Futures symbol
+  event_sequence: Entry
+  expected_invariant: Resolve front month, multiplier
+  status: gap
+  impl_status: missing
+  tests: []
+  evidence: FutureContractSpec carries root/expiry/multiplier/venue but no adapter or notional math uses
+    it; symbols pass through symbol_map.
+  notes: ''
+- id: M-06
+  group: M futures/forex/crypto
+  scenario: Futures source adapters (NinjaTrader webhook/Rithmic fills)
+  initial_state: Futures fills
+  event_sequence: Webhook
+  expected_invariant: Authenticated, validated, deduped
+  status: covered
+  impl_status: implemented
+  tests:
+  - tests/test_ninjatrader_webhook.py::test_rejects_wrong_secret
+  - tests/test_ninjatrader_webhook.py::test_a_redelivered_order_id_and_action_pair_is_not_processed_twice
+  - tests/test_ninjatrader_webhook.py::test_a_reversal_entry_and_exit_share_order_id_but_are_not_deduped_against_each_other
+  - tests/test_ninjatrader_webhook.py::test_fails_closed_when_unconfigured
+  evidence: Endpoint-level tests.
+  notes: NinjaTrader as an execution broker has no protection capability (bcg test).
+- id: M-07
+  group: M futures/forex/crypto
+  scenario: 'Forex via OANDA: signed units, immediate fill, rejection'
+  initial_state: OANDA
+  event_sequence: Buy/sell
+  expected_invariant: Units sign correct; fill/reject mapped
+  status: unit-only
+  impl_status: implemented
+  tests:
+  - tests/test_oanda_broker.py::test_buy_sends_positive_units_sell_sends_negative
+  - tests/test_oanda_broker.py::test_immediate_fill_reports_filled_directly_not_pending
+  - tests/test_oanda_broker.py::test_rejected_order_reports_rejected
+  evidence: Adapter-level with fake HTTP.
+  notes: ''
+- id: M-08
+  group: M futures/forex/crypto
+  scenario: Forex lot/pip/units conversion, MT5 lots
+  initial_state: Forex signal in lots
+  event_sequence: Entry
+  expected_invariant: Correct unit conversion
+  status: gap
+  impl_status: missing
+  tests: []
+  evidence: FxContractSpec unused; quantity passed straight as OANDA units / MT5 volume.
+  notes: ''
+- id: M-09
+  group: M futures/forex/crypto
+  scenario: MT5 via MetaApi partial fill preserved
+  initial_state: MT5
+  event_sequence: Partial success
+  expected_invariant: Reported as filled with quantity, not pending
+  status: unit-only
+  impl_status: implemented
+  tests:
+  - tests/test_adp08_mt5_partial_fill.py::test_partial_fill_reports_filled_not_pending
+  - tests/test_adp08_mt5_partial_fill.py::test_concurrent_orders_do_not_interleave_across_accounts
+  evidence: Adapter-level.
+  notes: ''
+- id: M-10
+  group: M futures/forex/crypto
+  scenario: Live entries require a per-route qualification record
+  initial_state: Live (non-paper) route
+  event_sequence: Entry
+  expected_invariant: Rejected without release_approved; paper and CLOSE exempt
+  status: covered
+  impl_status: implemented
+  tests:
+  - tests/test_track1b_live_gates.py::test_live_entry_rejected_when_route_has_no_qualification_record
+  - tests/test_track1b_live_gates.py::test_qualification_gate_is_per_exact_route_not_just_adapter
+  - tests/test_track1b_live_gates.py::test_close_signal_is_not_blocked_by_the_qualification_gate
+  evidence: Engine-level.
+  notes: ''
+- id: M-12
+  group: M futures/forex/crypto
+  scenario: Brokers that declare no supported_asset_classes are unrestricted
+  initial_state: Paper/NinjaTrader/Rithmic/MT5/SignalStack
+  event_sequence: Any asset class
+  expected_invariant: Documented as unverified
+  status: partial
+  impl_status: partial
+  tests:
+  - tests/test_asset_class_gate.py::test_undeclared_broker_is_unrestricted_by_default
+  evidence: Pinned permissive default.
+  notes: Wrong-asset-class orders can still reach undeclared adapters.
+- id: N-01
+  group: M futures/forex/crypto
+  scenario: Daily loss percent limiter decision logic
+  initial_state: Mock store, mock broker
+  event_sequence: check_daily_loss_limit
+  expected_invariant: Reject at/after limit, fail closed on errors
+  status: gap
+  impl_status: partial
+  tests: []
+  evidence: No test anywhere calls check_daily_loss_limit or halt_trading_if_limit_exceeded; the e09 tests
+    cover only check_min_equity_threshold (see N-06).
+  notes: Class exists in app/daily_loss_limiter.py.
+- id: N-02
+  group: M futures/forex/crypto
+  scenario: Daily loss limiter wired into the engine
+  initial_state: DEFAULT_DAILY_LOSS_LIMIT_PERCENT or account limit set
+  event_sequence: Entry
+  expected_invariant: Reject after breach
+  status: gap
+  impl_status: partial
+  tests: []
+  evidence: 'By static reading: SignalStore has no get_daily_pnl or _broker_adapters (tests set the latter
+    by hand) and nothing writes the daily_pnl table, so enabling the limit would raise AttributeError
+    inside handle_signal. Limit also cannot be set per account via API/DB loader.'
+  notes: Not executed; verify before relying on it.
+- id: N-03
+  group: M futures/forex/crypto
+  scenario: Loss limit latch (stay halted until reset; no instant un-halt on a P&L wiggle)
+  initial_state: Breach occurred
+  event_sequence: Later P&L recovery
+  expected_invariant: Remains halted until next session/manual reset
+  status: gap
+  impl_status: missing
+  tests: []
+  evidence: Limiter recomputes statelessly on each signal; there is no latch/halt state or reset path.
+  notes: ''
+- id: N-04
+  group: M futures/forex/crypto
+  scenario: Daily boundary uses exchange/UTC session, not server-local date
+  initial_state: Limiter
+  event_sequence: Midnight rollover
+  expected_invariant: Defined timezone and session
+  status: gap
+  impl_status: missing
+  tests: []
+  evidence: date.today() server-local; no calendar or session model anywhere.
+  notes: ''
+- id: N-05
+  group: M futures/forex/crypto
+  scenario: 'Trading calendar: market hours, holidays, session gating, extended hours'
+  initial_state: Equity order at 02:00
+  event_sequence: Entry
+  expected_invariant: Queue, reject or flag
+  status: gap
+  impl_status: missing
+  tests: []
+  evidence: No market-hours or holiday logic in app/ (only crypto-agnostic order submission).
+  notes: ''
+- id: N-06
+  group: M futures/forex/crypto
+  scenario: Min-equity (liquidation) gate
+  initial_state: account.min_equity_threshold set
+  event_sequence: Entry
+  expected_invariant: Reject below threshold, fail closed
+  status: unit-only
+  impl_status: partial
+  tests:
+  - tests/test_integration_e09_commercial_accounting.py::test_liquidation_check_prevents_entry_when_equity_below_threshold
+  - tests/test_integration_e09_commercial_accounting.py::test_liquidation_threshold_enforcement_is_fail_closed
+  evidence: Called directly on DailyLossLimiter with an injected _broker_adapters; not through engine.handle_signal;
+    field is not settable via config API or loader.
+  notes: ''
+- id: N-07
+  group: M futures/forex/crypto
+  scenario: Exits bypass loss/liquidation/margin gates
+  initial_state: Breached account
+  event_sequence: CLOSE
+  expected_invariant: Allowed
+  status: gap
+  impl_status: implemented
+  tests: []
+  evidence: Engine skips these gates for Side.CLOSE (code), but no test asserts it.
+  notes: ''
+- id: N-08
+  group: M futures/forex/crypto
+  scenario: Per-strategy or portfolio loss limits, max positions, max trades per day
+  initial_state: Strategy limits
+  event_sequence: Entries
+  expected_invariant: Enforced
+  status: gap
+  impl_status: missing
+  tests: []
+  evidence: No such controls exist (only per-account daily loss % default and strategy notional ceiling).
+  notes: ''
+- id: N-09
+  group: M futures/forex/crypto
+  scenario: Margin-call alerts persisted and resolved
+  initial_state: Detector
+  event_sequence: Alert lifecycle
+  expected_invariant: Persist/resolve
+  status: unit-only
+  impl_status: partial
+  tests:
+  - tests/test_e04_margin_call_detection.py::test_margin_call_detector_persists_alert
+  - tests/test_e04_margin_call_detection.py::test_margin_call_detector_resolves_alert
+  evidence: Store-level; engine feeds None inputs so no alerts arise in production.
+  notes: ''
+- id: O-01
+  group: O integration health/operational failure
+  scenario: Restart after allocation selection
+  initial_state: Bound intent
+  event_sequence: New engine
+  expected_invariant: Same account resumed
+  status: covered
+  impl_status: implemented
+  tests:
+  - tests/test_alloc01_single_destination.py::test_restart_after_selection_resumes_same_account_only
+  evidence: See C-12.
+  notes: ''
+- id: O-02
+  group: O integration health/operational failure
+  scenario: Crash after pre-effect ledger write before broker call
+  initial_state: Durable PENDING_SUBMISSION row
+  event_sequence: Restart
+  expected_invariant: Row visible and unresolved
+  status: partial
+  impl_status: partial
+  tests:
+  - tests/test_p0_2_command_ledger.py::test_pre_effect_write_survives_a_simulated_crash_before_the_broker_call
+  - tests/test_p0_2_command_ledger.py::test_unknown_ambiguous_outcome_stays_unresolved_and_is_never_silently_dropped
+  evidence: Durability proven at store level; nothing consumes/resolves these rows on restart and no API
+    lists them.
+  notes: ''
+- id: O-03
+  group: O integration health/operational failure
+  scenario: Restart with unresolved reservations/pending orders
+  initial_state: Pending reservation
+  event_sequence: Restart
+  expected_invariant: Reservations retained
+  status: covered
+  impl_status: implemented
+  tests:
+  - tests/test_capital_allocator.py::test_reservation_survives_a_fresh_allocator_built_from_the_same_db
+  - tests/test_capital_allocator.py::test_reservation_survives_restart_across_two_separate_store_instances
+  evidence: Reloaded.
+  notes: ''
+- id: O-04
+  group: O integration health/operational failure
+  scenario: Restart in the middle of fill resolution/protection
+  initial_state: Managed
+  event_sequence: Crash points
+  expected_invariant: No double apply
+  status: covered
+  impl_status: implemented
+  tests:
+  - tests/test_5e91e78_lifecycle_composition.py::test_crash_after_position_commit_before_fill_checkpoint_does_not_double_apply
+  - tests/test_5e91e78_lifecycle_composition.py::test_crash_during_protection_work_after_position_commit_does_not_double_apply
+  - tests/test_edd2b70_review_regressions.py::test_managed_full_fill_survives_a_restart_without_duplicating
+  - tests/test_protection_transfer.py::test_persisted_lifecycle_resumes_after_restart_with_deficit_intact
+  evidence: Position/lifecycle consistent after restore.
+  notes: ''
+- id: O-05
+  group: O integration health/operational failure
+  scenario: SQLite contention across processes
+  initial_state: Multi-process writes
+  event_sequence: BEGIN IMMEDIATE races
+  expected_invariant: Atomic claim/bind/reserve
+  status: partial
+  impl_status: partial
+  tests:
+  - tests/test_alloc02_cross_process_claim.py::test_many_processes_race_exactly_one_account_wins
+  - tests/test_alloc03_strategy_budget.py::test_cross_process_strategy_admission_is_atomic
+  evidence: Atomicity proven with 4-6 spawn processes; no test of busy/locked errors, retry or timeout
+    behavior (default sqlite timeout, no WAL pragma found).
+  notes: ''
+- id: O-06
+  group: O integration health/operational failure
+  scenario: Stale writer lease / fencing token
+  initial_state: Two writers
+  event_sequence: Promotion/expiry
+  expected_invariant: Old writer refused, no auto takeover by other site
+  status: covered
+  impl_status: implemented
+  tests:
+  - tests/test_writer_lease_fencing.py::test_different_site_cannot_acquire_automatically_even_when_expired
+  - tests/test_writer_lease_fencing.py::test_promote_rejected_while_lease_still_valid
+  - tests/test_writer_lease_fencing.py::test_renew_after_fencing_raises
+  - tests/test_writer_lease_fencing.py::test_concurrent_acquire_from_multiple_threads_is_race_free
+  evidence: Lease semantics.
+  notes: ''
+- id: O-10
+  group: O integration health/operational failure
+  scenario: Alembic/bootstrap schema includes allocation tables on running DB
+  initial_state: Existing DB
+  event_sequence: Open store
+  expected_invariant: Tables present
+  status: partial
+  impl_status: implemented
+  tests:
+  - tests/test_e01_alembic_migration_stamping.py::test_alembic_upgrade_head_from_genuinely_empty_database_matches_bootstrap
+  evidence: Empty->head parity only; see R-05.
+  notes: ''
+- id: O-12
+  group: O integration health/operational failure
+  scenario: Single-writer assumption for multi-host/network SQLite
+  initial_state: Two hosts
+  event_sequence: Shared WAL file
+  expected_invariant: Unsupported; fencing
+  status: gap
+  impl_status: partial
+  tests: []
+  evidence: DL-29/ADR say unsupported; lease prevents accidental dual-active but there is no test of shared-file
+    multi-host behavior.
+  notes: ''
+- id: P-01
+  group: P configuration/UI/authorization
+  scenario: Allocation endpoints require owner auth
+  initial_state: Anon client
+  event_sequence: GET/PUT
+  expected_invariant: 401/403
+  status: covered
+  impl_status: implemented
+  tests:
+  - tests/test_alloc04_api_end_to_end.py::test_allocation_endpoints_require_owner_auth
+  evidence: Asserted.
+  notes: ''
+- id: P-02
+  group: P configuration/UI/authorization
+  scenario: Config write paths (providers, routing rules) require owner session
+  initial_state: Anon
+  event_sequence: POST/PUT/DELETE
+  expected_invariant: '401'
+  status: covered
+  impl_status: implemented
+  tests:
+  - tests/test_tr09_tr12_trading_screens.py::test_policy_and_routing_write_paths_require_owner_session
+  - tests/test_tr09_tr12_trading_screens.py::test_new_screens_read_endpoints_require_owner_session
+  evidence: Asserted.
+  notes: POST/DELETE /accounts auth not separately asserted here.
+- id: P-03
+  group: P configuration/UI/authorization
+  scenario: CSRF required on mutating requests
+  initial_state: Session without CSRF
+  event_sequence: POST
+  expected_invariant: '403'
+  status: covered
+  impl_status: implemented
+  tests:
+  - tests/test_owner_auth.py::test_mutating_request_403s_with_session_but_no_csrf_header
+  - tests/test_owner_auth.py::test_wrong_csrf_token_is_rejected
+  evidence: Asserted.
+  notes: ''
+- id: P-04
+  group: P configuration/UI/authorization
+  scenario: Webhook secret fail-closed and constant-time
+  initial_state: No/incorrect secret
+  event_sequence: POST /webhook
+  expected_invariant: 401/503
+  status: covered
+  impl_status: implemented
+  tests:
+  - tests/test_owner_auth.py::test_webhook_503s_when_secret_unconfigured
+  - tests/test_owner_auth.py::test_webhook_401s_with_wrong_secret
+  - tests/test_owner_auth.py::test_webhook_secret_check_uses_constant_time_compare
+  evidence: Asserted.
+  notes: ''
+- id: P-05
+  group: P configuration/UI/authorization
+  scenario: Preview/simulate is read-only
+  initial_state: Routing simulate
+  event_sequence: POST simulate
+  expected_invariant: No signals/orders
+  status: covered
+  impl_status: implemented
+  tests:
+  - tests/test_tr11_routing_simulator.py::test_simulate_never_creates_a_signal_or_order
+  evidence: Asserted.
+  notes: ''
+- id: P-06
+  group: P configuration/UI/authorization
+  scenario: 'Stale preview: apply must be bound to the config version previewed'
+  initial_state: Preview then concurrent edit
+  event_sequence: Apply
+  expected_invariant: Reject stale
+  status: gap
+  impl_status: missing
+  tests: []
+  evidence: No config version/ETag/preview token; PUT /routing-rules/{id} and POST /accounts are last-write-wins.
+  notes: ''
+- id: P-07
+  group: P configuration/UI/authorization
+  scenario: Concurrent config edits (two operators)
+  initial_state: Two PUTs
+  event_sequence: Interleaved
+  expected_invariant: Detected/serialized
+  status: gap
+  impl_status: missing
+  tests: []
+  evidence: No optimistic concurrency or audit log of config changes (none found in app/db.py/main.py).
+  notes: ''
+- id: P-08
+  group: P configuration/UI/authorization
+  scenario: Config edits take effect live and persist
+  initial_state: Running system
+  event_sequence: Edit rule
+  expected_invariant: Next signal uses it
+  status: covered
+  impl_status: implemented
+  tests:
+  - tests/test_config_crud.py::test_updating_a_routing_rule_changes_destinations_live
+  - tests/test_config_crud.py::test_deleting_a_routing_rule_stops_routing_to_it
+  - tests/test_config_crud.py::test_max_notional_exposure_round_trips_and_gates_live
+  evidence: Asserted.
+  notes: ''
+- id: P-09
+  group: P configuration/UI/authorization
+  scenario: Config edit while an intent is in flight or position open (rule deletion stranding exits)
+  initial_state: Position open
+  event_sequence: Delete rule
+  expected_invariant: Exit still routable
+  status: gap
+  impl_status: missing
+  tests: []
+  evidence: Only account deletion/broker change is guarded (EXE-10); deleting a rule that is the only
+    route for an open position is allowed (see C-13).
+  notes: ''
+- id: P-11
+  group: P configuration/UI/authorization
+  scenario: delivery_mode and budget validation at the API
+  initial_state: API
+  event_sequence: invalid values
+  expected_invariant: '422'
+  status: covered
+  impl_status: implemented
+  tests:
+  - tests/test_alloc04_api_end_to_end.py::test_invalid_delivery_mode_is_rejected
+  - tests/test_alloc03_strategy_budget.py::test_strategy_budget_validation
+  evidence: Asserted.
+  notes: ''
+- id: Q-01
+  group: Q accounting/reporting
+  scenario: Account realized P&L from the order journal (round trip, partial close, flip, short)
+  initial_state: Filled orders
+  event_sequence: Compute
+  expected_invariant: Average-cost lot accounting
+  status: covered
+  impl_status: implemented
+  tests:
+  - tests/test_e06_account_economics.py::test_simple_round_trip_realizes_expected_pnl
+  - tests/test_e06_account_economics.py::test_partial_close_realizes_only_the_closed_portion
+  - tests/test_e06_account_economics.py::test_flip_through_flat_opens_fresh_position_at_flip_price
+  - tests/test_e06_economics_endpoint.py::test_returns_realized_pnl_from_actual_fills
+  evidence: Asserted incl. endpoint.
+  notes: ''
+- id: Q-02
+  group: Q accounting/reporting
+  scenario: Strategy (source) view derived from the same journal
+  initial_state: Fills from two sources on one account
+  event_sequence: Compute strategy P&L/exposure
+  expected_invariant: Strategy views sum to account view
+  status: partial
+  impl_status: partial
+  tests:
+  - tests/test_alloc03_strategy_budget.py::test_strategy_ceiling_is_global_not_per_account
+  - tests/test_provider_value.py::test_two_providers_sharing_one_account_symbol_are_attributed_separately
+  evidence: confirmed_strategy_notional (source filter) is exercised through ceiling tests and provider_value
+    attributes shared-account lots per provider; no test that strategy slices reconcile to the account
+    total.
+  notes: ''
+- id: Q-03
+  group: Q accounting/reporting
+  scenario: Strategy P&L endpoint for owner use
+  initial_state: API
+  event_sequence: GET
+  expected_invariant: Strategy P&L
+  status: partial
+  impl_status: partial
+  tests:
+  - tests/test_provider_value.py::test_two_providers_sharing_one_account_symbol_are_attributed_separately
+  evidence: GET /providers/value provides provider-level scoring; economics endpoints are account-only.
+  notes: ''
+- id: Q-04
+  group: Q accounting/reporting
+  scenario: Fees and financing reported honestly
+  initial_state: Brokers without fee data
+  event_sequence: Economics v2
+  expected_invariant: Unknown, never zero
+  status: partial
+  impl_status: partial
+  tests:
+  - tests/test_account_economics_v2.py::test_fees_and_financing_are_unknown_never_zero
+  - tests/test_e10_fee_tracking.py::test_paper_broker_is_only_honest_fee_reporter
+  evidence: Only the paper broker reports fees; realized P&L from economics.py excludes fees; real-broker
+    fee ingestion absent.
+  notes: ''
+- id: Q-05
+  group: Q accounting/reporting
+  scenario: Unresolved/invalid fills make symbol incomplete, not zero
+  initial_state: Bad fill row
+  event_sequence: Compute
+  expected_invariant: Incomplete flagged
+  status: covered
+  impl_status: implemented
+  tests:
+  - tests/test_e06_account_economics.py::test_unresolved_close_side_marks_symbol_incomplete_not_zero
+  - tests/test_provider_value.py::test_unresolved_or_invalid_fills_are_skipped_not_counted_as_zero
+  evidence: Asserted.
+  notes: ''
+- id: Q-06
+  group: Q accounting/reporting
+  scenario: Multiple partial exits are one episode; stop exits counted against provider
+  initial_state: Episodes
+  event_sequence: Exits
+  expected_invariant: One episode
+  status: covered
+  impl_status: implemented
+  tests:
+  - tests/test_trade_episode.py::test_three_partial_exits_are_one_episode_not_three
+  - tests/test_trade_episode.py::test_stop_exit_loss_is_counted_against_the_provider
+  evidence: Asserted.
+  notes: ''
+- id: Q-07
+  group: Q accounting/reporting
+  scenario: Manual flatten / native stop closes attributed to the owning strategy
+  initial_state: Strategy position closed outside provider signal
+  event_sequence: Compute strategy view
+  expected_invariant: Closed lots removed from strategy exposure
+  status: gap
+  impl_status: partial
+  tests: []
+  evidence: Strategy filter joins orders to signals by source; orders without a provider signal are excluded
+    (unverified for flatten rows).
+  notes: ''
+- id: Q-08
+  group: Q accounting/reporting
+  scenario: Allocation audit trail (which account selected and why)
+  initial_state: Intents
+  event_sequence: GET /allocation-intents
+  expected_invariant: Auditable
+  status: covered
+  impl_status: implemented
+  tests:
+  - tests/test_alloc04_api_end_to_end.py::test_one_webhook_three_eligible_accounts_one_order
+  - tests/test_alloc01_single_destination.py::test_no_capacity_anywhere_is_explained_skip_with_no_order
+  evidence: Intent rows with selected_account/skip reason.
+  notes: ''
+- id: R-01
+  group: Q accounting/reporting
+  scenario: Fresh database stamped at alembic head
+  initial_state: New DB
+  event_sequence: Open
+  expected_invariant: Stamped 0037
+  status: covered
+  impl_status: implemented
+  tests:
+  - tests/test_e01_alembic_migration_stamping.py::test_fresh_database_is_stamped_at_head
+  evidence: Asserted.
+  notes: ''
+- id: R-02
+  group: Q accounting/reporting
+  scenario: Legacy pre-alembic database stamped not recreated
+  initial_state: Old DB with data
+  event_sequence: Open
+  expected_invariant: Data intact, stamped
+  status: covered
+  impl_status: implemented
+  tests:
+  - tests/test_e01_alembic_migration_stamping.py::test_legacy_pre_alembic_database_is_stamped_not_recreated
+  evidence: Asserted.
+  notes: ''
+- id: R-03
+  group: Q accounting/reporting
+  scenario: alembic upgrade head from empty equals bootstrap schema (includes 0037)
+  initial_state: Empty DB
+  event_sequence: upgrade head
+  expected_invariant: Same tables/columns/indexes
+  status: covered
+  impl_status: implemented
+  tests:
+  - tests/test_e01_alembic_migration_stamping.py::test_alembic_upgrade_head_from_genuinely_empty_database_matches_bootstrap
+  evidence: Schema parity asserted.
+  notes: ''
+- id: R-05
+  group: Q accounting/reporting
+  scenario: Upgrade 0036 -> 0037 on a DB with existing rules, reservations and open positions
+  initial_state: Populated 0036 DB
+  event_sequence: upgrade
+  expected_invariant: Rules default single, reservations keep NULL strategy_key, positions keep closing
+  status: gap
+  impl_status: implemented
+  tests: []
+  evidence: No test upgrades a populated pre-0037 database or checks downgrade; only empty->head and bootstrap
+    are tested.
+  notes: ''
+- id: R-06
+  group: Q accounting/reporting
+  scenario: 'Behavior change: existing multi-destination rules silently become single-destination'
+  initial_state: Legacy rules with several destinations
+  event_sequence: Deploy
+  expected_invariant: Owner warned or rules migrated to explicit replicate
+  status: gap
+  impl_status: partial
+  tests: []
+  evidence: delivery_mode defaults to single via migration/server_default; README/ADR document it but
+    there is no runtime warning or migration choice.
+  notes: Legacy tests were adapted by adding delivery_mode=replicate (test_engine, tr09).
+- id: R-07
+  group: Q accounting/reporting
+  scenario: YAML routing file honors delivery_mode
+  initial_state: routing.yaml
+  event_sequence: load_routing_config
+  expected_invariant: Parsed
+  status: gap
+  impl_status: implemented
+  tests: []
+  evidence: routing.py parses delivery_mode from YAML but no test covers it (only the store loader default).
+  notes: ''
+- id: R-08
+  group: Q accounting/reporting
+  scenario: CLOSE for pre-existing position with no allocation intent or attribution
+  initial_state: Position from before cutover
+  event_sequence: Provider CLOSE
+  expected_invariant: Still closes
+  status: covered
+  impl_status: implemented
+  tests:
+  - tests/test_track18_position_ownership.py::test_plain_close_with_no_order_attribution_at_all_is_unaffected
+  - tests/test_alloc01_single_destination.py::test_paused_primary_falls_to_secondary_and_close_still_reaches_owner
+  evidence: Asserted.
+  notes: ''
+- id: R-09
+  group: Q accounting/reporting
+  scenario: Alembic downgrade path for 0037
+  initial_state: Downgrade
+  event_sequence: alembic downgrade
+  expected_invariant: Reversible
+  status: gap
+  impl_status: implemented
+  tests: []
+  evidence: No test; batch_alter_table drop column is implemented.
+  notes: ''
+- id: ALLOC-01
+  group: C
+  scenario: One signal, three eligible accounts, one selected
+  initial_state: 3 accounts in one single-mode rule
+  event_sequence: one webhook/entry signal
+  expected_invariant: exactly one live order, one bound account, no exposure elsewhere
+  status: covered
+  impl_status: implemented
+  tests:
+  - tests/test_alloc01_single_destination.py::test_one_signal_three_eligible_accounts_produces_one_order
+  - tests/test_alloc04_api_end_to_end.py::test_one_webhook_three_eligible_accounts_one_order
+  evidence: asserts one order row, one broker position, intent committed with selected account
+  notes: paper broker only
+- id: ALLOC-02
+  group: F
+  scenario: Concurrent workers race to bind one intent
+  initial_state: claimed intent
+  event_sequence: 4 spawned processes bind different accounts
+  expected_invariant: exactly one wins
+  status: covered
+  impl_status: implemented
+  tests:
+  - tests/test_alloc02_cross_process_claim.py::test_many_processes_race_exactly_one_account_wins
+  evidence: separate OS processes on one SQLite file
+  notes: one host; not a distributed proof
+- id: ALLOC-03
+  group: D
+  scenario: Strategy ceiling counted once across accounts
+  initial_state: strategy budget 1500, two accounts
+  event_sequence: two 1000 notional entries
+  expected_invariant: second rejected on every account
+  status: covered
+  impl_status: implemented
+  tests:
+  - tests/test_alloc03_strategy_budget.py::test_strategy_ceiling_is_global_not_per_account
+  - tests/test_alloc03_strategy_budget.py::test_cross_process_strategy_admission_is_atomic
+  evidence: notional only; confirmed fills plus unresolved reservations
+  notes: no planned-risk, protected/shared sleeves
+- id: ALLOC-04
+  group: I
+  scenario: Unknown submission keeps its reservation until evidence
+  initial_state: broker call times out
+  event_sequence: timeout, second signal, resolve not_placed
+  expected_invariant: capacity not spendable twice; released exactly once
+  status: covered
+  impl_status: implemented
+  tests:
+  - tests/test_alloc05_unknown_and_exit_scope.py::test_unknown_submission_holds_reservation_until_resolved
+  evidence: strategy and account reservations held then released
+  notes: only not_placed is releasable; real fills must come via reconciliation
+- id: ALLOC-05
+  group: O
+  scenario: Crash at each durable boundary of an entry then restart
+  initial_state: 3 accounts
+  event_sequence: BaseException at bind/ledger/broker/outcome/save, redeliver on new engine
+  expected_invariant: never a second order, never a second account
+  status: covered
+  impl_status: implemented
+  tests:
+  - tests/test_alloc07_crash_boundaries.py::test_crash_after_binding_before_ledger_intent_resumes_same_account_once
+  - tests/test_alloc07_crash_boundaries.py::test_crash_after_ledger_intent_before_broker_call_never_resubmits
+  - tests/test_alloc07_crash_boundaries.py::test_crash_after_broker_fill_before_ledger_outcome_never_resubmits
+  - tests/test_alloc07_crash_boundaries.py::test_crash_after_ledger_outcome_before_order_saved_never_resubmits
+  evidence: simulated crashes in-process, not a process kill
+  notes: plain entry path only; close/stop commands still treat an existing PENDING_SUBMISSION as new
+- id: ALLOC-06
+  group: P
+  scenario: UI preserves delivery mode on edit
+  initial_state: replicate rule
+  event_sequence: edit destinations/mode in TR-11 in a real browser
+  expected_invariant: mode round-trips; preview does not apply
+  status: covered
+  impl_status: implemented
+  tests:
+  - tests/test_alloc06_tr11_delivery_mode_ui.py::test_tr11_shows_delivery_mode_and_edit_round_trips
+  - tests/test_alloc06_tr11_delivery_mode_ui.py::test_tr11_editing_other_fields_does_not_change_replicate_mode
+  evidence: Playwright against uvicorn subprocess
+  notes: no console screens yet for strategy budgets or intent audit
+- id: ALLOC-07
+  group: J
+  scenario: Exit never sells another strategy's holdings (SNOW-style)
+  initial_state: alice holds SNOW, bob never bought
+  event_sequence: bob CLOSE
+  expected_invariant: no sale, no short
+  status: covered
+  impl_status: implemented
+  tests:
+  - tests/test_alloc05_unknown_and_exit_scope.py::test_exit_never_sells_another_strategys_holdings
+  - tests/test_alloc05_unknown_and_exit_scope.py::test_exit_after_failed_entry_sells_nothing_and_creates_no_short
+  evidence: plain account, per-source ownership derivation
+  notes: managed accounts reject any second lifecycle instead (EXE-09)
+- id: ALLOC-08
+  group: N
+  scenario: Configured loss limit fails closed with a real store
+  initial_state: account with daily_loss_limit_percent
+  event_sequence: entry signal
+  expected_invariant: rejected, never raises
+  status: covered
+  impl_status: partial
+  tests:
+  - tests/test_alloc09_loss_limit_fails_closed.py::test_configured_daily_loss_limit_rejects_instead_of_raising
+  evidence: the limiter has no real daily P&L source, so a configured limit rejects ALL entries
+  notes: 'gap: SignalStore.get_daily_pnl does not exist; no latch; no calendar'
+- id: ALLOC-09
+  group: G
+  scenario: Bypassed allocator is detected
+  initial_state: pool_for patched to broadcast
+  event_sequence: one signal
+  expected_invariant: the one-order invariant fails
+  status: covered
+  impl_status: implemented
+  tests:
+  - tests/test_alloc08_managed_and_properties.py::test_mutation_bypassing_allocator_is_detected
+  evidence: mutation check
+  notes: ''
+- id: ALLOC-10
+  group: F
+  scenario: Adversarial sequences keep single mode and strategy ceiling
+  initial_state: random capacity/ceiling/mode
+  event_sequence: hypothesis sequences of entries, redeliveries, closes
+  expected_invariant: <=1 live order per signal; strategy total <= ceiling
+  status: covered
+  impl_status: implemented
+  tests:
+  - tests/test_alloc08_managed_and_properties.py::test_property_single_mode_never_exceeds_one_destination_or_ceilings
+  evidence: 40 examples per run; bounded state space
+  notes: not a proof

@@ -32,6 +32,11 @@ encoded consistently in docs, code and a test**, plus account-scoped
 idempotency. It was not missing requirement ingestion and not a
 disconnected allocator: there was no allocator.
 
+Two further defects of the same family were found while building the
+regressions: the duplicate-command replay exported an invalid routing outcome
+(raised on every replay), and the daily-loss limiter reads store members that do
+not exist because its tests mock them. Both are fixed or fail closed now.
+
 **Regression that would have prevented it:**
 `tests/test_alloc01_single_destination.py::test_one_signal_three_eligible_accounts_produces_one_order`
 and the through-the-webhook variant
@@ -105,8 +110,8 @@ No calendar is asserted. Gates are acceptance criteria with evidence.
 | G1 schema + store: intents, bind/release, budgets, migrations | G0 | Alembic 0037; separate-process claim race test | done |
 | G2 engine integration: pool resolution, select-before-submit, resume | G1 | One signal → one order through engine and through webhook API | done |
 | G3 joint admission: strategy ceiling, durable reservations, ID-matched release | G1, G2 | Cross-process atomic admission test | done |
-| G4 unknown-outcome hold + operator resolution | G3 | Reservation held for ambiguous submit; released once on evidence | in progress |
-| G5 UI: delivery mode, budgets, intent audit in existing console | G2, G3 | Rendered, driven in a real browser | not started |
+| G4 unknown-outcome hold + operator resolution | G3 | Reservation held for ambiguous submit; released once on evidence; crash at each boundary never resubmits | done (plain entry path) |
+| G5 UI: delivery mode, budgets, intent audit in existing console | G2, G3 | Rendered, driven in a real browser | partial: delivery mode + simulator done and browser-tested; strategy budgets and intent audit have API only |
 | G6 immutable allocation identity under managed lifecycles | G2 | Two providers hold same instrument; scoped protection/exit | **not started — largest remaining gap** |
 | G7 account identity / bindings / purpose | G2 | Duplicate-credential detection; per-account purpose | not started |
 | G8 deferred-entry policy, split mode, assignment handling | G6 | per ledger | not started |
@@ -115,8 +120,10 @@ No calendar is asserted. Gates are acceptance criteria with evidence.
 
 Extend the existing private console only. Implemented: API for routing
 `delivery_mode`, strategy budgets and the allocation-intent audit view.
-Console screens for them: see "Release-state report" for what has actually
-been rendered and driven.
+The TR-11 routing editor now shows and preserves `delivery_mode` and the
+simulator shows which account would be selected; both were driven in a real
+browser. Strategy budgets and the intent audit view have API endpoints but no
+console screen yet.
 
 ## 7. Migration and rollout
 
@@ -146,12 +153,16 @@ externally qualified, deployed or live-released.
 | Intent bound-account resume after restart | Isolated-tested | simulated by pre-binding; not a kill-at-boundary test |
 | Cross-process claim/admission atomicity | Isolated-tested | SQLite, `spawn` processes, one host |
 | Strategy ceiling counted once across accounts | Integrated, isolated-tested | notional only |
-| Unknown-submission reservation hold | In progress | |
+| Unknown-submission reservation hold | Integrated, isolated-tested | `resolve_unknown_submission` is engine-level only; no API/UI to resolve yet |
+| Crash at each durable boundary (plain entry) | Isolated-tested | in-process `BaseException`, not a process kill |
+| Property + mutation tests for the allocator | Isolated-tested | detects a bypassed allocator |
 | Same-direction multi-provider allocations | Designed | code rejects second managed lifecycle |
 | Account identity / bindings / purpose | Designed | |
 | Deferred entry, split, assignment/exercise | Designed | |
 | Risk defaults (0.25/0.75/0.50/25%, halts) | Not implemented | ledger only; need explicit release |
-| Console screens | see below | |
+| TR-11 delivery-mode editor + simulator selection | Integrated, isolated-tested | real browser (Playwright), paper |
+| Strategy budget / intent audit screens | Designed | API exists, no console screen |
+| Daily-loss / min-equity gates | Not functional | fail closed; no daily-P&L source (see traceability) |
 
 ## 9. Known limits
 

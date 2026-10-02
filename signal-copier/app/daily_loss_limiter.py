@@ -35,18 +35,25 @@ class DailyLossLimiter:
 
         # Get today's P&L from account economics
         today = date.today()
-        daily_pnl = self.store.get_daily_pnl(account.account_id, today)
+        get_daily_pnl = getattr(self.store, "get_daily_pnl", None)
+        if get_daily_pnl is None:
+            # A limit IS configured but this build has no daily-P&L source
+            # (SignalStore.get_daily_pnl does not exist). Reject (fail
+            # closed) rather than raise out of signal handling or silently
+            # skip a configured circuit breaker.
+            return "Daily loss limit check failed: no daily P&L source is implemented in this build (failing closed)"
+        daily_pnl = get_daily_pnl(account.account_id, today)
 
         if daily_pnl is None:
             # No data yet for today
             return None
 
         # Get account balance to compute percentage
-        if account.broker not in self.store._broker_adapters:
+        if account.broker not in getattr(self.store, "_broker_adapters", {}):
             # No broker available, fail closed
             return "Daily loss limit check failed: no broker adapter available"
 
-        broker = self.store._broker_adapters[account.broker]
+        broker = self.store._broker_adapters[account.broker]  # type: ignore[attr-defined]
         try:
             balance = await broker.get_account_balance(account)
             if balance is None or balance.equity is None:
@@ -99,11 +106,11 @@ class DailyLossLimiter:
             return None  # Min equity threshold not configured
 
         # Get current account balance to check equity
-        if account.broker not in self.store._broker_adapters:
+        if account.broker not in getattr(self.store, "_broker_adapters", {}):
             # No broker available, fail closed
             return "Min equity check failed: no broker adapter available"
 
-        broker = self.store._broker_adapters[account.broker]
+        broker = self.store._broker_adapters[account.broker]  # type: ignore[attr-defined]
         try:
             balance = await broker.get_account_balance(account)
             if balance is None or balance.equity is None:
