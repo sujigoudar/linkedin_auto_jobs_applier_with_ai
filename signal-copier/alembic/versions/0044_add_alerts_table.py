@@ -51,10 +51,14 @@ def upgrade() -> None:
         "alerts",
         ["acknowledged_at"],
 <<<<<<< HEAD
+<<<<<<< HEAD
         sqlite_where=sa.text("acknowledged_at IS NULL"),
 =======
         sqlite_where="acknowledged_at IS NULL",
 >>>>>>> dbe41be (WP-16: Add risk-fraction sizing mode for dynamic position sizing)
+=======
+        sqlite_where="acknowledged_at IS NULL",
+>>>>>>> 94d04df (WP-13: Default target sizing with equal-split fractions)
     )
 
 

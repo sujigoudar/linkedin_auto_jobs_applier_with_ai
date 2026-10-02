@@ -16,6 +16,7 @@ a live broker or feed.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
 from app.models import AccountBalance, DestinationAccount, OrderResult, OrderStatus, Side, Signal
 from app.brokers.base import BrokerAdapter
@@ -68,16 +69,22 @@ class PaperBroker(BrokerAdapter):
         #: adjust `self.positions` for a real fill.
         self._cash: dict[str, float] = {}
 <<<<<<< HEAD
+<<<<<<< HEAD
+=======
+>>>>>>> 94d04df (WP-13: Default target sizing with equal-split fractions)
         #: account_id -> next order ID sequence number (WP-38, G-C-24).
         #: Persisted via the DestinationAccount.paper_order_id_sequence field
         #: in the database so order IDs remain unique across restarts.
         #: The engine initializes this from the store at startup and updates
         #: it after each fill.
         self._order_id_sequence: dict[str, int] = {}
+<<<<<<< HEAD
 =======
         #: account_id -> symbol -> last known price (used to compute equity)
         self._last_prices: dict[str, dict[str, float]] = {}
 >>>>>>> c659a00 (WP-32b: Enforce max_gross_leverage cap and implement paper broker margin/equity)
+=======
+>>>>>>> 94d04df (WP-13: Default target sizing with equal-split fractions)
         #: Read-only exposure of `fee_per_fill` -- see class docstring.
         self.fee_per_fill = self.FEE_PER_FILL
 
@@ -157,6 +164,9 @@ class PaperBroker(BrokerAdapter):
 
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
+=======
+>>>>>>> 94d04df (WP-13: Default target sizing with equal-split fractions)
         # WP-38 (G-C-24): Use persistent per-account sequence for order IDs.
         # The engine initializes _order_id_sequence from the database and
         # updates it after each order. Defaults to 1 if not yet set.
@@ -164,6 +174,7 @@ class PaperBroker(BrokerAdapter):
         seq = self._order_id_sequence.get(account_id, 1)
         self._order_id_sequence[account_id] = seq + 1
         order_id = f"paper-{seq}"
+<<<<<<< HEAD
 =======
         # D-01: Create simulated child stop orders for bracket entries
         child_order_ids: dict[str, str] = {}
@@ -198,6 +209,8 @@ class PaperBroker(BrokerAdapter):
             prices_for_account = self._last_prices.setdefault(account.account_id, {})
             prices_for_account[symbol] = price
 >>>>>>> c659a00 (WP-32b: Enforce max_gross_leverage cap and implement paper broker margin/equity)
+=======
+>>>>>>> 94d04df (WP-13: Default target sizing with equal-split fractions)
 
         result = OrderResult(
             account_id=account.account_id,
@@ -210,7 +223,11 @@ class PaperBroker(BrokerAdapter):
             fee=self.fee_per_fill,
             fee_currency="USD",  # Paper broker uses USD convention
             slippage=0.0,  # Paper broker fills exactly at signal price when available
+<<<<<<< HEAD
             child_order_ids=child_order_ids,
+=======
+            executed_at=datetime.now(timezone.utc),
+>>>>>>> 94d04df (WP-13: Default target sizing with equal-split fractions)
         )
         self.fills.append(result)
         return result
@@ -319,6 +336,9 @@ class PaperBroker(BrokerAdapter):
         return self.positions.setdefault(account.account_id, {}).get(symbol, 0.0)
 
 <<<<<<< HEAD
+<<<<<<< HEAD
+=======
+>>>>>>> 94d04df (WP-13: Default target sizing with equal-split fractions)
     def set_order_id_sequence(self, account_id: str, sequence: int) -> None:
         """Initialize the order ID sequence for an account (WP-38, G-C-24).
         Called by the engine at startup to restore the persisted sequence
@@ -331,6 +351,7 @@ class PaperBroker(BrokerAdapter):
         Called by the engine after a fill to persist the updated sequence
         back to the database."""
         return self._order_id_sequence.get(account_id, 1)
+<<<<<<< HEAD
 =======
     async def get_order_status(
         self, account: DestinationAccount, broker_order_id: str
@@ -349,6 +370,8 @@ class PaperBroker(BrokerAdapter):
         # Unknown order - return None
         return None
 >>>>>>> 21bf5fe (WP-18 (D-01, C-07): Track bracket child legs as reconcilable orders)
+=======
+>>>>>>> 94d04df (WP-13: Default target sizing with equal-split fractions)
 
     def simulate_price(self, symbol: str, price: float) -> list[OrderResult]:
         """Test/simulation hook: check every resting stop order on `symbol`

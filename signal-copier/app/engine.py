@@ -150,6 +150,7 @@ from app.models import (
     Intent,
     OrderResult,
     OrderStatus,
+    ProfitTarget,
     Side,
     Signal,
     SourceEvent,
@@ -3131,6 +3132,44 @@ class SignalCopierEngine:
             )
         return await self._handle_managed_entry(signal, account, symbol)
 
+    def _compute_default_target_fractions(self, targets: list[ProfitTarget]) -> list[float | None]:
+        """Compute equal-split default fractions for targets that don't have them.
+
+        WP-13: When a signal's targets carry no fraction, size them equal-split with
+        the last level taking the remainder (3 levels → 1/3, 1/3, rest).
+
+        Returns a list of fractions (one per target), where each is either:
+        - The target's original fraction (if it had one)
+        - A computed equal-split fraction (if it didn't have one)
+        """
+        if not targets:
+            return []
+
+        # Check if any target needs a computed fraction
+        needs_computation = [t.fraction is None for t in targets]
+        if not any(needs_computation):
+            # All targets already have fractions, return as-is
+            return [t.fraction for t in targets]
+
+        # Compute equal-split fractions: base is 1.0 / count
+        count = len(targets)
+        base_fraction = 1.0 / count
+        fractions: list[float | None] = []
+
+        for i, target in enumerate(targets):
+            if target.fraction is not None:
+                # Target already has a fraction, use it
+                fractions.append(target.fraction)
+            elif i < count - 1:
+                # Not the last target, use base fraction
+                fractions.append(base_fraction)
+            else:
+                # Last target, gets the remainder
+                remaining = 1.0 - (base_fraction * (count - 1))
+                fractions.append(remaining)
+
+        return fractions
+
     async def _handle_managed_entry(
         self, signal: Signal, account: DestinationAccount, symbol: str
     ) -> _ManagedOrderOutcome:
@@ -3186,21 +3225,13 @@ class SignalCopierEngine:
         # the existing single-take_profit behavior when `targets` is
         # empty (every producer this task didn't touch).
         if signal.targets:
-            # Known, disclosed gap (full multi-target execution logic is
-            # out of scope for this pass): a level that carries a
-            # `quantity` but no `fraction` (see `ProfitTarget`'s own
-            # docstring -- each is independent/optional) resolves here to
-            # `reduce_fraction=None`, which `PositionLifecycleManager`
-            # itself already treats as a real, harmless 0.0-fraction
-            # no-op-on-fire SELL (see its own `target.reduce_fraction or
-            # 0.0`), never a crash -- it just doesn't yet reduce the
-            # position at that level. A real per-level `quantity`
-            # resolved against this account's own sized `quantity` (not
-            # merely converted to a fraction here) needs its own,
-            # separately-scoped follow-up.
+            # WP-13: Default target sizing — when targets carry no fraction,
+            # size them equal-split with the last level taking the remainder
+            # (3 levels → 1/3, 1/3, rest). A single take_profit → one target at 1.0.
+            fractions = self._compute_default_target_fractions(signal.targets)
             targets = [
-                Target(trigger_price=level.price, action=TargetAction.SELL, reduce_fraction=level.fraction)
-                for level in signal.targets
+                Target(trigger_price=level.price, action=TargetAction.SELL, reduce_fraction=fraction)
+                for level, fraction in zip(signal.targets, fractions, strict=True)
             ]
         elif signal.take_profit is not None:
             targets = [Target(trigger_price=signal.take_profit, action=TargetAction.SELL, reduce_fraction=1.0)]
