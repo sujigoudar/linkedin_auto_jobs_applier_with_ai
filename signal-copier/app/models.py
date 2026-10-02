@@ -398,12 +398,14 @@ class OrderResult:
     filled_quantity: Optional[float] = None
     filled_price: Optional[float] = None
     message: str = ""
-    # E-07: executed_at should be the broker's actual fill timestamp, not the
-    # poll time. Adapters should populate this with the broker's reported fill
-    # time when the order is FILLED. For PENDING orders or when the broker
-    # doesn't provide a timestamp, this is None (only set when broker reports
-    # an actual fill time). See db.py's _update_order_status_locked.
-    executed_at: Optional[datetime] = None
+    # E-07: `executed_at` is the broker's fill timestamp when the adapter
+    # reports one; otherwise the instant this result was built (the public
+    # contract every exporter and journal reader relies on -- never None).
+    # A reconciliation update keeps a stored fill time rather than
+    # overwriting it with the poll time (see db.py's
+    # `_update_order_status_locked`, which records the poll instant in
+    # `orders.confirmed_at` instead).
+    executed_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     #: Broker commission/fee for this order, in account currency.
     #: None when this broker doesn't report fees or this order wasn't filled.
     fee: Optional[float] = None
