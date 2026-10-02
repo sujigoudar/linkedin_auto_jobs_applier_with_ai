@@ -1,7 +1,7 @@
 # Current progress snapshot
 
-As of `HEAD` after Track 59: mutation testing for statistics.py and
-signal_correlation.py on `claude/signal-copier-readiness-sm44tr`
+As of `HEAD` after Track 71: comprehensive mutation testing for broker adapters
+and provider modules on `agent-track71-brokers-providers-mutation`
 (2026-10-02). This is a snapshot, not a roadmap — update it when the state
 it describes actually changes. This file was previously stale for an
 extended period (it referenced an old branch, `claude/signal-copier-
@@ -42,10 +42,9 @@ anything past Track 29 has landed since this snapshot was written.
 
 ## What's genuinely landed and working, as of HEAD
 
-- Alembic head is `0034`. Full `pytest -q` suite: **2152 passed, 0 failed**
-  (after Track 59's 23 new mutation regression tests for statistics.py and
-  signal_correlation.py, which also uncovered and fixed a critical bug in
-  signal_correlation.fingerprint_key).
+- Alembic head is `0034`. Full `pytest -q` suite: **2196 passed, 0 failed**
+  (after Track 71's 44 new mutation regression tests for brokers and providers,
+  building on Track 59's critical bug fix in signal_correlation.fingerprint_key).
 - `ruff check .` and the CI-scoped `mypy` command (file list in
   `.github/workflows/signal-copier-ci.yml`, 39 files) both clean against
   this HEAD.
