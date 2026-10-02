@@ -546,6 +546,38 @@ async def lifespan(app: FastAPI):
     else:
         logger.info("RELAY_INGRESS_URL is not set -- relay scheduler not started")
 
+    # WP-34: startup sweep of stale allocation intents. Mark allocation intents
+    # that were left in 'claimed' or 'selected' state (crash-window) as 'skipped'
+    # with reason "stale after restart", and raise an alert for each.
+    try:
+        from app.alerts import AlertSink
+
+        alert_sink = AlertSink(store)
+        stale_seconds = getattr(config, "ALLOCATION_INTENT_STALE_SECONDS", 3600)
+        stale_intents = store.list_allocation_intents(state="claimed") + store.list_allocation_intents(state="selected")
+        now = datetime.now(timezone.utc)
+        for intent in stale_intents:
+            created = datetime.fromisoformat(intent.get("created_at", ""))
+            if (now - created).total_seconds() > stale_seconds:
+                store.skip_allocation_intent(
+                    intent["signal_id"],
+                    reason="stale after restart",
+                    trace=[{"event": "startup_sweep", "timestamp": now.isoformat()}],
+                )
+                alert_sink.record(
+                    kind="skipped_allocation",
+                    account_id=None,
+                    message=f"Stale allocation intent {intent['intent_id']} swept on startup",
+                    payload={
+                        "intent_id": intent["intent_id"],
+                        "signal_id": intent["signal_id"],
+                        "strategy_key": intent["strategy_key"],
+                        "reason": "stale after restart",
+                    },
+                )
+    except Exception:
+        logger.exception("Failed to sweep stale allocation intents on startup")
+
     yield
 
     _heartbeat_task.cancel()
@@ -6549,6 +6581,52 @@ async def get_fx_rate(
         return await fx_context.get_latest_rate(base, quote)
     except httpx.HTTPError as exc:
         raise HTTPException(status_code=502, detail=_sanitized_upstream_error("Frankfurter", exc)) from exc
+
+
+@app.get("/alerts")
+async def list_alerts(
+    unacknowledged: bool = False, account_id: str | None = None, _owner: dict = Depends(require_owner_read)
+) -> dict:
+    """List alerts, optionally filtered.
+
+    Query parameters:
+    - unacknowledged: if true, return only unacknowledged alerts
+    - account_id: if provided, filter by account
+
+    Returns:
+    {
+        "alerts": [
+            {
+                "id": "uuid",
+                "kind": "protection_deficit" | "loss_halt" | "unknown_submission" | "skipped_allocation" | "venue_adoption",
+                "account_id": "uuid or null",
+                "message": "...",
+                "payload": {...} or null,
+                "acknowledged_at": "2026-10-02T...",
+                "created_at": "2026-10-02T..."
+            }
+        ]
+    }
+    """
+    alerts = store.list_alerts(unacknowledged=unacknowledged, account_id=account_id, limit=200)
+    return {"alerts": alerts}
+
+
+@app.post("/alerts/{alert_id}/ack")
+async def acknowledge_alert(alert_id: str, _owner: dict = Depends(require_owner)) -> dict:
+    """Mark an alert as acknowledged.
+
+    Args:
+        alert_id: Alert UUID
+
+    Returns:
+    {
+        "acknowledged": true if the alert was found and updated, false otherwise,
+        "id": "alert_id"
+    }
+    """
+    acknowledged = store.acknowledge_alert(alert_id)
+    return {"acknowledged": acknowledged, "id": alert_id}
 
 
 def _orders_response(signal_id: str, results) -> dict:

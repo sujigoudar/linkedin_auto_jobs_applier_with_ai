@@ -1883,6 +1883,17 @@ CREATE TABLE IF NOT EXISTS health_heartbeat (
     id INTEGER PRIMARY KEY,
     last_write TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL
 );
+CREATE TABLE IF NOT EXISTS alerts (
+    id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL,
+    account_id TEXT,
+    message TEXT NOT NULL,
+    payload TEXT,
+    acknowledged_at TIMESTAMP,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_alerts_account_id ON alerts(account_id);
+CREATE INDEX IF NOT EXISTS ix_alerts_unacknowledged ON alerts(acknowledged_at) WHERE acknowledged_at IS NULL;
 """
 
 
@@ -9322,3 +9333,96 @@ class SignalStore:
                    WHERE id = ?""",
                 (datetime.now(timezone.utc).isoformat(), alert_id),
             )
+
+    def persist_alert(
+        self,
+        kind: str,
+        account_id: str | None,
+        message: str,
+        payload: dict[str, Any] | None = None,
+    ) -> str:
+        """Record an alert to the alerts table.
+
+        Args:
+            kind: Alert type (e.g., "protection_deficit", "loss_halt")
+            account_id: Account UUID, or None for system-level alerts
+            message: Human-readable description
+            payload: Structured data (dict), stored as JSON
+
+        Returns:
+            Alert ID (UUID string)
+        """
+        import uuid
+
+        alert_id = str(uuid.uuid4())
+        payload_json = json.dumps(payload) if payload else None
+        now = datetime.now(timezone.utc).isoformat()
+
+        with self._connect() as conn:
+            conn.execute(
+                """INSERT INTO alerts
+                   (id, kind, account_id, message, payload, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (alert_id, kind, account_id, message, payload_json, now),
+            )
+        return alert_id
+
+    def list_alerts(
+        self, *, unacknowledged: bool = False, account_id: str | None = None, limit: int = 100
+    ) -> list[dict]:
+        """List alerts, optionally filtered.
+
+        Args:
+            unacknowledged: If True, only return alerts where acknowledged_at IS NULL
+            account_id: If provided, filter by account
+            limit: Maximum rows to return
+
+        Returns:
+            List of alert dicts with id, kind, account_id, message, payload (parsed),
+            acknowledged_at, created_at
+        """
+        query = "SELECT id, kind, account_id, message, payload, acknowledged_at, created_at FROM alerts WHERE 1=1"
+        params: list[Any] = []
+
+        if unacknowledged:
+            query += " AND acknowledged_at IS NULL"
+        if account_id is not None:
+            query += " AND account_id = ?"
+            params.append(account_id)
+
+        query += " ORDER BY created_at DESC LIMIT ?"
+        params.append(limit)
+
+        with self._connect() as conn:
+            rows = conn.execute(query, params).fetchall()
+
+        return [
+            {
+                "id": r[0],
+                "kind": r[1],
+                "account_id": r[2],
+                "message": r[3],
+                "payload": json.loads(r[4]) if r[4] else None,
+                "acknowledged_at": r[5],
+                "created_at": r[6],
+            }
+            for r in rows
+        ]
+
+    def acknowledge_alert(self, alert_id: str) -> bool:
+        """Mark an alert as acknowledged.
+
+        Args:
+            alert_id: Alert UUID
+
+        Returns:
+            True if the alert was updated, False if not found
+        """
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            cur = conn.execute(
+                "UPDATE alerts SET acknowledged_at = ? WHERE id = ? AND acknowledged_at IS NULL",
+                (now, alert_id),
+            )
+        return cur.rowcount > 0
+

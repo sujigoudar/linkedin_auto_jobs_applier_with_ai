@@ -167,12 +167,14 @@ class CloseArbiter:
             # `reserved > owned` below -- called out as its own case first
             # so the halt reason names the actual anomaly (an overclose)
             # rather than the more generic reserved-vs-owned mismatch.
+            # WP-30: generate protection_deficit alert for invariant violation
             ledger.halted = True
             ledger.halt_reason = (
                 f"invariant violated: owned ({ledger.owned}) is negative -- more was settled as "
                 "filled than was actually owned (an overclose)"
             )
         elif ledger.reserved > ledger.owned + _EPSILON:
+            # WP-30: generate protection_deficit alert for invariant violation
             ledger.halted = True
             ledger.halt_reason = (
                 f"invariant violated: reserved ({ledger.reserved}) exceeds owned ({ledger.owned})"
