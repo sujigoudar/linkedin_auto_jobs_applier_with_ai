@@ -323,8 +323,11 @@
       const fixedQuantityRaw = els.review.querySelector("#tr08-fixed-quantity").value;
       const maxExposureRaw = els.review.querySelector("#tr08-max-exposure").value;
       try {
-        await postJSON("/accounts", {
-          account_id: draft.accountLabel,
+        // Check if account already exists
+        const accountsRes = await ctx.fetchJSON("/accounts");
+        const existing = accountsRes.accounts.find((a) => a.account_id === draft.accountLabel);
+
+        const payload = {
           broker: draft.adapter,
           multiplier,
           fixed_quantity: fixedQuantityRaw ? parseFloat(fixedQuantityRaw) : null,
@@ -332,7 +335,18 @@
           enabled: false, // "Save never enables trading" -- always inactive.
           managed_lifecycle: els.review.querySelector("#tr08-managed-lifecycle").checked,
           max_notional_exposure: maxExposureRaw ? parseFloat(maxExposureRaw) : null,
-        });
+        };
+
+        if (existing) {
+          // Use PATCH for existing account (partial update)
+          await patchJSON(`/accounts/${encodeURIComponent(draft.accountLabel)}`, payload);
+        } else {
+          // Use POST for new account (full create)
+          await postJSON("/accounts", {
+            account_id: draft.accountLabel,
+            ...payload,
+          });
+        }
         els.review.querySelector("#tr08-action-result").innerHTML = `<p class="section-note">Saved as an inactive account draft. <a href="#/trade/accounts">Open Broker accounts and capabilities (TR-07)</a> to review it.</p>`;
       } catch (err) {
         errorEl.textContent = err.message;
