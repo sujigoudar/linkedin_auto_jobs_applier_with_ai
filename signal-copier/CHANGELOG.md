@@ -7,6 +7,76 @@ does not yet cut versioned releases (see `docs/process/RELEASE.md`), so
 entries are grouped by theme and rough chronological wave instead of by
 version number. Newest wave first.
 
+## [Unreleased] — Track 72: mutation-testing regression tests for lifecycle and financial core modules (2026-10-02)
+
+Comprehensive targeted regression testing for critical position lifecycle and
+financial core modules: `app/lifecycle/manager.py` (position lifecycle state
+machine and critical invariants), `app/lifecycle/close_arbiter.py` (close
+arbitration and oversell prevention), `app/writer_lease.py` (single-writer
+fencing mechanism), `app/command_ledger.py` (idempotent pre-effect financial-
+command ledger), and `app/reconciliation.py` (fill-confirmation reconciliation).
+Follows Track 60-71 mutation testing pattern with focused coverage on financial
+invariants, state machine correctness, and atomicity guarantees.
+
+### Mutation Testing Design
+
+Mutation resistance established via 57 targeted regression tests organized
+into 10 test classes covering position lifecycle and financial safety:
+
+**app/lifecycle/close_arbiter.py** (8 tests):
+- Oversell prevention: available_to_sell = max(0, owned - reserved) invariant
+- Reserve/settle atomicity with epsilon tolerance
+- Halt detection for invariant violations
+
+**app/lifecycle/manager.py** (4 tests):
+- Initial state correctness and state machine flow
+- Protection status progression and unresolved entry tracking
+
+**Reduction Plan Computation** (5 tests):
+- Quantity clamping to available (not owned)
+- Can-amend-stop preconditions (all three required: had_stop AND remainder>0 AND broker support)
+- Zero/negative quantity handling and reserved quantity respect
+
+**Trailing Stop Computation** (6 tests):
+- Buy-side: improves only when price rises, never loosens
+- Sell-side: improves only when price falls, never tightens
+- Floor price boundaries and first-price always-improves
+
+**app/writer_lease.py** (6 tests):
+- Token validation and FencedOutError on mismatch
+- Acquire idempotency within process
+- Lease expiry checks and different-site rejection
+
+**app/command_ledger.py** (10 tests):
+- Deterministic SHA-256 fingerprints (key-order irrelevant)
+- Duplicate detection via uncertainty state
+- Order result classification and cancel result handling
+
+**app/reconciliation.py** (3 tests):
+- PENDING non-terminal and FILLED/REJECTED terminal state discrimination
+
+**Boundary Conditions** (6 tests):
+- Zero quantity and negative owned detection
+- NaN/infinity rejection and epsilon tolerance
+- Very small positive quantity handling
+
+**Operator Inversion Mutations** (6 tests):
+- Comparison operators and direction inversions
+- Halt/close condition mutations
+
+**Integration Tests** (3 tests):
+- Plan validation, duplicate position prevention, and plan persistence
+
+### Added
+- `tests/test_track72_lifecycle_financial_mutations.py`: 57 new targeted regression tests
+
+### Verified
+- Full `pytest -q` on lifecycle/financial modules: **57 passed**
+- `ruff check .` on test file: **All checks passed**
+- `mypy` type-checking: **No new issues**
+
+---
+
 ## [Unreleased] — Track 73: mutation-testing regression tests for feature and capability modules (2026-10-02)
 
 Comprehensive targeted regression testing for critical feature and capability
