@@ -38,9 +38,20 @@ def upgrade() -> None:
         sa.Column("updated_at", sa.Text, nullable=False),
     )
     op.create_index("idx_allocation_intents_state", "allocation_intents", ["state"])
+    with op.batch_alter_table("capital_reservations", schema=None) as batch_op:
+        batch_op.add_column(sa.Column("strategy_key", sa.Text))
+    op.create_table(
+        "strategy_budgets",
+        sa.Column("strategy_key", sa.Text, primary_key=True),
+        sa.Column("max_notional", sa.Float),
+        sa.Column("updated_at", sa.Text, nullable=False),
+    )
 
 
 def downgrade() -> None:
+    op.drop_table("strategy_budgets")
+    with op.batch_alter_table("capital_reservations", schema=None) as batch_op:
+        batch_op.drop_column("strategy_key")
     op.drop_index("idx_allocation_intents_state", table_name="allocation_intents")
     op.drop_table("allocation_intents")
     with op.batch_alter_table("config_routing_rules", schema=None) as batch_op:

@@ -304,20 +304,27 @@ stress-loss modeling — see `app/capital_allocator.py`'s module docstring
 for the exact, current scope.
 
 **If I have two accounts of the same type (e.g. two options-capable
-accounts), where does an incoming options trade get placed?** Routing is
-still purely rule-based (`config/routing.yaml`'s `source` +
-`symbol_filter`, now also implicitly filtered by the asset-class gate
-above) — **every account listed as a destination for a matching rule
-receives the signal; there is no automatic "pick the best one" logic.**
-If two accounts are both listed as destinations for the same
-`source`/`symbol_filter` rule, both get every matching signal — that's
-fan-out (deliberate copying to multiple accounts), not disambiguation.
-To send options alerts to account A and everything else to account B,
-write two separate routing rules with non-overlapping `symbol_filter`s
-(or, once it exists, an asset-class-aware filter — not implemented yet;
-today the only disambiguation lever is `symbol_filter`). There's no
-per-account "I only want option symbols" declarative rule yet — a
-concrete, buildable next step if that's the disambiguation you need.
+accounts), where does an incoming options trade get placed?** (ALLOC-01)
+A routing rule's `destinations` are **alternatives for ONE intended
+trade**, listed in priority order (`delivery_mode: single`, the default).
+For each entry signal the engine records one durable allocation intent
+(`allocation_intents`), then walks the approved pool in order and picks the
+first account that passes every pre-submission gate (route qualification,
+asset-class support, daily-loss/margin/equity breakers, sizing, capital
+admission). Exactly one account receives the order; the others get none.
+Once a submission has been attempted on the selected account — whatever
+its outcome, including an unknown/lost response — the intent is committed
+and is **never rerouted** to another account. A restart or duplicate
+delivery resumes the same bound account.
+
+If no approved account can take the trade, the signal is recorded as an
+explained skip (`allocation_intents.state = 'skipped'`, with each
+account's rejection reason) and nothing is submitted.
+
+Deliberate copying to several accounts is still possible, but it must be
+configured explicitly with `delivery_mode: replicate` on that rule — it is
+never inferred from the number of accounts listed. See
+`docs/design/PORTFOLIO_ALLOCATION.md`.
 
 ## Close signals
 

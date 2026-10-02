@@ -970,7 +970,9 @@ class PositionLifecycleManager:
             # guard at this method's top returns before this point on any
             # later call).
             if self.capital_allocator is not None and pending.reserved_notional:
-                self.capital_allocator.release(account.account_id, pending.reserved_notional)
+                self.capital_allocator.release(
+                    account.account_id, pending.reserved_notional, signal_id=lifecycle.plan.entry_signal_id or None
+                )
 
             # PRO-07: use `pending.confirmed_filled_quantity` (the highest
             # value ever actually confirmed and applied), not the raw

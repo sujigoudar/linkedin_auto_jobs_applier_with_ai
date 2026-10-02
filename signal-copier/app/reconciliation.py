@@ -586,4 +586,4 @@ class OrderReconciler:
         allowed to release it."""
         reserved_notional = order.get("reserved_notional")
         if self.capital_allocator is not None and reserved_notional:
-            self.capital_allocator.release(order["account_id"], reserved_notional)
+            self.capital_allocator.release(order["account_id"], reserved_notional, signal_id=order.get("signal_id"))

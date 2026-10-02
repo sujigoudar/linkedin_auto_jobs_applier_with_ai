@@ -716,6 +716,17 @@ CREATE INDEX IF NOT EXISTS idx_saved_views_screen ON saved_views (screen);
 -- so a reservation and its originating command share one identifier
 -- end-to-end -- this table's `signal_id` column is a good anchor for
 -- that reconciliation (both should already agree on the same signal).
+-- ALLOC-03: a GLOBAL notional ceiling for one strategy (keyed by signal
+-- `source`, the same key Track 18's ownership derivation uses). Counted
+-- ONCE across every account the strategy can use -- adding accounts never
+-- multiplies it. NULL max_notional = no ceiling configured (unset blocks
+-- nothing; it is an opt-in gate like max_notional_exposure).
+CREATE TABLE IF NOT EXISTS strategy_budgets (
+    strategy_key TEXT PRIMARY KEY,
+    max_notional REAL,
+    updated_at TEXT NOT NULL
+);
+
 -- ALLOC-01: one durable logical allocation decision per trade opportunity,
 -- created BEFORE any account-specific execution. `intent_id` is derived
 -- from (strategy_key, signal_id) -- NOT from an account -- so N eligible
@@ -1853,6 +1864,7 @@ CREATE INDEX IF NOT EXISTS ix_margin_call_alerts_account_id ON margin_call_alert
 #: for columns before SQLite 3.35, and this stays compatible with older
 #: builds rather than assuming a version).
 _COLUMN_MIGRATIONS = [
+    ("capital_reservations", "strategy_key", "TEXT"),
     ("config_routing_rules", "delivery_mode", "TEXT NOT NULL DEFAULT 'single'"),
     ("signals", "stop_loss", "REAL"),
     ("signals", "take_profit", "REAL"),
@@ -3121,7 +3133,12 @@ class SignalStore:
         return (row[0], row[1])
 
     def create_capital_reservation(
-        self, reservation_id: str, account_id: str, notional: float, signal_id: str | None = None
+        self,
+        reservation_id: str,
+        account_id: str,
+        notional: float,
+        signal_id: str | None = None,
+        strategy_key: str | None = None,
     ) -> None:
         """P0-4: durably record a app/capital_allocator.py provisional
         reservation the INSTANT it's admitted -- called from inside
@@ -3133,12 +3150,15 @@ class SignalStore:
         reading the table, never required for correctness."""
         with self._connect() as conn:
             conn.execute(
-                "INSERT INTO capital_reservations (id, account_id, notional, signal_id, created_at, resolved_at) "
-                "VALUES (?, ?, ?, ?, ?, NULL)",
-                (reservation_id, account_id, notional, signal_id, datetime.now(timezone.utc).isoformat()),
+                "INSERT INTO capital_reservations "
+                "(id, account_id, notional, signal_id, created_at, resolved_at, strategy_key) "
+                "VALUES (?, ?, ?, ?, ?, NULL, ?)",
+                (reservation_id, account_id, notional, signal_id, datetime.now(timezone.utc).isoformat(), strategy_key),
             )
 
-    def resolve_one_capital_reservation(self, account_id: str, reservation_id: str | None, notional: float) -> None:
+    def resolve_one_capital_reservation(
+        self, account_id: str, reservation_id: str | None, notional: float, signal_id: str | None = None
+    ) -> None:
         """Mark one durable reservation resolved -- called everywhere
         `CapitalAllocator.release` already is, so a row here goes
         unresolved for exactly as long as `_pending`'s own in-memory
@@ -3163,17 +3183,117 @@ class SignalStore:
                     (datetime.now(timezone.utc).isoformat(), reservation_id),
                 )
                 return
-            row = conn.execute(
-                "SELECT id FROM capital_reservations WHERE account_id = ? AND notional = ? AND resolved_at IS NULL "
-                "LIMIT 1",
-                (account_id, notional),
-            ).fetchone()
+            row = None
+            if signal_id is not None:
+                # ALLOC-03: an exact (account, signal, notional) match first,
+                # so a strategy-tagged reservation is never resolved by
+                # another strategy's identically-sized one on that account.
+                row = conn.execute(
+                    "SELECT id FROM capital_reservations WHERE account_id = ? AND notional = ? AND signal_id = ? "
+                    "AND resolved_at IS NULL LIMIT 1",
+                    (account_id, notional, signal_id),
+                ).fetchone()
+            if row is None:
+                row = conn.execute(
+                    "SELECT id FROM capital_reservations WHERE account_id = ? AND notional = ? "
+                    "AND resolved_at IS NULL LIMIT 1",
+                    (account_id, notional),
+                ).fetchone()
             if row is None:
                 return
             conn.execute(
                 "UPDATE capital_reservations SET resolved_at = ? WHERE id = ?",
                 (datetime.now(timezone.utc).isoformat(), row[0]),
             )
+
+    # ------------------------------------------------------------------
+    # ALLOC-03: strategy budgets + joint, cross-process-safe admission
+    # ------------------------------------------------------------------
+    def set_strategy_budget(self, strategy_key: str, max_notional: float | None) -> None:
+        if max_notional is not None and not (max_notional > 0):
+            raise ValueError("max_notional must be a positive number or None")
+        with self._immediate() as conn:
+            conn.execute(
+                "INSERT INTO strategy_budgets (strategy_key, max_notional, updated_at) VALUES (?, ?, ?) "
+                "ON CONFLICT(strategy_key) DO UPDATE SET max_notional = excluded.max_notional, "
+                "updated_at = excluded.updated_at",
+                (strategy_key, max_notional, datetime.now(timezone.utc).isoformat()),
+            )
+
+    def get_strategy_budget(self, strategy_key: str) -> dict | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT strategy_key, max_notional, updated_at FROM strategy_budgets WHERE strategy_key = ?",
+                (strategy_key,),
+            ).fetchone()
+        return None if row is None else {"strategy_key": row[0], "max_notional": row[1], "updated_at": row[2]}
+
+    def list_strategy_budgets(self) -> list[dict]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT strategy_key, max_notional, updated_at FROM strategy_budgets ORDER BY strategy_key"
+            ).fetchall()
+        return [{"strategy_key": r[0], "max_notional": r[1], "updated_at": r[2]} for r in rows]
+
+    def delete_strategy_budget(self, strategy_key: str) -> None:
+        with self._immediate() as conn:
+            conn.execute("DELETE FROM strategy_budgets WHERE strategy_key = ?", (strategy_key,))
+
+    def sum_unresolved_strategy_reservations(self, strategy_key: str) -> float:
+        """Outstanding reserved notional for one strategy ACROSS every
+        account and every process sharing this database file."""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT COALESCE(SUM(notional), 0) FROM capital_reservations "
+                "WHERE strategy_key = ? AND resolved_at IS NULL",
+                (strategy_key,),
+            ).fetchone()
+        return float(row[0])
+
+    def reserve_strategy_checked(
+        self,
+        reservation_id: str,
+        account_id: str,
+        notional: float,
+        *,
+        signal_id: str | None,
+        strategy_key: str,
+        ceiling: float,
+        confirmed_notional,
+    ) -> tuple[bool, float, float]:
+        """Atomically (one BEGIN IMMEDIATE transaction) check
+        `confirmed + outstanding reservations + notional <= ceiling` for
+        the strategy and, only if it fits, insert the reservation.
+        `confirmed_notional` is a zero-arg callable evaluated AFTER the
+        write lock is held, so no other process can commit a fill or a
+        reservation between the read and the insert. No broker or network
+        call may happen inside it. Returns (admitted, confirmed, pending).
+        """
+        with self._immediate() as conn:
+            confirmed = float(confirmed_notional())
+            pending = float(
+                conn.execute(
+                    "SELECT COALESCE(SUM(notional), 0) FROM capital_reservations "
+                    "WHERE strategy_key = ? AND resolved_at IS NULL",
+                    (strategy_key,),
+                ).fetchone()[0]
+            )
+            if confirmed + pending + notional > ceiling:
+                return False, confirmed, pending
+            conn.execute(
+                "INSERT INTO capital_reservations "
+                "(id, account_id, notional, signal_id, created_at, resolved_at, strategy_key) "
+                "VALUES (?, ?, ?, ?, ?, NULL, ?)",
+                (
+                    reservation_id,
+                    account_id,
+                    notional,
+                    signal_id,
+                    datetime.now(timezone.utc).isoformat(),
+                    strategy_key,
+                ),
+            )
+        return True, confirmed, pending
 
     def sum_unresolved_capital_reservations(self) -> dict[str, float]:
         """Every account's real, currently-outstanding durable reservation
@@ -4337,7 +4457,7 @@ class SignalStore:
         body short and must never make a broker/network call inside it."""
         import time
 
-        conn = sqlite3.connect(self.db_path, timeout=5.0)
+        conn = sqlite3.connect(self.db_path, timeout=3.0)  # v8 engineering default sqlite_busy_timeout_ms=3000
         conn.execute("PRAGMA foreign_keys = ON")
         try:
             for attempt in range(attempts):
@@ -8762,17 +8882,33 @@ class SignalStore:
             for r in rows
         ]
 
-    def list_filled_orders_chronological(self, account_id: str) -> list[dict]:
+    def list_accounts_with_fills_for_source(self, source: str) -> list[str]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT DISTINCT o.account_id FROM orders o JOIN signals s ON o.signal_id = s.id "
+                "WHERE o.status = 'filled' AND s.source = ?",
+                (source,),
+            ).fetchall()
+        return [r[0] for r in rows]
+
+    def list_filled_orders_chronological(self, account_id: str, source: str | None = None) -> list[dict]:
         """Every FILLED order for this account, oldest first -- the replay
         order app/economics.py needs to reconstruct realized P&L via
         average-cost lot accounting. Unlike `list_recent_orders`, this has
         no LIMIT: a P&L computation that silently dropped older fills would
         misstate cost basis and realized gains, not just show fewer rows."""
-        query = """SELECT id, account_id, broker, symbol, side, requested_quantity, signal_id,
-                          status, broker_order_id, filled_quantity, filled_price, message, executed_at
-                   FROM orders WHERE account_id = ? AND status = 'filled' ORDER BY executed_at ASC, id ASC"""
+        query = """SELECT o.id, o.account_id, o.broker, o.symbol, o.side, o.requested_quantity, o.signal_id,
+                          o.status, o.broker_order_id, o.filled_quantity, o.filled_price, o.message, o.executed_at
+                   FROM orders o {join} WHERE o.account_id = ? AND o.status = 'filled' {extra}
+                   ORDER BY o.executed_at ASC, o.id ASC"""
+        params: list[Any] = [account_id]
+        if source is None:
+            query = query.format(join="", extra="")
+        else:
+            query = query.format(join="JOIN signals s ON o.signal_id = s.id", extra="AND s.source = ?")
+            params.append(source)
         with self._connect() as conn:
-            rows = conn.execute(query, (account_id,)).fetchall()
+            rows = conn.execute(query, params).fetchall()
         return [
             {
                 "id": r[0],

@@ -2551,6 +2551,45 @@ async def delete_routing_rule(rule_id: int, _owner: dict = Depends(require_owner
     return {"id": rule_id, "status": "deleted"}
 
 
+class StrategyBudgetRequest(BaseModel):
+    #: ALLOC-03: global notional ceiling for this strategy across ALL
+    #: accounts (None = explicitly unset). Must be positive when set.
+    max_notional: float | None = None
+
+
+@app.get("/strategy-budgets")
+async def list_strategy_budgets(_owner: dict = Depends(require_owner_read)) -> dict:
+    budgets = store.list_strategy_budgets()
+    for budget in budgets:
+        budget["reserved_notional"] = store.sum_unresolved_strategy_reservations(budget["strategy_key"])
+    return {"strategy_budgets": budgets}
+
+
+@app.put("/strategy-budgets/{strategy_key}")
+async def put_strategy_budget(
+    strategy_key: str, request: StrategyBudgetRequest, _owner: dict = Depends(require_owner)
+) -> dict:
+    if request.max_notional is not None and not (request.max_notional > 0):
+        raise HTTPException(status_code=422, detail="max_notional must be a positive number or null")
+    store.set_strategy_budget(strategy_key, request.max_notional)
+    return {"strategy_key": strategy_key, "max_notional": request.max_notional, "status": "saved"}
+
+
+@app.delete("/strategy-budgets/{strategy_key}")
+async def delete_strategy_budget(strategy_key: str, _owner: dict = Depends(require_owner)) -> dict:
+    store.delete_strategy_budget(strategy_key)
+    return {"strategy_key": strategy_key, "status": "deleted"}
+
+
+@app.get("/allocation-intents")
+async def list_allocation_intents(
+    state: str | None = None, limit: int = 100, _owner: dict = Depends(require_owner_read)
+) -> dict:
+    """ALLOC-01 audit view: every logical allocation decision (which
+    account was selected, or why the trade was skipped)."""
+    return {"allocation_intents": store.list_allocation_intents(state=state, limit=max(1, min(limit, 500)))}
+
+
 class RoutingSimulateRequest(BaseModel):
     source: str
     symbol: str
@@ -2629,6 +2668,7 @@ async def simulate_routing_rules(request: RoutingSimulateRequest, _owner: dict =
             "source": rule.source,
             "destinations": rule.destinations,
             "symbol_filter": rule.symbol_filter,
+            "delivery_mode": rule.delivery_mode,
             "matched": entry["matched"],
         }
         if entry["matched"]:
@@ -2648,6 +2688,16 @@ async def simulate_routing_rules(request: RoutingSimulateRequest, _owner: dict =
         quantity=request.quantity,
         price=request.price,
     )
+
+    # ALLOC-01: an ENTRY selects ONE account from the `single`-mode pool
+    # (first eligible, in priority order -- exactly what the real engine
+    # does); `replicate` accounts each receive their own copy. A CLOSE keeps
+    # account-scoped behavior (no selection).
+    single_pool_ids: list[str] = []
+    if side != Side.CLOSE:
+        single_pool_ids = [a.account_id for a in routing_config.pool_for(request.source, request.symbol).single]
+    selected_single: str | None = None
+    eligible_pool: list[str] = []
 
     accounts_out = []
     final_destinations: list[str] = []
@@ -2680,6 +2730,7 @@ async def simulate_routing_rules(request: RoutingSimulateRequest, _owner: dict =
             account.max_notional_exposure is None
             and account.risk_percent_of_equity is None
             and engine.max_owner_notional_exposure is None
+            and store.get_strategy_budget(request.source) is None
         ):
             capital_check = {
                 "status": "skipped",
@@ -2699,7 +2750,7 @@ async def simulate_routing_rules(request: RoutingSimulateRequest, _owner: dict =
                 # shared CapitalAllocator -- release it immediately so this
                 # dry run leaves the real in-memory ledger exactly as it
                 # found it (see this endpoint's own docstring).
-                engine.capital_allocator.release(account.account_id, notional)
+                engine.capital_allocator.release(account.account_id, notional, signal_id=synthetic_signal.id)
             capital_admitted = admitted
             capital_check = {
                 "status": "would_admit" if admitted else "would_reject",
@@ -2710,7 +2761,20 @@ async def simulate_routing_rules(request: RoutingSimulateRequest, _owner: dict =
                 "reason": None if admitted else rejection.message if rejection else None,
             }
 
-        would_receive = entry_allowed and broker_registered and asset_class_ok and capital_admitted
+        eligible = entry_allowed and broker_registered and asset_class_ok and capital_admitted
+        would_receive = eligible
+        allocation_status = "replicated" if eligible else "not_eligible"
+        if account.account_id in single_pool_ids:
+            if eligible:
+                eligible_pool.append(account.account_id)
+                if selected_single is None:
+                    selected_single = account.account_id
+                    allocation_status = "selected"
+                else:
+                    would_receive = False
+                    allocation_status = "eligible_not_selected"
+        elif side == Side.CLOSE:
+            allocation_status = "account_scoped_close" if eligible else "not_eligible"
         if would_receive:
             final_destinations.append(account.account_id)
 
@@ -2731,6 +2795,7 @@ async def simulate_routing_rules(request: RoutingSimulateRequest, _owner: dict =
                 ),
             },
             "capital_reservation": capital_check,
+            "allocation": {"status": allocation_status},
             "would_receive_this_signal": would_receive,
         })
 
@@ -2753,6 +2818,14 @@ async def simulate_routing_rules(request: RoutingSimulateRequest, _owner: dict =
                 "webhook route's own Idempotency-Key/event-id response cache) both key off a real prior "
                 "delivery this hypothetical signal has no counterpart to -- there is nothing real to "
                 "evaluate for a dry run, so this is honestly not_tracked rather than guessed."
+            ),
+        },
+        "allocation": {
+            "selected_account_id": selected_single,
+            "eligible_single_pool": eligible_pool,
+            "note": (
+                "single-mode destinations are alternatives for ONE trade: the first eligible account in "
+                "priority order is selected; replicate-mode destinations each receive a copy."
             ),
         },
         "final_destinations": final_destinations,

@@ -97,7 +97,14 @@ def test_simulate_precedence_matches_the_real_engines_own_precedence(client):
         assert body["rules_evaluated"][1]["matched"] is True
         assert body["rules_evaluated"][1]["admitted_accounts"] == ["acct_btc"]
 
-        assert set(body["final_destinations"]) == {"acct_catchall", "acct_btc"}
+        # ALLOC-01: both rules are `single` mode, so they merge into ONE
+        # ordered pool and exactly one account (the first eligible, in
+        # priority order) is selected; the other is eligible-not-selected.
+        assert body["final_destinations"] == ["acct_catchall"]
+        assert body["allocation"]["selected_account_id"] == "acct_catchall"
+        assert body["allocation"]["eligible_single_pool"] == ["acct_catchall", "acct_btc"]
+        statuses = {a["account_id"]: a["allocation"]["status"] for a in body["accounts"]}
+        assert statuses == {"acct_catchall": "selected", "acct_btc": "eligible_not_selected"}
 
         # Cross-check against the REAL engine: send the identical signal for
         # real via the webhook endpoint and confirm it actually reaches the

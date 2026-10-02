@@ -125,7 +125,12 @@ from app import quantity as quantity_module
 from app import signal_freshness
 from app.brokers.base import BrokerAdapter
 from app.brokers.paper import PaperBroker
-from app.capital_allocator import CapitalAllocator, confirmed_open_notional, owner_wide_exposure
+from app.capital_allocator import (
+    CapitalAllocator,
+    confirmed_open_notional,
+    confirmed_strategy_notional,
+    owner_wide_exposure,
+)
 from app.daily_loss_limiter import DailyLossLimiter
 from app.margin_call_detector import MarginCallDetector
 from app.db import SignalStore
@@ -1075,7 +1080,7 @@ class SignalCopierEngine:
                 # call. If another worker/delivery already bound a
                 # different account, this one must not execute.
                 if not self.store.bind_allocation_intent(signal.id, account.account_id):
-                    self.capital_allocator.release(account.account_id, notional)
+                    self.capital_allocator.release(account.account_id, notional, signal_id=signal.id)
                     logger.info(
                         "allocation intent for signal=%s is bound elsewhere; not executing on account=%s",
                         signal.id,
@@ -1115,7 +1120,7 @@ class SignalCopierEngine:
                 # The broker was already released this reservation's fate
                 # one way or another on that first attempt, so release here
                 # too rather than double-reserve.
-                self.capital_allocator.release(account.account_id, notional)
+                self.capital_allocator.release(account.account_id, notional, signal_id=signal.id)
                 logger.info(
                     "duplicate entry command idempotency_key=%s account=%s symbol=%s -- replaying "
                     "tracked state=%s instead of resubmitting",
@@ -1146,6 +1151,7 @@ class SignalCopierEngine:
             # so nothing else on this path (routing, sizing, the capital-
             # admission check above) is folded into it.
             submitted_at = datetime.now(timezone.utc)
+            ambiguous_submission = False
             try:
                 result = await broker.place_order(order_signal, account, quantity, symbol)
             except Exception as exc:  # noqa: BLE001 - one account's failure must not block others
@@ -1156,13 +1162,21 @@ class SignalCopierEngine:
                     signal_id=signal.id,
                     message=str(exc),
                 )
+                ambiguous_submission = True
                 self.store.mark_command_ledger_outcome(
                     ledger_key,
                     uncertainty_state=UncertaintyState.UNKNOWN_AMBIGUOUS,
-                    terminal_evidence=command_ledger.ambiguous_evidence_for_exception(exc),
+                    terminal_evidence={
+                        **command_ledger.ambiguous_evidence_for_exception(exc),
+                        "signal_id": signal.id,
+                        "reserved_notional": notional,
+                    },
                 )
             else:
                 outcome_state, outcome_remote, outcome_evidence = command_ledger.classify_order_result(result)
+                ambiguous_submission = outcome_state == UncertaintyState.UNKNOWN_AMBIGUOUS
+                if ambiguous_submission:
+                    outcome_evidence = {**outcome_evidence, "signal_id": signal.id, "reserved_notional": notional}
                 self.store.mark_command_ledger_outcome(
                     ledger_key,
                     uncertainty_state=outcome_state,
@@ -1194,8 +1208,22 @@ class SignalCopierEngine:
                 # fabricated full-quantity reservation for an order nothing
                 # actually reserved capital against.
                 reserved_quantity = quantity if notional else 0.0
+            elif ambiguous_submission and notional:
+                # ALLOC-05: an ambiguous submission (timeout / lost response /
+                # ERROR / PENDING with nothing to poll) may have been
+                # accepted at the venue. It is an unresolved OBLIGATION: the
+                # capital and strategy reservations stay held until
+                # `resolve_unknown_submission` (or reconciliation that
+                # records the real fill) settles it. Releasing here would let
+                # the same capacity be spent twice.
+                logger.warning(
+                    "ambiguous submission for signal=%s account=%s: holding reservation of %.2f until resolved",
+                    signal.id,
+                    account.account_id,
+                    notional,
+                )
             else:
-                self.capital_allocator.release(account.account_id, notional)
+                self.capital_allocator.release(account.account_id, notional, signal_id=signal.id)
 
             # TRK-Q1: how much of `quantity` the broker has actually
             # ACCEPTED an order for -- see app/quantity.py's
@@ -1898,6 +1926,36 @@ class SignalCopierEngine:
             )
         return True, None
 
+    def resolve_unknown_submission(self, idempotency_key: str, *, outcome: str, evidence: str) -> bool:
+        """ALLOC-05: settle one ambiguous ENTRY submission with independent
+        evidence. Only `outcome="not_placed"` is supported: the operator (or
+        a reconciliation readback) has confirmed the broker holds no order
+        or fill for it, so the held capital/strategy reservation is released
+        exactly once and the ledger row becomes REJECTED_CONFIRMED.
+
+        A submission that DID reach the venue is not released here: its
+        fill must be recorded through reconciliation so confirmed exposure
+        replaces the reservation. Releasing it on an operator's word alone
+        would drop real exposure from the books. Returns False when the
+        entry is unknown, not an ENTRY, or already resolved."""
+        if outcome != "not_placed":
+            raise ValueError("only outcome='not_placed' can release a reservation; record real fills via reconciliation")
+        entry = self.store.get_command_ledger_entry(idempotency_key)
+        if entry is None or entry.command_type != CommandType.ENTRY:
+            return False
+        if entry.uncertainty_state != UncertaintyState.UNKNOWN_AMBIGUOUS or entry.resolved_at is not None:
+            return False
+        signal_id = entry.terminal_evidence.get("signal_id")
+        notional = entry.terminal_evidence.get("reserved_notional") or 0.0
+        if notional and signal_id:
+            self.capital_allocator.release(entry.account_id, float(notional), signal_id=str(signal_id))
+        self.store.mark_command_ledger_outcome(
+            idempotency_key,
+            uncertainty_state=UncertaintyState.REJECTED_CONFIRMED,
+            terminal_evidence={"resolution": "not_placed", "operator_evidence": evidence},
+        )
+        return True
+
     async def _try_reserve_capital(
         self, account: DestinationAccount, order_signal: Signal, quantity: float
     ) -> tuple[bool, float, OrderResult | None]:
@@ -1952,10 +2010,13 @@ class SignalCopierEngine:
             assert bp_rejection is not None
             return False, 0.0, bp_rejection
 
+        strategy_budget = self.store.get_strategy_budget(order_signal.source)
+        strategy_ceiling = strategy_budget["max_notional"] if strategy_budget is not None else None
         has_gate = (
             account.max_notional_exposure is not None
             or account.risk_percent_of_equity is not None
             or self.max_owner_notional_exposure is not None
+            or strategy_ceiling is not None
         )
         if not has_gate:
             return True, 0.0, None
@@ -2049,6 +2110,35 @@ class SignalCopierEngine:
                             f"{owner_exposure.notional:.2f}, requested={notional:.2f}) -- refusing",
                         )
 
+                if strategy_ceiling is not None:
+                    # ALLOC-03: strategy-level admission, atomic across
+                    # accounts and processes (see
+                    # CapitalAllocator.reserve_with_strategy_ceiling).
+                    strategy_exposure = confirmed_strategy_notional(self.store, order_signal.source)
+                    if strategy_exposure.has_unresolved:
+                        return False, notional, self._reject(
+                            account,
+                            order_signal,
+                            f"strategy '{order_signal.source}' has open exposure "
+                            f"{strategy_exposure.unresolved_symbols} this replay could not resolve -- true "
+                            "strategy notional is unknown, refusing new admissions until it resolves",
+                        )
+                    ok, confirmed, pending = self.capital_allocator.reserve_with_strategy_ceiling(
+                        account.account_id,
+                        notional,
+                        signal_id=order_signal.id,
+                        strategy_key=order_signal.source,
+                        ceiling=strategy_ceiling,
+                    )
+                    if not ok:
+                        return False, notional, self._reject(
+                            account,
+                            order_signal,
+                            f"strategy '{order_signal.source}' notional ceiling ({strategy_ceiling}) would be "
+                            f"exceeded by this entry (confirmed={confirmed:.2f}, pending={pending:.2f}, "
+                            f"requested={notional:.2f}) across all accounts -- refusing",
+                        )
+                    return True, notional, None
                 self.capital_allocator.reserve_locked(account.account_id, notional, signal_id=order_signal.id)
                 return True, notional, None
         finally:
@@ -2703,7 +2793,7 @@ class SignalCopierEngine:
             # nothing guarantees resolve_pending_entry is ever called for
             # this one. Deferring here risks a reservation that's never
             # released -- see app/capital_allocator.py's "Known gap".
-            self.capital_allocator.release(account.account_id, notional)
+            self.capital_allocator.release(account.account_id, notional, signal_id=signal.id)
             self.lifecycle_manager.register_pending_entry(account, symbol, None, quantity)
             self.store.mark_command_ledger_outcome(
                 ledger_key,
@@ -2752,7 +2842,7 @@ class SignalCopierEngine:
             # failure that never reached the network) is the one case that
             # definitely never happened -- nothing to protect, so nothing
             # to keep registered.
-            self.capital_allocator.release(account.account_id, notional)
+            self.capital_allocator.release(account.account_id, notional, signal_id=signal.id)
             self.lifecycle_manager.unregister_plan(account.account_id, symbol)
         elif result.status == OrderStatus.ERROR:
             # Same ambiguity as the raised-exception branch above, just
@@ -2776,12 +2866,12 @@ class SignalCopierEngine:
             # E03 (bounded): same "release now, not defer" reasoning as the
             # raised-exception branch above -- an ERROR result is never
             # polled by _reconcile_pending_entries either.
-            self.capital_allocator.release(account.account_id, notional)
+            self.capital_allocator.release(account.account_id, notional, signal_id=signal.id)
             self.lifecycle_manager.register_pending_entry(account, symbol, None, quantity)
         elif result.status == OrderStatus.FILLED:
             # Confirmed exposure now includes this fill, so the provisional
             # reservation's job is done.
-            self.capital_allocator.release(account.account_id, notional)
+            self.capital_allocator.release(account.account_id, notional, signal_id=signal.id)
             filled_quantity = result.filled_quantity if result.filled_quantity is not None else quantity
             self.store.record_fill(account.account_id, symbol, signal.side, filled_quantity)
             # TRK-22: `filled_quantity` above is exactly what was just
@@ -2851,7 +2941,7 @@ class SignalCopierEngine:
                     reserved_quantity=quantity if notional else 0.0,
                 )
             else:
-                self.capital_allocator.release(account.account_id, notional)
+                self.capital_allocator.release(account.account_id, notional, signal_id=signal.id)
                 self.lifecycle_manager.register_pending_entry(account, symbol, None, quantity)
             if result.filled_quantity is not None and result.filled_quantity > 0:
                 # The initial synchronous response can itself already carry

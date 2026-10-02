@@ -776,6 +776,12 @@ class TestCCXTBrokerCapabilities:
     - supports_native_bracket changed incorrectly
     """
 
+    @pytest.fixture(autouse=True)
+    def _requires_ccxt(self) -> None:
+        # ccxt is an optional dependency (requirements.txt); same convention
+        # as tests/test_ccxt_broker.py.
+        pytest.importorskip("ccxt")
+
     def test_ccxt_supports_crypto_only(self) -> None:
         """CCXTBroker only supports CRYPTO asset class."""
         broker = CCXTBroker(exchange_id="binance")

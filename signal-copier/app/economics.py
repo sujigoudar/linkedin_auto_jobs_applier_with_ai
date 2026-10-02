@@ -194,11 +194,11 @@ def _signed_quantity(side: str, quantity: float) -> float | None:
     return None  # Side.CLOSE (or anything else) is not a resolved direction
 
 
-def compute_account_economics(store: SignalStore, account_id: str) -> AccountEconomics:
+def compute_account_economics(store: SignalStore, account_id: str, source: str | None = None) -> AccountEconomics:
     result = AccountEconomics(account_id=account_id)
     per_symbol = result.per_symbol
 
-    for order in store.list_filled_orders_chronological(account_id):
+    for order in store.list_filled_orders_chronological(account_id, source=source):
         symbol = order["symbol"]
         quantity = order["filled_quantity"]
         price = order["filled_price"]

@@ -200,6 +200,24 @@ def confirmed_open_notional(store: SignalStore, account_id: str) -> ExposureRepo
     return ExposureReport(notional=total, unresolved_symbols=list(economics.incomplete_symbols))
 
 
+def confirmed_strategy_notional(store: SignalStore, strategy_key: str) -> ExposureReport:
+    """ALLOC-03: the strategy's confirmed open notional summed across EVERY
+    account it has filled orders on -- each account's confirmed-fill replay
+    filtered to this strategy's own signals (same replay as
+    `confirmed_open_notional`, never a second derivation). Unresolved
+    symbols are surfaced, not folded in as zero."""
+    total = 0.0
+    unresolved: list[str] = []
+    for account_id in store.list_accounts_with_fills_for_source(strategy_key):
+        economics = compute_account_economics(store, account_id, source=strategy_key)
+        for symbol_economics in economics.per_symbol.values():
+            if symbol_economics.average_cost is None:
+                continue
+            total += abs(symbol_economics.open_quantity) * symbol_economics.average_cost
+        unresolved.extend(f"{account_id}:{symbol}" for symbol in economics.incomplete_symbols)
+    return ExposureReport(notional=total, unresolved_symbols=unresolved)
+
+
 def owner_wide_exposure(
     store: SignalStore, accounts: Iterable, allocator: "CapitalAllocator"
 ) -> ExposureReport:
@@ -316,7 +334,14 @@ class CapitalAllocator:
             self._pending[account_id] += notional
             return True
 
-    def reserve_locked(self, account_id: str, notional: float, *, signal_id: str | None = None) -> None:
+    def reserve_locked(
+        self,
+        account_id: str,
+        notional: float,
+        *,
+        signal_id: str | None = None,
+        strategy_key: str | None = None,
+    ) -> None:
         """Reserve `notional` against `account_id` WITHOUT acquiring
         `account_lock(account_id)` -- the caller MUST already hold that
         lock (typically because it's enforcing more than one gate
@@ -328,13 +353,44 @@ class CapitalAllocator:
         `_try_reserve_capital` orchestration in app/engine.py) must not
         lose that same restart-survival guarantee."""
         if self.store is not None and notional:
-            self.store.create_capital_reservation(str(uuid.uuid4()), account_id, notional, signal_id=signal_id)
+            self.store.create_capital_reservation(
+                str(uuid.uuid4()), account_id, notional, signal_id=signal_id, strategy_key=strategy_key
+            )
         self._pending[account_id] += notional
 
-    def release(self, account_id: str, notional: float) -> None:
+    def reserve_with_strategy_ceiling(
+        self,
+        account_id: str,
+        notional: float,
+        *,
+        signal_id: str | None,
+        strategy_key: str,
+        ceiling: float,
+    ) -> tuple[bool, float, float]:
+        """ALLOC-03 joint admission step. Caller already holds
+        `account_lock(account_id)` (account gates already passed). The
+        strategy check + durable reservation insert is ONE atomic SQLite
+        transaction, so the strategy ceiling holds across accounts AND
+        across processes; the in-memory account ledger is only advanced
+        once that transaction admitted. Requires a store."""
+        assert self.store is not None, "strategy ceilings need a durable store"
+        admitted, confirmed, pending = self.store.reserve_strategy_checked(
+            str(uuid.uuid4()),
+            account_id,
+            notional,
+            signal_id=signal_id,
+            strategy_key=strategy_key,
+            ceiling=ceiling,
+            confirmed_notional=lambda: confirmed_strategy_notional(self.store, strategy_key).notional,  # type: ignore[arg-type]
+        )
+        if admitted:
+            self._pending[account_id] += notional
+        return admitted, confirmed, pending
+
+    def release(self, account_id: str, notional: float, *, signal_id: str | None = None) -> None:
         self._pending[account_id] = max(0.0, self._pending[account_id] - notional)
         if self.store is not None:
-            self.store.resolve_one_capital_reservation(account_id, None, notional)
+            self.store.resolve_one_capital_reservation(account_id, None, notional, signal_id=signal_id)
 
     def pending_reservation(self, account_id: str) -> float:
         """Phase B7: this account's real, current in-memory provisional

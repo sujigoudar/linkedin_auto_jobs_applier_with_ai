@@ -133,7 +133,7 @@ async def test_tr09_provider_scorecards_and_correlation_match_real_seeded_data(l
     ).status_code == 200
     assert client.post(
         "/routing-rules",
-        json={"source": "provB", "destinations": ["acct-fan1", "acct-fan2"]},
+        json={"source": "provB", "destinations": ["acct-fan1", "acct-fan2"], "delivery_mode": "replicate"},
         headers=csrf_headers,
     ).status_code == 200
     # GET /providers (TR-09's "Sources" table) reads app/providers.py's

@@ -21,7 +21,8 @@ async def test_signal_routes_and_sizes_to_multiple_accounts(store):
         "acct_flat": DestinationAccount(account_id="acct_flat", broker="paper", fixed_quantity=5.0),
     }
     routing = RoutingConfig(
-        rules=[RoutingRule(source="tradingview", destinations=["acct_full", "acct_half", "acct_flat"])],
+        # ALLOC-01: fan-out is explicit; this test is about per-account sizing under replication.
+        rules=[RoutingRule(source="tradingview", destinations=["acct_full", "acct_half", "acct_flat"], delivery_mode="replicate")],
         accounts=accounts,
     )
     engine = SignalCopierEngine(routing=routing, brokers={"paper": paper}, store=store)
