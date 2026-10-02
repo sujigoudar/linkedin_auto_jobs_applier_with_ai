@@ -136,7 +136,7 @@ async def test_all_four_trading_screens_render_real_content(live_server):
     csrf_headers = {"X-CSRF-Token": login.json()["csrf_token"]}
 
     assert client.post(
-        "/accounts", json={"account_id": "acct1", "broker": "paper"}, headers=csrf_headers
+        "/accounts", json={"account_id": "acct1", "broker": "paper", "multiplier": 1.0, "allow_short": True}, headers=csrf_headers
     ).status_code == 200
     assert client.post(
         "/routing-rules", json={"source": "tradingview", "destinations": ["acct1"]}, headers=csrf_headers

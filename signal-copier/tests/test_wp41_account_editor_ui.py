@@ -163,6 +163,55 @@ async def test_tr08_ui_sizing_mode_and_risk_fraction_persist(live_server):
     async with async_playwright() as p:
         browser = await p.chromium.launch(executable_path=_CHROMIUM_EXECUTABLE)
         page = await browser.new_page()
+
+        # Capture console and page errors for debugging
+        console_msgs = []
+        page_errors = []
+
+        def on_console_msg(msg):
+            console_msgs.append(f"[{msg.type}] {msg.text}")
+            print(f"[CONSOLE {msg.type}] {msg.text}")
+
+        def on_page_error(exc):
+            page_errors.append(str(exc))
+            print(f"[PAGE ERROR] {exc}")
+
+        page.on("console", on_console_msg)
+        page.on("pageerror", on_page_error)
+
+        # Capture network responses for debugging
+        responses = []
+
+        async def on_response(response):
+            if "/accounts" in response.url:
+                try:
+                    body = await response.text()
+                    responses.append({
+                        "url": response.url,
+                        "status": response.status,
+                        "body": body[:500]  # First 500 chars
+                    })
+                    print(f"[RESPONSE] {response.url} -> {response.status}")
+                    if response.status >= 400:
+                        print(f"  Body: {body[:500]}")
+                except Exception as e:
+                    print(f"[RESPONSE ERROR] {e}")
+
+        page.on("response", on_response)
+
+        # Intercept requests
+        requests_made = []
+        async def on_request(request):
+            if "/accounts" in request.url:
+                requests_made.append({
+                    "url": request.url,
+                    "method": request.method,
+                    "headers": dict(request.headers)
+                })
+                print(f"[REQUEST] {request.method} {request.url}")
+
+        page.on("request", on_request)
+
         try:
             await page.goto(base_url)
             await page.fill("#login-password", "test-owner-pw")
@@ -185,9 +234,44 @@ async def test_tr08_ui_sizing_mode_and_risk_fraction_persist(live_server):
             await page.wait_for_selector("#tr08-risk-fraction", timeout=5000)
             await page.fill("#tr08-risk-fraction", "0.02")
 
+            # Check sessionStorage and CSS token before saving
+            csrf_in_storage = await page.evaluate("() => sessionStorage.getItem('scr_csrf_token')")
+            print(f"[DEBUG] CSRF token in sessionStorage before save: {csrf_in_storage}")
+
+            # Also check if tr08 view is loaded
+            sizing_mode_elem = await page.query_selector("#tr08-sizing-mode")
+            if sizing_mode_elem:
+                selected_value = await sizing_mode_elem.get_property("value")
+                print(f"[DEBUG] Selected sizing_mode value: {selected_value}")
+
             # Save
+            print("[DEBUG] Clicking save button")
             await page.click("#tr08-save")
-            await page.wait_for_selector("#tr08-action-result :text('Saved')", timeout=10000)
+
+            # Give it a moment and check if action result has content
+            await asyncio.sleep(1)
+            result_elem = await page.query_selector("#tr08-action-result")
+            if result_elem:
+                result_text = await result_elem.inner_text()
+                print(f"[DEBUG] Action result text after click: '{result_text}'")
+
+            try:
+                await page.wait_for_selector("#tr08-action-result :text('Saved')", timeout=10000)
+            except Exception as e:
+                print(f"\n[TIMEOUT/ERROR] Failed to find 'Saved' message: {e}")
+                print(f"Requests made: {requests_made}")
+                print(f"Console messages: {console_msgs}")
+                print(f"Page errors: {page_errors}")
+                print(f"Network responses: {responses}")
+                # Check if result div exists at all
+                try:
+                    result = await page.query_selector("#tr08-action-result")
+                    if result:
+                        content = await result.inner_text()
+                        print(f"Action result content: {content}")
+                except:
+                    pass
+                raise
 
             # Verify persisted via API (sizing_mode/risk_fraction may not be returned if columns don't exist yet per WP-16)
             accounts = {a["account_id"]: a for a in client.get("/accounts").json()["accounts"]}

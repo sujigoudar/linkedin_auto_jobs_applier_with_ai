@@ -13,7 +13,7 @@ from app.db import SignalStore
 
 @pytest.fixture
 def client(tmp_path, monkeypatch):
-    """Client with auth configured."""
+    """Client with auth configured and state properly isolated."""
     monkeypatch.setattr(app_config, "OWNER_PASSWORD", "test-owner-password")
     monkeypatch.setattr(app_config, "SESSION_SECRET", "test-session-secret")
     # Disable standby mode so writer lease is "held"
@@ -22,6 +22,11 @@ def client(tmp_path, monkeypatch):
     store = SignalStore(tmp_path / "test.db")
     monkeypatch.setattr(main_module, "store", store)
     monkeypatch.setattr(main_module.engine, "store", store)
+
+    # Clear routing config to prevent state leakage from other tests
+    main_module.routing_config.accounts.clear()
+    main_module.routing_config.rules.clear()
+    main_module.provider_registry.providers.clear()
 
     test_client = TestClient(main_module.app)
     login = test_client.post("/auth/login", json={"password": "test-owner-password"})

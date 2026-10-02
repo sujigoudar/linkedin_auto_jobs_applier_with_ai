@@ -414,7 +414,7 @@
       try {
         // Check if account already exists
         const accountsRes = await ctx.fetchJSON("/accounts");
-        originalAccount = accountsRes.accounts.find((a) => a.account_id === draft.accountLabel);
+        originalAccount = (accountsRes.data && accountsRes.data.accounts.find((a) => a.account_id === draft.accountLabel)) || undefined;
 
         // Build payload with only changed fields for PATCH
         const payload = {};
@@ -435,8 +435,8 @@
           payload.max_gross_leverage = draft.maxGrossLeverage;
           payload.daily_loss_limit_percent = draft.dailyLossLimitPercent;
           payload.min_equity_threshold = draft.minEquityThreshold;
-          payload.sizing_mode = draft.sizingMode;
-          payload.risk_fraction = draft.riskFraction;
+          if (draft.sizingMode) payload.sizing_mode = draft.sizingMode;
+          if (draft.riskFraction) payload.risk_fraction = draft.riskFraction;
         } else {
           // For PATCH, only include fields that changed
           if (originalAccount.broker !== draft.adapter) payload.broker = draft.adapter;
