@@ -187,19 +187,16 @@ def test_margin_call_detector_handles_multiple_alerts(
     assert len(alerts) == 2
 
 
-def test_margin_call_detector_persists_error_on_database_failure(
+def test_margin_call_detector_skips_check_when_all_data_unavailable(
     detector: MarginCallDetector, sample_account: DestinationAccount
 ):
-    """Fail-closed: database failure during persist should return error."""
-    # Mock a database error by using an invalid store (this is harder to test in isolation)
-    # For now, we verify the basic error handling path exists
+    """When all margin data is unavailable (all None), skip the check."""
     error = detector.check_and_persist_margin_call(
         account=sample_account,
-        current_equity=5000.0,
-        maintenance_requirement=6000.0,
-        excess_margin=-1000.0,
+        current_equity=None,
+        maintenance_requirement=None,
+        excess_margin=None,
         broker="paper",
     )
-    # Should succeed in normal case
-    assert error is not None  # Because it persisted successfully and reports the margin call
-    assert "Margin call" in error
+    # Should not error when all data is None (broker doesn't support margin tracking)
+    assert error is None

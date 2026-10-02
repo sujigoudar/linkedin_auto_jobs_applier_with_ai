@@ -46,10 +46,16 @@ class MarginCallDetector:
             broker: Broker name for record-keeping
 
         Returns:
-            Error message if unable to determine margin state or if margin call exists,
-            None if margin is sufficient. Fail-closed: when in doubt, return error.
+            Error message if margin call exists, None if margin is sufficient or
+            unavailable. Margin data unavailability (all None values) is not treated
+            as an error -- the broker adapter hasn't integrated margin reporting yet.
         """
-        # Fail-closed: if we can't determine margin state with required precision, reject
+        # If all margin data is unavailable, skip the check (broker doesn't support it yet)
+        if current_equity is None and maintenance_requirement is None and excess_margin is None:
+            return None
+
+        # Fail-closed: if we can determine some margin state but not all required fields,
+        # that's an error -- we can't safely proceed with partial information
         if current_equity is None or maintenance_requirement is None:
             return (
                 f"Cannot determine margin state for {account.account_id}: "

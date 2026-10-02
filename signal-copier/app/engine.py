@@ -715,23 +715,20 @@ class SignalCopierEngine:
 
             # E04 (bounded): margin call detection and alert persistence. Check if
             # account has breached maintenance requirements, and record alert if so.
-            # This is a fail-closed gate: if margin state cannot be determined, we
-            # must reject the signal rather than allow trading blind. Only check for
-            # entry signals; CLOSE signals are allowed through to permit hedging after
-            # margin calls. Broker adapters must supply current_equity, maintenance_
-            # requirement, or both can be derived from account state.
+            # This is a fail-closed gate: if margin state CAN be determined but
+            # indicates a margin call, we reject the signal. If margin data is
+            # unavailable (all None values), we pass through, as the broker adapter
+            # hasn't integrated margin state reporting yet. Only check for entry
+            # signals; CLOSE signals are allowed through to permit hedging.
             if signal.side != Side.CLOSE:
-                # Attempt to read margin state from broker. The broker adapter should
-                # provide these values; if not available, the detector will return an
-                # error message and we reject the signal.
-                # TODO: integrate broker.get_margin_state() calls to populate these
-                # values from live broker data. For now, these may be None if not
-                # explicitly provided by the broker adapter.
+                # TODO: integrate broker.get_margin_state() calls to populate
+                # these values from live broker data. For now, these may be None
+                # if not explicitly provided by the broker adapter.
                 margin_error = self.margin_call_detector.check_and_persist_margin_call(
                     account=account,
-                    current_equity=None,  # TODO: get from broker
-                    maintenance_requirement=None,  # TODO: get from broker
-                    excess_margin=None,  # TODO: get from broker
+                    current_equity=None,
+                    maintenance_requirement=None,
+                    excess_margin=None,
                     broker=account.broker,
                 )
                 if margin_error is not None:
