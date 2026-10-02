@@ -3988,7 +3988,7 @@ class SignalStore:
             except sqlite3.IntegrityError:
                 pass  # idempotency_key already exists -- fall through to read it back below.
             else:
-                return self._command_ledger_row_to_entry(
+                opened = self._command_ledger_row_to_entry(
                     (
                         row_id,
                         resolved_intent_id,
@@ -4005,6 +4005,8 @@ class SignalStore:
                         None,
                     )
                 )
+                opened.newly_opened = True
+                return opened
             existing_row = conn.execute(
                 """SELECT id, intent_id, idempotency_key, command_type, account_id, environment,
                           expected_revision, request_fingerprint, created_at, remote_identifiers,

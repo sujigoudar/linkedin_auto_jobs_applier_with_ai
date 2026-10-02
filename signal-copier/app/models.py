@@ -616,6 +616,13 @@ class CommandLedgerEntry:
     remote_identifiers: dict[str, Any] = field(default_factory=dict)
     terminal_evidence: dict[str, Any] = field(default_factory=dict)
     resolved_at: Optional[datetime] = None
+    #: Not persisted. True only on the entry returned by the
+    #: `open_command_ledger_entry` call that INSERTED this row; False when
+    #: that call found an existing row for the same idempotency key. Lets a
+    #: caller tell "I am the first attempt" from "an earlier attempt (maybe a
+    #: crashed or concurrent one) already wrote its intent" even while the
+    #: row is still `PENDING_SUBMISSION`.
+    newly_opened: bool = False
 
     @property
     def is_resolved(self) -> bool:

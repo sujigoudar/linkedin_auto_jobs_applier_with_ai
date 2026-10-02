@@ -1114,7 +1114,27 @@ class SignalCopierEngine:
                 environment=command_ledger.current_environment(),
                 request_fingerprint=ledger_fingerprint,
             )
-            if command_ledger.is_duplicate_submission(ledger_entry.uncertainty_state):
+            # ALLOC-05: an EXISTING row still in PENDING_SUBMISSION means an
+            # earlier attempt (a crashed process, or a concurrent worker)
+            # wrote its intent and we cannot know whether its broker call
+            # happened. That is an ambiguous submission, never "brand new":
+            # resubmitting could place the same exposure twice.
+            crash_window_duplicate = (
+                not ledger_entry.newly_opened
+                and ledger_entry.uncertainty_state == UncertaintyState.PENDING_SUBMISSION
+            )
+            if crash_window_duplicate:
+                self.store.mark_command_ledger_outcome(
+                    ledger_key,
+                    uncertainty_state=UncertaintyState.UNKNOWN_AMBIGUOUS,
+                    terminal_evidence={
+                        "broker_status": "intent_found_without_outcome",
+                        "signal_id": signal.id,
+                        "reserved_notional": notional,
+                    },
+                )
+                ledger_entry.uncertainty_state = UncertaintyState.UNKNOWN_AMBIGUOUS
+            if crash_window_duplicate or command_ledger.is_duplicate_submission(ledger_entry.uncertainty_state):
                 # A prior attempt under this exact key already ran (or is
                 # running) -- never submit a second broker order for it.
                 # The broker was already released this reservation's fate
@@ -1140,9 +1160,14 @@ class SignalCopierEngine:
                     ),
                 )
                 results.append(result)
-                self._export_routing_outcome(
-                    signal, outcome="duplicate_command", account=account, order_status=result.status, message=result.message
-                )
+                if crash_window_duplicate:
+                    # The earlier attempt never exported an outcome; surface
+                    # the unresolved obligation. A plain replay of an already
+                    # exported outcome is deliberately NOT re-exported ("duplicate_command" is not a
+                    # valid routing outcome and would raise).
+                    self._export_routing_outcome(
+                        signal, outcome="error", account=account, order_status=result.status, message=result.message
+                    )
                 continue
 
             # PU-A2: the real moment this engine actually calls the broker --
