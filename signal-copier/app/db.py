@@ -10590,3 +10590,306 @@ class SignalStore:
                 (sleeve_id, portfolio_id, provider, analyst, name, max_notional_cents, now, now),
             )
 
+
+    # --- WC-21: Console decision traces and reservation/intent health (READ-ONLY) ---
+
+    def list_decision_traces(self, signal_id: str) -> list[dict]:
+        """Every candidate evaluation for a given signal's routing decision.
+
+        Spec §5.2: decision_traces rows persist every candidate's rank,
+        feasibility, exclusion reason, and selection outcome. This read
+        returns them in rank order, with exactly one `selected=1` row when
+        a decision was made.
+
+        Args:
+            signal_id: The signal id to read traces for.
+
+        Returns:
+            List of dicts: {id, signal_id, physical_account_id, candidate_rank,
+            feasible, reason, selected, created_at}, in candidate_rank order.
+            Empty list if no traces were recorded for this signal.
+        """
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT id, signal_id, physical_account_id, candidate_rank, feasible, reason, selected, created_at
+                   FROM decision_traces
+                   WHERE signal_id = ?
+                   ORDER BY candidate_rank ASC""",
+                (signal_id,),
+            ).fetchall()
+        return [
+            {
+                "id": row[0],
+                "signal_id": row[1],
+                "physical_account_id": row[2],
+                "candidate_rank": row[3],
+                "feasible": bool(row[4]),
+                "reason": row[5],
+                "selected": bool(row[6]),
+                "created_at": row[7],
+            }
+            for row in rows
+        ]
+
+    def list_budget_reservations(self, *, opportunity_id: str | None = None, state: str | None = None, limit: int = 200) -> list[dict]:
+        """Budget reservations for capital allocation tracking.
+
+        Spec WC-03 §6.2 state machine: every signal that reached capital
+        admission has a budget_reservations row tracking its needed cash,
+        margin, notional and planned risk across the position's lifecycle.
+
+        Args:
+            opportunity_id: Filter by a specific opportunity (signal) id. Optional.
+            state: Filter by reservation state (e.g., 'HELD', 'RELEASED'). Optional.
+            limit: Maximum rows to return (default 200).
+
+        Returns:
+            List of dicts with reservation_id, opportunity_id, owner, physical_account_id,
+            needed_cash_cents, needed_margin_cents, needed_notional_cents,
+            needed_planned_risk_cents, state, created_at, updated_at.
+            Empty list if no matching reservations exist.
+        """
+        query = "SELECT reservation_id, opportunity_id, owner, physical_account_id, needed_cash_cents, needed_margin_cents, needed_notional_cents, needed_planned_risk_cents, state, created_at, updated_at FROM budget_reservations WHERE 1=1"
+        params: list = []
+
+        if opportunity_id is not None:
+            query += " AND opportunity_id = ?"
+            params.append(opportunity_id)
+        if state is not None:
+            query += " AND state = ?"
+            params.append(state)
+
+        query += f" ORDER BY created_at DESC LIMIT {limit}"
+
+        with self._connect() as conn:
+            rows = conn.execute(query, params).fetchall()
+
+        return [
+            {
+                "reservation_id": row[0],
+                "opportunity_id": row[1],
+                "owner": row[2],
+                "physical_account_id": row[3],
+                "needed_cash_cents": row[4],
+                "needed_margin_cents": row[5],
+                "needed_notional_cents": row[6],
+                "needed_planned_risk_cents": row[7],
+                "state": row[8],
+                "created_at": row[9],
+                "updated_at": row[10],
+            }
+            for row in rows
+        ]
+
+    def list_order_intents(self, *, opportunity_id: str | None = None, limit: int = 200) -> list[dict]:
+        """Order intents for crash recovery and execution tracking (WC-06).
+
+        Spec WC-06: every signal routed to execution has a durable order_intents
+        row recording the intent before it's submitted to the broker, with
+        binding_id and reservation_id links for recovery.
+
+        Args:
+            opportunity_id: Filter by a specific opportunity (signal) id. Optional.
+            limit: Maximum rows to return (default 200).
+
+        Returns:
+            List of dicts with intent_id, opportunity_id, physical_account_id,
+            binding_id, quantity, state (if available), created_at.
+            Empty list if no intents exist.
+        """
+        query = "SELECT intent_id, opportunity_id, physical_account_id, binding_id, quantity, created_at FROM order_intents WHERE 1=1"
+        params: list = []
+
+        if opportunity_id is not None:
+            query += " AND opportunity_id = ?"
+            params.append(opportunity_id)
+
+        query += f" ORDER BY created_at DESC LIMIT {limit}"
+
+        with self._connect() as conn:
+            rows = conn.execute(query, params).fetchall()
+
+        return [
+            {
+                "intent_id": row[0],
+                "opportunity_id": row[1],
+                "physical_account_id": row[2],
+                "binding_id": row[3],
+                "quantity": row[4],
+                "created_at": row[5],
+            }
+            for row in rows
+        ]
+
+    def list_outbox_items(self, *, state: str | None = None, limit: int = 200) -> list[dict]:
+        """Transactional outbox items (S4.2/S6 spec) for durable event export.
+
+        Spec S4.2/S6: every order_intent that reaches submission-to-broker is
+        queued in the outbox for transactional event export. This read shows
+        in-flight and settled items, with response timestamps for delivery proof.
+
+        Args:
+            state: Filter by state (e.g., 'outboxed', 'exported'). Optional.
+            limit: Maximum rows to return (default 200).
+
+        Returns:
+            List of dicts with item_id, intent_id, state, created_at, claimed_at,
+            claimed_by, response, response_recorded_at.
+            Empty list if no outbox items exist.
+        """
+        query = "SELECT item_id, intent_id, state, created_at, claimed_at, claimed_by, response, response_recorded_at FROM outbox WHERE 1=1"
+        params: list = []
+
+        if state is not None:
+            query += " AND state = ?"
+            params.append(state)
+
+        query += f" ORDER BY created_at DESC LIMIT {limit}"
+
+        with self._connect() as conn:
+            rows = conn.execute(query, params).fetchall()
+
+        return [
+            {
+                "item_id": row[0],
+                "intent_id": row[1],
+                "state": row[2],
+                "created_at": row[3],
+                "claimed_at": row[4],
+                "claimed_by": row[5],
+                "response": row[6],
+                "response_recorded_at": row[7],
+            }
+            for row in rows
+        ]
+
+    def reservation_health(self) -> dict:
+        """Aggregated health of budget reservations across all active signals.
+
+        Returns:
+            Dict with:
+            - counts_by_state: dict of state -> count pairs
+            - held_total_cents: sum of (needed_cash + needed_margin) for HELD/UNKNOWN_HELD reservations
+            - stale_unknown_held: count of UNKNOWN_HELD reservations older than 15 minutes
+            - oldest_held_age_seconds: age in seconds of the oldest HELD/UNKNOWN_HELD reservation, or None
+        """
+        now = datetime.now(timezone.utc)
+        fifteen_min_ago = now - timedelta(minutes=15)
+
+        with self._connect() as conn:
+            # Get counts by state
+            state_rows = conn.execute(
+                """SELECT state, COUNT(*) as cnt
+                   FROM budget_reservations
+                   GROUP BY state"""
+            ).fetchall()
+            counts_by_state = {row[0]: row[1] for row in state_rows}
+
+            # Get held total (sum of cash+margin for HELD and UNKNOWN_HELD)
+            held_total = conn.execute(
+                """SELECT COALESCE(SUM(needed_cash_cents + needed_margin_cents), 0)
+                   FROM budget_reservations
+                   WHERE state IN ('HELD', 'UNKNOWN_HELD')"""
+            ).fetchone()
+            held_total_cents = held_total[0] if held_total else 0
+
+            # Get stale unknown held (older than 15 minutes)
+            stale_unknown = conn.execute(
+                """SELECT COUNT(*)
+                   FROM budget_reservations
+                   WHERE state = 'UNKNOWN_HELD'
+                   AND created_at < ?""",
+                (fifteen_min_ago.isoformat(),),
+            ).fetchone()
+            stale_unknown_held = stale_unknown[0] if stale_unknown else 0
+
+            # Get oldest held age
+            oldest_held = conn.execute(
+                """SELECT created_at
+                   FROM budget_reservations
+                   WHERE state IN ('HELD', 'UNKNOWN_HELD')
+                   ORDER BY created_at ASC LIMIT 1"""
+            ).fetchone()
+
+            oldest_held_age_seconds: int | None = None
+            if oldest_held:
+                created_at_str = oldest_held[0]
+                # Parse ISO format timestamp
+                if isinstance(created_at_str, str):
+                    created_at = datetime.fromisoformat(created_at_str.replace("Z", "+00:00"))
+                else:
+                    created_at = created_at_str
+                if created_at.tzinfo is None:
+                    created_at = created_at.replace(tzinfo=timezone.utc)
+                oldest_held_age_seconds = int((now - created_at).total_seconds())
+
+        return {
+            "counts_by_state": counts_by_state,
+            "held_total_cents": held_total_cents,
+            "stale_unknown_held": stale_unknown_held,
+            "oldest_held_age_seconds": oldest_held_age_seconds,
+        }
+
+    def intent_health(self) -> dict:
+        """Aggregated health of order intents and outbox delivery.
+
+        Returns:
+            Dict with:
+            - outbox_counts_by_state: dict of outbox state -> count pairs
+            - dispatching_without_response: count of outbox items with state='outboxed' (not yet responded)
+            - unknown: count of intents without a corresponding outbox item
+            - oldest_unresponded_age_seconds: age in seconds of the oldest outbox item without a response, or None
+        """
+        now = datetime.now(timezone.utc)
+
+        with self._connect() as conn:
+            # Get outbox counts by state
+            outbox_state_rows = conn.execute(
+                """SELECT state, COUNT(*) as cnt
+                   FROM outbox
+                   GROUP BY state"""
+            ).fetchall()
+            outbox_counts_by_state = {row[0]: row[1] for row in outbox_state_rows}
+
+            # Get count of outbox items without responses (state='outboxed' or no response_recorded_at)
+            dispatching = conn.execute(
+                """SELECT COUNT(*)
+                   FROM outbox
+                   WHERE state = 'outboxed' OR response_recorded_at IS NULL"""
+            ).fetchone()
+            dispatching_without_response = dispatching[0] if dispatching else 0
+
+            # Get count of intents without outbox items
+            unknown_count = conn.execute(
+                """SELECT COUNT(*)
+                   FROM order_intents
+                   WHERE intent_id NOT IN (SELECT intent_id FROM outbox)"""
+            ).fetchone()
+            unknown = unknown_count[0] if unknown_count else 0
+
+            # Get oldest outbox item without response
+            oldest_unresponded = conn.execute(
+                """SELECT created_at
+                   FROM outbox
+                   WHERE response_recorded_at IS NULL
+                   ORDER BY created_at ASC LIMIT 1"""
+            ).fetchone()
+
+            oldest_unresponded_age_seconds: int | None = None
+            if oldest_unresponded:
+                created_at_str = oldest_unresponded[0]
+                # Parse ISO format timestamp
+                if isinstance(created_at_str, str):
+                    created_at = datetime.fromisoformat(created_at_str.replace("Z", "+00:00"))
+                else:
+                    created_at = created_at_str
+                if created_at.tzinfo is None:
+                    created_at = created_at.replace(tzinfo=timezone.utc)
+                oldest_unresponded_age_seconds = int((now - created_at).total_seconds())
+
+        return {
+            "outbox_counts_by_state": outbox_counts_by_state,
+            "dispatching_without_response": dispatching_without_response,
+            "unknown": unknown,
+            "oldest_unresponded_age_seconds": oldest_unresponded_age_seconds,
+        }

@@ -1331,6 +1331,12 @@ async def system_readiness(_owner: dict = Depends(require_owner_read)) -> dict:
         relay_down=relay_down,
     )
 
+    # --- WC-21: reservation and intent health ---
+    workflow = {
+        "reservations": store.reservation_health(),
+        "intents": store.intent_health(),
+    }
+
     return {
         "liveness": liveness,
         "data_readiness": data_readiness,
@@ -1339,6 +1345,7 @@ async def system_readiness(_owner: dict = Depends(require_owner_read)) -> dict:
         "protection_readiness": protection_readiness,
         "release_status": release_status,
         "rollup": rollup,
+        "workflow": workflow,
         "standby_mode": config.STANDBY_MODE,
         "accounts": account_readiness_items,
     }
@@ -4769,6 +4776,78 @@ async def get_signal_lifecycle_route(signal_id: str, _owner: dict = Depends(requ
     if lifecycle is None:
         raise HTTPException(status_code=404, detail=f"no signal recorded with id={signal_id!r}")
     return lifecycle
+
+
+# --- WC-21: Console decision traces and reservation/intent health ---
+
+@app.get("/signals/{signal_id}/decision")
+async def get_signal_decision_route(signal_id: str, _owner: dict = Depends(require_owner_read)) -> dict:
+    """Decision trace detail for a signal: candidates considered, exclusion reasons,
+    selected account, reservation/intent state, and protection state.
+
+    Returns:
+        Dict with signal_id, traces (list of decision_traces rows), selected_physical_account_id,
+        reservation (budget_reservations row or None), intent (order_intents row or None),
+        outbox (outbox row or None), protection (protection state dict).
+
+    404 when signal does not exist.
+    """
+    signal = store.get_signal(signal_id)
+    if signal is None:
+        raise HTTPException(status_code=404, detail=f"no signal recorded with id={signal_id!r}")
+
+    traces = store.list_decision_traces(signal_id)
+    selected_account = next((t["physical_account_id"] for t in traces if t["selected"]), None)
+
+    reservation = None
+    reservations = store.list_budget_reservations(opportunity_id=signal_id, limit=1)
+    if reservations:
+        reservation = reservations[0]
+
+    intent = None
+    intents = store.list_order_intents(opportunity_id=signal_id, limit=1)
+    if intents:
+        intent = intents[0]
+
+    outbox_item = None
+    if intent:
+        outbox_items = store.list_outbox_items(limit=1000)
+        outbox_item = next((o for o in outbox_items if o["intent_id"] == intent["intent_id"]), None)
+
+    lifecycle = store.get_signal_lifecycle(signal_id)
+    protection = {"state": "not_tracked"}
+    if lifecycle and "protection" in lifecycle:
+        protection = lifecycle["protection"]
+
+    return {
+        "signal_id": signal_id,
+        "traces": traces,
+        "selected_physical_account_id": selected_account,
+        "reservation": reservation,
+        "intent": intent,
+        "outbox": outbox_item,
+        "protection": protection,
+    }
+
+
+@app.get("/operations/reservation-health")
+async def get_reservation_health_route(_owner: dict = Depends(require_owner_read)) -> dict:
+    """Aggregated health of budget reservations across all signals.
+
+    Returns:
+        Dict with counts_by_state, held_total_cents, stale_unknown_held, oldest_held_age_seconds.
+    """
+    return store.reservation_health()
+
+
+@app.get("/operations/intent-health")
+async def get_intent_health_route(_owner: dict = Depends(require_owner_read)) -> dict:
+    """Aggregated health of order intents and outbox delivery.
+
+    Returns:
+        Dict with outbox_counts_by_state, dispatching_without_response, unknown, oldest_unresponded_age_seconds.
+    """
+    return store.intent_health()
 
 
 @app.get("/positions/{symbol}/provider-allocations")
