@@ -754,6 +754,40 @@ class SignalCopierEngine:
                     )
                     continue
 
+            # E09 (bounded): account liquidation circuit breaker. Check if account
+            # equity meets minimum threshold. This is a fail-closed gate: if equity
+            # is below threshold or cannot be determined, we reject the signal to
+            # prevent liquidation. Only check for entry signals; CLOSE signals are
+            # allowed through to permit position reduction.
+            if signal.side != Side.CLOSE:
+                min_equity_threshold = account.min_equity_threshold
+                if min_equity_threshold is not None:
+                    liquidation_error = self.daily_loss_limiter.check_min_equity_threshold(
+                        account, min_equity_threshold
+                    )
+                    if liquidation_error is not None:
+                        result = OrderResult(
+                            account_id=account.account_id,
+                            status=OrderStatus.REJECTED,
+                            signal_id=signal.id,
+                            message=liquidation_error,
+                        )
+                        self.store.save_order_result(
+                            result,
+                            broker=account.broker,
+                            purpose=order_purpose,
+                            family_id=order_family_id,
+                        )
+                        results.append(result)
+                        self._export_routing_outcome(
+                            signal,
+                            outcome=_OUTCOME_BY_ORDER_STATUS[result.status],
+                            account=account,
+                            order_status=result.status,
+                            message=result.message,
+                        )
+                        continue
+
             if not broker.can_trade_asset_class(signal.asset_class):
                 # e.g. an OPTION signal reaching AlpacaBroker/IBKRBroker (equity-only
                 # in this codebase — see their module docstrings) or any non-CRYPTO
