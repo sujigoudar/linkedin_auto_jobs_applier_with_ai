@@ -409,6 +409,17 @@ class _Settings(BaseSettings):
     # is unchanged unless this is explicitly set.
     MAX_OWNER_NOTIONAL_EXPOSURE: float | None = None
 
+    # Risk management: daily loss limits and minimum equity thresholds
+    # (see app/daily_loss_limiter.py, docs/risk/CIRCUIT_BREAKER.md).
+    # Global default daily loss limit as percentage of account equity;
+    # `None` disables. Can be overridden per-account in accounts.yaml.
+    DEFAULT_DAILY_LOSS_LIMIT_PERCENT: float | None = None
+
+    # Global default minimum equity threshold (in account currency);
+    # rejects new entries if breached. `None` disables. Can be overridden
+    # per-account in accounts.yaml.
+    DEFAULT_MIN_EQUITY_THRESHOLD: float | None = None
+
     # Track 10: notification-bridge (Android NotificationListenerService
     # fallback capture path, app/notification_bridge.py). How stale a
     # device-reported `posted_at` may be, relative to this server's own
@@ -550,3 +561,6 @@ SIGNAL_CORRELATION_PRICE_TOLERANCE_PCT = _settings.SIGNAL_CORRELATION_PRICE_TOLE
 SIGNAL_CORRELATION_TIMESTAMP_WINDOW_SECONDS = _settings.SIGNAL_CORRELATION_TIMESTAMP_WINDOW_SECONDS
 SIGNAL_CORRELATION_ENABLED = _settings.SIGNAL_CORRELATION_ENABLED
 MANAGED_EXIT_DUPLICATE_WINDOW_SECONDS = _settings.MANAGED_EXIT_DUPLICATE_WINDOW_SECONDS
+
+DEFAULT_DAILY_LOSS_LIMIT_PERCENT = _settings.DEFAULT_DAILY_LOSS_LIMIT_PERCENT
+DEFAULT_MIN_EQUITY_THRESHOLD = _settings.DEFAULT_MIN_EQUITY_THRESHOLD

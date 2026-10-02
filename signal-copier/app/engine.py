@@ -126,6 +126,7 @@ from app import signal_freshness
 from app.brokers.base import BrokerAdapter
 from app.brokers.paper import PaperBroker
 from app.capital_allocator import CapitalAllocator, confirmed_open_notional, owner_wide_exposure
+from app.daily_loss_limiter import DailyLossLimiter
 from app.db import SignalStore
 from app.export_events import (
 build_execution_applied_envelope,
@@ -311,6 +312,10 @@ class SignalCopierEngine:
         # owner-wide gate is never evaluated, no change from before this
         # existed.
         self.max_owner_notional_exposure: float | None = config.MAX_OWNER_NOTIONAL_EXPOSURE
+        # Daily loss limit enforcement (see app/daily_loss_limiter.py): circuit
+        # breaker that rejects new entries if daily loss exceeds threshold.
+        # Fail-closed: any error determining equity/loss leaves trading halted.
+        self.daily_loss_limiter = DailyLossLimiter(store=store)
         # Wired in after construction (app/lifecycle/manager.py's own
         # __init__ can't take this: main.py often constructs a
         # PositionLifecycleManager before this Engine, and so before this
@@ -670,6 +675,35 @@ class SignalCopierEngine:
                         account=account,
                         order_status=qualification_rejection.status,
                         message=qualification_rejection.message,
+                    )
+                    continue
+
+            # Daily loss limit check: refuse an ENTRY if account has breached
+            # its daily loss ceiling (circuit breaker, fail-closed). CLOSE
+            # signals bypass this to allow closing/hedging after loss limits hit.
+            if signal.side != Side.CLOSE:
+                daily_loss_limit_percent = account.daily_loss_limit_percent or config.DEFAULT_DAILY_LOSS_LIMIT_PERCENT
+                daily_loss_error = self.daily_loss_limiter.check_daily_loss_limit(account, daily_loss_limit_percent)
+                if daily_loss_error is not None:
+                    result = OrderResult(
+                        account_id=account.account_id,
+                        status=OrderStatus.REJECTED,
+                        signal_id=signal.id,
+                        message=daily_loss_error,
+                    )
+                    self.store.save_order_result(
+                        result,
+                        broker=account.broker,
+                        purpose=order_purpose,
+                        family_id=order_family_id,
+                    )
+                    results.append(result)
+                    self._export_routing_outcome(
+                        signal,
+                        outcome=_OUTCOME_BY_ORDER_STATUS[result.status],
+                        account=account,
+                        order_status=result.status,
+                        message=result.message,
                     )
                     continue
 
@@ -1860,7 +1894,7 @@ class SignalCopierEngine:
         for every other caller."""
         if position is None:
             position = self.store.get_position(account.account_id, symbol)
-        if position == 0:
+        if abs(position) < 1e-8:  # Use tolerance-based comparison instead of exact equality
             return None
 
         closing_side = Side.SELL if position > 0 else Side.BUY
@@ -2194,7 +2228,7 @@ class SignalCopierEngine:
                 )
             try:
                 local_position = self.store.get_position(account.account_id, symbol)
-                if local_position == 0:
+                if abs(local_position) < 1e-8:  # Use tolerance-based comparison instead of exact equality
                     result = OrderResult(
                         account_id=account.account_id,
                         status=OrderStatus.REJECTED,
@@ -2236,7 +2270,7 @@ class SignalCopierEngine:
                         return ownership_rejection
 
                 resolved = self._resolve_close(signal, account, symbol, position=close_position_value)
-                assert resolved is not None  # close_position_value != 0 whenever no rejection was returned above
+                assert resolved is not None and abs(close_position_value) >= 1e-8, f"close_position_value={close_position_value} must be non-zero when no rejection returned"
 
                 order_signal, quantity = resolved
                 (
@@ -2373,15 +2407,6 @@ class SignalCopierEngine:
                 None,
             )
 
-        admitted, notional, rejection = await self._try_reserve_capital(account, signal, quantity)
-        if not admitted:
-            assert rejection is not None  # _try_reserve_capital always sets this when admitted is False
-            # TRK-22: same convention -- capital admission is refused before
-            # any broker call.
-            return _ManagedOrderOutcome(rejection, None, None)
-
-        self.lifecycle_manager.start_plan(plan)
-
         # Entry order only — stop_loss/take_profit are deliberately DROPPED
         # here: they're managed by the lifecycle manager from here on (its
         # logical targets/trailing/protective-stop machinery), not embedded
@@ -2409,7 +2434,8 @@ class SignalCopierEngine:
         # app/command_ledger.py's module docstring and handle_signal's
         # identical wiring for the plain-account entry path. `signal.id`
         # (== `entry_signal.id` above) is this entry's natural retry
-        # identity.
+        # identity. Check for duplicate BEFORE reserving capital to prevent
+        # double-release possibility.
         ledger_key = f"entry:{account.account_id}:{symbol}:{signal.id}"
         ledger_fingerprint = command_ledger.compute_fingerprint(
             {
@@ -2429,7 +2455,6 @@ class SignalCopierEngine:
             request_fingerprint=ledger_fingerprint,
         )
         if command_ledger.is_duplicate_submission(ledger_entry.uncertainty_state):
-            self.capital_allocator.release(account.account_id, notional)
             logger.info(
                 "duplicate managed entry command idempotency_key=%s account=%s symbol=%s -- replaying "
                 "tracked state=%s instead of resubmitting",
@@ -2461,6 +2486,16 @@ class SignalCopierEngine:
                 applied_execution_delta=0.0,
                 outstanding_possible_fill=0.0,
             )
+
+        # Only reserve capital AFTER confirming this is not a duplicate
+        admitted, notional, rejection = await self._try_reserve_capital(account, signal, quantity)
+        if not admitted:
+            assert rejection is not None  # _try_reserve_capital always sets this when admitted is False
+            # TRK-22: same convention -- capital admission is refused before
+            # any broker call.
+            return _ManagedOrderOutcome(rejection, None, None)
+
+        self.lifecycle_manager.start_plan(plan)
 
         # PU-A2: submission moment for this managed entry -- see
         # handle_signal's identical field for what it feeds into.

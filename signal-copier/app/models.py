@@ -687,6 +687,16 @@ class DestinationAccount:
     #: away -- see README.md's "Exclusive-writer qualification" section
     #: for what it means and its risk before setting it True.
     exclusive_writer_qualified: bool = False
+    #: Circuit breaker: maximum acceptable daily loss as percentage of equity
+    #: (e.g., 5 for 5%). `None` (the default) means no daily loss limit is
+    #: enforced for this account. When set, entries are rejected if today's
+    #: P&L loss (realized + unrealized) exceeds this percentage. Closes are
+    #: always allowed to hedge/unwind after a breach. See app/daily_loss_limiter.py.
+    daily_loss_limit_percent: Optional[float] = None
+    #: Minimum equity threshold (in account currency). When set, new entries
+    #: are rejected if account equity would fall below this level. `None`
+    #: (the default) disables this check. See app/daily_loss_limiter.py.
+    min_equity_threshold: Optional[float] = None
 
     def __post_init__(self) -> None:
         if self.management_recipe is None:
