@@ -870,3 +870,120 @@ words, sizing modes, alerts, adapter table), `docs/adr/0013-intent-model.md`,
 `docs/testing/ALLOCATION_TRACEABILITY.yaml/.md` (one row per WP test),
 `docs/state/PROGRESS.md`, `docs/audit/SOLUTION_GAP_ANALYSIS.md` (status
 column per finding: Implemented / Isolated-tested / not externally qualified).
+
+---
+
+## Gate R8 — console surfaces and autonomy (UI/UX)
+
+Principle: the system must run on its own and be easy to operate. Every new
+backend capability in R0–R7 gets a console surface in the same release, every
+rejection message tells the operator what to do next, and a single readiness
+view says what still blocks autonomous operation and offers the fix. The
+console is static HTML/JS under `app/static` (no bundler): views are
+`app/static/views/trNN.js` registering `window.Views.trNN`, routed by
+`app/static/router.js` (read its header comment for the 3-step registration),
+with shared components in `app/static/components/` (`action-confirm.js` for
+the preview→confirm workflow, `attention-queue.js`, `capability-state.js`,
+`kpi-band.js`). Browser tests use Playwright through the `live_server`
+fixture in `tests/conftest.py`; copy the pattern of
+`tests/test_alloc06_tr11_delivery_mode_ui.py` (poll the API for persistence
+instead of waiting for toast text).
+
+### WP-41 — TR-08/TR-12: complete account editor on PATCH
+
+Depends on WP-06, WP-08, WP-16, WP-28, WP-30, WP-32.
+Files: `app/static/views/tr08.js`, `app/static/views/tr12.js`, tests.
+
+Steps: the account form exposes every account field with inline help:
+`sizing_mode` (select: multiplier / fixed / risk_fraction, showing only the
+relevant numeric input), `allow_short`, `currency`, `max_gross_leverage`,
+`daily_loss_limit_percent`, `min_equity_threshold`, `managed_lifecycle`
+(disabled with a tooltip "has exposure" when the API would 409). Saves use
+`PATCH /accounts/{id}` with only changed fields. A "What this account will
+do" preview line (computed client-side from the form) reads like: "Risk 1 %
+of equity per trade, long only, halt at −5 % day, USD". Server 409/422
+messages are shown verbatim next to the field they name.
+
+Tests (`tests/test_wp41_account_editor_ui.py`, Playwright): change sizing
+mode and risk fraction → persisted via API; flip managed_lifecycle on an
+account with exposure → inline 409 message shown, value reverted.
+
+### WP-42 — Operations center: alerts, halts, unresolved commands, intents
+
+Depends on WP-34, WP-30, WP-22 (optional), existing
+`/command-ledger/unresolved`, `/allocation-intents`, `/strategy-budgets`.
+Files: new `app/static/views/tr20.js` ("Operations center"), nav badge in
+`app/static/router.js`/`dashboard.html`, tests.
+
+Steps: one screen with four panels, each polling its endpoint every 15 s:
+1. Alerts — unacknowledged first, kind/account/message/time, "Acknowledge"
+   button (`POST /alerts/{id}/ack`).
+2. Risk halts — account, reason, triggered_at; "Clear halt" goes through
+   `action-confirm.js` with the evidence text required by the API.
+3. Unresolved commands — rows from `/command-ledger/unresolved`; "Mark not
+   placed" opens the confirm workflow with a required evidence field (≥ 3
+   chars) and calls `POST /command-ledger/resolve`.
+4. Allocation intents and strategy budgets — recent intents with state and
+   selected account; budgets editable inline (`PUT /strategy-budgets`).
+The nav shows a red badge with the count of unacknowledged alerts + open
+halts + unresolved commands (one fetch, cached 15 s).
+
+Tests (`tests/test_wp42_operations_center_ui.py`, Playwright): seed one of
+each via the API/store; the screen shows all four; acknowledging an alert
+removes it and decrements the badge; resolving a command requires evidence.
+
+### WP-43 — TR-11: precedence and intent resolution in the simulator
+
+Depends on WP-07, WP-09.
+Files: `app/static/views/tr11.js`, `app/main.py` (`POST /routing-rules/simulate`
+returns `precedence` per rule and, when a `side`/`intent` is given, the
+per-account intent resolution: `exit`, `entry_short`, `rejected:<reason>`),
+tests.
+
+Steps: the rule list is ordered by precedence with a "specific first" label;
+the simulator form gains `intent` (buy / sell / short / close / reduce) and
+shows per account: selected or not, and how a SELL would resolve for that
+account given its current book and `allow_short`.
+
+Tests: API test for the new simulate fields; Playwright test that the order
+shown matches `precedence`.
+
+### WP-44 — TR-04/TR-03: plain-language signal interpretation
+
+Depends on WP-08, WP-12, WP-15.
+Files: `app/static/views/tr04.js`, `app/static/views/tr03.js`,
+`app/main.py` (signal detail returns `intent`, `reduce_fraction`, contract
+spec, `asset_class_inferred`), tests.
+
+Steps: each signal row shows an "Interpreted as" column: "Exit 50 % of AAPL",
+"Enter short 10 BTC", "Option: AAPL 150C 2026-01-17 ×100"; a rejected order
+shows a "Why" chip with the stored message and a "Fix" link to the screen
+that resolves it (account editor for sizing/allow_short, routing for no
+destination, operations center for halts/unresolved commands).
+
+Tests: Playwright test rendering one of each.
+
+### WP-45 — Readiness and autonomy checklist
+
+Depends on WP-33, WP-36, WP-30, WP-34.
+Files: `app/main.py` (`GET /readiness` → per account: sizing configured,
+loss limit configured, adapter can route entries, venue environment known,
+route qualification per (source, symbol class), alerts path configured,
+writer lease active; each item `ok|blocked` with `reason` and `fix_route`),
+`app/static/views/tr16.js` (new top panel "Ready to run on its own?" listing
+blocked items with a "Fix" link; green when empty), tests.
+
+Tests: API test building an account that is blocked on three items and
+fixing them one by one; Playwright test that the panel reflects it.
+
+### WP-46 — Accessibility and state matrix for new screens
+
+Files: the new/changed views, `app/static/state-matrix.js`, tests.
+
+Steps: every new panel implements the 11-state matrix the console already
+defines (loading, empty, error, stale, etc. — read `state-matrix.js`), has
+labelled controls, keyboard-reachable actions and passes the existing
+axe-core check (`tests/test_c33_c34_*` pattern).
+
+Tests: extend the existing accessibility test to include TR-20 and the new
+TR-16 panel.
