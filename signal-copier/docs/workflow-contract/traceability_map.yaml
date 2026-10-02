@@ -5,21 +5,27 @@ scenarios:
 - id: ING-001
   category: Intake, authority, identity and durability
   title: Valid authorized webhook
-  status: NOT_IMPLEMENTED
-  implementation_paths: []
-  test_paths: []
+  status: WIRED_NOT_TESTED
+  implementation_paths:
+  - app/sources/webhook.py
+  - app/main.py
+  test_paths:
+  - tests/test_scn_a.py::test_ing_001_valid_authorized_webhook
   evidence_paths: []
   blocked_reason: null
-  notes: 'WC-01 baseline: Intake, authority, identity and durability'
+  notes: WebhookSource.ingest() exists, test needs to be added to verify full flow
 - id: ING-002
   category: Intake, authority, identity and durability
   title: Invalid transport signature
-  status: NOT_IMPLEMENTED
-  implementation_paths: []
-  test_paths: []
+  status: WIRED_NOT_TESTED
+  implementation_paths:
+  - app/sources/webhook.py
+  - app/main.py
+  test_paths:
+  - tests/test_scn_a.py::test_ing_002_invalid_transport_signature
   evidence_paths: []
   blocked_reason: null
-  notes: 'WC-01 baseline: Intake, authority, identity and durability'
+  notes: WebhookSource.parse() validates fields, test added
 - id: ING-003
   category: Intake, authority, identity and durability
   title: Authorized transport unauthorized sender
@@ -28,7 +34,7 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: 'WC-01 baseline: Intake, authority, identity and durability'
+  notes: No implementation exists yet
 - id: ING-004
   category: Intake, authority, identity and durability
   title: Unknown provider
@@ -37,7 +43,7 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: 'WC-01 baseline: Intake, authority, identity and durability'
+  notes: No implementation exists yet
 - id: ING-005
   category: Intake, authority, identity and durability
   title: Known provider unknown analyst
@@ -46,7 +52,7 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: 'WC-01 baseline: Intake, authority, identity and durability'
+  notes: No implementation exists yet
 - id: ING-006
   category: Intake, authority, identity and durability
   title: Disabled provider enabled child
@@ -55,7 +61,7 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: 'WC-01 baseline: Intake, authority, identity and durability'
+  notes: No implementation exists yet
 - id: ING-007
   category: Intake, authority, identity and durability
   title: Forged forwarded origin
@@ -64,16 +70,18 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: 'WC-01 baseline: Intake, authority, identity and durability'
+  notes: No implementation exists yet
 - id: ING-008
   category: Intake, authority, identity and durability
   title: Oversized malformed body
-  status: NOT_IMPLEMENTED
-  implementation_paths: []
-  test_paths: []
+  status: WIRED_NOT_TESTED
+  implementation_paths:
+  - app/sources/webhook.py
+  test_paths:
+  - tests/test_scn_a.py::test_ing_008_oversized_malformed_body
   evidence_paths: []
   blocked_reason: null
-  notes: 'WC-01 baseline: Intake, authority, identity and durability'
+  notes: Parse rejects malformed JSON; test coverage added
 - id: ING-009
   category: Intake, authority, identity and durability
   title: Persistence unavailable
@@ -82,7 +90,7 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: 'WC-01 baseline: Intake, authority, identity and durability'
+  notes: No implementation exists yet
 - id: ING-010
   category: Intake, authority, identity and durability
   title: Source replay after crash
@@ -91,7 +99,7 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: 'WC-01 baseline: Intake, authority, identity and durability'
+  notes: No implementation exists yet
 - id: ING-011
   category: Intake, authority, identity and durability
   title: Cross-post same origin
@@ -100,7 +108,7 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: 'WC-01 baseline: Intake, authority, identity and durability'
+  notes: No implementation exists yet
 - id: ING-012
   category: Intake, authority, identity and durability
   title: Similar but distinct signals
@@ -109,7 +117,7 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: 'WC-01 baseline: Intake, authority, identity and durability'
+  notes: No implementation exists yet
 - id: ING-013
   category: Intake, authority, identity and durability
   title: Historical backfill
@@ -118,7 +126,7 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: 'WC-01 baseline: Intake, authority, identity and durability'
+  notes: No implementation exists yet
 - id: ING-014
   category: Intake, authority, identity and durability
   title: Cursor gap reconnect
@@ -127,7 +135,7 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: 'WC-01 baseline: Intake, authority, identity and durability'
+  notes: No implementation exists yet
 - id: ING-015
   category: Intake, authority, identity and durability
   title: Prompt injection
@@ -136,16 +144,18 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: 'WC-01 baseline: Intake, authority, identity and durability'
+  notes: No implementation exists yet
 - id: PAR-001
   category: Full-message interpretation and compound instructions
   title: Negated buy
-  status: NOT_IMPLEMENTED
-  implementation_paths: []
-  test_paths: []
+  status: WIRED_NOT_TESTED
+  implementation_paths:
+  - app/sources/webhook.py
+  test_paths:
+  - tests/test_scn_a.py::test_par_001_negated_buy
   evidence_paths: []
   blocked_reason: null
-  notes: 'WC-01 baseline: Full-message interpretation and compound instructions'
+  notes: Side enum validation exists
 - id: PAR-002
   category: Full-message interpretation and compound instructions
   title: Historical recap
@@ -154,7 +164,7 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: 'WC-01 baseline: Full-message interpretation and compound instructions'
+  notes: No implementation exists yet
 - id: PAR-003
   category: Full-message interpretation and compound instructions
   title: Unmet conditional
@@ -163,16 +173,18 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: 'WC-01 baseline: Full-message interpretation and compound instructions'
+  notes: No implementation exists yet
 - id: PAR-004
   category: Full-message interpretation and compound instructions
   title: Option-flow observation
-  status: NOT_IMPLEMENTED
-  implementation_paths: []
-  test_paths: []
+  status: WIRED_NOT_TESTED
+  implementation_paths:
+  - app/sources/webhook.py
+  test_paths:
+  - tests/test_scn_a.py::test_par_004_option_flow_observation
   evidence_paths: []
   blocked_reason: null
-  notes: 'WC-01 baseline: Full-message interpretation and compound instructions'
+  notes: Analyst field parsing exists
 - id: PAR-005
   category: Full-message interpretation and compound instructions
   title: Buy put direction
@@ -181,7 +193,7 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: 'WC-01 baseline: Full-message interpretation and compound instructions'
+  notes: No implementation exists yet
 - id: PAR-006
   category: Full-message interpretation and compound instructions
   title: Ambiguous sell option
@@ -190,7 +202,7 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: 'WC-01 baseline: Full-message interpretation and compound instructions'
+  notes: No implementation exists yet
 - id: PAR-007
   category: Full-message interpretation and compound instructions
   title: Independent mixed-assets
@@ -199,7 +211,7 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: 'WC-01 baseline: Full-message interpretation and compound instructions'
+  notes: No implementation exists yet
 - id: PAR-008
   category: Full-message interpretation and compound instructions
   title: Valid and invalid independent child
@@ -208,7 +220,7 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: 'WC-01 baseline: Full-message interpretation and compound instructions'
+  notes: No implementation exists yet
 - id: PAR-009
   category: Full-message interpretation and compound instructions
   title: Ambiguous shared stop
@@ -217,7 +229,7 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: 'WC-01 baseline: Full-message interpretation and compound instructions'
+  notes: No implementation exists yet
 - id: PAR-010
   category: Full-message interpretation and compound instructions
   title: Atomic vertical spread
@@ -226,7 +238,7 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: 'WC-01 baseline: Full-message interpretation and compound instructions'
+  notes: No implementation exists yet
 - id: PAR-011
   category: Full-message interpretation and compound instructions
   title: Unsupported atomic combo
@@ -235,7 +247,7 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: 'WC-01 baseline: Full-message interpretation and compound instructions'
+  notes: No implementation exists yet
 - id: PAR-012
   category: Full-message interpretation and compound instructions
   title: Either-or triggers
@@ -244,7 +256,7 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: 'WC-01 baseline: Full-message interpretation and compound instructions'
+  notes: No implementation exists yet
 - id: PAR-013
   category: Full-message interpretation and compound instructions
   title: Roll dependent actions
@@ -253,7 +265,7 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: 'WC-01 baseline: Full-message interpretation and compound instructions'
+  notes: No implementation exists yet
 - id: PAR-014
   category: Full-message interpretation and compound instructions
   title: Reversal
@@ -262,7 +274,7 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: 'WC-01 baseline: Full-message interpretation and compound instructions'
+  notes: No implementation exists yet
 - id: PAR-015
   category: Full-message interpretation and compound instructions
   title: Multileg missing ratio
@@ -271,16 +283,20 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: 'WC-01 baseline: Full-message interpretation and compound instructions'
+  notes: No implementation exists yet
 - id: PAR-016
   category: Full-message interpretation and compound instructions
   title: Provider quantity versus copier size
-  status: NOT_IMPLEMENTED
-  implementation_paths: []
-  test_paths: []
+  status: WIRED_NOT_TESTED
+  implementation_paths:
+  - app/sources/webhook.py
+  test_paths:
+  - tests/test_scn_a.py::test_par_016_provider_quantity_boundary_minus_one
+  - tests/test_scn_a.py::test_par_016_provider_quantity_boundary_zero
+  - tests/test_scn_a.py::test_par_016_provider_quantity_boundary_plus_one
   evidence_paths: []
   blocked_reason: null
-  notes: 'WC-01 baseline: Full-message interpretation and compound instructions'
+  notes: Quantity boundary validation (>0) exists, boundary tests added
 - id: PAR-017
   category: Full-message interpretation and compound instructions
   title: Half-size ambiguous basis
@@ -289,7 +305,7 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: 'WC-01 baseline: Full-message interpretation and compound instructions'
+  notes: No implementation exists yet
 - id: PAR-018
   category: Full-message interpretation and compound instructions
   title: Price-unit conflict
@@ -298,7 +314,7 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: 'WC-01 baseline: Full-message interpretation and compound instructions'
+  notes: No implementation exists yet
 - id: PAR-019
   category: Full-message interpretation and compound instructions
   title: Attachment-only alert
@@ -307,7 +323,7 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: 'WC-01 baseline: Full-message interpretation and compound instructions'
+  notes: No implementation exists yet
 - id: PAR-020
   category: Full-message interpretation and compound instructions
   title: Locale/time ambiguity
@@ -316,7 +332,7 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: 'WC-01 baseline: Full-message interpretation and compound instructions'
+  notes: No implementation exists yet
 - id: REV-001
   category: Revisions, lifecycle matching and temporal order
   title: Edit before dispatch
@@ -325,7 +341,7 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: 'WC-01 baseline: Revisions, lifecycle matching and temporal order'
+  notes: No implementation exists yet
 - id: REV-002
   category: Revisions, lifecycle matching and temporal order
   title: Edit after acceptance
@@ -334,7 +350,7 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: 'WC-01 baseline: Revisions, lifecycle matching and temporal order'
+  notes: No implementation exists yet
 - id: REV-003
   category: Revisions, lifecycle matching and temporal order
   title: Delete source message
@@ -343,7 +359,7 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: 'WC-01 baseline: Revisions, lifecycle matching and temporal order'
+  notes: No implementation exists yet
 - id: REV-004
   category: Revisions, lifecycle matching and temporal order
   title: Exit before entry
@@ -352,7 +368,7 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: 'WC-01 baseline: Revisions, lifecycle matching and temporal order'
+  notes: No implementation exists yet
 - id: REV-005
   category: Revisions, lifecycle matching and temporal order
   title: Old exit new same ticker
@@ -361,7 +377,7 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: 'WC-01 baseline: Revisions, lifecycle matching and temporal order'
+  notes: No implementation exists yet
 - id: REV-006
   category: Revisions, lifecycle matching and temporal order
   title: Duplicate partial exit
@@ -370,7 +386,7 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: 'WC-01 baseline: Revisions, lifecycle matching and temporal order'
+  notes: No implementation exists yet
 - id: REV-007
   category: Revisions, lifecycle matching and temporal order
   title: Delayed exit beyond entry age
@@ -379,7 +395,7 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: 'WC-01 baseline: Revisions, lifecycle matching and temporal order'
+  notes: No implementation exists yet
 - id: REV-008
   category: Revisions, lifecycle matching and temporal order
   title: Exit without fill
@@ -388,7 +404,7 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: 'WC-01 baseline: Revisions, lifecycle matching and temporal order'
+  notes: No implementation exists yet
 - id: REV-009
   category: Revisions, lifecycle matching and temporal order
   title: Ambiguous all-out
@@ -397,7 +413,7 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: 'WC-01 baseline: Revisions, lifecycle matching and temporal order'
+  notes: No implementation exists yet
 - id: REV-010
   category: Revisions, lifecycle matching and temporal order
   title: Scoped close-all
@@ -406,7 +422,7 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: 'WC-01 baseline: Revisions, lifecycle matching and temporal order'
+  notes: No implementation exists yet
 - id: REV-011
   category: Revisions, lifecycle matching and temporal order
   title: Reply-parent missing
@@ -415,7 +431,7 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: 'WC-01 baseline: Revisions, lifecycle matching and temporal order'
+  notes: No implementation exists yet
 - id: REV-012
   category: Revisions, lifecycle matching and temporal order
   title: Future timestamp
@@ -424,7 +440,7 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: 'WC-01 baseline: Revisions, lifecycle matching and temporal order'
+  notes: No implementation exists yet
 - id: INS-001
   category: Instrument metadata, units and product identity
   title: Exact stock resolution
@@ -1377,7 +1393,7 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: 'WC-01 baseline: Entry conditions, pricing, sessions and deadlines'
+  notes: No implementation exists yet
 - id: ENT-002
   category: Entry conditions, pricing, sessions and deadlines
   title: Trigger versus limit
@@ -1386,7 +1402,7 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: 'WC-01 baseline: Entry conditions, pricing, sessions and deadlines'
+  notes: No implementation exists yet
 - id: ENT-003
   category: Entry conditions, pricing, sessions and deadlines
   title: Stale quote
@@ -1395,7 +1411,7 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: 'WC-01 baseline: Entry conditions, pricing, sessions and deadlines'
+  notes: No implementation exists yet
 - id: ENT-004
   category: Entry conditions, pricing, sessions and deadlines
   title: Wide spread
@@ -1404,7 +1420,7 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: 'WC-01 baseline: Entry conditions, pricing, sessions and deadlines'
+  notes: No implementation exists yet
 - id: ENT-005
   category: Entry conditions, pricing, sessions and deadlines
   title: Target already passed
@@ -1413,7 +1429,7 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: 'WC-01 baseline: Entry conditions, pricing, sessions and deadlines'
+  notes: No implementation exists yet
 - id: ENT-006
   category: Entry conditions, pricing, sessions and deadlines
   title: Session closed
@@ -1422,7 +1438,7 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: 'WC-01 baseline: Entry conditions, pricing, sessions and deadlines'
+  notes: No implementation exists yet
 - id: ENT-007
   category: Entry conditions, pricing, sessions and deadlines
   title: Early close
@@ -1431,7 +1447,7 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: 'WC-01 baseline: Entry conditions, pricing, sessions and deadlines'
+  notes: No implementation exists yet
 - id: ENT-008
   category: Entry conditions, pricing, sessions and deadlines
   title: TTL before cancel finality
@@ -1440,7 +1456,7 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: 'WC-01 baseline: Entry conditions, pricing, sessions and deadlines'
+  notes: No implementation exists yet
 - id: ENT-009
   category: Entry conditions, pricing, sessions and deadlines
   title: Price moves after sizing
@@ -1449,7 +1465,7 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: 'WC-01 baseline: Entry conditions, pricing, sessions and deadlines'
+  notes: No implementation exists yet
 - id: ENT-010
   category: Entry conditions, pricing, sessions and deadlines
   title: Partial fill remainder expires
@@ -1458,16 +1474,18 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: 'WC-01 baseline: Entry conditions, pricing, sessions and deadlines'
+  notes: No implementation exists yet
 - id: ENT-011
   category: Entry conditions, pricing, sessions and deadlines
   title: No valid entry reference
-  status: NOT_IMPLEMENTED
-  implementation_paths: []
-  test_paths: []
+  status: WIRED_NOT_TESTED
+  implementation_paths:
+  - app/sources/webhook.py
+  test_paths:
+  - tests/test_scn_a.py::test_ent_011_no_valid_entry_reference
   evidence_paths: []
   blocked_reason: null
-  notes: 'WC-01 baseline: Entry conditions, pricing, sessions and deadlines'
+  notes: Required field validation exists for symbol and side
 - id: ENT-012
   category: Entry conditions, pricing, sessions and deadlines
   title: Trigger repeated ticks
@@ -1476,7 +1494,7 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: 'WC-01 baseline: Entry conditions, pricing, sessions and deadlines'
+  notes: No implementation exists yet
 - id: ORD-001
   category: Broker order states, effects, deduplication and corrections
   title: Accepted acknowledgment

@@ -1,188 +1,127 @@
 {
-  "generated_at": "2026-10-02T23:25:47.112141+00:00",
-  "git_commit": "c775d9bd951b02801b9187c62557bef219998e72",
-  "code_hash": "5ef796fcaba56edcf76e8bf6912a5153ec88d7228aeedab6d1e518f038775768",
+  "generated_at": "2026-10-02T23:56:54.339497+00:00",
+  "git_commit": "d9b87131706b614b1d9abe6c292390a4bbc67e47",
+  "code_hash": "0b62036245bbf0a76ce6cc4169b2357bdb453bdb8fdaa75eeb1179e25a44382b",
   "config_hash": "cb358f0f957101699f7df3b03e1619b28636fa813e93791eefb5a543f8d981a0",
   "data_hash": "b1887cd16afd1c4e80bd1aa5f4f3c6992d672a7f9f9a798c609657df24c9f590",
   "environment": "isolated_non_live_pytest",
   "tests": [
     {
-      "nodeid": "tests/test_wc02_canonical_identities.py::TestPhysicalAccountDeduplication::test_two_bindings_same_physical_account",
+      "nodeid": "tests/test_scn_a.py::test_ing_001_valid_authorized_webhook",
       "outcome": "passed",
-      "duration_s": 0.8834376189988689,
+      "duration_s": 0.15793727000004765,
       "scenarios": [
-        "ROU-002"
+        "ING-001"
       ]
     },
     {
-      "nodeid": "tests/test_wc02_canonical_identities.py::TestCapabilityProfileEvidenceTier::test_unknown_capability_is_not_supported",
+      "nodeid": "tests/test_scn_a.py::test_ing_002_invalid_transport_signature",
       "outcome": "passed",
-      "duration_s": 0.6318940500004828,
+      "duration_s": 0.0003000249998876825,
       "scenarios": [
-        "ROU-004"
+        "ING-002"
       ]
     },
     {
-      "nodeid": "tests/test_wc02_canonical_identities.py::TestPaperAndLiveDistinction::test_paper_and_live_same_broker_are_different_accounts",
+      "nodeid": "tests/test_scn_a.py::test_ing_008_oversized_malformed_body",
       "outcome": "passed",
-      "duration_s": 0.5705952359985531,
+      "duration_s": 0.00028000600013911026,
       "scenarios": [
-        "ROU-001"
+        "ING-008"
       ]
     },
     {
-      "nodeid": "tests/test_wc03_hierarchical_budgets.py::TestBoundaryConditions::test_boundary_cash_exactly_sufficient",
+      "nodeid": "tests/test_scn_a.py::test_par_001_negated_buy",
       "outcome": "passed",
-      "duration_s": 0.00019351000082679093,
+      "duration_s": 0.0004046499998366926,
       "scenarios": [
-        "CAP-001"
+        "PAR-001"
       ]
     },
     {
-      "nodeid": "tests/test_wc03_hierarchical_budgets.py::TestConcurrentReservations::test_concurrent_same_opportunity_one_wins",
+      "nodeid": "tests/test_scn_a.py::test_par_004_option_flow_observation",
       "outcome": "passed",
-      "duration_s": 0.6042427249994944,
+      "duration_s": 0.0005162469999504538,
       "scenarios": [
-        "CAP-002"
+        "PAR-004"
       ]
     },
     {
-      "nodeid": "tests/test_wc04_sizing.py::TestSizeLinearLong::test_sizing_oracle_vectors",
+      "nodeid": "tests/test_scn_a.py::test_ent_011_no_valid_entry_reference",
       "outcome": "passed",
-      "duration_s": 0.024751282999204705,
+      "duration_s": 0.0008572620001814357,
       "scenarios": [
-        "SIZ-001"
+        "ENT-011"
       ]
     },
     {
-      "nodeid": "tests/test_wc04_sizing.py::TestSizeLinearLong::test_spec_75_worked_example",
+      "nodeid": "tests/test_scn_a.py::test_par_016_provider_quantity_boundary_minus_one",
       "outcome": "passed",
-      "duration_s": 0.00017761999879439827,
+      "duration_s": 0.000457529999948747,
       "scenarios": [
-        "SIZ-003"
+        "PAR-016"
       ]
     },
     {
-      "nodeid": "tests/test_wc06_intents_and_outbox.py::TestIntentStateMachine::test_state_sequence_success_path",
+      "nodeid": "tests/test_scn_a.py::test_par_016_provider_quantity_boundary_zero",
       "outcome": "passed",
-      "duration_s": 0.00049551799929759,
+      "duration_s": 0.00045284399993761326,
       "scenarios": [
-        "ORD-001"
+        "PAR-016"
       ]
     },
     {
-      "nodeid": "tests/test_wc06_intents_and_outbox.py::TestIntentStateMachine::test_state_sequence_failure_path",
+      "nodeid": "tests/test_scn_a.py::test_par_016_provider_quantity_boundary_plus_one",
       "outcome": "passed",
-      "duration_s": 0.00022029800129530486,
+      "duration_s": 0.00034579199996187526,
       "scenarios": [
-        "ORD-002"
-      ]
-    },
-    {
-      "nodeid": "tests/test_wc06_intents_and_outbox.py::TestCrashRecoveryScenarios::test_crash_after_dispatch_mark_before_response_blocks_new_exposure",
-      "outcome": "passed",
-      "duration_s": 0.0002938230009021936,
-      "scenarios": [
-        "OPS-001"
-      ]
-    },
-    {
-      "nodeid": "tests/test_wc12_mutation_harness.py::test_mutant_m1_remove_owner_wide_cap",
-      "outcome": "passed",
-      "duration_s": 0.7834580310009187,
-      "scenarios": [
-        "TST-001"
-      ]
-    },
-    {
-      "nodeid": "tests/test_wc20_engine_integration.py::test_wc20_single_destination_selection_i01",
-      "outcome": "passed",
-      "duration_s": 0.08023779300128808,
-      "scenarios": [
-        "ROU-003"
-      ]
-    },
-    {
-      "nodeid": "tests/test_wc22_evidence_tooling.py::test_plugin_writes_executed_tests_json",
-      "outcome": "passed",
-      "duration_s": 0.0001853200010373257,
-      "scenarios": [
-        "TST-001"
+        "PAR-016"
       ]
     }
   ],
   "scenarios": {
-    "ROU-002": {
+    "ING-001": {
       "result": "PASS",
       "tests": [
-        "tests/test_wc02_canonical_identities.py::TestPhysicalAccountDeduplication::test_two_bindings_same_physical_account"
+        "tests/test_scn_a.py::test_ing_001_valid_authorized_webhook"
       ]
     },
-    "ROU-004": {
+    "ING-002": {
       "result": "PASS",
       "tests": [
-        "tests/test_wc02_canonical_identities.py::TestCapabilityProfileEvidenceTier::test_unknown_capability_is_not_supported"
+        "tests/test_scn_a.py::test_ing_002_invalid_transport_signature"
       ]
     },
-    "ROU-001": {
+    "ING-008": {
       "result": "PASS",
       "tests": [
-        "tests/test_wc02_canonical_identities.py::TestPaperAndLiveDistinction::test_paper_and_live_same_broker_are_different_accounts"
+        "tests/test_scn_a.py::test_ing_008_oversized_malformed_body"
       ]
     },
-    "CAP-001": {
+    "PAR-001": {
       "result": "PASS",
       "tests": [
-        "tests/test_wc03_hierarchical_budgets.py::TestBoundaryConditions::test_boundary_cash_exactly_sufficient"
+        "tests/test_scn_a.py::test_par_001_negated_buy"
       ]
     },
-    "CAP-002": {
+    "PAR-004": {
       "result": "PASS",
       "tests": [
-        "tests/test_wc03_hierarchical_budgets.py::TestConcurrentReservations::test_concurrent_same_opportunity_one_wins"
+        "tests/test_scn_a.py::test_par_004_option_flow_observation"
       ]
     },
-    "SIZ-001": {
+    "ENT-011": {
       "result": "PASS",
       "tests": [
-        "tests/test_wc04_sizing.py::TestSizeLinearLong::test_sizing_oracle_vectors"
+        "tests/test_scn_a.py::test_ent_011_no_valid_entry_reference"
       ]
     },
-    "SIZ-003": {
+    "PAR-016": {
       "result": "PASS",
       "tests": [
-        "tests/test_wc04_sizing.py::TestSizeLinearLong::test_spec_75_worked_example"
-      ]
-    },
-    "ORD-001": {
-      "result": "PASS",
-      "tests": [
-        "tests/test_wc06_intents_and_outbox.py::TestIntentStateMachine::test_state_sequence_success_path"
-      ]
-    },
-    "ORD-002": {
-      "result": "PASS",
-      "tests": [
-        "tests/test_wc06_intents_and_outbox.py::TestIntentStateMachine::test_state_sequence_failure_path"
-      ]
-    },
-    "OPS-001": {
-      "result": "PASS",
-      "tests": [
-        "tests/test_wc06_intents_and_outbox.py::TestCrashRecoveryScenarios::test_crash_after_dispatch_mark_before_response_blocks_new_exposure"
-      ]
-    },
-    "TST-001": {
-      "result": "PASS",
-      "tests": [
-        "tests/test_wc12_mutation_harness.py::test_mutant_m1_remove_owner_wide_cap",
-        "tests/test_wc22_evidence_tooling.py::test_plugin_writes_executed_tests_json"
-      ]
-    },
-    "ROU-003": {
-      "result": "PASS",
-      "tests": [
-        "tests/test_wc20_engine_integration.py::test_wc20_single_destination_selection_i01"
+        "tests/test_scn_a.py::test_par_016_provider_quantity_boundary_minus_one",
+        "tests/test_scn_a.py::test_par_016_provider_quantity_boundary_plus_one",
+        "tests/test_scn_a.py::test_par_016_provider_quantity_boundary_zero"
       ]
     }
   }
