@@ -24,3 +24,4 @@ deploy/terraform/**/terraform.tfvars
 deploy/cloudflare-heartbeat/.dev.vars
 deploy/litestream/litestream.env
 venv_mutation/
+mutmut.ini
