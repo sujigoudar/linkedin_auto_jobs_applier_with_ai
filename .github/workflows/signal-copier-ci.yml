@@ -57,6 +57,8 @@ jobs:
                app/parser_tooling.py app/connection_catalog.py \
                app/sources/adapter_contract.py app/sources/url_safety.py app/sources/rss_source.py \
                app/export_events.py \
+               app/workflow/reasons.py app/workflow/money.py app/workflow/admission.py app/workflow/selection.py \
+               app/workflow/kelly.py \
                --follow-imports=silent
 
       - name: Run tests
