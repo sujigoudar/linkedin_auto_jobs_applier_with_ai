@@ -120,6 +120,7 @@ class MutationTest:
 # =============================================================================
 
 @pytest.mark.asyncio
+@pytest.mark.scenario("TST-001")
 async def test_mutant_m1_remove_owner_wide_cap(tmp_path: Path, monkeypatch):
     """M1: Owner-wide capital cap must be enforced.
 

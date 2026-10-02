@@ -227,6 +227,7 @@ class TestOutbox:
 class TestIntentStateMachine:
     """Test the state transitions of an intent."""
 
+    @pytest.mark.scenario("ORD-001")
     def test_state_sequence_success_path(self):
         """Verify the happy-path state sequence."""
         states = [
@@ -241,6 +242,7 @@ class TestIntentStateMachine:
         for state in states:
             assert state in IntentState
 
+    @pytest.mark.scenario("ORD-002")
     def test_state_sequence_failure_path(self):
         """Verify rejection/expiration state sequences."""
         states = [
@@ -290,6 +292,7 @@ class TestCrashRecoveryScenarios:
         # This requires SignalStore integration to implement claim_next.
         pass
 
+    @pytest.mark.scenario("OPS-001")
     def test_crash_after_dispatch_mark_before_response_blocks_new_exposure(self):
         """Crash after dispatch but before response → SUBMISSION_UNKNOWN.
 

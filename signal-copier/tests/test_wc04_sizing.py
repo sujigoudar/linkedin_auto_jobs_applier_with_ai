@@ -62,6 +62,7 @@ class TestSizeLinearLong:
     Tests the 4,500 fixture vectors plus boundary conditions.
     """
 
+    @pytest.mark.scenario("SIZ-001")
     def test_sizing_oracle_vectors(self):
         """Run all 4,500 linear_sizing.jsonl vectors against size_linear_long.
 
@@ -121,6 +122,7 @@ class TestSizeLinearLong:
                 + ("\n..." if len(failures) > 10 else "")
             )
 
+    @pytest.mark.scenario("SIZ-003")
     def test_spec_75_worked_example(self):
         """Test spec §7.5 worked synthetic example.
 

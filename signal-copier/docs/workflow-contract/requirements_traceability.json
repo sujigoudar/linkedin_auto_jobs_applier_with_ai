@@ -1,9 +1,10 @@
 {
   "schema_version": "1.0",
-  "generated_at": "1790974151.5990236",
+  "generated_at": "1790980906.9356403",
   "total_scenarios": 292,
   "status_counts": {
-    "NOT_IMPLEMENTED": 292
+    "NOT_IMPLEMENTED": 280,
+    "TESTED_SIMULATOR": 12
   },
   "scenarios": [
     {
@@ -1657,9 +1658,11 @@
       "id": "ROU-001",
       "category": "Account identity, selection, permissions and binding",
       "title": "Three eligible accounts",
-      "status": "NOT_IMPLEMENTED",
+      "status": "TESTED_SIMULATOR",
       "implementation_paths": [],
-      "test_paths": [],
+      "test_paths": [
+        "tests/test_wc02_canonical_identities.py"
+      ],
       "evidence_paths": [],
       "blocked_reason": null,
       "notes": "WC-01 baseline: Account identity, selection, permissions and binding",
@@ -1684,9 +1687,11 @@
       "id": "ROU-002",
       "category": "Account identity, selection, permissions and binding",
       "title": "Duplicate bindings",
-      "status": "NOT_IMPLEMENTED",
+      "status": "TESTED_SIMULATOR",
       "implementation_paths": [],
-      "test_paths": [],
+      "test_paths": [
+        "tests/test_wc02_canonical_identities.py"
+      ],
       "evidence_paths": [],
       "blocked_reason": null,
       "notes": "WC-01 baseline: Account identity, selection, permissions and binding",
@@ -1711,9 +1716,11 @@
       "id": "ROU-003",
       "category": "Account identity, selection, permissions and binding",
       "title": "No eligible account",
-      "status": "NOT_IMPLEMENTED",
+      "status": "TESTED_SIMULATOR",
       "implementation_paths": [],
-      "test_paths": [],
+      "test_paths": [
+        "tests/test_wc20_engine_integration.py"
+      ],
       "evidence_paths": [],
       "blocked_reason": null,
       "notes": "WC-01 baseline: Account identity, selection, permissions and binding",
@@ -1738,9 +1745,11 @@
       "id": "ROU-004",
       "category": "Account identity, selection, permissions and binding",
       "title": "Better funded alternate",
-      "status": "NOT_IMPLEMENTED",
+      "status": "TESTED_SIMULATOR",
       "implementation_paths": [],
-      "test_paths": [],
+      "test_paths": [
+        "tests/test_wc02_canonical_identities.py"
+      ],
       "evidence_paths": [],
       "blocked_reason": null,
       "notes": "WC-01 baseline: Account identity, selection, permissions and binding",
@@ -2035,9 +2044,11 @@
       "id": "CAP-001",
       "category": "Hierarchical budgets, shared backing and reservations",
       "title": "Shared final dollars",
-      "status": "NOT_IMPLEMENTED",
+      "status": "TESTED_SIMULATOR",
       "implementation_paths": [],
-      "test_paths": [],
+      "test_paths": [
+        "tests/test_wc03_hierarchical_budgets.py"
+      ],
       "evidence_paths": [],
       "blocked_reason": null,
       "notes": "WC-01 baseline: Hierarchical budgets, shared backing and reservations",
@@ -2062,9 +2073,11 @@
       "id": "CAP-002",
       "category": "Hierarchical budgets, shared backing and reservations",
       "title": "Owner cap across accounts",
-      "status": "NOT_IMPLEMENTED",
+      "status": "TESTED_SIMULATOR",
       "implementation_paths": [],
-      "test_paths": [],
+      "test_paths": [
+        "tests/test_wc03_hierarchical_budgets.py"
+      ],
       "evidence_paths": [],
       "blocked_reason": null,
       "notes": "WC-01 baseline: Hierarchical budgets, shared backing and reservations",
@@ -2521,9 +2534,11 @@
       "id": "SIZ-001",
       "category": "Financial validation and exact sizing",
       "title": "Reference stock sizing",
-      "status": "NOT_IMPLEMENTED",
+      "status": "TESTED_SIMULATOR",
       "implementation_paths": [],
-      "test_paths": [],
+      "test_paths": [
+        "tests/test_wc04_sizing.py"
+      ],
       "evidence_paths": [],
       "blocked_reason": null,
       "notes": "WC-01 baseline: Financial validation and exact sizing",
@@ -2575,9 +2590,11 @@
       "id": "SIZ-003",
       "category": "Financial validation and exact sizing",
       "title": "Invalid numeric quantity",
-      "status": "NOT_IMPLEMENTED",
+      "status": "TESTED_SIMULATOR",
       "implementation_paths": [],
-      "test_paths": [],
+      "test_paths": [
+        "tests/test_wc04_sizing.py"
+      ],
       "evidence_paths": [],
       "blocked_reason": null,
       "notes": "WC-01 baseline: Financial validation and exact sizing",
@@ -4033,9 +4050,11 @@
       "id": "ORD-001",
       "category": "Broker order states, effects, deduplication and corrections",
       "title": "Accepted acknowledgment",
-      "status": "NOT_IMPLEMENTED",
+      "status": "TESTED_SIMULATOR",
       "implementation_paths": [],
-      "test_paths": [],
+      "test_paths": [
+        "tests/test_wc06_intents_and_outbox.py"
+      ],
       "evidence_paths": [],
       "blocked_reason": null,
       "notes": "WC-01 baseline: Broker order states, effects, deduplication and corrections",
@@ -4060,9 +4079,11 @@
       "id": "ORD-002",
       "category": "Broker order states, effects, deduplication and corrections",
       "title": "HTTP success business rejection",
-      "status": "NOT_IMPLEMENTED",
+      "status": "TESTED_SIMULATOR",
       "implementation_paths": [],
-      "test_paths": [],
+      "test_paths": [
+        "tests/test_wc06_intents_and_outbox.py"
+      ],
       "evidence_paths": [],
       "blocked_reason": null,
       "notes": "WC-01 baseline: Broker order states, effects, deduplication and corrections",
@@ -6463,9 +6484,11 @@
       "id": "OPS-001",
       "category": "Failure, restart, coordination and operational health",
       "title": "Crash after reserve before send",
-      "status": "NOT_IMPLEMENTED",
+      "status": "TESTED_SIMULATOR",
       "implementation_paths": [],
-      "test_paths": [],
+      "test_paths": [
+        "tests/test_wc06_intents_and_outbox.py"
+      ],
       "evidence_paths": [],
       "blocked_reason": null,
       "notes": "WC-01 baseline: Failure, restart, coordination and operational health",
@@ -7570,9 +7593,11 @@
       "id": "TST-001",
       "category": "Verification integrity, mutations and release boundaries",
       "title": "Unbound contract harness",
-      "status": "NOT_IMPLEMENTED",
+      "status": "TESTED_SIMULATOR",
       "implementation_paths": [],
-      "test_paths": [],
+      "test_paths": [
+        "tests/test_wc12_mutation_harness.py"
+      ],
       "evidence_paths": [],
       "blocked_reason": null,
       "notes": "WC-01 baseline: Verification integrity, mutations and release boundaries",

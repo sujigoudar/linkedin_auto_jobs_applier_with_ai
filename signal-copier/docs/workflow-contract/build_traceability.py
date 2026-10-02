@@ -167,7 +167,7 @@ def build_traceability(
             print(f"WARNING: {map_id} in traceability_map but not in SCENARIO_CATALOG")
 
     # Compute summary stats
-    status_counts = {}
+    status_counts: dict[str, int] = {}
     for entry in result_scenarios:
         status = entry["status"]
         status_counts[status] = status_counts.get(status, 0) + 1
@@ -181,6 +181,89 @@ def build_traceability(
     }
 
 
+def apply_executed_evidence(
+    scenarios: dict[str, Any],
+    traceability_map: dict[str, dict[str, Any]],
+    executed_file: Path,
+) -> tuple[dict[str, dict[str, Any]], list[str]]:
+    """Apply executed test evidence to traceability map.
+
+    Returns:
+        (updated_map, warnings) where updated_map has TESTED_SIMULATOR status
+        for scenarios with PASS result in executed file, and warnings for
+        downgraded scenarios.
+    """
+    warnings = []
+
+    if not executed_file.exists():
+        warnings.append(f"--executed file not found: {executed_file}")
+        return traceability_map, warnings
+
+    with open(executed_file) as f:
+        executed_data = json.load(f)
+
+    executed_scenarios = executed_data.get("scenarios", {})
+
+    # Check for scenarios marked TESTED_* in map but absent from executed
+    for scenario_id, map_entry in traceability_map.items():
+        status = map_entry.get("status", "NOT_IMPLEMENTED")
+        if status in {"TESTED_SIMULATOR", "TESTED_BROKER_PAPER", "TESTED_OWNER_LIVE"}:
+            if scenario_id not in executed_scenarios:
+                warnings.append(
+                    f"{scenario_id}: marked {status} in map but absent from executed evidence; "
+                    "downgrading to WIRED_NOT_TESTED"
+                )
+                map_entry["status"] = "WIRED_NOT_TESTED"
+                map_entry["last_result"] = "NOT_RUN"
+
+    # Update scenarios with PASS result from executed file
+    for scenario_id, scenario_data in executed_scenarios.items():
+        result = scenario_data.get("result", "NOT_RUN")
+        test_nodes = scenario_data.get("tests", [])
+
+        # Ensure entry exists in traceability map
+        if scenario_id not in traceability_map:
+            traceability_map[scenario_id] = {}
+
+        map_entry = traceability_map[scenario_id]
+
+        if result == "PASS":
+            # Update to TESTED_SIMULATOR
+            if map_entry.get("status") != "TESTED_SIMULATOR":
+                map_entry["status"] = "TESTED_SIMULATOR"
+
+            # Add test_paths from executed file if not already present
+            if "test_paths" not in map_entry or not map_entry["test_paths"]:
+                # Extract file part from node ids
+                test_paths = set()
+                for nodeid in test_nodes:
+                    # nodeid format: path/to/test_file.py::test_name
+                    if "::" in nodeid:
+                        test_file = nodeid.split("::")[0]
+                        test_paths.add(test_file)
+                map_entry["test_paths"] = sorted(test_paths)
+
+            # Copy evidence fields
+            if "evidence_paths" not in map_entry:
+                map_entry["evidence_paths"] = [str(executed_file)]
+
+            # Copy hashes and execution info
+            for field in ["code_hash", "config_hash", "environment", "executed_at"]:
+                if field == "executed_at":
+                    if "generated_at" in executed_data:
+                        map_entry[field] = executed_data["generated_at"]
+                elif field in executed_data:
+                    map_entry[field] = executed_data[field]
+
+            map_entry["result"] = "PASS"
+        elif result == "FAIL":
+            # Keep existing status but mark last_result as FAIL
+            map_entry["last_result"] = "FAIL"
+            warnings.append(f"{scenario_id}: test execution FAILED")
+
+    return traceability_map, warnings
+
+
 def main(argv: list[str] | None = None):
     """Main entry point. `--output PATH` writes elsewhere (tests use tmp_path)."""
     import argparse
@@ -190,6 +273,12 @@ def main(argv: list[str] | None = None):
 
     parser = argparse.ArgumentParser(description="Build requirements_traceability.json")
     parser.add_argument("--output", type=Path, default=script_dir / "requirements_traceability.json")
+    parser.add_argument(
+        "--executed",
+        type=Path,
+        default=None,
+        help="Path to executed_tests.json from pytest plugin (optional)"
+    )
     args = parser.parse_args(argv)
 
     catalog_path = script_dir / "SCENARIO_CATALOG.json"
@@ -205,6 +294,18 @@ def main(argv: list[str] | None = None):
     traceability_map = load_traceability_map(map_path)
     print(f"  Found {len(traceability_map)} mapped scenarios")
 
+    # Apply executed evidence if provided
+    exit_code = 0
+    if args.executed:
+        print(f"Applying executed evidence from {args.executed}...")
+        traceability_map, warnings = apply_executed_evidence(scenarios, traceability_map, args.executed)
+        for warning in warnings:
+            print(f"  WARNING: {warning}")
+        if any(w.startswith("ERROR:") for w in warnings):
+            exit_code = 1
+    else:
+        print("WARNING: --executed not provided; statuses are not verified against test execution")
+
     # Build merged output
     print("Building requirements_traceability.json...")
     result = build_traceability(scenarios, traceability_map, repo_root)
@@ -218,7 +319,7 @@ def main(argv: list[str] | None = None):
     for status, count in sorted(result["status_counts"].items()):
         print(f"  {status}: {count}")
 
-    return 0
+    return exit_code
 
 
 if __name__ == "__main__":

@@ -13,6 +13,7 @@ Tests:
 """
 from __future__ import annotations
 
+import pytest
 
 from app.db import SignalStore
 from app.workflow.identity import (
@@ -26,6 +27,7 @@ from app.workflow.identity import (
 class TestPhysicalAccountDeduplication:
     """Test invariant I02: multiple bindings collapse to one physical account."""
 
+    @pytest.mark.scenario("ROU-002")
     def test_two_bindings_same_physical_account(self, tmp_path):
         """Two bindings to the same broker account ID collapse to one PhysicalAccount."""
         store = SignalStore(tmp_path / "test.db")
@@ -196,6 +198,7 @@ class TestPhysicalAccountDeduplication:
 class TestCapabilityProfileEvidenceTier:
     """Test invariant I21: unknown capabilities are unsupported."""
 
+    @pytest.mark.scenario("ROU-004")
     def test_unknown_capability_is_not_supported(self, tmp_path):
         """Unknown capability (evidence_tier='unknown') returns None, not mocked."""
         store = SignalStore(tmp_path / "test.db")
@@ -297,6 +300,7 @@ class TestCapabilityProfileEvidenceTier:
 class TestPaperAndLiveDistinction:
     """Test that paper and live accounts with the same broker name are different."""
 
+    @pytest.mark.scenario("ROU-001")
     def test_paper_and_live_same_broker_are_different_accounts(self, tmp_path):
         """Paper and live with same broker_account_id are different PhysicalAccounts."""
         store = SignalStore(tmp_path / "test.db")

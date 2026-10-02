@@ -1,0 +1,32 @@
+# Release Notes — Financial Risks and External Blockers
+
+# External blockers that prevent live readiness
+external_blockers:
+  - "Broker paper/live credentials not in CI — live evidence requires manual broker integration"
+  - "Live account restrictions and approval workflows not tested in CI"
+  - "Regulatory compliance (PDT, wash sale, tax loss harvesting) requires broker confirmation"
+
+# Financial risks NOT addressed by this test suite
+financial_risks:
+  - "Profitability claims are NOT included in this report — correctness and profitability are separate"
+  - "Edge cases in margin calculation at broker-specific decimal precision"
+  - "Settlement risk and T+1 availability not modeled in simulator"
+  - "FX rates and corporate actions assumed static, not sourced from live feeds"
+  - "Correlated asset default scenarios not covered"
+
+# Profitability evidence
+profitability_evidence: |
+  No profitability evidence is included in this report. This is a technical correctness
+  validation only. Trading strategies, historical performance backtests, and edge discovery
+  are separate concerns not covered here.
+
+# Live readiness statement
+live_readiness_statement: |
+  This report does not certify live readiness or trading authorization.
+  It is evidence of test execution in an isolated simulator only.
+  Do not deploy changes based on this report alone without:
+  1. Manual review of code changes and design decisions
+  2. Live broker integration testing in paper trading
+  3. Approval from risk and compliance teams
+  4. Independent audit of account restrictions and margin policy
+  5. Confirmation of strategy profitability with real market data

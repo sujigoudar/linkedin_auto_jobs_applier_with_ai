@@ -40,6 +40,7 @@ def store(tmp_path: Path):
 
 
 @pytest.mark.asyncio
+@pytest.mark.scenario("ROU-003")
 async def test_wc20_single_destination_selection_i01(store):
     """Test WC-20: Entry path with two eligible accounts, selects one (I01)."""
     accounts = [

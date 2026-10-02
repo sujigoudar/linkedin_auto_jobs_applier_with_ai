@@ -507,6 +507,7 @@ class TestHierarchicalBudgetMockStore:
 class TestBoundaryConditions:
     """Test boundary conditions at ±1 cent for each level."""
 
+    @pytest.mark.scenario("CAP-001")
     def test_boundary_cash_exactly_sufficient(self):
         """Cash available == cash needed → admit."""
 
@@ -600,6 +601,7 @@ class TestConcurrentReservations:
     opportunity, and reserves chosen resources."
     """
 
+    @pytest.mark.scenario("CAP-002")
     def test_concurrent_same_opportunity_one_wins(self, tmp_path):
         """Two threads racing to claim the same opportunity_id:
         exactly one succeeds."""

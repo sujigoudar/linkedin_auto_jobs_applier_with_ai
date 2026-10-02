@@ -16,6 +16,9 @@ from pathlib import Path
 import httpx
 import pytest
 
+# Register the scenario evidence plugin
+pytest_plugins = ["tests.scenario_evidence"]
+
 
 @pytest.fixture(autouse=True)
 def reset_capital_allocator_state():
