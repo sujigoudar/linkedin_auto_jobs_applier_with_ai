@@ -58,7 +58,7 @@ class ProviderSenderMapping:
 class InboxProviderConfig:
     """Configuration for one inbox role's provider mapping."""
     inbox_role: str  # "signals", "operations", or "reports"
-    senders: dict[str, ProviderSenderMapping] = None  # sender_pattern -> mapping
+    senders: Optional[dict[str, ProviderSenderMapping]] = None  # sender_pattern -> mapping
     default_provider: Optional[str] = None  # Fallback when no sender matches
     require_known_sender: bool = True  # If True, unknown senders get NEEDS_REVIEW
 
