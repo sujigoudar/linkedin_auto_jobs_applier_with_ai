@@ -17,38 +17,44 @@
  * This file only holds tokens + component/nav/mobile rules that are
  * genuinely shared. Page-specific one-offs stay in dashboard.html's own
  * inline <style> block, loaded AFTER this file so it can still override.
+ *
+ * Imports design-system-tokens.css for comprehensive token definitions
+ * across both signal-copier and signal-portfolio-commercial platforms.
  */
 
+@import url('/static/design-system-tokens.css');
+
 :root {
-  /* --- Existing tokens (dashboard.html) — kept, never renamed --- */
-  color-scheme: light dark;
-  --bg: #0b0e14;
-  --panel: #141926;
-  --border: #262c3d;
-  --text: #e6e9f0;
-  --muted: #8b93a7;
-  --ok: #3ddc84;
-  --warn: #f5b942;
-  --bad: #ef5b5b;
-  --accent: #5b8cff;
+  /* --- Backward-compatible token aliases (map old names to new tokens) --- */
+  /* These maintain compatibility with existing code while using the new
+     comprehensive token system from design-system-tokens.css */
+  --bg: var(--color-bg-primary);
+  --panel: var(--color-bg-secondary);
+  --border: var(--color-border);
+  --text: var(--color-text-primary);
+  --muted: var(--color-text-secondary);
+  --ok: var(--color-positive);
+  --warn: var(--color-warning);
+  --bad: var(--color-critical);
+  --accent: var(--color-accent);
 
   /* --- New semantic status tokens --- */
   /* --crit: reserved for genuine risk/exposure alerts (an unprotected
      position, a stale broker connection) -- deliberately a distinct
      red/orange from --bad (plain error/failure states) so the two never
      look interchangeable in a KPI band or attention queue. */
-  --crit: #ff5d3b;
-  --crit-bg: rgba(255, 93, 59, 0.14);
-  --ok-bg: rgba(61, 220, 132, 0.14);
-  --warn-bg: rgba(245, 185, 66, 0.14);
-  --bad-bg: rgba(239, 91, 91, 0.14);
-  --accent-bg: rgba(91, 140, 255, 0.14);
+  --crit: var(--color-caution);
+  --crit-bg: var(--color-caution-subtle);
+  --ok-bg: var(--color-positive-subtle);
+  --warn-bg: var(--color-warning-subtle);
+  --bad-bg: var(--color-critical-subtle);
+  --accent-bg: var(--color-info-subtle);
   --neutral-bg: rgba(139, 147, 167, 0.14);
 
   /* --level3-color: a dimmer muted, for evidence-tier text that must
      recede further than --muted (which is still used for ordinary
      Level-2 secondary text like column headers and timestamps). */
-  --level3-color: #62687a;
+  --level3-color: var(--color-text-detail);
 
   /* --- Type scale (3 explicit levels) --- */
   --level1-size: 2rem;       /* KPI band big numbers */
@@ -58,12 +64,12 @@
   --level3-size: 0.72rem;    /* evidence/technical detail */
 
   /* --- Spacing scale --- */
-  --space-1: 4px;
-  --space-2: 8px;
-  --space-3: 12px;
-  --space-4: 16px;
-  --space-5: 24px;
-  --space-6: 32px;
+  --space-1: var(--gap-xs);
+  --space-2: var(--gap-sm);
+  --space-3: var(--gap-md);
+  --space-4: var(--gap-lg);
+  --space-5: var(--gap-xl);
+  --space-6: var(--gap-2xl);
 
   --radius: 10px;
   --radius-sm: 6px;

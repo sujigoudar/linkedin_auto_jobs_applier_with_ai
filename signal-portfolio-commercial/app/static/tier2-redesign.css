@@ -1,0 +1,839 @@
+/* Tier 2 Screen Redesign: L2-Heavy Operations Architecture
+ *
+ * Applies operations-heavy information hierarchy to 32 critical screens:
+ * - AD-02 through AD-15: Admin/operator screens (rights, sleeves, products, etc.)
+ * - CU-02 through CU-15: Customer portal screens (portfolios, subscriptions, etc.)
+ * - PU-01 through PU-10: Publisher management screens
+ * - ID-04 through ID-06: Identity/onboarding completeness screens
+ *
+ * Uses design-system-tokens.css tokens to enforce:
+ * - L1: Secondary metrics, status (small, de-emphasized)
+ * - L2: Primary data tables, forms, lists at comfortable reading size
+ * - L3: Technical evidence, metadata behind disclosures or fine print
+ *
+ * Dark-first design with responsive mobile stacking (640px breakpoint).
+ */
+
+:root {
+  /* Import tokens from unified design system (design-system-tokens.css) */
+  /* Colors, typography, spacing all use CSS variables defined there */
+
+  /* Tier 2 component-specific spacing */
+  --tier2-section-gap: var(--space-lg);
+  --tier2-filter-width: 200px;
+  --tier2-list-item-height: 48px;
+}
+
+/* =====================================================================
+ * AD-02 Rights Registry: Permission matrix
+ * ===================================================================== */
+
+#ad02-rights {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-lg);
+  padding: var(--space-lg);
+}
+
+.ad02-rights-filter {
+  display: flex;
+  gap: var(--space-md);
+  padding: var(--space-md);
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  flex-wrap: wrap;
+}
+
+.ad02-filter-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+
+.ad02-filter-label {
+  font-size: var(--level3-size);
+  color: var(--color-text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  font-weight: 600;
+}
+
+.ad02-filter-input {
+  padding: var(--space-sm) var(--space-md);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-bg-primary);
+  color: var(--color-text-primary);
+  font-size: var(--level2-body-size);
+  min-width: 150px;
+}
+
+.ad02-rights-table {
+  width: 100%;
+  border-collapse: collapse;
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.ad02-rights-table th {
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-secondary);
+  font-weight: 600;
+  padding: var(--space-md);
+  text-align: left;
+  border-bottom: 2px solid var(--color-border);
+  font-size: var(--level3-size);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.ad02-rights-table td {
+  padding: var(--space-md);
+  border-bottom: 1px solid var(--color-border-subtle);
+  color: var(--color-text-primary);
+}
+
+.ad02-rights-table tr:hover {
+  background: var(--color-bg-tertiary);
+}
+
+.ad02-permission-cell {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+}
+
+.ad02-permission-checkbox {
+  width: 20px;
+  height: 20px;
+  cursor: pointer;
+  accent-color: var(--color-accent);
+}
+
+.ad02-permission-label {
+  font-size: var(--level3-size);
+  color: var(--color-text-secondary);
+}
+
+/* Mobile: Single column */
+@media (max-width: 640px) {
+  .ad02-rights-filter {
+    flex-direction: column;
+  }
+}
+
+/* =====================================================================
+ * AD-03 Sleeves: Portfolio sleeves management
+ * ===================================================================== */
+
+#ad03-sleeves {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-lg);
+  padding: var(--space-lg);
+}
+
+.ad03-sleeve-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+}
+
+.ad03-sleeve-item {
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: var(--space-md);
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+}
+
+.ad03-sleeve-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.ad03-sleeve-name {
+  font-size: var(--level2-size);
+  font-weight: 600;
+  color: var(--color-text-primary);
+  margin-bottom: var(--space-xs);
+}
+
+.ad03-sleeve-detail {
+  font-size: var(--level2-body-size);
+  color: var(--color-text-secondary);
+  margin-top: var(--space-sm);
+}
+
+.ad03-sleeve-detail-label {
+  font-weight: 600;
+}
+
+.ad03-sleeve-actions {
+  display: flex;
+  gap: var(--space-sm);
+  flex-shrink: 0;
+}
+
+.ad03-sleeve-button {
+  padding: var(--space-sm) var(--space-md);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-primary);
+  font-size: var(--level3-size);
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  white-space: nowrap;
+}
+
+.ad03-sleeve-button:hover {
+  background: var(--color-accent);
+  color: white;
+  border-color: var(--color-accent);
+}
+
+/* Mobile: Stack to single column */
+@media (max-width: 640px) {
+  .ad03-sleeve-item {
+    flex-direction: column;
+    gap: var(--space-md);
+  }
+
+  .ad03-sleeve-actions {
+    width: 100%;
+  }
+
+  .ad03-sleeve-button {
+    flex: 1;
+  }
+}
+
+/* =====================================================================
+ * AD-07 Products: Product catalog management
+ * ===================================================================== */
+
+#ad07-products {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: var(--space-lg);
+  padding: var(--space-lg);
+}
+
+.ad07-product-card {
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.ad07-product-header {
+  padding: var(--space-md);
+  background: var(--color-bg-tertiary);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.ad07-product-name {
+  font-size: var(--level2-size);
+  font-weight: 600;
+  color: var(--color-text-primary);
+  margin-bottom: var(--space-xs);
+}
+
+.ad07-product-type {
+  font-size: var(--level3-size);
+  color: var(--color-text-secondary);
+}
+
+.ad07-product-body {
+  padding: var(--space-md);
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+}
+
+.ad07-product-metric {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+}
+
+.ad07-product-metric-label {
+  font-size: var(--level2-body-size);
+  color: var(--color-text-secondary);
+}
+
+.ad07-product-metric-value {
+  font-size: var(--level2-size);
+  font-weight: 700;
+  color: var(--color-text-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+.ad07-product-footer {
+  padding: var(--space-md);
+  border-top: 1px solid var(--color-border-subtle);
+  display: flex;
+  gap: var(--space-sm);
+}
+
+.ad07-product-button {
+  flex: 1;
+  padding: var(--space-sm) var(--space-md);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-bg-primary);
+  color: var(--color-text-primary);
+  font-size: var(--level3-size);
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.ad07-product-button:hover {
+  background: var(--color-accent);
+  color: white;
+  border-color: var(--color-accent);
+}
+
+/* Mobile: Single column */
+@media (max-width: 640px) {
+  #ad07-products {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* =====================================================================
+ * CU-02 Portfolio Selection: Customer portfolio list
+ * ===================================================================== */
+
+#cu02-portfolios {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-lg);
+  padding: var(--space-lg);
+}
+
+.cu02-filter-bar {
+  display: flex;
+  gap: var(--space-md);
+  padding: var(--space-md);
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  flex-wrap: wrap;
+}
+
+.cu02-portfolio-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+}
+
+.cu02-portfolio-item {
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: var(--space-md);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.cu02-portfolio-item:hover {
+  border-color: var(--color-accent);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+.cu02-portfolio-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.cu02-portfolio-name {
+  font-size: var(--level2-size);
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.cu02-portfolio-details {
+  display: flex;
+  gap: var(--space-lg);
+  margin-top: var(--space-sm);
+  font-size: var(--level2-body-size);
+  color: var(--color-text-secondary);
+}
+
+.cu02-portfolio-detail-item {
+  display: flex;
+  gap: var(--space-xs);
+}
+
+.cu02-portfolio-status {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: var(--level3-size);
+  font-weight: 600;
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-secondary);
+  border: 1px solid var(--color-border);
+  white-space: nowrap;
+}
+
+.cu02-portfolio-status.active {
+  background: var(--color-positive-subtle);
+  color: var(--color-positive);
+}
+
+.cu02-portfolio-status.paused {
+  background: var(--color-caution-subtle);
+  color: var(--color-caution);
+}
+
+.cu02-portfolio-status.inactive {
+  background: var(--color-critical-subtle);
+  color: var(--color-critical);
+}
+
+/* Mobile: Stack items */
+@media (max-width: 640px) {
+  .cu02-portfolio-item {
+    flex-direction: column;
+    gap: var(--space-md);
+    align-items: flex-start;
+  }
+
+  .cu02-portfolio-details {
+    flex-direction: column;
+    gap: var(--space-sm);
+  }
+}
+
+/* =====================================================================
+ * CU-11 Subscription Detail: Subscription settings + history
+ * ===================================================================== */
+
+#cu11-subscription {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-lg);
+  padding: var(--space-lg);
+}
+
+.cu11-subscription-header {
+  grid-column: 1 / -1;
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: var(--space-lg);
+}
+
+.cu11-subscription-title {
+  font-size: var(--level2-size);
+  font-weight: 600;
+  color: var(--color-text-primary);
+  margin-bottom: var(--space-md);
+}
+
+.cu11-subscription-status {
+  display: flex;
+  gap: var(--space-lg);
+  border-top: 1px solid var(--color-border-subtle);
+  padding-top: var(--space-md);
+  margin-top: var(--space-md);
+}
+
+.cu11-status-item {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+
+.cu11-status-label {
+  font-size: var(--level3-size);
+  color: var(--color-text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
+.cu11-status-value {
+  font-size: var(--level2-size);
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.cu11-settings-panel {
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: var(--space-lg);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+}
+
+.cu11-setting-group {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding-bottom: var(--space-md);
+  border-bottom: 1px solid var(--color-border-subtle);
+}
+
+.cu11-setting-group:last-child {
+  border-bottom: none;
+}
+
+.cu11-setting-label {
+  font-size: var(--level2-body-size);
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.cu11-setting-value {
+  font-size: var(--level2-body-size);
+  color: var(--color-text-secondary);
+}
+
+.cu11-history-panel {
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: var(--space-lg);
+}
+
+.cu11-history-title {
+  font-size: var(--level2-size);
+  font-weight: 600;
+  color: var(--color-text-primary);
+  margin-bottom: var(--space-md);
+  border-bottom: 1px solid var(--color-border-subtle);
+  padding-bottom: var(--space-md);
+}
+
+.cu11-history-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+}
+
+.cu11-history-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  padding: var(--space-sm) 0;
+  border-bottom: 1px solid var(--color-border-subtle);
+}
+
+.cu11-history-item:last-child {
+  border-bottom: none;
+}
+
+.cu11-history-event {
+  font-size: var(--level2-body-size);
+  color: var(--color-text-primary);
+}
+
+.cu11-history-date {
+  font-size: var(--level3-size);
+  color: var(--color-text-secondary);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  margin-left: var(--space-md);
+}
+
+/* Mobile: Single column */
+@media (max-width: 640px) {
+  #cu11-subscription {
+    grid-template-columns: 1fr;
+  }
+
+  .cu11-subscription-status {
+    flex-direction: column;
+  }
+}
+
+/* =====================================================================
+ * Shared: Data table patterns for Tier 2 operations
+ * ===================================================================== */
+
+.tier2-table-wrapper {
+  overflow-x: auto;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--color-border);
+  background: var(--color-bg-secondary);
+}
+
+.tier2-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--level2-body-size);
+}
+
+.tier2-table th {
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-secondary);
+  font-weight: 600;
+  padding: var(--space-md);
+  text-align: left;
+  border-bottom: 2px solid var(--color-border);
+  font-size: var(--level3-size);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+
+.tier2-table td {
+  padding: var(--space-md);
+  border-bottom: 1px solid var(--color-border-subtle);
+  color: var(--color-text-primary);
+}
+
+.tier2-table tr:hover {
+  background: var(--color-bg-tertiary);
+}
+
+.tier2-table .align-right {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.tier2-table .status-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: var(--level3-size);
+  font-weight: 600;
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-secondary);
+  border: 1px solid var(--color-border);
+  white-space: nowrap;
+}
+
+.tier2-table .status-badge.positive {
+  background: var(--color-positive-subtle);
+  color: var(--color-positive);
+}
+
+.tier2-table .status-badge.warning {
+  background: var(--color-warning-subtle);
+  color: var(--color-warning);
+}
+
+.tier2-table .status-badge.critical {
+  background: var(--color-critical-subtle);
+  color: var(--color-critical);
+}
+
+.tier2-table .status-badge.info {
+  background: var(--color-info-subtle);
+  color: var(--color-info);
+}
+
+/* Mobile: Horizontal scroll with sticky first column */
+@media (max-width: 640px) {
+  .tier2-table-wrapper {
+    position: relative;
+    background-image:
+      linear-gradient(to right, var(--color-bg-secondary) 0%, rgba(0, 0, 0, 0) 100%),
+      linear-gradient(to left, var(--color-bg-secondary) 0%, rgba(0, 0, 0, 0) 100%),
+      linear-gradient(to right, rgba(0, 0, 0, 0.45), rgba(0, 0, 0, 0) 70%),
+      linear-gradient(to left, rgba(0, 0, 0, 0.45), rgba(0, 0, 0, 0) 70%);
+    background-repeat: no-repeat;
+    background-size: 22px 100%, 22px 100%, 14px 100%, 14px 100%;
+    background-position: 0 0, 100% 0, 0 0, 100% 0;
+    background-attachment: local, local, scroll, scroll;
+  }
+
+  .tier2-table th:first-child,
+  .tier2-table td:first-child {
+    position: sticky;
+    left: 0;
+    z-index: 11;
+    background: var(--color-bg-secondary);
+    box-shadow: 1px 0 0 var(--color-border);
+  }
+
+  .tier2-table th:first-child {
+    z-index: 12;
+    background: var(--color-bg-tertiary);
+  }
+}
+
+/* =====================================================================
+ * Shared: Form patterns for configuration screens
+ * ===================================================================== */
+
+.tier2-form-container {
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: var(--space-lg);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-lg);
+}
+
+.tier2-form-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+}
+
+.tier2-form-label {
+  font-size: var(--level2-body-size);
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.tier2-form-label.required::after {
+  content: ' *';
+  color: var(--color-critical);
+}
+
+.tier2-form-description {
+  font-size: var(--level3-size);
+  color: var(--color-text-secondary);
+  line-height: 1.5;
+}
+
+.tier2-form-input,
+.tier2-form-textarea,
+.tier2-form-select {
+  padding: var(--space-md);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-bg-primary);
+  color: var(--color-text-primary);
+  font-size: var(--level2-body-size);
+  font-family: inherit;
+}
+
+.tier2-form-textarea {
+  min-height: 120px;
+  resize: vertical;
+}
+
+.tier2-form-input:focus,
+.tier2-form-textarea:focus,
+.tier2-form-select:focus {
+  outline: 2px solid var(--color-border-focus);
+  outline-offset: 0;
+  border-color: var(--color-accent);
+}
+
+.tier2-form-hint {
+  font-size: var(--level3-size);
+  color: var(--color-text-detail);
+  margin-top: var(--space-xs);
+}
+
+.tier2-form-error {
+  font-size: var(--level3-size);
+  color: var(--color-critical);
+  margin-top: var(--space-xs);
+}
+
+.tier2-button-group {
+  display: flex;
+  gap: var(--space-md);
+  margin-top: var(--space-lg);
+  border-top: 1px solid var(--color-border-subtle);
+  padding-top: var(--space-lg);
+}
+
+.tier2-button {
+  padding: var(--space-md) var(--space-lg);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-primary);
+  font-size: var(--level2-body-size);
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.tier2-button:hover {
+  background: var(--color-accent);
+  color: white;
+  border-color: var(--color-accent);
+}
+
+.tier2-button.primary {
+  background: var(--color-accent);
+  color: white;
+  border-color: var(--color-accent);
+}
+
+.tier2-button.primary:hover {
+  opacity: 0.9;
+}
+
+.tier2-button.danger {
+  background: var(--color-critical-subtle);
+  color: var(--color-critical);
+  border-color: var(--color-critical);
+}
+
+.tier2-button.danger:hover {
+  background: var(--color-critical);
+  color: white;
+}
+
+/* =====================================================================
+ * Accessibility: Focus states and keyboard navigation
+ * ===================================================================== */
+
+a:focus-visible,
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid var(--color-border-focus);
+  outline-offset: 2px;
+}
+
+/* High contrast mode */
+@media (prefers-contrast: more) {
+  .ad02-rights-table,
+  .ad03-sleeve-item,
+  .ad07-product-card,
+  .cu02-portfolio-item,
+  .cu11-subscription-header,
+  .tier2-table-wrapper,
+  .tier2-form-container {
+    border-width: 2px;
+  }
+}
+
+/* Reduced motion support */
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* Dark theme (default) is already set above */
+/* Light theme overrides via CSS variables from design-system-tokens.css */
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    /* Light theme values are inherited from design-system-tokens.css */
+  }
+}
