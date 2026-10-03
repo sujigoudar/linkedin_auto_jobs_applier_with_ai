@@ -1,0 +1,212 @@
+{
+  "version": "1.0.0",
+  "description": "Unified design system tokens for signal-copier and signal-portfolio-commercial",
+  "colors": {
+    "semantic": {
+      "positive": {
+        "base": "#10b981",
+        "subtle": "#d1fae5",
+        "description": "Success, approved, positive outcomes"
+      },
+      "warning": {
+        "base": "#f59e0b",
+        "subtle": "#fef3c7",
+        "description": "Caution, attention needed, pending states"
+      },
+      "critical": {
+        "base": "#ef4444",
+        "subtle": "#fee2e2",
+        "description": "Errors, failures, dangerous actions"
+      },
+      "caution": {
+        "base": "#f97316",
+        "subtle": "#ffedd5",
+        "description": "Warning-level alerts, notable changes"
+      },
+      "info": {
+        "base": "#3b82f6",
+        "subtle": "#dbeafe",
+        "description": "Information, notes, secondary data"
+      }
+    },
+    "text": {
+      "primary": "#1a1a1a",
+      "secondary": "#6b7280",
+      "muted": "#9ca3af",
+      "detail": "#d1d5db",
+      "description": "Text hierarchy for readability"
+    },
+    "accent": {
+      "base": "#0f172a",
+      "description": "Primary action color, focus highlights"
+    },
+    "backgrounds": {
+      "primary": "#111827",
+      "secondary": "#1f2937",
+      "tertiary": "#374151",
+      "description": "Dark-first theme backgrounds"
+    },
+    "borders": {
+      "base": "#4b5563",
+      "subtle": "#2d3748",
+      "focus": "#3b82f6",
+      "description": "Border and divider colors"
+    }
+  },
+  "typography": {
+    "fonts": {
+      "display": {
+        "family": "Charter, Georgia, serif",
+        "size": "2rem",
+        "weight": "700",
+        "lineHeight": "1.2",
+        "use": "Page titles, hero sections"
+      },
+      "headingL1": {
+        "family": "-apple-system, BlinkMacSystemFont, Segoe UI, Roboto, sans-serif",
+        "size": "1.5rem",
+        "weight": "600",
+        "lineHeight": "1.3",
+        "use": "Section headings, major dividers"
+      },
+      "headingL2": {
+        "family": "-apple-system, BlinkMacSystemFont, Segoe UI, Roboto, sans-serif",
+        "size": "1.125rem",
+        "weight": "600",
+        "lineHeight": "1.4",
+        "use": "Subsection headings, tier 2 titles"
+      },
+      "body": {
+        "family": "-apple-system, BlinkMacSystemFont, Segoe UI, Roboto, sans-serif",
+        "size": "0.95rem",
+        "weight": "400",
+        "lineHeight": "1.6",
+        "use": "Body text, form labels, descriptions"
+      },
+      "caption": {
+        "family": "-apple-system, BlinkMacSystemFont, Segoe UI, Roboto, sans-serif",
+        "size": "0.85rem",
+        "weight": "400",
+        "lineHeight": "1.5",
+        "use": "Small text, metadata, hints"
+      },
+      "mono": {
+        "family": "Courier New, Courier, monospace",
+        "size": "0.85rem",
+        "weight": "400",
+        "lineHeight": "1.5",
+        "use": "Code blocks, API paths, technical identifiers"
+      }
+    },
+    "scales": {
+      "level1-size": "2rem",
+      "level2-size": "1.25rem",
+      "level2-body-size": "0.95rem",
+      "level3-size": "0.85rem",
+      "description": "Typography scale for information hierarchy"
+    }
+  },
+  "spacing": {
+    "scale": {
+      "xs": "0.25rem",
+      "sm": "0.5rem",
+      "md": "1rem",
+      "lg": "1.5rem",
+      "xl": "2rem",
+      "2xl": "3rem",
+      "3xl": "4rem"
+    },
+    "components": {
+      "gap-xs": "0.25rem",
+      "gap-sm": "0.5rem",
+      "gap-md": "1rem",
+      "gap-lg": "1.5rem",
+      "gap-xl": "2rem",
+      "gap-2xl": "3rem",
+      "gap-3xl": "4rem"
+    },
+    "description": "7-point spacing scale for consistent layouts"
+  },
+  "breakpoints": {
+    "mobile": "480px",
+    "tablet": "768px",
+    "desktop": "1440px",
+    "mobile-stacking": "640px",
+    "description": "Responsive design breakpoints"
+  },
+  "components": {
+    "badge": {
+      "padding": "0.15rem 0.5rem",
+      "borderRadius": "999px",
+      "fontSize": "0.75rem",
+      "fontWeight": "600",
+      "states": {
+        "draft": "background: #fef3c7; color: #92400e;",
+        "validated": "background: #dbeafe; color: #1e40af;",
+        "approved": "background: #ede9fe; color: #5b21b6;",
+        "published": "background: #d1fae5; color: #065f46;",
+        "positive": "background: #d1fae5; color: #065f46;",
+        "warning": "background: #fef3c7; color: #92400e;",
+        "critical": "background: #fee2e2; color: #991b1b;",
+        "info": "background: #dbeafe; color: #1e40af;"
+      }
+    },
+    "button": {
+      "background": "#111827",
+      "color": "#fff",
+      "padding": "0.5rem 1rem",
+      "borderRadius": "0.25rem",
+      "fontSize": "0.9rem",
+      "fontWeight": "600",
+      "cursor": "pointer",
+      "states": {
+        "hover": "background: #0f172a;",
+        "focus": "outline: 2px solid #3b82f6; outline-offset: 2px;",
+        "disabled": "opacity: 0.5; cursor: not-allowed;"
+      }
+    },
+    "input": {
+      "padding": "0.4rem 0.5rem",
+      "border": "1px solid #4b5563",
+      "borderRadius": "0.25rem",
+      "fontSize": "0.9rem",
+      "backgroundColor": "#111827",
+      "color": "#1a1a1a",
+      "states": {
+        "focus": "outline: 2px solid #3b82f6; outline-offset: 2px;",
+        "error": "border-color: #ef4444; background-color: #fee2e2;"
+      }
+    },
+    "card": {
+      "background": "#1f2937",
+      "border": "1px solid #4b5563",
+      "borderRadius": "0.5rem",
+      "padding": "1rem 1.25rem",
+      "boxShadow": "none"
+    },
+    "table": {
+      "borderCollapse": "collapse",
+      "fontSize": "0.95rem",
+      "headerBackground": "#374151",
+      "headerColor": "#9ca3af",
+      "headerFontWeight": "600",
+      "cellPadding": "0.5rem 0.75rem",
+      "borderBottom": "1px solid #4b5563"
+    }
+  },
+  "accessibility": {
+    "focusOutline": "2px solid #3b82f6",
+    "focusOutlineOffset": "2px",
+    "minContrastRatio": "4.5:1",
+    "highContrastModeBorderWidth": "2px",
+    "reduceMotionSupport": "true",
+    "semanticColorsSeparateFromAccent": "true"
+  },
+  "responsiveness": {
+    "gridColumns": "12",
+    "mobileFirstApproach": "true",
+    "stackingBreakpoint": "640px",
+    "sideGutter": "16px",
+    "maxContentWidth": "960px"
+  }
+}
