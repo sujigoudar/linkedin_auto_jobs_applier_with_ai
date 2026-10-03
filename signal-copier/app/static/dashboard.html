@@ -4,19 +4,12 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Signal Copier — Dashboard</title>
+<link rel="stylesheet" href="/static/design-system-tokens.css">
 <link rel="stylesheet" href="/static/design-system.css">
 <style>
   :root {
     color-scheme: light dark;
-    --bg: #0b0e14;
-    --panel: #141926;
-    --border: #262c3d;
-    --text: #e6e9f0;
-    --muted: #8b93a7;
-    --ok: #3ddc84;
-    --warn: #f5b942;
-    --bad: #ef5b5b;
-    --accent: #5b8cff;
+    /* Dark-first defaults (imported from design-system-tokens.css) are used via CSS variables */
   }
   * { box-sizing: border-box; }
   body {
@@ -75,10 +68,10 @@
     font-size: 0.72rem;
     font-weight: 600;
   }
-  .pill.ok { background: rgba(61,220,132,0.15); color: var(--ok); }
-  .pill.warn { background: rgba(245,185,66,0.15); color: var(--warn); }
-  .pill.bad { background: rgba(239,91,91,0.15); color: var(--bad); }
-  .pill.muted { background: rgba(139,147,167,0.15); color: var(--muted); }
+  .pill.ok { background: var(--ok-bg); color: var(--ok); }
+  .pill.warn { background: var(--warn-bg); color: var(--warn); }
+  .pill.bad { background: var(--bad-bg); color: var(--bad); }
+  .pill.muted { background: var(--neutral-bg); color: var(--muted); }
   .status-bar { display: flex; gap: 10px; align-items: center; margin-bottom: 16px; flex-wrap: wrap; }
   .status-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
   .status-dot.ok { background: var(--ok); }
