@@ -739,6 +739,35 @@ class SignalCopierEngine:
             )
             return results
 
+    @staticmethod
+    def _protective_level_error(signal: Signal) -> str | None:
+        """Why this entry's stop/target sit on the wrong side of its entry price, or None.
+
+        Only checked when the entry price is known and the direction is
+        unambiguous (ENTRY_LONG, ENTRY_SHORT, or ADD on the buy side)."""
+        price = signal.price
+        if price is None or price <= 0:
+            return None
+        if signal.intent == Intent.ENTRY_LONG or (signal.intent == Intent.ADD and signal.side == Side.BUY):
+            is_long = True
+        elif signal.intent == Intent.ENTRY_SHORT:
+            is_long = False
+        else:
+            return None
+        problems = []
+        stop, target = signal.stop_loss, signal.take_profit
+        if stop is not None and stop > 0:
+            if is_long and stop >= price:
+                problems.append(f"stop_loss {stop} must be below the entry price {price} for a long entry")
+            if not is_long and stop <= price:
+                problems.append(f"stop_loss {stop} must be above the entry price {price} for a short entry")
+        if target is not None and target > 0:
+            if is_long and target <= price:
+                problems.append(f"take_profit {target} must be above the entry price {price} for a long entry")
+            if not is_long and target >= price:
+                problems.append(f"take_profit {target} must be below the entry price {price} for a short entry")
+        return "; ".join(problems) or None
+
     async def _account_capital_exhausted(self, account: DestinationAccount) -> bool:
         """True only when the broker reports capital for this account and, after
         netting capital held by unfilled reservations, nothing is left.
@@ -1168,6 +1197,31 @@ class SignalCopierEngine:
             # is ambiguous (exit-or-short-entry, resolved per account in WP-09)
             # and ADD is an entry-sized order, so both are admitted as entries.
             _entry_like_intents = (Intent.ENTRY_LONG, Intent.ENTRY_SHORT, Intent.SELL, Intent.ADD)
+
+            # A protective level on the wrong side of the entry price is not a
+            # protection: a long's stop above its entry (or target below it)
+            # would trigger the moment the position opens. Reject before any
+            # sizing, reservation or broker call.
+            protective_error = self._protective_level_error(signal)
+            if protective_error is not None and signal.side != Side.CLOSE:
+                for account in [*single_candidates, *replicate_candidates]:
+                    result = OrderResult(
+                        account_id=account.account_id,
+                        status=OrderStatus.REJECTED,
+                        signal_id=signal.id,
+                        message=f"invalid protective levels: {protective_error}",
+                    )
+                    self.store.save_order_result(result, purpose="entry", family_id=signal.id)
+                    results.append(result)
+                    self._export_routing_outcome(
+                        signal,
+                        outcome="rejected",
+                        account=account,
+                        order_status=result.status,
+                        message=result.message,
+                    )
+                if results:
+                    return results
 
             # Check if allocation intent already exists (recovery/replay scenario)
             # This must be checked BEFORE the admission gate, since recovered intents
