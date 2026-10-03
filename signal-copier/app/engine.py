@@ -441,6 +441,9 @@ class SignalCopierEngine:
             if balance is not None:
                 # Convert to integer cents, using to_cents (which is exact)
                 buying_power_cents = ceil_cents(balance.buying_power) if balance.buying_power is not None else None
+                # Fall back to cash if buying_power is not provided
+                if buying_power_cents is None and balance.cash is not None:
+                    buying_power_cents = ceil_cents(balance.cash)
                 equity_cents = ceil_cents(balance.equity) if balance.equity is not None else None
                 maintenance_cents = ceil_cents(balance.maintenance_margin) if balance.maintenance_margin is not None else None
 
@@ -4390,26 +4393,247 @@ class SignalCopierEngine:
             )
             return _ManagedOrderOutcome(rejection, None, None)
 
+        # WC-33 STEP B: Check and reserve hierarchical resources before
+        # lifecycle plan starts. This ensures all budget levels are checked
+        # atomically before any broker effect occurs.
+        resources_ok, resource_error, reservation_id = await self._check_and_reserve_resources(
+            signal_id=signal.id,
+            account=account,
+            quantity=quantity,
+            signal=signal,  # Use original signal which has stop_loss/take_profit
+            broker=broker,
+        )
+        if not resources_ok:
+            assert resource_error is not None
+            # Release the capital reserved by _try_reserve_capital
+            self.capital_allocator.release(account.account_id, notional, signal_id=signal.id)
+            # Mark command ledger as rejected (confirmed rejection, not pending)
+            self.store.mark_command_ledger_outcome(
+                ledger_key,
+                uncertainty_state=UncertaintyState.REJECTED_CONFIRMED,
+                terminal_evidence={"reason": "resource_reservation_blocked", "message": resource_error},
+            )
+            # TRK-22: same convention as capital admission refusal
+            return _ManagedOrderOutcome(
+                OrderResult(
+                    account_id=account.account_id,
+                    status=OrderStatus.REJECTED,
+                    signal_id=signal.id,
+                    message=f"resource reservation blocked: {resource_error}",
+                ),
+                None,
+                None,
+            )
+
         self.lifecycle_manager.start_plan(plan)
+
+        # WC-33 STEP C: Build OrderIntent before broker dispatch
+        import hashlib
+        import json
+
+        # Get contract multiplier for policy hash
+        mult, _, _ = _get_contract_multiplier(signal)
+
+        # Build policy hash from sizing inputs
+        policy_input = {
+            "side": signal.side.value,
+            "quantity": quantity,
+            "multiplier": mult,
+            "price": signal.price,
+        }
+        policy_hash = hashlib.sha256(json.dumps(policy_input, sort_keys=True).encode()).hexdigest()
+
+        # Handle fractional quantities
+        if isinstance(quantity, float) and not quantity.is_integer():
+            intent_quantity = 0
+            quantity_fractional = quantity
+        else:
+            intent_quantity = int(quantity)
+            quantity_fractional = None
+
+        # Build price constraints and protection recipe (use original signal, not entry_signal)
+        price_constraints = {"entry": signal.price}
+        if signal.stop_loss is not None:
+            price_constraints["stop_loss"] = signal.stop_loss
+        if signal.take_profit is not None:
+            price_constraints["take_profit"] = signal.take_profit
+        if quantity_fractional is not None:
+            price_constraints["quantity_fractional"] = quantity_fractional
+
+        protection_recipe = None
+        if signal.stop_loss is not None or signal.take_profit is not None:
+            protection_recipe = {}
+            if signal.stop_loss is not None:
+                protection_recipe["stop_loss"] = signal.stop_loss
+
+        # Create OrderIntent
+        intent = OrderIntent.create(
+            opportunity_id=signal.id,
+            physical_account_id=account.account_id,
+            binding_id=account.account_id,
+            client_correlation_id=ledger_key,
+            policy_hash=policy_hash,
+            quantity=intent_quantity,
+            price_constraints=price_constraints,
+            protection_recipe=protection_recipe,
+            reservation_id=reservation_id,
+        )
 
         # PU-A2: submission moment for this managed entry -- see
         # handle_signal's identical field for what it feeds into.
         submitted_at = datetime.now(timezone.utc)
+
+        # WC-33 STEP E: Honest dry_run - stop AFTER intent is built, BEFORE outbox.enqueue
+        if dry_run:
+            # Release the reservation with dry_run evidence
+            if reservation_id is not None:
+                self.hierarchical_budget.transition(
+                    reservation_id,
+                    ReservationState.RELEASED,
+                    evidence={"dry_run": True},
+                )
+            # Release capital allocation
+            self.capital_allocator.release(account.account_id, notional, signal_id=signal.id)
+            logger.info(
+                "dry_run mode: planned signal=%s account=%s qty=%s price=%s reservation=%s",
+                signal.id,
+                account.account_id,
+                quantity,
+                entry_signal.price,
+                reservation_id,
+            )
+            # TRK-22: dry_run result with no durable intent/outbox rows
+            return _ManagedOrderOutcome(
+                OrderResult(
+                    account_id=account.account_id,
+                    status=OrderStatus.PENDING,
+                    signal_id=signal.id,
+                    message="dry_run: planned, not dispatched",
+                    filled_quantity=None,
+                    filled_price=None,
+                ),
+                None,
+                None,
+                applied_execution_delta=0.0,
+                outstanding_possible_fill=0.0,
+            )
+
+        # WC-33 STEP C: Enqueue intent before broker dispatch
+        try:
+            self.outbox.enqueue(intent)
+            logger.info(
+                "intent_enqueued signal=%s account=%s intent_id=%s",
+                signal.id,
+                account.account_id,
+                intent.intent_id,
+            )
+        except Exception as e:
+            logger.exception("failed to enqueue intent signal=%s account=%s", signal.id, account.account_id)
+            # Release reservations on enqueue failure
+            self.capital_allocator.release(account.account_id, notional, signal_id=signal.id)
+            if reservation_id is not None:
+                self.hierarchical_budget.transition(
+                    reservation_id,
+                    ReservationState.RELEASED,
+                    evidence={"error": str(e)},
+                )
+            return _ManagedOrderOutcome(
+                OrderResult(
+                    account_id=account.account_id,
+                    status=OrderStatus.ERROR,
+                    signal_id=signal.id,
+                    message=f"intent enqueue failed: {str(e)}",
+                ),
+                submitted_at,
+                None,
+                applied_execution_delta=0.0,
+                outstanding_possible_fill=0.0,
+            )
+
+        # Claim the outbox item for dispatch
+        worker_lease_id = self.lease_guard.lease_id if hasattr(self.lease_guard, 'lease_id') else "engine"
+        try:
+            claimed_item = self.outbox.claim_next(worker_lease_id)
+            if claimed_item is None:
+                logger.error("failed to claim outbox item signal=%s", signal.id)
+                raise RuntimeError("outbox item not found after enqueue")
+        except Exception as e:
+            logger.exception("failed to claim outbox item signal=%s", signal.id)
+            # Release reservations on claim failure
+            self.capital_allocator.release(account.account_id, notional, signal_id=signal.id)
+            if reservation_id is not None:
+                self.hierarchical_budget.transition(
+                    reservation_id,
+                    ReservationState.RELEASED,
+                    evidence={"error": str(e)},
+                )
+            return _ManagedOrderOutcome(
+                OrderResult(
+                    account_id=account.account_id,
+                    status=OrderStatus.ERROR,
+                    signal_id=signal.id,
+                    message=f"outbox claim failed: {str(e)}",
+                ),
+                submitted_at,
+                None,
+                applied_execution_delta=0.0,
+                outstanding_possible_fill=0.0,
+            )
+
+        # WC-33 STEP C: Transition to COMMITTED_TO_PENDING_ORDER before broker call
+        if reservation_id is not None:
+            try:
+                self.hierarchical_budget.transition(
+                    reservation_id,
+                    ReservationState.COMMITTED_TO_PENDING_ORDER,
+                    evidence={"outbox_intent_id": intent.intent_id},
+                )
+            except Exception as e:
+                logger.exception("failed to transition to COMMITTED_TO_PENDING_ORDER signal=%s", signal.id)
+                # Release reservations and capital on transition failure
+                self.capital_allocator.release(account.account_id, notional, signal_id=signal.id)
+                return _ManagedOrderOutcome(
+                    OrderResult(
+                        account_id=account.account_id,
+                        status=OrderStatus.ERROR,
+                        signal_id=signal.id,
+                        message=f"reservation transition failed: {str(e)}",
+                    ),
+                    submitted_at,
+                    None,
+                    applied_execution_delta=0.0,
+                    outstanding_possible_fill=0.0,
+                )
+
         try:
             entry_signal.client_order_id = ledger_key
-            if dry_run:
-                # Dry-run mode: simulate a successful order without calling broker
-                logger.info("dry_run mode: skipping broker submission for managed entry account=%s", account.account_id)
-                result = OrderResult(
-                    account_id=account.account_id,
-                    status=OrderStatus.FILLED,  # Simulate successful fill
-                    signal_id=signal.id,
-                    message="dry_run simulation",
-                    filled_quantity=quantity,
-                    filled_price=entry_signal.price,
-                )
-            else:
-                result = await broker.place_order(entry_signal, account, quantity, symbol)
+            result = await broker.place_order(entry_signal, account, quantity, symbol)
+            # WC-33 STEP D: Record response in outbox and transition reservation based on result status
+            outbox_response = {
+                "status": result.status.value,
+                "broker_order_id": result.broker_order_id,
+                "message": result.message,
+            }
+            self.outbox.record_response(intent.intent_id, outbox_response)
+            # WC-33 STEP D: Transition reservation based on result status
+            if reservation_id is not None:
+                if result.status == OrderStatus.FILLED:
+                    # Filled: go from COMMITTED_TO_PENDING_ORDER → FILLED_EXPOSURE
+                    self.hierarchical_budget.transition(
+                        reservation_id,
+                        ReservationState.FILLED_EXPOSURE,
+                        evidence={"broker_order_id": result.broker_order_id, "filled_quantity": result.filled_quantity},
+                    )
+                elif result.status == OrderStatus.PENDING:
+                    # Already in COMMITTED_TO_PENDING_ORDER, no further transition needed
+                    pass
+                elif result.status == OrderStatus.REJECTED:
+                    # Rejected: go from COMMITTED_TO_PENDING_ORDER → RELEASED
+                    self.hierarchical_budget.transition(
+                        reservation_id,
+                        ReservationState.RELEASED,
+                        evidence={"reason": "broker_rejected"},
+                    )
         except Exception as exc:  # noqa: BLE001 - one account's failure must not block others
             # EXE-01: `place_order` raising here is genuinely ambiguous — the
             # broker adapter may have already sent the request and gotten it
@@ -4436,6 +4660,26 @@ class SignalCopierEngine:
             # this one. Deferring here risks a reservation that's never
             # released -- see app/capital_allocator.py's "Known gap".
             self.capital_allocator.release(account.account_id, notional, signal_id=signal.id)
+            # WC-33 STEP D: Record response and transition to UNKNOWN_HELD on exception
+            try:
+                outbox_response = {
+                    "exception": str(exc),
+                    "status": "error",
+                    "message": str(exc),
+                }
+                self.outbox.record_response(intent.intent_id, outbox_response)
+            except Exception:
+                logger.exception("failed to record outbox response for failed order")
+            # WC-33 STEP D: Transition to UNKNOWN_HELD (held, not released automatically)
+            if reservation_id is not None:
+                try:
+                    self.hierarchical_budget.transition(
+                        reservation_id,
+                        ReservationState.UNKNOWN_HELD,
+                        evidence={"exception": str(exc)},
+                    )
+                except Exception:
+                    logger.exception("failed to transition reservation to UNKNOWN_HELD")
             self.lifecycle_manager.register_pending_entry(account, symbol, None, quantity)
             self.store.mark_command_ledger_outcome(
                 ledger_key,
@@ -4486,6 +4730,7 @@ class SignalCopierEngine:
             # to keep registered.
             self.capital_allocator.release(account.account_id, notional, signal_id=signal.id)
             self.lifecycle_manager.unregister_plan(account.account_id, symbol)
+            # Reservation already transitioned to RELEASED in the try block above
         elif result.status == OrderStatus.ERROR:
             # Same ambiguity as the raised-exception branch above, just
             # returned instead of raised: several adapters (e.g. AlpacaBroker)
@@ -4509,11 +4754,13 @@ class SignalCopierEngine:
             # raised-exception branch above -- an ERROR result is never
             # polled by _reconcile_pending_entries either.
             self.capital_allocator.release(account.account_id, notional, signal_id=signal.id)
+            # Reservation already transitioned to UNKNOWN_HELD in the except block above
             self.lifecycle_manager.register_pending_entry(account, symbol, None, quantity)
         elif result.status == OrderStatus.FILLED:
             # Confirmed exposure now includes this fill, so the provisional
             # reservation's job is done.
             self.capital_allocator.release(account.account_id, notional, signal_id=signal.id)
+            # Reservation already transitioned to FILLED_EXPOSURE in the try block above
             filled_quantity = result.filled_quantity if result.filled_quantity is not None else quantity
             self.store.record_fill(account.account_id, symbol, signal.side, filled_quantity)
             # WP-38 (G-C-24): Persist paper broker order ID sequence after fills
