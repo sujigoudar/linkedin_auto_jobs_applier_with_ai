@@ -1212,7 +1212,8 @@ scenarios:
   title: Binary Kelly arithmetic
   status: NOT_IMPLEMENTED
   implementation_paths: []
-  test_paths: []
+  test_paths:
+  - tests/test_wc07_kelly.py::TestBinaryKellyArithmetic::test_kelly_binary_p55_b14_full_kelly
   evidence_paths: []
   blocked_reason: null
   notes: 'WC-01 baseline: Kelly, profile evidence and adaptive allocation'
@@ -1221,7 +1222,8 @@ scenarios:
   title: Fractional Kelly hard cap
   status: NOT_IMPLEMENTED
   implementation_paths: []
-  test_paths: []
+  test_paths:
+  - tests/test_wc07_kelly.py::TestHierarchicalMin::test_hierarchical_min_constraint_binds
   evidence_paths: []
   blocked_reason: null
   notes: 'WC-01 baseline: Kelly, profile evidence and adaptive allocation'
@@ -1248,7 +1250,8 @@ scenarios:
   title: No history
   status: NOT_IMPLEMENTED
   implementation_paths: []
-  test_paths: []
+  test_paths:
+  - tests/test_wc07_kelly.py::TestEvidenceStates::test_no_history_empty_outcomes
   evidence_paths: []
   blocked_reason: null
   notes: 'WC-01 baseline: Kelly, profile evidence and adaptive allocation'
@@ -2019,7 +2022,8 @@ scenarios:
   title: Valid profitable add
   status: NOT_IMPLEMENTED
   implementation_paths: []
-  test_paths: []
+  test_paths:
+  - tests/test_wc08_scaling.py::TestSpecExample13_3::test_example_13_3_admits_when_all_conditions_met
   evidence_paths: []
   blocked_reason: null
   notes: 'WC-01 baseline: Staged entry and pyramiding into winners'
@@ -2433,7 +2437,8 @@ scenarios:
   title: Crash after reserve before send
   status: NOT_IMPLEMENTED
   implementation_paths: []
-  test_paths: []
+  test_paths:
+  - tests/test_wc31_outbox_persistence.py::TestCrashScenarios::test_crash_scenario_a_before_claim_item_still_outboxed
   evidence_paths: []
   blocked_reason: null
   notes: 'WC-01 baseline: Failure, restart, coordination and operational health'
@@ -2442,7 +2447,8 @@ scenarios:
   title: Crash after possible send
   status: NOT_IMPLEMENTED
   implementation_paths: []
-  test_paths: []
+  test_paths:
+  - tests/test_wc31_outbox_persistence.py::TestCrashScenarios::test_crash_scenario_b_after_claim_before_dispatch_marked_unknown
   evidence_paths: []
   blocked_reason: null
   notes: 'WC-01 baseline: Failure, restart, coordination and operational health'
@@ -2469,7 +2475,8 @@ scenarios:
   title: Dual workers
   status: NOT_IMPLEMENTED
   implementation_paths: []
-  test_paths: []
+  test_paths:
+  - tests/test_writer_lease_fencing.py::test_second_promotion_fences_out_the_first_guard_immediately
   evidence_paths: []
   blocked_reason: null
   notes: 'WC-01 baseline: Failure, restart, coordination and operational health'
@@ -2802,7 +2809,8 @@ scenarios:
   title: Unbound contract harness
   status: NOT_IMPLEMENTED
   implementation_paths: []
-  test_paths: []
+  test_paths:
+  - tests/test_wc22_evidence_tooling.py::test_plugin_writes_executed_tests_json
   evidence_paths: []
   blocked_reason: null
   notes: 'WC-01 baseline: Verification integrity, mutations and release boundaries'
