@@ -30,7 +30,7 @@ Architecture:
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -58,13 +58,9 @@ class ProviderSenderMapping:
 class InboxProviderConfig:
     """Configuration for one inbox role's provider mapping."""
     inbox_role: str  # "signals", "operations", or "reports"
-    senders: Optional[dict[str, ProviderSenderMapping]] = None  # sender_pattern -> mapping
+    senders: dict[str, ProviderSenderMapping] = field(default_factory=dict)  # sender_pattern -> mapping
     default_provider: Optional[str] = None  # Fallback when no sender matches
     require_known_sender: bool = True  # If True, unknown senders get NEEDS_REVIEW
-
-    def __post_init__(self):
-        if self.senders is None:
-            self.senders = {}
 
 
 class ProviderIdentityResolver:
