@@ -173,10 +173,24 @@ class BrokerOperationsIncidentEscalator:
             Tuple of (is_duplicate: bool, duplicate_incident_id: Optional[str])
         """
         try:
-            # For now, always return False (no duplicates)
-            # Full implementation would query broker_operations_incidents table
-            # matching: same account_owner_id, event_type, extracted_account,
-            # created within time_window_hours
+            if not self.store:
+                return False, None
+
+            # Get recent incidents for this account
+            recent_incidents = self.store.list_broker_operations_incidents(
+                hours_back=time_window_hours,
+                limit=1000,
+            )
+
+            # Check for duplicates with same event_type and extracted_account
+            for incident in recent_incidents:
+                if (
+                    incident.get("account_owner_id") == account_owner_id
+                    and incident.get("event_type") == event.event_type.value
+                    and incident.get("extracted_account") == event.extracted_account
+                ):
+                    return True, incident.get("incident_id")
+
             return False, None
         except Exception as e:
             logger.warning(f"Error checking for duplicate incident: {e}")
@@ -212,8 +226,23 @@ class BrokerOperationsIncidentEscalator:
             account_owner_id: Owner account ID
         """
         try:
-            # For now, log the incident
-            # Full implementation would INSERT into broker_operations_incidents table
+            if self.store:
+                self.store.save_broker_operations_incident(
+                    incident_id=escalation.incident_id,
+                    inbox_id=inbox_id,
+                    account_owner_id=account_owner_id,
+                    event_type=escalation.event_type.value,
+                    severity=escalation.severity.value,
+                    action=escalation.action.value,
+                    subject=escalation.subject,
+                    sender=escalation.sender,
+                    extracted_account=escalation.extracted_account,
+                    extracted_amount=escalation.extracted_amount,
+                    extracted_deadline=escalation.extracted_deadline,
+                    is_duplicate=escalation.is_duplicate,
+                    duplicate_of_incident_id=escalation.duplicate_of_incident_id,
+                    created_at=escalation.created_at.isoformat(),
+                )
             logger.info(
                 f"Broker operations incident stored | "
                 f"ID: {escalation.incident_id} | "

@@ -1602,6 +1602,182 @@ async def agentmail_webhook(request: Request) -> Response:
     return await agentmail_webhook_handler(request)
 
 
+@app.get("/api/agentmail/config")
+async def get_agentmail_config(_owner: dict = Depends(require_owner)) -> dict:
+    """Get current AgentMail configuration (owner-only).
+
+    Returns:
+    {
+        "enabled": true if configured,
+        "api_key_configured": true if API key is set,
+        "webhook_secret_configured": true if webhook secret is set,
+        "webhook_url": "...",
+        "inboxes": {
+            "operations": "agentmail:operations:account_id",
+            "signals": "...",
+            "reports": "..."
+        }
+    }
+    """
+    if not agentmail_transport:
+        return {
+            "enabled": False,
+            "api_key_configured": False,
+            "webhook_secret_configured": False,
+            "webhook_url": None,
+            "inboxes": {},
+        }
+
+    return {
+        "enabled": True,
+        "api_key_configured": bool(config.AGENTMAIL_API_KEY),
+        "webhook_secret_configured": bool(config.AGENTMAIL_WEBHOOK_SECRET),
+        "webhook_url": config.AGENTMAIL_WEBHOOK_URL,
+        "inboxes": {role.value: addr for role, addr in agentmail_transport.config.inboxes.items()},
+    }
+
+
+@app.get("/api/agentmail/health")
+async def get_agentmail_health() -> dict:
+    """Get AgentMail health status (public endpoint).
+
+    Returns:
+    {
+        "status": "healthy" | "degraded" | "unavailable",
+        "enabled": true if configured,
+        "webhook_configured": true if webhook endpoint is available,
+        "recent_events": number of events processed in last 24h,
+        "last_event_at": "2026-10-03T...",
+        "incident_queue_depth": number of pending escalations
+    }
+    """
+    if not agentmail_transport:
+        return {
+            "status": "unavailable",
+            "enabled": False,
+            "webhook_configured": False,
+            "recent_events": 0,
+            "last_event_at": None,
+            "incident_queue_depth": 0,
+        }
+
+    try:
+        # Get incident statistics from store
+        recent_incidents = store.list_broker_operations_incidents(
+            hours_back=24,
+            limit=1000,
+        ) if hasattr(store, 'list_broker_operations_incidents') else []
+
+        last_incident_time = (
+            recent_incidents[0]["created_at"] if recent_incidents else None
+        )
+
+        # Determine health status
+        if len(recent_incidents) > 0:
+            status = "healthy"
+        else:
+            status = "healthy" if agentmail_transport else "degraded"
+
+        return {
+            "status": status,
+            "enabled": True,
+            "webhook_configured": agentmail_webhook_handler is not None,
+            "recent_events": len(recent_incidents),
+            "last_event_at": last_incident_time,
+            "incident_queue_depth": 0,  # Async queue - tracked by store
+        }
+    except Exception as e:
+        logger.exception(f"Error getting AgentMail health: {e}")
+        return {
+            "status": "degraded",
+            "enabled": True,
+            "webhook_configured": agentmail_webhook_handler is not None,
+            "recent_events": 0,
+            "last_event_at": None,
+            "incident_queue_depth": 0,
+            "error": str(e),
+        }
+
+
+@app.get("/api/agentmail/statistics")
+async def get_agentmail_statistics(_owner: dict = Depends(require_owner)) -> dict:
+    """Get AgentMail incident escalation statistics (owner-only).
+
+    Returns:
+    {
+        "total_incidents": count,
+        "by_severity": {
+            "CRITICAL": count,
+            "WARNING": count,
+            "INFORMATIONAL": count
+        },
+        "by_action": {
+            "NOTIFY_IMMEDIATELY": count,
+            "QUEUE_FOR_REVIEW": count,
+            "LOG_ONLY": count
+        },
+        "by_event_type": {
+            "MARGIN_CALL": count,
+            ...
+        },
+        "deduplication_rate": percentage of duplicates,
+        "time_period": "last_24h" | "last_7d" | "all"
+    }
+    """
+    if not agentmail_transport:
+        return {
+            "total_incidents": 0,
+            "by_severity": {"CRITICAL": 0, "WARNING": 0, "INFORMATIONAL": 0},
+            "by_action": {"NOTIFY_IMMEDIATELY": 0, "QUEUE_FOR_REVIEW": 0, "LOG_ONLY": 0},
+            "by_event_type": {},
+            "deduplication_rate": 0.0,
+            "time_period": "all",
+        }
+
+    try:
+        # Get all incidents from store
+        incidents = store.list_broker_operations_incidents(
+            limit=10000,
+        ) if hasattr(store, 'list_broker_operations_incidents') else []
+
+        # Build statistics
+        by_severity = defaultdict(int)
+        by_action = defaultdict(int)
+        by_event_type = defaultdict(int)
+        duplicate_count = 0
+
+        for incident in incidents:
+            by_severity[incident.get("severity", "INFORMATIONAL")] += 1
+            by_action[incident.get("action", "LOG_ONLY")] += 1
+            by_event_type[incident.get("event_type", "UNKNOWN")] += 1
+            if incident.get("is_duplicate"):
+                duplicate_count += 1
+
+        total = len(incidents)
+        dedup_rate = (duplicate_count / total * 100) if total > 0 else 0.0
+
+        return {
+            "total_incidents": total,
+            "by_severity": dict(by_severity),
+            "by_action": dict(by_action),
+            "by_event_type": dict(by_event_type),
+            "deduplication_rate": round(dedup_rate, 2),
+            "time_period": "all",
+            "duplicate_count": duplicate_count,
+        }
+    except Exception as e:
+        logger.exception(f"Error getting AgentMail statistics: {e}")
+        return {
+            "total_incidents": 0,
+            "by_severity": {},
+            "by_action": {},
+            "by_event_type": {},
+            "deduplication_rate": 0.0,
+            "time_period": "all",
+            "error": str(e),
+        }
+
+
 @app.post("/sms/twilio")
 @limiter.limit(INGRESS_RATE_LIMIT)
 async def receive_sms(
