@@ -1671,7 +1671,11 @@ class SignalCopierEngine:
             # prevent liquidation. Only check for entry signals; CLOSE signals are
             # allowed through to permit position reduction.
             if working_signal.side != Side.CLOSE:
-                min_equity_threshold = account.min_equity_threshold
+                min_equity_threshold = (
+                    account.min_equity_threshold
+                    if account.min_equity_threshold is not None
+                    else config.DEFAULT_MIN_EQUITY_THRESHOLD
+                )
                 if min_equity_threshold is not None:
                     liquidation_error = await self.daily_loss_limiter.check_min_equity_threshold(
                         account, min_equity_threshold
