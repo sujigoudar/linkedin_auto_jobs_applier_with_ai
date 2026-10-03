@@ -9,3 +9,16 @@ Supported transports:
 - Gmail/IMAP: legacy IMAP polling (fallback; see app.sources.email_source)
 - Microsoft Graph: tenant-isolated multi-inbox support
 """
+from app.transports.provider_identity import (
+    InboxProviderConfig,
+    ProviderIdentity,
+    ProviderIdentityResolver,
+    ProviderSenderMapping,
+)
+
+__all__ = [
+    "ProviderIdentity",
+    "ProviderIdentityResolver",
+    "InboxProviderConfig",
+    "ProviderSenderMapping",
+]

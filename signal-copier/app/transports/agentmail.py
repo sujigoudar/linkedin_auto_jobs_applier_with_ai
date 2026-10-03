@@ -25,6 +25,9 @@ based message delivery. Key design decisions:
 6. NO FINANCIAL AUTHORITY: emails are observations only. They feed the
    existing SourceReceipt → Parser → NormalizedSignal pipeline.
 
+7. DETERMINISTIC PROVIDER IDENTITY MAPPING: inbox + sender + domain + config
+   → ProviderIdentity. Unknown senders → NEEDS_REVIEW state for manual routing.
+
 Architecture:
     Webhook endpoint receives message.received event
         ↓
@@ -38,7 +41,9 @@ Architecture:
         ↓
     Async: retrieve full message if truncated
         ↓
-    Async: process → ProviderIdentity → Parser
+    Async: resolve ProviderIdentity (sender → provider mapping)
+        ↓
+    Async: process → Parser → NormalizedSignal
 """
 from __future__ import annotations
 
@@ -58,6 +63,10 @@ from app.transports.email import (
     EmailTransport,
     InboxRole,
     SourceReceipt,
+)
+from app.transports.provider_identity import (
+    InboxProviderConfig,
+    ProviderIdentityResolver,
 )
 
 logger = logging.getLogger(__name__)
@@ -95,14 +104,13 @@ class AgentMailWebhookPayload:
     recipients: list[str]
     received_at: str
     subject: str
-    body_plain: Optional[str]  # Omitted if truncated
-    body_html: Optional[str]  # Omitted if truncated
+    message_id_header: str  # RFC 5322 Message-ID
 
+    # Optional fields (defaults must come after required fields)
+    body_plain: Optional[str] = None  # Omitted if truncated
+    body_html: Optional[str] = None  # Omitted if truncated
     attachments: list[dict[str, Any]] = field(default_factory=list)
     content_truncated: bool = False
-
-    # Headers
-    message_id_header: str  # RFC 5322 Message-ID
     in_reply_to: Optional[str] = None
     references: Optional[str] = None
 
@@ -120,10 +128,18 @@ class AgentMailTransport(EmailTransport):
         self,
         config: AgentMailConfig,
         on_receipt: Callable[[SourceReceipt], Any],  # async callback
+        provider_identity_resolver: Optional[ProviderIdentityResolver] = None,
+        provider_configs: Optional[list[InboxProviderConfig]] = None,
     ):
         self.config = config
         self.on_receipt = on_receipt
         self.http_client = httpx.AsyncClient(timeout=config.api_timeout_seconds)
+
+        # Initialize provider identity resolver
+        if provider_identity_resolver:
+            self.provider_identity_resolver = provider_identity_resolver
+        else:
+            self.provider_identity_resolver = ProviderIdentityResolver(configs=provider_configs)
 
         # Track received event IDs for deduplication (in-memory; should be
         # backed by persistent storage in production)
@@ -275,6 +291,39 @@ class AgentMailTransport(EmailTransport):
             "image/gif",
         }
         return mime_type in approved
+
+    def resolve_provider_identity(
+        self,
+        sender: str,
+        inbox_id: str,
+    ) -> dict:
+        """Resolve sender email to a provider identity.
+
+        Maps (sender, inbox_role) deterministically to a provider identifier.
+        Unknown senders return a needs_review state for manual routing.
+
+        Args:
+            sender: The email sender address
+            inbox_id: AgentMail inbox ID (e.g., "agentmail:signals")
+
+        Returns:
+            Dict with keys:
+            - provider: str or None (the mapped provider ID)
+            - analyst: str or None (extracted or configured analyst name)
+            - needs_review: bool (True if sender is unknown)
+            - reason: str (explanation for the mapping decision)
+        """
+        # Extract inbox role from inbox_id (format: "agentmail:signals")
+        inbox_role = inbox_id.split(":")[-1] if ":" in inbox_id else "signals"
+
+        identity = self.provider_identity_resolver.resolve(sender, inbox_role)
+
+        return {
+            "provider": identity.provider,
+            "analyst": identity.analyst,
+            "needs_review": identity.needs_review,
+            "reason": identity.reason,
+        }
 
     async def _process_receipt_async(
         self,
