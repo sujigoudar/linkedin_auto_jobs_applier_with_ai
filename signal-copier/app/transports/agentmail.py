@@ -60,6 +60,9 @@ from typing import Any, Callable, Optional
 import httpx
 
 from app.transports.broker_operations_classifier import BrokerOperationsClassifier
+from app.transports.broker_operations_escalator import (
+    BrokerOperationsIncidentEscalator,
+)
 from app.transports.email import (
     EmailAttachmentMetadata,
     EmailMessageContent,
@@ -216,10 +219,12 @@ class AgentMailTransport(EmailTransport):
         on_receipt: Callable[[SourceReceipt], Any],  # async callback
         provider_identity_resolver: Optional[ProviderIdentityResolver] = None,
         provider_configs: Optional[list[InboxProviderConfig]] = None,
+        signal_store: Optional[Any] = None,  # SignalStore instance for incident storage
     ):
         self.config = config
         self.on_receipt = on_receipt
         self.http_client = httpx.AsyncClient(timeout=config.api_timeout_seconds)
+        self.signal_store = signal_store
 
         # Initialize provider identity resolver
         if provider_identity_resolver:
@@ -229,6 +234,14 @@ class AgentMailTransport(EmailTransport):
 
         # Initialize broker operations classifier for operations inbox
         self.broker_operations_classifier = BrokerOperationsClassifier()
+
+        # Initialize broker operations incident escalator
+        if signal_store:
+            self.broker_operations_escalator: Optional[BrokerOperationsIncidentEscalator] = (
+                BrokerOperationsIncidentEscalator(store=signal_store)
+            )
+        else:
+            self.broker_operations_escalator = None
 
         # Track received event IDs for deduplication (in-memory; should be
         # backed by persistent storage in production)
@@ -475,9 +488,27 @@ class AgentMailTransport(EmailTransport):
                 f"Subject: {event.subject[:50]}"
             )
 
-            # TODO: Send to incident escalation system (Task #194)
-            # For now, events are logged for manual review and
-            # incident tracking in Task #194
+            # Escalate the incident if escalator is available
+            if self.broker_operations_escalator:
+                try:
+                    # Extract account owner ID from inbox ID
+                    # Format: "transport:role:account_owner_id" or "transport:role"
+                    inbox_parts = receipt.inbox_id.split(":")
+                    account_owner_id = inbox_parts[2] if len(inbox_parts) > 2 else "unknown"
+
+                    escalation = self.broker_operations_escalator.escalate(
+                        event=event,
+                        inbox_id=receipt.inbox_id,
+                        account_owner_id=account_owner_id,
+                    )
+                    logger.info(
+                        f"Incident escalated | ID: {escalation.incident_id} | "
+                        f"Action: {escalation.action}"
+                    )
+                except Exception as e:
+                    logger.exception(f"Error escalating broker operations incident: {e}")
+            else:
+                logger.debug("Broker operations escalator not configured, incident logged only")
 
         except Exception as e:
             logger.exception(f"Error classifying broker operations email: {e}")

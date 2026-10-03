@@ -15,6 +15,11 @@ from app.transports.broker_operations_classifier import (
     EventSeverity,
     OperationEventType,
 )
+from app.transports.broker_operations_escalator import (
+    BrokerOperationsIncidentEscalator,
+    EscalationAction,
+    IncidentEscalation,
+)
 from app.transports.provider_identity import (
     InboxProviderConfig,
     ProviderIdentity,
@@ -25,7 +30,10 @@ from app.transports.provider_identity import (
 __all__ = [
     "BrokerOperationEvent",
     "BrokerOperationsClassifier",
+    "BrokerOperationsIncidentEscalator",
+    "EscalationAction",
     "EventSeverity",
+    "IncidentEscalation",
     "OperationEventType",
     "ProviderIdentity",
     "ProviderIdentityResolver",
