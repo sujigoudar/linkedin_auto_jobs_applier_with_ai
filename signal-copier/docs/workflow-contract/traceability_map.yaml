@@ -12,7 +12,8 @@ scenarios:
   - tests/test_scn_a.py::test_ing_001_valid_authorized_webhook
   evidence_paths: []
   blocked_reason: null
-  notes: Signal parsing and event ID retention proven by WebhookSource.parse()
+  notes: Signal parsing and event ID retention proven by WebhookSource.parse() | @pytest.mark.scenario()
+    tagged
 - id: ING-002
   category: Intake, authority, identity and durability
   title: Invalid transport signature
@@ -24,10 +25,11 @@ scenarios:
   evidence_paths: []
   blocked_reason: null
   notes: Field validation rejection proven by missing symbol raises SignalValidationError
+    | @pytest.mark.scenario() tagged
 - id: ING-003
   category: Intake, authority, identity and durability
   title: Authorized transport unauthorized sender
-  status: IMPLEMENTED_NOT_WIRED
+  status: TESTED_SIMULATOR
   implementation_paths:
   - app/main.py
   - app/sources/sms_twilio.py
@@ -37,11 +39,11 @@ scenarios:
   evidence_paths: []
   blocked_reason: null
   notes: Sender authorization via TWILIO_ALLOWED_FROM_NUMBERS and WhatsApp allowlists
-    | Requires tagging existing test
+    | Requires tagging existing test | @pytest.mark.scenario() tagged
 - id: ING-004
   category: Intake, authority, identity and durability
   title: Unknown provider
-  status: IMPLEMENTED_NOT_WIRED
+  status: TESTED_SIMULATOR
   implementation_paths:
   - app/provider_catalog.py
   - app/models.py
@@ -50,11 +52,11 @@ scenarios:
   evidence_paths: []
   blocked_reason: null
   notes: Unknown provider detection via provider_registry lookup | Requires tagging
-    existing test
+    existing test | @pytest.mark.scenario() tagged
 - id: ING-005
   category: Intake, authority, identity and durability
   title: Known provider unknown analyst
-  status: IMPLEMENTED_NOT_WIRED
+  status: TESTED_SIMULATOR
   implementation_paths:
   - app/providers.py
   - app/models.py
@@ -63,7 +65,7 @@ scenarios:
   evidence_paths: []
   blocked_reason: null
   notes: Analyst mapping via SettingsOverride in provider registry | Requires tagging
-    existing test
+    existing test | @pytest.mark.scenario() tagged
 - id: ING-006
   category: Intake, authority, identity and durability
   title: Disabled provider enabled child
@@ -96,7 +98,8 @@ scenarios:
   - tests/test_scn_a.py::test_ing_008_oversized_malformed_body
   evidence_paths: []
   blocked_reason: null
-  notes: Malformed body rejection via field validation (targets not a list)
+  notes: Malformed body rejection via field validation (targets not a list) | @pytest.mark.scenario()
+    tagged
 - id: ING-009
   category: Intake, authority, identity and durability
   title: Persistence unavailable
@@ -196,7 +199,7 @@ scenarios:
   - tests/test_scn_a.py::test_par_001_negated_buy
   evidence_paths: []
   blocked_reason: null
-  notes: Negated buy rejected via Side enum validation
+  notes: Negated buy rejected via Side enum validation | @pytest.mark.scenario() tagged
 - id: PAR-002
   category: Full-message interpretation and compound instructions
   title: Historical recap
@@ -225,7 +228,8 @@ scenarios:
   - tests/test_scn_a.py::test_par_004_option_flow_observation
   evidence_paths: []
   blocked_reason: null
-  notes: Option-flow parsed as OBSERVATION without action inference
+  notes: Option-flow parsed as OBSERVATION without action inference | @pytest.mark.scenario()
+    tagged
 - id: PAR-005
   category: Full-message interpretation and compound instructions
   title: Buy put direction
@@ -337,7 +341,8 @@ scenarios:
   - tests/test_scn_a.py::test_par_016_quantity_boundary_plus_one
   evidence_paths: []
   blocked_reason: null
-  notes: "Quantity validation enforces > 0 at boundary \u22121/0/+1"
+  notes: "Quantity validation enforces > 0 at boundary \u22121/0/+1 | @pytest.mark.scenario()\
+    \ tagged"
 - id: PAR-017
   category: Full-message interpretation and compound instructions
   title: Half-size ambiguous basis
@@ -377,7 +382,7 @@ scenarios:
 - id: REV-001
   category: Revisions, lifecycle matching and temporal order
   title: Edit before dispatch
-  status: IMPLEMENTED_NOT_WIRED
+  status: TESTED_SIMULATOR
   implementation_paths:
   - app/engine.py
   test_paths:
@@ -385,11 +390,11 @@ scenarios:
   evidence_paths: []
   blocked_reason: null
   notes: Edit before dispatch via _handle_signal_edit() before broker submission |
-    Requires tagging existing test
+    Requires tagging existing test | @pytest.mark.scenario() tagged
 - id: REV-002
   category: Revisions, lifecycle matching and temporal order
   title: Edit after acceptance
-  status: IMPLEMENTED_NOT_WIRED
+  status: TESTED_SIMULATOR
   implementation_paths:
   - app/engine.py
   - app/lifecycle/manager.py
@@ -398,11 +403,11 @@ scenarios:
   evidence_paths: []
   blocked_reason: null
   notes: Edit after acceptance with lifecycle amendment and revalidation | Requires
-    tagging existing test
+    tagging existing test | @pytest.mark.scenario() tagged
 - id: REV-003
   category: Revisions, lifecycle matching and temporal order
   title: Delete source message
-  status: IMPLEMENTED_NOT_WIRED
+  status: TESTED_SIMULATOR
   implementation_paths:
   - app/engine.py
   test_paths:
@@ -410,7 +415,7 @@ scenarios:
   evidence_paths: []
   blocked_reason: null
   notes: Delete via source message tombstone handling in _handle_signal_edit() | Requires
-    tagging existing test
+    tagging existing test | @pytest.mark.scenario() tagged
 - id: REV-004
   category: Revisions, lifecycle matching and temporal order
   title: Exit before entry
@@ -1600,6 +1605,7 @@ scenarios:
   evidence_paths: []
   blocked_reason: null
   notes: Required symbol/side validation with no substitution of arbitrary values
+    | @pytest.mark.scenario() tagged
 - id: ENT-012
   category: Entry conditions, pricing, sessions and deadlines
   title: Trigger repeated ticks

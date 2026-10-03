@@ -29,6 +29,7 @@ def test_sms_ingress_fails_closed_with_no_authorized_senders_configured(client, 
     assert "TWILIO_ALLOWED_FROM_NUMBERS" in response.json()["detail"]
 
 
+@pytest.mark.scenario("ING-003")
 def test_sms_ingress_rejects_a_genuine_but_unauthorized_sender(client, monkeypatch):
     twilio_validator = pytest.importorskip("twilio.request_validator")
 

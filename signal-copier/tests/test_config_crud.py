@@ -162,6 +162,7 @@ def test_deleting_a_routing_rule_stops_routing_to_it(client):
     assert response.json()["orders"] == []
 
 
+@pytest.mark.scenario("ING-004")
 def test_provider_override_created_via_api_applies_to_the_next_signal(client):
     with client:
         client.post("/accounts", json={"account_id": "acct1", "broker": "paper", "multiplier": 1.0})
@@ -181,6 +182,7 @@ def test_provider_override_created_via_api_applies_to_the_next_signal(client):
     assert positions[0]["net_quantity"] == 25.0
 
 
+@pytest.mark.scenario("ING-005")
 def test_analyst_override_created_via_api_wins_over_provider(client):
     with client:
         client.post("/accounts", json={"account_id": "acct1", "broker": "paper"})

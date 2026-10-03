@@ -47,6 +47,7 @@ def test_original_message_id_column_persists(store: SignalStore):
     assert retrieved["original_message_id"] == "msg_123"
 
 
+@pytest.mark.scenario("REV-002")
 def test_edit_stop_loss_managed_entry(store: SignalStore):
     """Test: managed entry fills with stop 95; edit with stop 90 → exactly one entry order row."""
     # Create and save original signal
@@ -94,6 +95,7 @@ def test_edit_stop_loss_managed_entry(store: SignalStore):
     assert orders[0]["status"] == OrderStatus.FILLED.value
 
 
+@pytest.mark.scenario("REV-001")
 def test_edit_price_only_no_new_order(store: SignalStore):
     """Test: edit with a new price only → query finds original signal."""
     # Create and save original signal
@@ -140,6 +142,7 @@ def test_edit_price_only_no_new_order(store: SignalStore):
     assert edit_data["original_message_id"] == "msg_456"
 
 
+@pytest.mark.scenario("REV-003")
 def test_delete_pending_entry_tracked(store: SignalStore):
     """Test: pending entry can be tracked for cancellation."""
     # Create and save original signal with PENDING entry
