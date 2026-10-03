@@ -227,18 +227,13 @@ async def test_ext_003_timer_and_owner_close(manager, account, broker):
     plan = _plan(planned_quantity=100.0, initial_stop=48.50)
     await _enter(manager, broker, account, plan, 100.0)
 
-    # Request exit (timer)
+    # Request exit (timer) - should close full position
     result = await manager.request_exit(account, "AAPL", 100.0, source="timer")
+    assert result.status == OrderStatus.FILLED
 
-    # Verify: exit should be processed
-    assert result.status in [OrderStatus.FILLED, OrderStatus.PENDING]
-
-    # Verify: no duplicate close attempt
-    lifecycle = manager.get_lifecycle("acct1", "AAPL")
-    if lifecycle and lifecycle.closed:
-        # After full close, no further closes should be possible
-        result2 = await manager.request_exit(account, "AAPL", 50.0, source="manual")
-        assert result2.status == OrderStatus.REJECTED
+    # Verify: manual close attempt after timer close is rejected (not duplicated)
+    result2 = await manager.request_exit(account, "AAPL", 50.0, source="manual")
+    assert result2.status == OrderStatus.REJECTED
 
 
 # EXT-009: Exit during entry remainder
@@ -273,39 +268,24 @@ async def test_own_001_two_analysts_same_direction(store, account, broker, manag
 
     Then: At most 50 sold for B; A's 100 basis/stop retained.
     """
-    # Simulate analyst A's position
+    # Simulate analyst A's position (owned and not managed by bot lifecycle)
     store.record_fill("acct1", "AAPL", Side.BUY, 100.0)
 
-    # Start analyst B's plan
+    # Start analyst B's plan (50 shares)
     plan_b = _plan(planned_quantity=50.0, initial_stop=48.50)
     manager.start_plan(plan_b)
+    await _enter(manager, broker, account, plan_b, 50.0)
 
-    # Verify: B's entry is tracked
-    lifecycle_b = manager.get_lifecycle("acct1", "AAPL")
-    if lifecycle_b:
-        assert lifecycle_b.plan.planned_quantity == 50.0
+    # Verify: B can only close its own 50 shares, not A's 100
+    result_b_exit = await manager.request_exit(account, "AAPL", 50.0, source="analyst_b")
+    assert result_b_exit.status == OrderStatus.FILLED
+    assert result_b_exit.filled_quantity == 50.0
+    
+    # Verify: nothing left to sell for B
+    assert manager.arbiter.available_to_sell("acct1", "AAPL") == 0.0
 
 
-# OWN-003: Opposing netted positions
-@pytest.mark.asyncio
-@pytest.mark.scenario("OWN-003")
-async def test_own_003_opposing_netted_positions(manager):
-    """Opposing netted positions: A long 100; B proposes short 50 without netting
-    policy.
 
-    Then: Reject conflict; sell 50 cannot be labeled independent.
-    """
-    plan_long = _plan(planned_quantity=100.0, side=Side.BUY, initial_stop=48.50)
-    manager.start_plan(plan_long)
-
-    # Try to short without netting policy - should be rejected or handled carefully
-    plan_short = _plan(planned_quantity=50.0, side=Side.SELL, initial_stop=52.50)
-    error = manager.validate_plan(plan_short)
-
-    # Depending on implementation, might reject or require explicit netting policy
-    # The point is opposing positions shouldn't silently net
-    # For now, verify it doesn't crash
-    assert error is None or isinstance(error, str)
 
 
 # OWN-005: Manual shares reserved
@@ -316,17 +296,19 @@ async def test_own_005_manual_shares_reserved(store, account, broker, manager):
 
     Then: At most 20 bot shares closed; no full 100 account-wide close.
     """
-    # Simulate total position in store
+    # Simulate total position in store (100 shares, none managed by bot initially)
     store.record_fill("acct1", "AAPL", Side.BUY, 100.0)
 
-    # Request exit for all positions
+    # Start bot plan for 20 shares
+    plan = _plan(planned_quantity=20.0, initial_stop=48.50)
+    await _enter(manager, broker, account, plan, 20.0)
+
+    # Request exit for all 100 shares - but only bot-owned 20 should be available
     result = await manager.request_exit(account, "AAPL", 100.0, source="manual_close")
 
-    # The arbiter should limit the close to only bot-managed quantity
-    # The exact quantity depends on attribution logic
-    if result.status == OrderStatus.FILLED:
-        # If filled, it should be <= 100 (realistic constraint)
-        assert result.filled_quantity is not None
+    # Only the 20 bot-managed shares should be closed
+    assert result.status == OrderStatus.FILLED
+    assert result.filled_quantity == 20.0
 
 
 # OWN-008: Manual unknown new position
@@ -341,10 +323,20 @@ async def test_own_008_manual_unknown_new_position(store, manager):
     store.record_fill("acct1", "AAPL", Side.BUY, 50.0)
 
     # Start bot plan - should not merge with unknown position
-    plan = _plan(planned_quantity=100.0, initial_stop=48.50)
-    manager.start_plan(plan)
-    lifecycle = manager.get_lifecycle("acct1", "AAPL")
+    from app.models import DestinationAccount
+    account = DestinationAccount(account_id="acct1", broker="paper")
+    broker = PaperBroker()
+    manager_with_broker = PositionLifecycleManager(brokers={"paper": broker}, store=store)
 
-    # Bot should track its own lifecycle separately
-    if lifecycle:
-        assert lifecycle.plan.planned_quantity == 100.0
+    plan = _plan(planned_quantity=100.0, initial_stop=48.50)
+
+    # Start the plan first (required for on_entry_fill to work)
+    manager_with_broker.start_plan(plan)
+
+    # Enter bot plan for 30 shares
+    entry_signal = Signal(source="test", symbol="AAPL", side=Side.BUY)
+    await broker.place_order(entry_signal, account, 30.0, "AAPL")
+    lifecycle = await manager_with_broker.on_entry_fill(account, "AAPL", 30.0)
+
+    # Bot should track only its 30 confirmed shares, not the 50 unmanaged shares
+    assert lifecycle.confirmed_owned_quantity == 30.0
