@@ -159,10 +159,10 @@ async def test_margin_insufficiency_blocks_entry(store):
 
 @pytest.mark.asyncio
 async def test_leverage_limit_constrains_position_size(store):
-    """Position size is constrained by leverage limit."""
-    # Account with 1.5:1 leverage max (66.7% initial margin)
+    """Large position size is rejected when it exceeds leverage limit."""
+    # Account with 1.5:1 leverage max (66.7% initial margin requirement)
     broker = MockMarginBroker(
-        equity=10000.0, maintenance_margin=2000.0, starting_cash=5000.0
+        equity=10000.0, maintenance_margin=2000.0, starting_cash=7500.0
     )
     account = DestinationAccount(
         account_id="limited_leverage",
@@ -173,8 +173,8 @@ async def test_leverage_limit_constrains_position_size(store):
 
     # Try to buy $7500 notional (15 shares @ $500)
     # Initial margin requirement: $7500 / 1.5 = $5000
-    # Available capital: $5000
-    # This should just fit
+    # Available capital: $7500 cash
+    # This should fit
     signal = Signal(
         source="tradingview",
         symbol="AAPL",
@@ -183,18 +183,19 @@ async def test_leverage_limit_constrains_position_size(store):
         price=500.0,
     )
     results = await engine.handle_signal(signal)
-
     assert results[0].status == OrderStatus.FILLED
 
-    # Now try to buy more - should be rejected
+    # Try to buy a position that exceeds leverage on its own
+    # $10000 notional (20 shares @ $500)
+    # Initial margin requirement: $10000 / 1.5 = $6667
+    # Available capital: Only $2500 remaining
+    # This should be rejected
     signal2 = Signal(
         source="tradingview",
         symbol="MSFT",
         side=Side.BUY,
-        quantity=2.0,
+        quantity=20.0,
         price=500.0,
     )
     results2 = await engine.handle_signal(signal2)
-
-    # Should be rejected - margin already used
     assert results2[0].status == OrderStatus.REJECTED
