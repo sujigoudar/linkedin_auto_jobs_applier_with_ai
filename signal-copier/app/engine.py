@@ -455,6 +455,7 @@ class SignalCopierEngine:
             # Fetch broker snapshot (equity, margin, buying power)
             balance = await broker.get_account_balance(account)
             broker_snapshot = None
+            maintenance_cents = None
             if balance is not None:
                 # Convert to integer cents, using to_cents (which is exact)
                 buying_power_cents = ceil_cents(balance.buying_power) if balance.buying_power is not None else None

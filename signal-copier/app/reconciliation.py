@@ -449,12 +449,16 @@ class OrderReconciler:
             if broker_owned is None:
                 continue  # genuinely unknown -- never treated as confirming zero
 
-            # WP-03: convert broker readback to lifecycle's own orientation.
-            # Broker returns signed quantity (negative for short); lifecycle
-            # always tracks positive owned quantity. For SELL positions
-            # (shorts), invert the sign to match.
-            broker_owned_abs = -broker_owned if lifecycle.plan.side == Side.SELL else broker_owned
-            if broker_owned_abs < 0:
+            # WP-55 (D-03): broker_owned is signed (negative for short).
+            # confirmed_owned_quantity is also signed (negative for short).
+            # Keep both signed for consistent deficit calculation.
+            # Check that broker and plan agree on side:
+            # - For BUY (long), broker_owned should be positive
+            # - For SELL (short), broker_owned should be negative
+            broker_owned_signed = broker_owned
+            expected_sign_positive = lifecycle.plan.side == Side.BUY
+            broker_is_positive = broker_owned_signed > 0
+            if expected_sign_positive != broker_is_positive:
                 # Venue holds the OPPOSITE side of what the plan expects
                 logger.warning(
                     "broker position readback for account=%s symbol=%s returned opposite side (venue: %s, plan: %s)",
@@ -464,6 +468,7 @@ class OrderReconciler:
                     "short" if broker_owned < 0 else "long",
                 )
                 continue
+            broker_owned_abs = broker_owned_signed
 
             if exit_has_no_order_id_to_poll:
                 # Exit-side counterpart of the entry branch below: a
