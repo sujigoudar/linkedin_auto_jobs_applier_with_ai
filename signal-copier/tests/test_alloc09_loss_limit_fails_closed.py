@@ -1,10 +1,10 @@
 """Test that loss limit circuit breaker fails closed when P&L cannot be computed.
 
-WP-30: Loss limit end-to-end wiring. This test verifies that when an account
-has a configured daily_loss_limit_percent but daily P&L data is unavailable
-(as is the case in the current build), entries are rejected rather than
-silently bypassed. This is the fail-closed safety posture for unimplemented
-risk controls.
+WP-30: Loss limit end-to-end wiring. When an account has a configured
+daily_loss_limit_percent but daily P&L cannot be obtained (a store with no
+daily-P&L source), entries are rejected rather than silently bypassed. The real
+store now provides get_daily_pnl (see tests/test_daily_loss_limit_real_pnl.py);
+the engine-level tests below cover both the fail-closed path and a real breach.
 """
 from __future__ import annotations
 
@@ -30,20 +30,16 @@ def paper_broker() -> PaperBroker:
 
 
 async def test_daily_loss_limit_configured_fails_closed(
-    tmp_store: SignalStore, paper_broker: PaperBroker
+    tmp_store: SignalStore, paper_broker: PaperBroker, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """When daily_loss_limit_percent is configured, entries are rejected (fail-closed).
+    """When daily_loss_limit_percent is configured but the store has no daily-P&L
+    source, entries are rejected (fail-closed) rather than silently bypassed.
 
-    This verifies that configured loss limits do not silently bypass entries
-    when daily P&L computation is not yet implemented. The limiter explicitly
-    rejects entries with a message indicating the P&L source is missing,
-    preventing unguarded trading.
-
-    Scenario: An account is configured with daily_loss_limit_percent=5 (5% loss
-    limit). Because daily P&L computation is not yet implemented in this build,
-    the engine should REJECT an entry attempt with a clear message that the
-    P&L source is not available.
+    Scenario: an account has daily_loss_limit_percent=5 and the store exposes no
+    get_daily_pnl. The engine must REJECT the entry with a message saying the P&L
+    source is not available.
     """
+    monkeypatch.setattr(SignalStore, "get_daily_pnl", None)
     # Set up account with a configured loss limit
     account = DestinationAccount(
         account_id="paper-loss-limited",
@@ -184,3 +180,57 @@ async def test_close_signals_bypass_loss_limit_check(
 
     # CLOSE should NOT be rejected by loss limit check
     assert "Daily loss limit check failed" not in (result.message or "")
+
+
+def _limited_engine(store: SignalStore, broker: PaperBroker, account_id: str):
+    account = DestinationAccount(account_id=account_id, broker="paper", daily_loss_limit_percent=5.0)
+    store.upsert_config_account(
+        account_id=account.account_id,
+        broker=account.broker,
+        multiplier=account.multiplier,
+        daily_loss_limit_percent=account.daily_loss_limit_percent,
+    )
+    routing = RoutingConfig(
+        rules=[RoutingRule(source="test", destinations=[account_id])],
+        accounts={account_id: account},
+    )
+    return SignalCopierEngine(store=store, routing=routing, brokers={"paper": broker})
+
+
+def _entry(signal_id: str) -> Signal:
+    return Signal(id=signal_id, source="test", symbol="AAPL", side=Side.BUY, quantity=10.0, price=150.0, stop_loss=145.0)
+
+
+def _snapshots(store: SignalStore, account_id: str, today_cumulative: float) -> None:
+    from datetime import datetime, timedelta, timezone
+
+    now = datetime.now(timezone.utc)
+    start = datetime(now.year, now.month, now.day, tzinfo=timezone.utc)
+    for when, value in ((start - timedelta(hours=1), 0.0), (start + timedelta(seconds=1), today_cumulative)):
+        store.record_equity_snapshot(
+            account_id, captured_at=when, realized_pnl=value, unrealized_pnl=0.0, cumulative_pnl=value
+        )
+
+
+async def test_real_loss_over_limit_rejects_entries(tmp_store: SignalStore, paper_broker: PaperBroker) -> None:
+    """With real snapshots showing a loss beyond the limit, the engine rejects the entry."""
+    engine = _limited_engine(tmp_store, paper_broker, "paper-breached")
+    equity = float((await paper_broker.get_account_balance(DestinationAccount(account_id="paper-breached", broker="paper"))).equity)
+    _snapshots(tmp_store, "paper-breached", -(equity * 0.06))  # 6% loss vs 5% limit
+
+    results = await engine.handle_signal(_entry("breach-entry"))
+
+    assert len(results) == 1 and results[0].status == OrderStatus.REJECTED
+    assert "Daily loss limit breached" in results[0].message
+
+
+async def test_loss_under_limit_does_not_block_entries(tmp_store: SignalStore, paper_broker: PaperBroker) -> None:
+    """A loss inside the limit is not rejected by the loss limiter."""
+    engine = _limited_engine(tmp_store, paper_broker, "paper-within")
+    equity = float((await paper_broker.get_account_balance(DestinationAccount(account_id="paper-within", broker="paper"))).equity)
+    _snapshots(tmp_store, "paper-within", -(equity * 0.02))  # 2% loss vs 5% limit
+
+    results = await engine.handle_signal(_entry("within-entry"))
+
+    assert len(results) == 1
+    assert "Daily loss limit" not in (results[0].message or "")

@@ -4510,6 +4510,40 @@ class SignalStore:
                 ),
             )
 
+    def get_daily_pnl(self, account_id: str, day) -> float | None:
+        """P&L change for this account over the UTC calendar `day`, taken from the
+        persisted equity-snapshot series (never a second P&L calculation).
+
+        Baseline is the last snapshot before `day` began; if the series starts
+        within `day`, the first snapshot of `day`. The end point is the last
+        snapshot within `day`. Returns None when the account has no snapshot in
+        `day` (no data to measure).
+        """
+        start = datetime(day.year, day.month, day.day, tzinfo=timezone.utc)
+        end = start + timedelta(days=1)
+        with self._connect() as conn:
+            latest = conn.execute(
+                "SELECT cumulative_pnl FROM account_equity_snapshots "
+                "WHERE account_id = ? AND captured_at >= ? AND captured_at < ? "
+                "ORDER BY captured_at DESC LIMIT 1",
+                (account_id, start.isoformat(), end.isoformat()),
+            ).fetchone()
+            if latest is None:
+                return None
+            baseline = conn.execute(
+                "SELECT cumulative_pnl FROM account_equity_snapshots "
+                "WHERE account_id = ? AND captured_at < ? ORDER BY captured_at DESC LIMIT 1",
+                (account_id, start.isoformat()),
+            ).fetchone()
+            if baseline is None:
+                baseline = conn.execute(
+                    "SELECT cumulative_pnl FROM account_equity_snapshots "
+                    "WHERE account_id = ? AND captured_at >= ? AND captured_at < ? "
+                    "ORDER BY captured_at ASC LIMIT 1",
+                    (account_id, start.isoformat(), end.isoformat()),
+                ).fetchone()
+        return float(latest[0]) - float(baseline[0])
+
     def list_equity_snapshots(
         self,
         account_id: str,

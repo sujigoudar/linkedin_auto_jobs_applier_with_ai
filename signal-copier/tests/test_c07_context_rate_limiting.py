@@ -76,4 +76,7 @@ async def test_calls_within_capacity_are_not_delayed(monkeypatch):
     await fx_context.get_latest_rate("USD", "EUR")
     elapsed = time.monotonic() - start
 
-    assert elapsed < 0.1
+    # Under capacity the limiter adds no delay; a real throttle here would cost
+    # seconds (10 calls / 60 s), so 1 s separates the cases without flaking when
+    # the suite runs in parallel on a loaded machine.
+    assert elapsed < 1.0
