@@ -27,7 +27,7 @@ scenarios:
 - id: ING-003
   category: Intake, authority, identity and durability
   title: Authorized transport unauthorized sender
-  status: TESTED_SIMULATOR
+  status: IMPLEMENTED_NOT_WIRED
   implementation_paths:
   - app/main.py
   - app/sources/sms.py
@@ -37,10 +37,11 @@ scenarios:
   evidence_paths: []
   blocked_reason: null
   notes: Sender authorization via TWILIO_ALLOWED_FROM_NUMBERS and WhatsApp allowlists
+    | Requires tagging existing test
 - id: ING-004
   category: Intake, authority, identity and durability
   title: Unknown provider
-  status: TESTED_SIMULATOR
+  status: IMPLEMENTED_NOT_WIRED
   implementation_paths:
   - app/provider_catalog.py
   - app/models.py
@@ -48,11 +49,12 @@ scenarios:
   - tests/test_config_crud.py
   evidence_paths: []
   blocked_reason: null
-  notes: Unknown provider detection via provider_registry lookup
+  notes: Unknown provider detection via provider_registry lookup | Requires tagging
+    existing test
 - id: ING-005
   category: Intake, authority, identity and durability
   title: Known provider unknown analyst
-  status: TESTED_SIMULATOR
+  status: IMPLEMENTED_NOT_WIRED
   implementation_paths:
   - app/providers.py
   - app/models.py
@@ -60,11 +62,12 @@ scenarios:
   - tests/test_config_crud.py
   evidence_paths: []
   blocked_reason: null
-  notes: Analyst mapping via SettingsOverride in provider registry
+  notes: Analyst mapping via SettingsOverride in provider registry | Requires tagging
+    existing test
 - id: ING-006
   category: Intake, authority, identity and durability
   title: Disabled provider enabled child
-  status: TESTED_SIMULATOR
+  status: IMPLEMENTED_NOT_WIRED
   implementation_paths:
   - app/engine.py
   - app/models.py
@@ -72,7 +75,8 @@ scenarios:
   - tests/test_config_crud.py
   evidence_paths: []
   blocked_reason: null
-  notes: Provider/child enabled flag hierarchy via _effective_settings()
+  notes: Provider/child enabled flag hierarchy via _effective_settings() | Requires
+    tagging existing test
 - id: ING-007
   category: Intake, authority, identity and durability
   title: Forged forwarded origin
@@ -96,7 +100,7 @@ scenarios:
 - id: ING-009
   category: Intake, authority, identity and durability
   title: Persistence unavailable
-  status: TESTED_SIMULATOR
+  status: IMPLEMENTED_NOT_WIRED
   implementation_paths:
   - app/db.py
   - app/main.py
@@ -104,11 +108,12 @@ scenarios:
   - tests/test_wp35_rule_deletion_guard_schema_check_disk_health.py
   evidence_paths: []
   blocked_reason: null
-  notes: Database error handling via schema migration and health checks
+  notes: Database error handling via schema migration and health checks | Requires
+    tagging existing test
 - id: ING-010
   category: Intake, authority, identity and durability
   title: Source replay after crash
-  status: TESTED_SIMULATOR
+  status: IMPLEMENTED_NOT_WIRED
   implementation_paths:
   - app/main.py
   - app/db.py
@@ -116,33 +121,36 @@ scenarios:
   - tests/test_sig01_duplicate_submission_protection.py
   evidence_paths: []
   blocked_reason: null
-  notes: Replay deduplication via Idempotency-Key and payload event_id
+  notes: Replay deduplication via Idempotency-Key and payload event_id | Requires
+    tagging existing test
 - id: ING-011
   category: Intake, authority, identity and durability
   title: Cross-post same origin
-  status: TESTED_SIMULATOR
+  status: IMPLEMENTED_NOT_WIRED
   implementation_paths:
   - app/signal_correlation.py
   test_paths:
   - tests/test_telegram_cross_collector_dedup.py
   evidence_paths: []
   blocked_reason: null
-  notes: Cross-post deduplication by SignalCorrelator.matches_by_cluster()
+  notes: Cross-post deduplication by SignalCorrelator.matches_by_cluster() | Requires
+    tagging existing test
 - id: ING-012
   category: Intake, authority, identity and durability
   title: Similar but distinct signals
-  status: TESTED_SIMULATOR
+  status: IMPLEMENTED_NOT_WIRED
   implementation_paths:
   - app/signal_correlation.py
   test_paths:
   - tests/test_track12_whop_notification_completeness.py
   evidence_paths: []
   blocked_reason: null
-  notes: Similar-but-distinct via signal correlation with exact venue matching
+  notes: Similar-but-distinct via signal correlation with exact venue matching | Requires
+    tagging existing test
 - id: ING-013
   category: Intake, authority, identity and durability
   title: Historical backfill
-  status: TESTED_SIMULATOR
+  status: IMPLEMENTED_NOT_WIRED
   implementation_paths:
   - app/db.py
   - app/models.py
@@ -151,10 +159,11 @@ scenarios:
   evidence_paths: []
   blocked_reason: null
   notes: Historical backfill via SourceEvent.purpose field (ORIGINAL vs BACKFILL)
+    | Requires tagging existing test
 - id: ING-014
   category: Intake, authority, identity and durability
   title: Cursor gap reconnect
-  status: TESTED_SIMULATOR
+  status: IMPLEMENTED_NOT_WIRED
   implementation_paths:
   - app/sources/telegram.py
   - app/sources/discord.py
@@ -164,11 +173,12 @@ scenarios:
   - tests/test_track5_collector_cursor_pagination.py
   evidence_paths: []
   blocked_reason: null
-  notes: Cursor gap recovery via pagination in collector source adapters
+  notes: Cursor gap recovery via pagination in collector source adapters | Requires
+    tagging existing test
 - id: ING-015
   category: Intake, authority, identity and durability
   title: Prompt injection
-  status: TESTED_SIMULATOR
+  status: IMPLEMENTED_NOT_WIRED
   implementation_paths:
   - app/sources/text_parser.py
   - app/parser_tooling.py
@@ -176,7 +186,8 @@ scenarios:
   - tests/test_wp12_parser_instrument_validation.py
   evidence_paths: []
   blocked_reason: null
-  notes: Text parsers treat user input as data, no instruction execution
+  notes: Text parsers treat user input as data, no instruction execution | Requires
+    tagging existing test
 - id: PAR-001
   category: Full-message interpretation and compound instructions
   title: Negated buy
@@ -369,18 +380,19 @@ scenarios:
 - id: REV-001
   category: Revisions, lifecycle matching and temporal order
   title: Edit before dispatch
-  status: TESTED_SIMULATOR
+  status: IMPLEMENTED_NOT_WIRED
   implementation_paths:
   - app/engine.py
   test_paths:
   - tests/test_wp11_edit_and_delete.py
   evidence_paths: []
   blocked_reason: null
-  notes: Edit before dispatch via _handle_signal_edit() before broker submission
+  notes: Edit before dispatch via _handle_signal_edit() before broker submission |
+    Requires tagging existing test
 - id: REV-002
   category: Revisions, lifecycle matching and temporal order
   title: Edit after acceptance
-  status: TESTED_SIMULATOR
+  status: IMPLEMENTED_NOT_WIRED
   implementation_paths:
   - app/engine.py
   - app/lifecycle/manager.py
@@ -388,22 +400,24 @@ scenarios:
   - tests/test_wp11_edit_and_delete.py
   evidence_paths: []
   blocked_reason: null
-  notes: Edit after acceptance with lifecycle amendment and revalidation
+  notes: Edit after acceptance with lifecycle amendment and revalidation | Requires
+    tagging existing test
 - id: REV-003
   category: Revisions, lifecycle matching and temporal order
   title: Delete source message
-  status: TESTED_SIMULATOR
+  status: IMPLEMENTED_NOT_WIRED
   implementation_paths:
   - app/engine.py
   test_paths:
   - tests/test_wp11_edit_and_delete.py
   evidence_paths: []
   blocked_reason: null
-  notes: Delete via source message tombstone handling in _handle_signal_edit()
+  notes: Delete via source message tombstone handling in _handle_signal_edit() | Requires
+    tagging existing test
 - id: REV-004
   category: Revisions, lifecycle matching and temporal order
   title: Exit before entry
-  status: TESTED_SIMULATOR
+  status: IMPLEMENTED_NOT_WIRED
   implementation_paths:
   - app/lifecycle/manager.py
   - app/models.py
@@ -412,10 +426,11 @@ scenarios:
   evidence_paths: []
   blocked_reason: null
   notes: Exit-before-entry detected via lifecycle matching and marked EXIT_ORPHAN
+    | Requires tagging existing test
 - id: REV-005
   category: Revisions, lifecycle matching and temporal order
   title: Old exit new same ticker
-  status: TESTED_SIMULATOR
+  status: IMPLEMENTED_NOT_WIRED
   implementation_paths:
   - app/lifecycle/manager.py
   - app/signal_correlation.py
@@ -423,11 +438,12 @@ scenarios:
   - tests/test_track16_correlation_lifecycle.py
   evidence_paths: []
   blocked_reason: null
-  notes: Old exit new ticker matched exactly via lifecycle identity, not symbol
+  notes: Old exit new ticker matched exactly via lifecycle identity, not symbol |
+    Requires tagging existing test
 - id: REV-006
   category: Revisions, lifecycle matching and temporal order
   title: Duplicate partial exit
-  status: TESTED_SIMULATOR
+  status: IMPLEMENTED_NOT_WIRED
   implementation_paths:
   - app/lifecycle/manager.py
   - app/db.py
@@ -436,11 +452,12 @@ scenarios:
   - tests/test_pro06_stop_amend_on_partial_exit.py
   evidence_paths: []
   blocked_reason: null
-  notes: Duplicate partial exit rejected via idempotency on signal/message ID
+  notes: Duplicate partial exit rejected via idempotency on signal/message ID | Requires
+    tagging existing test
 - id: REV-007
   category: Revisions, lifecycle matching and temporal order
   title: Delayed exit beyond entry age
-  status: TESTED_SIMULATOR
+  status: IMPLEMENTED_NOT_WIRED
   implementation_paths:
   - app/engine.py
   - app/lifecycle/manager.py
@@ -448,11 +465,12 @@ scenarios:
   - tests/test_wp23_recovery_edges.py
   evidence_paths: []
   blocked_reason: null
-  notes: Delayed exit resolved via owned remainder reconciliation, not entry TTL
+  notes: Delayed exit resolved via owned remainder reconciliation, not entry TTL |
+    Requires tagging existing test
 - id: REV-008
   category: Revisions, lifecycle matching and temporal order
   title: Exit without fill
-  status: TESTED_SIMULATOR
+  status: IMPLEMENTED_NOT_WIRED
   implementation_paths:
   - app/lifecycle/manager.py
   - app/engine.py
@@ -462,10 +480,11 @@ scenarios:
   evidence_paths: []
   blocked_reason: null
   notes: Exit without fill marked audit-only when entry was definitively rejected
+    | Requires tagging existing test
 - id: REV-009
   category: Revisions, lifecycle matching and temporal order
   title: Ambiguous all-out
-  status: TESTED_SIMULATOR
+  status: IMPLEMENTED_NOT_WIRED
   implementation_paths:
   - app/engine.py
   - app/main.py
@@ -474,11 +493,12 @@ scenarios:
   - tests/test_wp20_ambiguous_exit_and_stop.py
   evidence_paths: []
   blocked_reason: null
-  notes: Ambiguous all-out blocks execution and requires incident review
+  notes: Ambiguous all-out blocks execution and requires incident review | Requires
+    tagging existing test
 - id: REV-010
   category: Revisions, lifecycle matching and temporal order
   title: Scoped close-all
-  status: TESTED_SIMULATOR
+  status: IMPLEMENTED_NOT_WIRED
   implementation_paths:
   - app/main.py
   - app/command_ledger.py
@@ -486,11 +506,12 @@ scenarios:
   - tests/test_tr06_flatten_confirm.py
   evidence_paths: []
   blocked_reason: null
-  notes: Scoped close-all via /accounts/{id}/flatten with writer scope matching
+  notes: Scoped close-all via /accounts/{id}/flatten with writer scope matching |
+    Requires tagging existing test
 - id: REV-011
   category: Revisions, lifecycle matching and temporal order
   title: Reply-parent missing
-  status: TESTED_SIMULATOR
+  status: IMPLEMENTED_NOT_WIRED
   implementation_paths:
   - app/models.py
   - app/sources/
@@ -499,10 +520,11 @@ scenarios:
   evidence_paths: []
   blocked_reason: null
   notes: Reply parent matching via SourceEventKind.REPLY with missing context handling
+    | Requires tagging existing test
 - id: REV-012
   category: Revisions, lifecycle matching and temporal order
   title: Future timestamp
-  status: TESTED_SIMULATOR
+  status: IMPLEMENTED_NOT_WIRED
   implementation_paths:
   - app/sources/
   test_paths:
@@ -510,7 +532,7 @@ scenarios:
   evidence_paths: []
   blocked_reason: null
   notes: Future timestamp validation via received_at vs source_timestamp clock-skew
-    check
+    check | Requires tagging existing test
 - id: INS-001
   category: Instrument metadata, units and product identity
   title: Exact stock resolution
@@ -1458,7 +1480,7 @@ scenarios:
 - id: ENT-001
   category: Entry conditions, pricing, sessions and deadlines
   title: Explicit limit preserved
-  status: TESTED_SIMULATOR
+  status: IMPLEMENTED_NOT_WIRED
   implementation_paths:
   - app/engine.py
   - app/models.py
@@ -1466,11 +1488,12 @@ scenarios:
   - tests/test_wp13_entry_order_type_and_price.py
   evidence_paths: []
   blocked_reason: null
-  notes: Explicit price limit preserved via Signal.entry_order_type validation
+  notes: Explicit price limit preserved via Signal.entry_order_type validation | Requires
+    tagging existing test
 - id: ENT-002
   category: Entry conditions, pricing, sessions and deadlines
   title: Trigger versus limit
-  status: TESTED_SIMULATOR
+  status: IMPLEMENTED_NOT_WIRED
   implementation_paths:
   - app/engine.py
   test_paths:
@@ -1478,43 +1501,47 @@ scenarios:
   evidence_paths: []
   blocked_reason: null
   notes: Trigger not permitted to breach limit via separate entry plan validation
+    | Requires tagging existing test
 - id: ENT-003
   category: Entry conditions, pricing, sessions and deadlines
   title: Stale quote
-  status: TESTED_SIMULATOR
+  status: IMPLEMENTED_NOT_WIRED
   implementation_paths:
   - app/engine.py
   test_paths:
   - tests/test_wp47_parser_source_gaps.py
   evidence_paths: []
   blocked_reason: null
-  notes: Stale quote rejected via A-09 age gate before entry dispatch
+  notes: Stale quote rejected via A-09 age gate before entry dispatch | Requires tagging
+    existing test
 - id: ENT-004
   category: Entry conditions, pricing, sessions and deadlines
   title: Wide spread
-  status: TESTED_SIMULATOR
+  status: IMPLEMENTED_NOT_WIRED
   implementation_paths:
   - app/engine.py
   test_paths:
   - tests/test_wp13_entry_price_ranges.py
   evidence_paths: []
   blocked_reason: null
-  notes: Wide spread rejected via bid-ask spread validation gate
+  notes: Wide spread rejected via bid-ask spread validation gate | Requires tagging
+    existing test
 - id: ENT-005
   category: Entry conditions, pricing, sessions and deadlines
   title: Target already passed
-  status: TESTED_SIMULATOR
+  status: IMPLEMENTED_NOT_WIRED
   implementation_paths:
   - app/engine.py
   test_paths:
   - tests/test_wp13_targets_and_updates.py
   evidence_paths: []
   blocked_reason: null
-  notes: Target already passed expired via _expire_stale_target() in engine
+  notes: Target already passed expired via _expire_stale_target() in engine | Requires
+    tagging existing test
 - id: ENT-006
   category: Entry conditions, pricing, sessions and deadlines
   title: Session closed
-  status: TESTED_SIMULATOR
+  status: IMPLEMENTED_NOT_WIRED
   implementation_paths:
   - app/workflow/identity.py
   - app/brokers/base.py
@@ -1522,22 +1549,24 @@ scenarios:
   - tests/test_wc02_canonical_identities.py
   evidence_paths: []
   blocked_reason: null
-  notes: Session closed detected via CapabilityProfile.session field
+  notes: Session closed detected via CapabilityProfile.session field | Requires tagging
+    existing test
 - id: ENT-007
   category: Entry conditions, pricing, sessions and deadlines
   title: Early close
-  status: TESTED_SIMULATOR
+  status: IMPLEMENTED_NOT_WIRED
   implementation_paths:
   - app/workflow/identity.py
   test_paths:
   - tests/test_wc02_canonical_identities.py
   evidence_paths: []
   blocked_reason: null
-  notes: Early close respected via exchange_calendar session boundaries
+  notes: Early close respected via exchange_calendar session boundaries | Requires
+    tagging existing test
 - id: ENT-008
   category: Entry conditions, pricing, sessions and deadlines
   title: TTL before cancel finality
-  status: TESTED_SIMULATOR
+  status: IMPLEMENTED_NOT_WIRED
   implementation_paths:
   - app/lifecycle/manager.py
   test_paths:
@@ -1545,21 +1574,23 @@ scenarios:
   evidence_paths: []
   blocked_reason: null
   notes: TTL before cancel finality tracked via _reconcile_pending_order() with Reason.EXPIRED
+    | Requires tagging existing test
 - id: ENT-009
   category: Entry conditions, pricing, sessions and deadlines
   title: Price moves after sizing
-  status: TESTED_SIMULATOR
+  status: IMPLEMENTED_NOT_WIRED
   implementation_paths:
   - app/engine.py
   test_paths:
   - tests/test_wp47_parser_source_gaps.py
   evidence_paths: []
   blocked_reason: null
-  notes: Price moves detected via revalidation at submit time
+  notes: Price moves detected via revalidation at submit time | Requires tagging existing
+    test
 - id: ENT-010
   category: Entry conditions, pricing, sessions and deadlines
   title: Partial fill remainder expires
-  status: TESTED_SIMULATOR
+  status: IMPLEMENTED_NOT_WIRED
   implementation_paths:
   - app/lifecycle/manager.py
   test_paths:
@@ -1568,6 +1599,7 @@ scenarios:
   evidence_paths: []
   blocked_reason: null
   notes: Partial fill remainder tracked and expired separately via bracket updates
+    | Requires tagging existing test
 - id: ENT-011
   category: Entry conditions, pricing, sessions and deadlines
   title: No valid entry reference
@@ -1582,7 +1614,7 @@ scenarios:
 - id: ENT-012
   category: Entry conditions, pricing, sessions and deadlines
   title: Trigger repeated ticks
-  status: TESTED_SIMULATOR
+  status: IMPLEMENTED_NOT_WIRED
   implementation_paths:
   - app/brokers/paper.py
   test_paths:
@@ -1590,6 +1622,7 @@ scenarios:
   evidence_paths: []
   blocked_reason: null
   notes: Trigger repeated ticks fires only once via PaperBroker.simulate_price() dedup
+    | Requires tagging existing test
 - id: ORD-001
   category: Broker order states, effects, deduplication and corrections
   title: Accepted acknowledgment
