@@ -14,10 +14,10 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import sqlite3
 import tempfile
 import traceback
 from datetime import datetime, timezone
-from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -63,6 +63,30 @@ class LiveCountingPaperBroker(CountingPaperBroker):
 
 
 _LIVE_BROKER_KEY = "paper_live"
+
+
+class UnreadableBudgetStore(SignalStore):
+    """SignalStore whose budget read FAILS, as it would on a locked or unreadable
+    database. Used only for budget=='unknown'.
+
+    No real SignalStore setter can produce an unreadable budget (limits are NOT NULL
+    ints, an absent limit reads as UNLIMITED), and corrupting tables would test
+    nothing about the engine. Injecting the read fault leaves every table valid and
+    lets the engine's own handling of a failing hierarchical_budget.remaining() run.
+    """
+
+    def get_level_remaining(self, level: str, level_scope: dict) -> int:
+        raise sqlite3.OperationalError("fixture: budget store unreadable (database is locked)")
+
+
+_NOMINAL_ACCOUNT_ID = "account_1"
+
+
+def _admission_physical_ids(route_inputs: str, accounts: list[DestinationAccount]) -> list[str]:
+    """Physical account ids the engine evaluates for these config accounts."""
+    if route_inputs == "duplicate_bindings_one_account":
+        return ["config_a"] if accounts else []
+    return sorted(a.account_id for a in accounts)
 
 
 def _fixture_error(inputs: dict[str, Any], step: str, exc: BaseException) -> RuntimeError:
@@ -126,9 +150,8 @@ def _build_admission_state(store: SignalStore, inputs: dict[str, Any]) -> tuple:
     elif auth_inputs == "unknown":
         rules.clear()  # no rule admits source 'provider'
     elif auth_inputs == "disabled":
-        if not accounts:
-            accounts.append(DestinationAccount(account_id="account_1", broker=broker_key))
-            rules.append(RoutingRule(source="provider", destinations=["account_1"]))
+        # Authorization failure only: with routes=zero there is still no account
+        # and no rule (do not fabricate a route the case says is absent).
         for a in accounts:
             a.enabled = False
     else:
@@ -160,9 +183,9 @@ def _build_admission_state(store: SignalStore, inputs: dict[str, Any]) -> tuple:
                     )
 
     step("identity rows", make_identity)
-    physical_account_ids = sorted({("config_a" if route_inputs == "duplicate_bindings_one_account" else a.account_id) for a in accounts})
-    # Nominal ids so halts/ledger/reservations still exist when routes == zero.
-    state_account_ids = physical_account_ids or ["account_1"]
+    physical_account_ids = _admission_physical_ids(route_inputs, accounts)
+    # Nominal id so halts/ledger/reservations still exist when routes == zero.
+    state_account_ids = physical_account_ids or [_NOMINAL_ACCOUNT_ID]
 
     # --- budget ---
     budget_inputs = inputs.get("budget", "enough")
@@ -188,14 +211,13 @@ def _build_admission_state(store: SignalStore, inputs: dict[str, Any]) -> tuple:
 
         step("budget=oversubscribed HELD reservation", hold)
     elif budget_inputs == "unknown":
-        # hierarchical_budget.remaining() only raises on a malformed/unreadable
-        # store; every real SignalStore setter (set_owner_limit, set_budget_limit
-        # with NOT NULL max_cents, ...) yields a readable value, and an absent limit
-        # reads as UNLIMITED. There is no legitimate API path to an unreadable
-        # budget, so the fixture does NOT corrupt tables: the owner limit stays
-        # readable and the limitation is recorded in evidence.
-        step("budget=unknown owner limit (unrepresentable)", lambda: store.set_owner_limit("owner", max_notional_cents=100_000_000))
-        notes.append("budget=unknown not representable via real APIs: budget left readable and sufficient")
+        # No real SignalStore setter yields an unreadable budget (see
+        # UnreadableBudgetStore). The caller opened `store` as that fault-injecting
+        # subclass for this input; the tables themselves are left valid.
+        if not isinstance(store, UnreadableBudgetStore):
+            raise _fixture_error(inputs, "budget=unknown", TypeError("store must be an UnreadableBudgetStore"))
+        step("budget=unknown owner limit", lambda: store.set_owner_limit("owner", max_notional_cents=100_000_000))
+        notes.append("budget=unknown: store.get_level_remaining fault-injected (sqlite3.OperationalError); no real API makes a budget unreadable")
     else:
         raise _fixture_error(inputs, "budget", ValueError(f"unknown budget value {budget_inputs!r}"))
 
@@ -289,7 +311,7 @@ async def _run_admission_case(tmp_dir: str, case_id: str, inputs: dict[str, Any]
     all (no results, e.g. zero candidates after routing).
     """
     db_path = Path(tmp_dir) / f"{case_id}.db"
-    store = SignalStore(db_path)
+    store = (UnreadableBudgetStore if inputs.get("budget") == "unknown" else SignalStore)(db_path)
 
     try:
         accounts, rules, brokers, fixture_notes = _build_admission_state(store, inputs)
@@ -324,6 +346,28 @@ async def _run_admission_case(tmp_dir: str, case_id: str, inputs: dict[str, Any]
             analyst="test_analyst",
         )
 
+        # Snapshot the fixture's durable state BEFORE the engine runs, so the
+        # module_not_engine fallback never reads rows the engine itself wrote.
+        state_ids = _admission_physical_ids(inputs.get("routes", "zero"), accounts) or [_NOMINAL_ACCOUNT_ID]
+        pre_halted = any(
+            store.active_halt_for("account", i) is not None for i in state_ids
+        ) or store.active_halt_for("portfolio", "portfolio_1") is not None or store.active_halt_for("owner", "owner") is not None
+        pre_uncertain = any(
+            e.command_type in (CommandType.ENTRY, CommandType.CLOSE)
+            and e.uncertainty_state in (UncertaintyState.UNKNOWN_AMBIGUOUS, UncertaintyState.PENDING_SUBMISSION)
+            for i in state_ids
+            for e in store.list_unresolved_command_ledger_entries(i)
+        )
+        from app.workflow.budget import BudgetScope
+
+        try:
+            pre_remaining = engine.hierarchical_budget.remaining(
+                BudgetScope("owner", state_ids[0], None, None, signal.source, signal.analyst, signal.symbol, None)
+            )
+            pre_budget_state = "enough" if all(v > 0 for v in pre_remaining.values()) else "not_enough"
+        except Exception:
+            pre_budget_state = "unreadable"
+
         results = await engine.handle_signal(signal, dry_run=True)
         broker_call_count = sum(b.place_order_call_count for b in brokers.values())
         decision_traces = store.list_decision_traces(signal.id)
@@ -356,26 +400,9 @@ async def _run_admission_case(tmp_dir: str, case_id: str, inputs: dict[str, Any]
                 # is configured: the configured accounts are the candidates.
                 eligible_accounts = [a.account_id for a in accounts]
             interp = "entry" if signal.intent in (Intent.ENTRY_LONG, Intent.ENTRY_SHORT, Intent.SELL, Intent.ADD) else "non_entry"
-            nominal = "account_1"
-            halted = (
-                store.active_halt_for("account", nominal) is not None
-                or store.active_halt_for("portfolio", "portfolio_1") is not None
-                or store.active_halt_for("owner", "owner") is not None
-            )
-            uncertain = any(
-                e.command_type in (CommandType.ENTRY, CommandType.CLOSE)
-                and e.uncertainty_state in (UncertaintyState.UNKNOWN_AMBIGUOUS, UncertaintyState.PENDING_SUBMISSION)
-                for e in store.list_unresolved_command_ledger_entries(nominal)
-            )
-            from app.workflow.budget import BudgetScope
-
-            try:
-                remaining = engine.hierarchical_budget.remaining(
-                    BudgetScope("owner", nominal, None, None, signal.source, signal.analyst, signal.symbol, None)
-                )
-                budget_state = "enough" if all(v > 0 for v in remaining.values()) else "not_enough"
-            except Exception:
-                budget_state = "unreadable"
+            budget_state = pre_budget_state
+            halted = pre_halted
+            uncertain = pre_uncertain
             # No candidate account exists, so the engine has nothing to derive a
             # margin regime from: this one value comes from the case input.
             margin_regime = "unknown" if inputs.get("margin_regime") == "unknown" else "legacy_pdt_verified"
@@ -468,9 +495,9 @@ async def _run_sizing_case(tmp_dir: str, case_id: str, inputs: dict[str, Any]) -
 
                 return AccountBalance(
                     account_id=account.account_id,
-                    equity=Decimal(str(self.risk_budget_cents / 100)),
-                    buying_power=Decimal(str(self.cash_capacity_cents / 100)),
-                    cash=Decimal(str(self.cash_capacity_cents / 100)),
+                    equity=self.risk_budget_cents / 100,
+                    buying_power=self.cash_capacity_cents / 100,
+                    cash=self.cash_capacity_cents / 100,
                 )
 
         broker = FixtureBroker(

@@ -10394,6 +10394,24 @@ class SignalStore:
                 (new_state, now, new_evidence_json, reservation_id),
             )
 
+    def reserved_capital_cents(self, physical_account_id: str) -> int:
+        """Capital (cash + margin, in cents) held by reservations on an account that
+        are not yet reflected in the broker's own reported capital.
+
+        Only unfilled reservation states count: a FILLED_EXPOSURE reservation is
+        already inside the broker's reported cash/buying power, so counting it
+        again would double-count. RELEASED reservations hold nothing.
+        """
+        with self._connect() as conn:
+            row = conn.execute(
+                """SELECT COALESCE(SUM(needed_cash_cents + needed_margin_cents), 0)
+                   FROM budget_reservations
+                   WHERE physical_account_id = ?
+                     AND state IN ('HELD', 'COMMITTED_TO_PENDING_ORDER', 'HELD_REMAINDER')""",
+                (physical_account_id,),
+            ).fetchone()
+        return int(row[0]) if row else 0
+
     def get_level_remaining(self, level: str, level_scope: dict) -> int:
         """WC-30: Query remaining budget at a hierarchical level (in cents).
 

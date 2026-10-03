@@ -171,7 +171,7 @@ from app.routing import RoutingConfig
 from app.shadow_mode import evaluate_shadow, to_result_row
 from app.writer_lease import NullLeaseGuard, WriterLeaseGuard
 from app.workflow.admission import AdmissionInputs, evaluate_admission
-from app.workflow.budget import HierarchicalBudget, BudgetScope, ResourceVector, BrokerSnapshot, ReservationState
+from app.workflow.budget import HierarchicalBudget, BudgetScope, ResourceVector, BrokerSnapshot, ReservationState, UNLIMITED_CENTS
 from app.workflow.intents import OrderIntent, Outbox
 from app.workflow.money import ceil_cents
 
@@ -739,6 +739,30 @@ class SignalCopierEngine:
             )
             return results
 
+    async def _account_capital_exhausted(self, account: DestinationAccount) -> bool:
+        """True only when the broker reports capital for this account and, after
+        netting capital held by unfilled reservations, nothing is left.
+
+        Deliberately False for a missing adapter or an unreported balance: those
+        already fail closed downstream with their own specific reasons (missing
+        adapter -> ERROR; no buying_power and no ceiling -> refusing entry), and
+        masking them with a generic budget reason would hide the real cause."""
+        broker = self.brokers.get(account.broker)
+        if broker is None or not broker.has_balance_capability:
+            return False
+        try:
+            balance = await broker.get_account_balance(account)
+        except Exception:
+            return False
+        if balance is None:
+            return False
+        capital = balance.buying_power if balance.buying_power is not None else balance.cash
+        if capital is None:
+            return False
+        capital_cents = int(Decimal(str(capital)) * 100)
+        reserved_cents = self.store.reserved_capital_cents(account.account_id)
+        return capital_cents - reserved_cents <= 0
+
     async def _derive_admission_inputs(self, signal: Signal, single_candidates: list) -> AdmissionInputs:
         """WC-32: Derive real admission inputs evaluated per candidate.
 
@@ -806,80 +830,98 @@ class SignalCopierEngine:
                         self.store.set_trading_halt("account", physical_account_id, loss_check_error, source="daily_loss_limiter")
                         excluded_reasons.append(f"HALTED:{loss_check_error}")
 
-            # Check margin regime
-            if not excluded_reasons:
-                regime_row = self.store.get_margin_regime(physical_account_id)
-                if regime_row:
-                    regime = regime_row["regime"]
-                else:
-                    # Determine regime based on broker environment
-                    try:
-                        broker = self.brokers.get(account.broker)
-                        if broker:
-                            env = broker.venue_environment(account)
-                            if env == "live":
-                                # A live venue with no declared regime blocks
-                                # new exposure (spec I17, §9).
-                                regime = "unknown"
-                            else:
-                                # paper/sandbox carry no PDT/intraday regime.
-                                # An adapter that cannot name its environment
-                                # ("unknown") is kept off live routes by the
-                                # WP-33 environment-qualification gate, not by
-                                # relabelling it as a margin-regime block.
-                                regime = f"not_applicable_{env}"
+            # Check margin regime (all applicable reasons are collected, not just the first)
+            regime_row = self.store.get_margin_regime(physical_account_id)
+            if regime_row:
+                regime = regime_row["regime"]
+            else:
+                # Determine regime based on broker environment
+                try:
+                    broker = self.brokers.get(account.broker)
+                    if broker:
+                        env = broker.venue_environment(account)
+                        if env == "live":
+                            # A live venue with no declared regime blocks
+                            # new exposure (spec I17, §9).
+                            regime = "unknown"
                         else:
-                            # No adapter registered for this account's broker:
-                            # the regime cannot be evaluated at all, and the
-                            # entry path below reports the missing adapter as
-                            # an ERROR (its existing contract). Do not relabel
-                            # a configuration error as a margin-regime block.
-                            regime = "not_evaluated_no_adapter"
-                    except Exception:
-                        regime = "unknown"
+                            # paper/sandbox carry no PDT/intraday regime.
+                            # An adapter that cannot name its environment
+                            # ("unknown") is kept off live routes by the
+                            # WP-33 environment-qualification gate, not by
+                            # relabelling it as a margin-regime block.
+                            regime = f"not_applicable_{env}"
+                    else:
+                        # No adapter registered for this account's broker:
+                        # the regime cannot be evaluated at all, and the
+                        # entry path below reports the missing adapter as
+                        # an ERROR (its existing contract). Do not relabel
+                        # a configuration error as a margin-regime block.
+                        regime = "not_evaluated_no_adapter"
+                except Exception:
+                    regime = "unknown"
 
-                if regime == "unknown":
-                    excluded_reasons.append("REGIME_UNKNOWN")
+            if regime == "unknown":
+                excluded_reasons.append("REGIME_UNKNOWN")
 
             # Check uncertain effect (unresolved command ledger entries)
-            if not excluded_reasons:
-                unresolved = self.store.list_unresolved_command_ledger_entries(account.account_id)
-                # Spec §6.3: an UNCERTAIN effect is a submission whose broker
-                # outcome is genuinely unknown (UNKNOWN_AMBIGUOUS, or a
-                # PENDING_SUBMISSION row with no response yet). A
-                # SUBMITTED_UNCONFIRMED row is a KNOWN accepted order with a
-                # broker id: its exposure is already held by the capital
-                # reservation, so it is not an uncertain effect.
-                for entry in unresolved:
-                    if entry.command_type in (CommandType.ENTRY, CommandType.CLOSE) and entry.uncertainty_state in (
-                        UncertaintyState.UNKNOWN_AMBIGUOUS,
-                        UncertaintyState.PENDING_SUBMISSION,
-                    ):
-                        excluded_reasons.append("UNCERTAIN_EFFECT")
-                        break
+            unresolved = self.store.list_unresolved_command_ledger_entries(account.account_id)
+            # Spec §6.3: an UNCERTAIN effect is a submission whose broker
+            # outcome is genuinely unknown (UNKNOWN_AMBIGUOUS, or a
+            # PENDING_SUBMISSION row with no response yet). A
+            # SUBMITTED_UNCONFIRMED row is a KNOWN accepted order with a
+            # broker id: its exposure is already held by the capital
+            # reservation, so it is not an uncertain effect.
+            for entry in unresolved:
+                if entry.command_type in (CommandType.ENTRY, CommandType.CLOSE) and entry.uncertainty_state in (
+                    UncertaintyState.UNKNOWN_AMBIGUOUS,
+                    UncertaintyState.PENDING_SUBMISSION,
+                ):
+                    excluded_reasons.append("UNCERTAIN_EFFECT")
+                    break
 
             # Check budget state
-            if not excluded_reasons:
-                scope = BudgetScope(
-                    owner="owner",  # Default owner id (may be overridden by config)
-                    physical_account_id=physical_account_id,
-                    portfolio_id=None,
-                    sleeve_id=None,
-                    provider=signal.source,
-                    analyst=signal.analyst,
-                    underlying=signal.symbol,
-                    cluster=None,
-                )
+            scope = BudgetScope(
+                owner="owner",  # Default owner id (may be overridden by config)
+                physical_account_id=physical_account_id,
+                portfolio_id=None,
+                sleeve_id=None,
+                provider=signal.source,
+                analyst=signal.analyst,
+                underlying=signal.symbol,
+                cluster=None,
+            )
 
-                try:
-                    remaining_dict = self.hierarchical_budget.remaining(scope)
-                    # Check if any level has zero or negative remaining cents
-                    for _level, remaining_cents in remaining_dict.items():
-                        if remaining_cents is not None and remaining_cents <= 0:
-                            excluded_reasons.append("BUDGET_NOT_ADMISSIBLE")
-                            break
-                except Exception:
+            try:
+                remaining_dict = self.hierarchical_budget.remaining(scope)
+                # Check if any level has zero or negative remaining cents
+                for _level, remaining_cents in remaining_dict.items():
+                    if remaining_cents is not None and remaining_cents <= 0:
+                        excluded_reasons.append("BUDGET_NOT_ADMISSIBLE")
+                        break
+
+                # A budget is never unlimited. With no finite configured limit at
+                # any level (the store reports 2**62 minus usage there) and no
+                # account ceiling, the bound is the account's available capital:
+                # buying power (cash plus margin on a margin account) or cash.
+                # Exhausted capital blocks here; unreported capital is refused by
+                # the order-time buying-power gate with its own specific reason.
+                unbounded = all(
+                    c is None or c >= UNLIMITED_CENTS // 2 for c in remaining_dict.values()
+                )
+                has_account_ceiling = (
+                    account.max_notional_exposure is not None
+                    or account.risk_percent_of_equity is not None
+                )
+                if (
+                    "BUDGET_NOT_ADMISSIBLE" not in excluded_reasons
+                    and unbounded
+                    and not has_account_ceiling
+                    and await self._account_capital_exhausted(account)
+                ):
                     excluded_reasons.append("BUDGET_NOT_ADMISSIBLE")
+            except Exception:
+                excluded_reasons.append("BUDGET_NOT_ADMISSIBLE")
 
             # Record decision trace for this candidate
             if excluded_reasons:
