@@ -2119,6 +2119,33 @@ CREATE TABLE IF NOT EXISTS trading_halts (
     cleared_by TEXT NULL
 );
 CREATE INDEX IF NOT EXISTS ix_trading_halts_active ON trading_halts(scope, scope_id, cleared_at);
+
+-- Broker operations incident escalation log for Task #194.
+-- Stores all incidents classified by BrokerOperationsIncidentEscalator,
+-- including critical incidents that need owner notification and deduplication
+-- tracking for alert fatigue prevention.
+CREATE TABLE IF NOT EXISTS broker_operations_incidents (
+    incident_id TEXT PRIMARY KEY,
+    inbox_id TEXT NOT NULL,
+    account_owner_id TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    severity TEXT NOT NULL,
+    action TEXT NOT NULL,
+    subject TEXT NOT NULL,
+    sender TEXT NOT NULL,
+    extracted_account TEXT,
+    extracted_amount TEXT,
+    extracted_deadline TEXT,
+    is_duplicate INTEGER NOT NULL DEFAULT 0,
+    duplicate_of_incident_id TEXT,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_broker_operations_incidents_account_owner_id
+    ON broker_operations_incidents(account_owner_id);
+CREATE INDEX IF NOT EXISTS idx_broker_operations_incidents_created_at
+    ON broker_operations_incidents(created_at);
+CREATE INDEX IF NOT EXISTS idx_broker_operations_incidents_severity
+    ON broker_operations_incidents(severity);
 """
 
 
@@ -3896,6 +3923,96 @@ class SignalStore:
             for r in rows
         ]
 
+    def list_broker_operations_incidents(
+        self, *, hours_back: int | None = None, limit: int = 10000
+    ) -> list[dict]:
+        """Get broker operations incidents from the database.
+
+        Args:
+            hours_back: If set, only return incidents created in the last N hours
+            limit: Maximum number of incidents to return (default 10000)
+
+        Returns:
+            List of incident dicts with all fields from broker_operations_incidents table
+        """
+        with self._connect() as conn:
+            query = "SELECT * FROM broker_operations_incidents"
+            params: list = []
+
+            if hours_back is not None:
+                query += (
+                    " WHERE created_at > datetime('now', '-' || ? || ' hours')"
+                )
+                params.append(hours_back)
+
+            query += " ORDER BY created_at DESC LIMIT ?"
+            params.append(limit)
+
+            rows = conn.execute(query, params).fetchall()
+
+        return [
+            {
+                "incident_id": r[0],
+                "inbox_id": r[1],
+                "account_owner_id": r[2],
+                "event_type": r[3],
+                "severity": r[4],
+                "action": r[5],
+                "subject": r[6],
+                "sender": r[7],
+                "extracted_account": r[8],
+                "extracted_amount": r[9],
+                "extracted_deadline": r[10],
+                "is_duplicate": bool(r[11]),
+                "duplicate_of_incident_id": r[12],
+                "created_at": r[13],
+            }
+            for r in rows
+        ]
+
+    def save_broker_operations_incident(
+        self,
+        incident_id: str,
+        inbox_id: str,
+        account_owner_id: str,
+        event_type: str,
+        severity: str,
+        action: str,
+        subject: str,
+        sender: str,
+        extracted_account: str | None,
+        extracted_amount: str | None,
+        extracted_deadline: str | None,
+        is_duplicate: bool,
+        duplicate_of_incident_id: str | None,
+        created_at: str,
+    ) -> None:
+        """Store a broker operations incident for audit and escalation tracking."""
+        with self._connect() as conn:
+            conn.execute(
+                """INSERT INTO broker_operations_incidents
+                   (incident_id, inbox_id, account_owner_id, event_type, severity,
+                    action, subject, sender, extracted_account, extracted_amount,
+                    extracted_deadline, is_duplicate, duplicate_of_incident_id, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    incident_id,
+                    inbox_id,
+                    account_owner_id,
+                    event_type,
+                    severity,
+                    action,
+                    subject,
+                    sender,
+                    extracted_account,
+                    extracted_amount,
+                    extracted_deadline,
+                    int(is_duplicate),
+                    duplicate_of_incident_id,
+                    created_at,
+                ),
+            )
+
     def update_order_status(
         self,
         order_row_id: int,
@@ -4392,6 +4509,40 @@ class SignalStore:
                     json.dumps(unpriced_open_symbols or []),
                 ),
             )
+
+    def get_daily_pnl(self, account_id: str, day) -> float | None:
+        """P&L change for this account over the UTC calendar `day`, taken from the
+        persisted equity-snapshot series (never a second P&L calculation).
+
+        Baseline is the last snapshot before `day` began; if the series starts
+        within `day`, the first snapshot of `day`. The end point is the last
+        snapshot within `day`. Returns None when the account has no snapshot in
+        `day` (no data to measure).
+        """
+        start = datetime(day.year, day.month, day.day, tzinfo=timezone.utc)
+        end = start + timedelta(days=1)
+        with self._connect() as conn:
+            latest = conn.execute(
+                "SELECT cumulative_pnl FROM account_equity_snapshots "
+                "WHERE account_id = ? AND captured_at >= ? AND captured_at < ? "
+                "ORDER BY captured_at DESC LIMIT 1",
+                (account_id, start.isoformat(), end.isoformat()),
+            ).fetchone()
+            if latest is None:
+                return None
+            baseline = conn.execute(
+                "SELECT cumulative_pnl FROM account_equity_snapshots "
+                "WHERE account_id = ? AND captured_at < ? ORDER BY captured_at DESC LIMIT 1",
+                (account_id, start.isoformat()),
+            ).fetchone()
+            if baseline is None:
+                baseline = conn.execute(
+                    "SELECT cumulative_pnl FROM account_equity_snapshots "
+                    "WHERE account_id = ? AND captured_at >= ? AND captured_at < ? "
+                    "ORDER BY captured_at ASC LIMIT 1",
+                    (account_id, start.isoformat(), end.isoformat()),
+                ).fetchone()
+        return float(latest[0]) - float(baseline[0])
 
     def list_equity_snapshots(
         self,
@@ -10276,6 +10427,24 @@ class SignalStore:
                 "UPDATE budget_reservations SET state = ?, updated_at = ?, evidence = ? WHERE reservation_id = ?",
                 (new_state, now, new_evidence_json, reservation_id),
             )
+
+    def reserved_capital_cents(self, physical_account_id: str) -> int:
+        """Capital (cash + margin, in cents) held by reservations on an account that
+        are not yet reflected in the broker's own reported capital.
+
+        Only unfilled reservation states count: a FILLED_EXPOSURE reservation is
+        already inside the broker's reported cash/buying power, so counting it
+        again would double-count. RELEASED reservations hold nothing.
+        """
+        with self._connect() as conn:
+            row = conn.execute(
+                """SELECT COALESCE(SUM(needed_cash_cents + needed_margin_cents), 0)
+                   FROM budget_reservations
+                   WHERE physical_account_id = ?
+                     AND state IN ('HELD', 'COMMITTED_TO_PENDING_ORDER', 'HELD_REMAINDER')""",
+                (physical_account_id,),
+            ).fetchone()
+        return int(row[0]) if row else 0
 
     def get_level_remaining(self, level: str, level_scope: dict) -> int:
         """WC-30: Query remaining budget at a hierarchical level (in cents).

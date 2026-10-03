@@ -20,8 +20,10 @@ feedparser>=6.0          # Track 9: RSS/Atom feed discovery/polling for WebsiteS
 trafilatura>=2.0         # Track 9: clean article text/title/author/timestamp extraction from fetched HTML
                          # (app/sources/article_extraction.py) -- MIT-licensed, well-maintained.
 
+ccxt>=4.3                # crypto exchange execution (CCXTBroker) -- installed unconditionally so the
+                         # ccxt-dependent tests (importorskip in ~15 files) actually run in CI.
+
 # Optional, needed only for adapters you actually enable:
-# ccxt>=4.3                    # crypto exchange execution (CCXTBroker)
 # python-telegram-bot>=21.0    # Telegram source (bot-based, TelegramSource)
 # telethon>=1.34               # Telegram USER-ACCOUNT source (TelegramUserSource) --
                                 # see docs/security/TELEGRAM_USER_LOGIN.md; the login

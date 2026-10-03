@@ -1561,11 +1561,14 @@ cp config/routing.example.yaml config/routing.yaml
 cp config/accounts.example.yaml config/accounts.yaml
 ```
 
-Send a test signal:
+Send a test signal. The webhook route is **disabled (HTTP 503) until
+`WEBHOOK_SHARED_SECRET` is set** in `.env`, and every request must carry that
+value in the `X-Webhook-Secret` header (a missing or wrong header gets 401):
 
 ```bash
 curl -X POST http://localhost:8000/webhook/tradingview \
   -H 'Content-Type: application/json' \
+  -H "X-Webhook-Secret: $WEBHOOK_SHARED_SECRET" \
   -d '{"symbol": "BTCUSDT", "side": "buy", "quantity": 1.0, "price": 65000}'
 ```
 

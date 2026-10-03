@@ -182,6 +182,20 @@ class _Settings(BaseSettings):
     # TWILIO_ALLOWED_FROM_NUMBERS above.
     WHATSAPP_ALLOWED_FROM_NUMBERS: str = ""
 
+    # AgentMail: event-driven email transport with persistent agent inboxes
+    # (see app/transports/agentmail.py for full architecture). API_KEY and
+    # WEBHOOK_SECRET enable AgentMail's HMAC-SHA256 signature verification.
+    # WEBHOOK_URL is where AgentMail POST message.received events to this
+    # deployment. INBOXES maps inbox roles (signals/operations/reports) to
+    # dedicated email addresses (e.g., "signals@agent.example.agentmail.to").
+    # Unset/empty means AgentMail transport is disabled.
+    AGENTMAIL_API_KEY: str = ""
+    AGENTMAIL_WEBHOOK_SECRET: str = ""
+    AGENTMAIL_WEBHOOK_URL: str = ""
+    # Comma-separated list of inbox role:address pairs, e.g.
+    # "signals:signals@agent.agentmail.to,operations:ops@agent.agentmail.to"
+    AGENTMAIL_INBOXES: str = ""
+
     # NinjaTrader signal source (see app/sources/ninjatrader.py's docstring)
     # -- a NinjaScript AddOn/Indicator POSTs fill events here with this
     # value in an X-NinjaTrader-Secret header. NinjaScript has no built-in
@@ -524,6 +538,21 @@ TWILIO_ALLOWED_FROM_NUMBERS = [n.strip() for n in _settings.TWILIO_ALLOWED_FROM_
 WHATSAPP_APP_SECRET = _settings.WHATSAPP_APP_SECRET
 WHATSAPP_VERIFY_TOKEN = _settings.WHATSAPP_VERIFY_TOKEN
 WHATSAPP_ALLOWED_FROM_NUMBERS = [n.strip() for n in _settings.WHATSAPP_ALLOWED_FROM_NUMBERS.split(",") if n.strip()]
+
+AGENTMAIL_API_KEY = _settings.AGENTMAIL_API_KEY
+AGENTMAIL_WEBHOOK_SECRET = _settings.AGENTMAIL_WEBHOOK_SECRET
+AGENTMAIL_WEBHOOK_URL = _settings.AGENTMAIL_WEBHOOK_URL
+# Parse inboxes into a dict of role -> email address
+_agentmail_inboxes_raw = _settings.AGENTMAIL_INBOXES
+AGENTMAIL_INBOXES: dict[str, str] = {}
+if _agentmail_inboxes_raw:
+    for pair in _agentmail_inboxes_raw.split(","):
+        if ":" in pair:
+            role, addr = pair.split(":", 1)
+            role_lower = role.strip().lower()
+            addr_lower = addr.strip().lower()
+            if role_lower in ("signals", "operations", "reports"):
+                AGENTMAIL_INBOXES[role_lower] = addr_lower
 
 NINJATRADER_WEBHOOK_SECRET = _settings.NINJATRADER_WEBHOOK_SECRET
 

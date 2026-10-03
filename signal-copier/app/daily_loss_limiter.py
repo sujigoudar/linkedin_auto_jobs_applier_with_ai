@@ -3,16 +3,17 @@
 Prevents trading when daily losses exceed configured ceiling for an account.
 Implements fail-closed: rejects new entries if data cannot be verified.
 
-The daily_pnl table exists but is not yet populated (as of this release); therefore,
-the daily loss limiter fails closed when daily_loss_limit_percent is configured but
-the daily P&L data is unavailable. This prevents silent trading when risk controls
-cannot be verified.
+Daily P&L comes from SignalStore.get_daily_pnl, which differences the persisted
+equity-snapshot series over the UTC day. The limiter fails closed when it is
+configured but the store has no daily-P&L source, the broker adapter is missing,
+or equity cannot be read. Only LOSSES count toward the limit: a large profit
+never trips it.
 
 Min equity threshold checks use broker.get_account_balance() to fetch current equity.
 """
 from __future__ import annotations
 
-from datetime import date
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 from app.models import DestinationAccount
@@ -45,7 +46,7 @@ class DailyLossLimiter:
             return None  # Daily loss limit not configured
 
         # Get today's P&L from account economics
-        today = date.today()
+        today = datetime.now(timezone.utc).date()
         get_daily_pnl = getattr(self.store, "get_daily_pnl", None)
         if get_daily_pnl is None:
             # A limit IS configured but this build has no daily-P&L source
@@ -75,6 +76,8 @@ class DailyLossLimiter:
             if balance is None or balance.equity is None:
                 return "Daily loss limit check failed: cannot determine account equity"
 
+            if daily_pnl >= 0:
+                return None  # a profit (or flat day) cannot breach a loss limit
             daily_loss_percent = abs(daily_pnl) / balance.equity * 100
             if daily_loss_percent >= daily_loss_limit_percent:
                 return (

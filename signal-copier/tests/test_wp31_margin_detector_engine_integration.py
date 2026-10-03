@@ -153,7 +153,9 @@ async def test_margin_call_detector_allows_entry_with_both_none(store):
 @pytest.mark.asyncio
 async def test_margin_call_alert_can_be_resolved_to_allow_entry(store):
     """After resolving a margin call alert, entries should be allowed again."""
-    broker = MockBrokerWithMarginBalance(equity=10000.0, maintenance_margin=5000.0)
+    # The broker still reports the breach while the alert is open, so the
+    # engine's auto-recovery must NOT clear it (only a genuine recovery does).
+    broker = MockBrokerWithMarginBalance(equity=5000.0, maintenance_margin=6000.0)
     account = DestinationAccount(account_id="acct1", broker="mock_margin_broker")
     engine = _engine(store, broker, account)
 
@@ -176,7 +178,9 @@ async def test_margin_call_alert_can_be_resolved_to_allow_entry(store):
     assert len(alerts) == 1
     store.resolve_margin_call_alert(alerts[0]["id"])
 
-    # Now entry should be allowed (broker reports sufficient margin)
+    # Margin is restored at the broker; now entry should be allowed
+    broker.equity = 10000.0
+    broker.maintenance_margin = 5000.0
     signal2 = Signal(source="tradingview", symbol="AAPL", side=Side.BUY, quantity=10.0)
     results2 = await engine.handle_signal(signal2)
     assert results2[0].status == OrderStatus.FILLED

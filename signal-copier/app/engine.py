@@ -171,7 +171,7 @@ from app.routing import RoutingConfig
 from app.shadow_mode import evaluate_shadow, to_result_row
 from app.writer_lease import NullLeaseGuard, WriterLeaseGuard
 from app.workflow.admission import AdmissionInputs, evaluate_admission
-from app.workflow.budget import HierarchicalBudget, BudgetScope, ResourceVector, BrokerSnapshot, ReservationState
+from app.workflow.budget import HierarchicalBudget, BudgetScope, ResourceVector, BrokerSnapshot, ReservationState, UNLIMITED_CENTS
 from app.workflow.intents import OrderIntent, Outbox
 from app.workflow.money import ceil_cents
 
@@ -455,6 +455,7 @@ class SignalCopierEngine:
             # Fetch broker snapshot (equity, margin, buying power)
             balance = await broker.get_account_balance(account)
             broker_snapshot = None
+            maintenance_cents = None
             if balance is not None:
                 # Convert to integer cents, using to_cents (which is exact)
                 buying_power_cents = ceil_cents(balance.buying_power) if balance.buying_power is not None else None
@@ -514,13 +515,17 @@ class SignalCopierEngine:
                 planned_risk_decimal = risk_per_unit * Decimal(str(quantity)) * Decimal(str(contract_multiplier))
                 planned_risk_cents = ceil_cents(planned_risk_decimal)
 
-            # Initial margin calculation
-            # For cash venues: 0
-            # For margin venues with max_gross_leverage: ceil(cash / max_gross_leverage)
-            # TODO: determine margin_type from physical account metadata
+            # Initial margin calculation (WP-53)
+            # Cash accounts (maintenance_margin is None): no margin requirement
+            # Margin accounts with leverage limit: initial_margin = ceil(notional / max_gross_leverage)
+            # Margin accounts without leverage limit: no initial margin requirement
             initial_margin_cents = 0
-            # NOTE: margin_type is not available on DestinationAccount yet;
-            # assuming cash venue for now (initial_margin_cents = 0)
+            if maintenance_cents is not None and account.max_gross_leverage is not None and account.max_gross_leverage > 1.0:
+                # Margin account with leverage limit: calculate initial margin requirement
+                # initial_margin = ceil(notional / max_gross_leverage)
+                if notional_cents > 0:
+                    margin_decimal = Decimal(str(notional_cents)) / Decimal(str(account.max_gross_leverage))
+                    initial_margin_cents = ceil_cents(margin_decimal)
 
             need = ResourceVector(
                 cash=cash_needed_cents,
@@ -739,6 +744,59 @@ class SignalCopierEngine:
             )
             return results
 
+    @staticmethod
+    def _protective_level_error(signal: Signal) -> str | None:
+        """Why this entry's stop/target sit on the wrong side of its entry price, or None.
+
+        Only checked when the entry price is known and the direction is
+        unambiguous (ENTRY_LONG, ENTRY_SHORT, or ADD on the buy side)."""
+        price = signal.price
+        if price is None or price <= 0:
+            return None
+        if signal.intent == Intent.ENTRY_LONG or (signal.intent == Intent.ADD and signal.side == Side.BUY):
+            is_long = True
+        elif signal.intent == Intent.ENTRY_SHORT:
+            is_long = False
+        else:
+            return None
+        problems = []
+        stop, target = signal.stop_loss, signal.take_profit
+        if stop is not None and stop > 0:
+            if is_long and stop >= price:
+                problems.append(f"stop_loss {stop} must be below the entry price {price} for a long entry")
+            if not is_long and stop <= price:
+                problems.append(f"stop_loss {stop} must be above the entry price {price} for a short entry")
+        if target is not None and target > 0:
+            if is_long and target <= price:
+                problems.append(f"take_profit {target} must be above the entry price {price} for a long entry")
+            if not is_long and target >= price:
+                problems.append(f"take_profit {target} must be below the entry price {price} for a short entry")
+        return "; ".join(problems) or None
+
+    async def _account_capital_exhausted(self, account: DestinationAccount) -> bool:
+        """True only when the broker reports capital for this account and, after
+        netting capital held by unfilled reservations, nothing is left.
+
+        Deliberately False for a missing adapter or an unreported balance: those
+        already fail closed downstream with their own specific reasons (missing
+        adapter -> ERROR; no buying_power and no ceiling -> refusing entry), and
+        masking them with a generic budget reason would hide the real cause."""
+        broker = self.brokers.get(account.broker)
+        if broker is None or not broker.has_balance_capability:
+            return False
+        try:
+            balance = await broker.get_account_balance(account)
+        except Exception:
+            return False
+        if balance is None:
+            return False
+        capital = balance.buying_power if balance.buying_power is not None else balance.cash
+        if capital is None:
+            return False
+        capital_cents = int(Decimal(str(capital)) * 100)
+        reserved_cents = self.store.reserved_capital_cents(account.account_id)
+        return capital_cents - reserved_cents <= 0
+
     async def _derive_admission_inputs(self, signal: Signal, single_candidates: list) -> AdmissionInputs:
         """WC-32: Derive real admission inputs evaluated per candidate.
 
@@ -806,80 +864,98 @@ class SignalCopierEngine:
                         self.store.set_trading_halt("account", physical_account_id, loss_check_error, source="daily_loss_limiter")
                         excluded_reasons.append(f"HALTED:{loss_check_error}")
 
-            # Check margin regime
-            if not excluded_reasons:
-                regime_row = self.store.get_margin_regime(physical_account_id)
-                if regime_row:
-                    regime = regime_row["regime"]
-                else:
-                    # Determine regime based on broker environment
-                    try:
-                        broker = self.brokers.get(account.broker)
-                        if broker:
-                            env = broker.venue_environment(account)
-                            if env == "live":
-                                # A live venue with no declared regime blocks
-                                # new exposure (spec I17, §9).
-                                regime = "unknown"
-                            else:
-                                # paper/sandbox carry no PDT/intraday regime.
-                                # An adapter that cannot name its environment
-                                # ("unknown") is kept off live routes by the
-                                # WP-33 environment-qualification gate, not by
-                                # relabelling it as a margin-regime block.
-                                regime = f"not_applicable_{env}"
+            # Check margin regime (all applicable reasons are collected, not just the first)
+            regime_row = self.store.get_margin_regime(physical_account_id)
+            if regime_row:
+                regime = regime_row["regime"]
+            else:
+                # Determine regime based on broker environment
+                try:
+                    broker = self.brokers.get(account.broker)
+                    if broker:
+                        env = broker.venue_environment(account)
+                        if env == "live":
+                            # A live venue with no declared regime blocks
+                            # new exposure (spec I17, §9).
+                            regime = "unknown"
                         else:
-                            # No adapter registered for this account's broker:
-                            # the regime cannot be evaluated at all, and the
-                            # entry path below reports the missing adapter as
-                            # an ERROR (its existing contract). Do not relabel
-                            # a configuration error as a margin-regime block.
-                            regime = "not_evaluated_no_adapter"
-                    except Exception:
-                        regime = "unknown"
+                            # paper/sandbox carry no PDT/intraday regime.
+                            # An adapter that cannot name its environment
+                            # ("unknown") is kept off live routes by the
+                            # WP-33 environment-qualification gate, not by
+                            # relabelling it as a margin-regime block.
+                            regime = f"not_applicable_{env}"
+                    else:
+                        # No adapter registered for this account's broker:
+                        # the regime cannot be evaluated at all, and the
+                        # entry path below reports the missing adapter as
+                        # an ERROR (its existing contract). Do not relabel
+                        # a configuration error as a margin-regime block.
+                        regime = "not_evaluated_no_adapter"
+                except Exception:
+                    regime = "unknown"
 
-                if regime == "unknown":
-                    excluded_reasons.append("REGIME_UNKNOWN")
+            if regime == "unknown":
+                excluded_reasons.append("REGIME_UNKNOWN")
 
             # Check uncertain effect (unresolved command ledger entries)
-            if not excluded_reasons:
-                unresolved = self.store.list_unresolved_command_ledger_entries(account.account_id)
-                # Spec §6.3: an UNCERTAIN effect is a submission whose broker
-                # outcome is genuinely unknown (UNKNOWN_AMBIGUOUS, or a
-                # PENDING_SUBMISSION row with no response yet). A
-                # SUBMITTED_UNCONFIRMED row is a KNOWN accepted order with a
-                # broker id: its exposure is already held by the capital
-                # reservation, so it is not an uncertain effect.
-                for entry in unresolved:
-                    if entry.command_type in (CommandType.ENTRY, CommandType.CLOSE) and entry.uncertainty_state in (
-                        UncertaintyState.UNKNOWN_AMBIGUOUS,
-                        UncertaintyState.PENDING_SUBMISSION,
-                    ):
-                        excluded_reasons.append("UNCERTAIN_EFFECT")
-                        break
+            unresolved = self.store.list_unresolved_command_ledger_entries(account.account_id)
+            # Spec §6.3: an UNCERTAIN effect is a submission whose broker
+            # outcome is genuinely unknown (UNKNOWN_AMBIGUOUS, or a
+            # PENDING_SUBMISSION row with no response yet). A
+            # SUBMITTED_UNCONFIRMED row is a KNOWN accepted order with a
+            # broker id: its exposure is already held by the capital
+            # reservation, so it is not an uncertain effect.
+            for entry in unresolved:
+                if entry.command_type in (CommandType.ENTRY, CommandType.CLOSE) and entry.uncertainty_state in (
+                    UncertaintyState.UNKNOWN_AMBIGUOUS,
+                    UncertaintyState.PENDING_SUBMISSION,
+                ):
+                    excluded_reasons.append("UNCERTAIN_EFFECT")
+                    break
 
             # Check budget state
-            if not excluded_reasons:
-                scope = BudgetScope(
-                    owner="owner",  # Default owner id (may be overridden by config)
-                    physical_account_id=physical_account_id,
-                    portfolio_id=None,
-                    sleeve_id=None,
-                    provider=signal.source,
-                    analyst=signal.analyst,
-                    underlying=signal.symbol,
-                    cluster=None,
-                )
+            scope = BudgetScope(
+                owner="owner",  # Default owner id (may be overridden by config)
+                physical_account_id=physical_account_id,
+                portfolio_id=None,
+                sleeve_id=None,
+                provider=signal.source,
+                analyst=signal.analyst,
+                underlying=signal.symbol,
+                cluster=None,
+            )
 
-                try:
-                    remaining_dict = self.hierarchical_budget.remaining(scope)
-                    # Check if any level has zero or negative remaining cents
-                    for _level, remaining_cents in remaining_dict.items():
-                        if remaining_cents is not None and remaining_cents <= 0:
-                            excluded_reasons.append("BUDGET_NOT_ADMISSIBLE")
-                            break
-                except Exception:
+            try:
+                remaining_dict = self.hierarchical_budget.remaining(scope)
+                # Check if any level has zero or negative remaining cents
+                for _level, remaining_cents in remaining_dict.items():
+                    if remaining_cents is not None and remaining_cents <= 0:
+                        excluded_reasons.append("BUDGET_NOT_ADMISSIBLE")
+                        break
+
+                # A budget is never unlimited. With no finite configured limit at
+                # any level (the store reports 2**62 minus usage there) and no
+                # account ceiling, the bound is the account's available capital:
+                # buying power (cash plus margin on a margin account) or cash.
+                # Exhausted capital blocks here; unreported capital is refused by
+                # the order-time buying-power gate with its own specific reason.
+                unbounded = all(
+                    c is None or c >= UNLIMITED_CENTS // 2 for c in remaining_dict.values()
+                )
+                has_account_ceiling = (
+                    account.max_notional_exposure is not None
+                    or account.risk_percent_of_equity is not None
+                )
+                if (
+                    "BUDGET_NOT_ADMISSIBLE" not in excluded_reasons
+                    and unbounded
+                    and not has_account_ceiling
+                    and await self._account_capital_exhausted(account)
+                ):
                     excluded_reasons.append("BUDGET_NOT_ADMISSIBLE")
+            except Exception:
+                excluded_reasons.append("BUDGET_NOT_ADMISSIBLE")
 
             # Record decision trace for this candidate
             if excluded_reasons:
@@ -1126,6 +1202,31 @@ class SignalCopierEngine:
             # is ambiguous (exit-or-short-entry, resolved per account in WP-09)
             # and ADD is an entry-sized order, so both are admitted as entries.
             _entry_like_intents = (Intent.ENTRY_LONG, Intent.ENTRY_SHORT, Intent.SELL, Intent.ADD)
+
+            # A protective level on the wrong side of the entry price is not a
+            # protection: a long's stop above its entry (or target below it)
+            # would trigger the moment the position opens. Reject before any
+            # sizing, reservation or broker call.
+            protective_error = self._protective_level_error(signal)
+            if protective_error is not None and signal.side != Side.CLOSE:
+                for account in [*single_candidates, *replicate_candidates]:
+                    result = OrderResult(
+                        account_id=account.account_id,
+                        status=OrderStatus.REJECTED,
+                        signal_id=signal.id,
+                        message=f"invalid protective levels: {protective_error}",
+                    )
+                    self.store.save_order_result(result, purpose="entry", family_id=signal.id)
+                    results.append(result)
+                    self._export_routing_outcome(
+                        signal,
+                        outcome="rejected",
+                        account=account,
+                        order_status=result.status,
+                        message=result.message,
+                    )
+                if results:
+                    return results
 
             # Check if allocation intent already exists (recovery/replay scenario)
             # This must be checked BEFORE the admission gate, since recovered intents
@@ -1480,6 +1581,20 @@ class SignalCopierEngine:
                     account.account_id
                 )
                 if unresolved_alerts:
+                    # An alert must not latch forever: if the live balance now shows
+                    # margin comfortably recovered, resolve it. Anything unreadable
+                    # leaves the alerts open and the entry blocked.
+                    try:
+                        recovery_balance = await broker.get_account_balance(account)
+                    except Exception:
+                        recovery_balance = None
+                    if recovery_balance is not None and self.margin_call_detector.resolve_recovered_margin_calls(
+                        account.account_id, recovery_balance.equity, recovery_balance.maintenance_margin
+                    ):
+                        unresolved_alerts = self.margin_call_detector.get_unresolved_margin_calls(
+                            account.account_id
+                        )
+                if unresolved_alerts:
                     alert_ids = [a["id"] for a in unresolved_alerts]
                     result = OrderResult(
                         account_id=account.account_id,
@@ -1575,7 +1690,11 @@ class SignalCopierEngine:
             # prevent liquidation. Only check for entry signals; CLOSE signals are
             # allowed through to permit position reduction.
             if working_signal.side != Side.CLOSE:
-                min_equity_threshold = account.min_equity_threshold
+                min_equity_threshold = (
+                    account.min_equity_threshold
+                    if account.min_equity_threshold is not None
+                    else config.DEFAULT_MIN_EQUITY_THRESHOLD
+                )
                 if min_equity_threshold is not None:
                     liquidation_error = await self.daily_loss_limiter.check_min_equity_threshold(
                         account, min_equity_threshold

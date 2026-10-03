@@ -1,0 +1,663 @@
+"""AgentMail email transport adapter.
+
+AgentMail provides persistent email addresses for agents with event-driven
+webhook delivery, multi-inbox support, and tenant isolation through Pods.
+
+This adapter implements the EmailTransport interface for AgentMail's webhook-
+based message delivery. Key design decisions:
+
+1. WEBHOOK-DRIVEN, not polling: message.received webhooks are event-driven,
+   providing near-real-time ingestion without latency.
+
+2. SIGNATURE VERIFICATION: AgentMail webhooks include a secret for HMAC
+   signature verification. Every webhook is verified before processing.
+
+3. IDEMPOTENCY: webhook retries are deduplicated on event_id. An event_id
+   that has already been processed is ACK'd immediately without reprocessing.
+
+4. ASYNCHRONOUS PROCESSING: the webhook handler ACKs AgentMail immediately
+   (within 5s), then processes heavy work asynchronously. This follows
+   AgentMail's own recommendations.
+
+5. PAYLOAD SIZE HANDLING: AgentMail caps webhook payloads at 1 MB. When
+   content is omitted due to size, the full message is retrieved via API.
+
+6. NO FINANCIAL AUTHORITY: emails are observations only. They feed the
+   existing SourceReceipt → Parser → NormalizedSignal pipeline.
+
+7. DETERMINISTIC PROVIDER IDENTITY MAPPING: inbox + sender + domain + config
+   → ProviderIdentity. Unknown senders → NEEDS_REVIEW state for manual routing.
+
+Architecture:
+    Webhook endpoint receives message.received event
+        ↓
+    Verify HMAC signature
+        ↓
+    Dedup on event_id
+        ↓
+    Persist raw SourceReceipt
+        ↓
+    ACK AgentMail (5s)
+        ↓
+    Async: retrieve full message if truncated
+        ↓
+    Async: resolve ProviderIdentity (sender → provider mapping)
+        ↓
+    Async: process → Parser → NormalizedSignal
+"""
+from __future__ import annotations
+
+import asyncio
+import hashlib
+import hmac
+import logging
+import re
+from dataclasses import dataclass, field
+from datetime import datetime
+from html.parser import HTMLParser
+from typing import Any, Callable, Optional
+
+import httpx
+
+from app.transports.broker_operations_classifier import BrokerOperationsClassifier
+from app.transports.broker_operations_escalator import (
+    BrokerOperationsIncidentEscalator,
+)
+from app.transports.email import (
+    EmailAttachmentMetadata,
+    EmailMessageContent,
+    EmailTransport,
+    InboxRole,
+    SourceReceipt,
+)
+from app.transports.provider_identity import (
+    InboxProviderConfig,
+    ProviderIdentityResolver,
+)
+
+logger = logging.getLogger(__name__)
+
+
+class _HTMLTextExtractor(HTMLParser):
+    """Minimal HTML-to-text extractor using stdlib HTMLParser.
+
+    Extracts readable text from HTML by:
+    - Skipping script/style/head tags entirely
+    - Converting block-level tags to newlines
+    - Unescaping HTML entities
+    - Preserving readable prose structure
+    """
+
+    _BLOCK_TAGS = {
+        "p", "div", "br", "tr", "li", "h1", "h2", "h3", "h4", "h5", "h6",
+        "table", "blockquote", "section", "article", "aside",
+    }
+    _SKIP_TAGS = {"script", "style", "head", "title"}
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self._parts: list[str] = []
+        self._skip_depth = 0
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag in self._SKIP_TAGS:
+            self._skip_depth += 1
+        elif tag in self._BLOCK_TAGS:
+            self._parts.append("\n")
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in self._SKIP_TAGS and self._skip_depth > 0:
+            self._skip_depth -= 1
+        elif tag in self._BLOCK_TAGS:
+            self._parts.append("\n")
+
+    def handle_data(self, data: str) -> None:
+        if self._skip_depth == 0 and data:
+            self._parts.append(data)
+
+    def get_text(self) -> str:
+        raw = "".join(self._parts)
+        lines = [re.sub(r"[ \t\r\f\v]+", " ", line).strip() for line in raw.split("\n")]
+        return "\n".join(line for line in lines if line)
+
+
+def _strip_html_to_text(html: str) -> str:
+    """Extract plain text from HTML content."""
+    try:
+        extractor = _HTMLTextExtractor()
+        extractor.feed(html)
+        extractor.close()
+        return extractor.get_text()
+    except Exception as e:
+        logger.warning(f"Failed to parse HTML: {e}")
+        return ""
+
+
+def _extract_html_excerpt(html: str, max_length: int = 500) -> Optional[str]:
+    """Extract first paragraph(s) from HTML as a brief excerpt.
+
+    Returns the first meaningful text block, truncated to max_length.
+    """
+    text = _strip_html_to_text(html)
+    if not text:
+        return None
+
+    lines = text.split("\n")
+    excerpt_lines: list[str] = []
+    excerpt_length = 0
+
+    for line in lines:
+        if excerpt_length + len(line) > max_length:
+            if excerpt_lines:
+                break
+            excerpt_lines.append(line[:max_length])
+            break
+        excerpt_lines.append(line)
+        excerpt_length += len(line)
+        if excerpt_length >= max_length:
+            break
+
+    excerpt = "\n".join(excerpt_lines).strip()
+    return excerpt if excerpt else None
+
+
+@dataclass
+class AgentMailConfig:
+    """AgentMail transport configuration."""
+    api_key: str
+    webhook_secret: str
+    webhook_url: str  # URL where AgentMail sends message.received events
+
+    # Inbox configuration: role → email address
+    inboxes: dict[InboxRole, str] = field(default_factory=dict)  # signals@..., ops@..., etc.
+
+    # API settings
+    api_base_url: str = "https://api.agentmail.to"
+    webhook_timeout_seconds: int = 5
+    api_timeout_seconds: int = 10
+    max_retry_attempts: int = 3
+
+
+@dataclass
+class AgentMailWebhookPayload:
+    """Structure of message.received webhook from AgentMail."""
+    event_id: str
+    event_type: str  # "message.received"
+    timestamp: str  # ISO8601
+
+    # Message data (may be truncated if >1MB)
+    inbox_id: str
+    message_id: str
+    thread_id: str
+    sender: str
+    recipients: list[str]
+    received_at: str
+    subject: str
+    message_id_header: str  # RFC 5322 Message-ID
+
+    # Optional fields (defaults must come after required fields)
+    body_plain: Optional[str] = None  # Omitted if truncated
+    body_html: Optional[str] = None  # Omitted if truncated
+    attachments: list[dict[str, Any]] = field(default_factory=list)
+    content_truncated: bool = False
+    in_reply_to: Optional[str] = None
+    references: Optional[str] = None
+
+
+class AgentMailTransport(EmailTransport):
+    """AgentMail implementation of EmailTransport.
+
+    Receives webhook deliveries from AgentMail, verifies signatures,
+    deduplicates, and routes through the signal pipeline.
+    """
+
+    name = "agentmail"
+
+    def __init__(
+        self,
+        config: AgentMailConfig,
+        on_receipt: Callable[[SourceReceipt], Any],  # async callback
+        provider_identity_resolver: Optional[ProviderIdentityResolver] = None,
+        provider_configs: Optional[list[InboxProviderConfig]] = None,
+        signal_store: Optional[Any] = None,  # SignalStore instance for incident storage
+    ):
+        self.config = config
+        self.on_receipt = on_receipt
+        self.http_client = httpx.AsyncClient(timeout=config.api_timeout_seconds)
+        self.signal_store = signal_store
+
+        # Initialize provider identity resolver
+        if provider_identity_resolver:
+            self.provider_identity_resolver = provider_identity_resolver
+        else:
+            self.provider_identity_resolver = ProviderIdentityResolver(configs=provider_configs)
+
+        # Initialize broker operations classifier for operations inbox
+        self.broker_operations_classifier = BrokerOperationsClassifier()
+
+        # Initialize broker operations incident escalator
+        if signal_store:
+            self.broker_operations_escalator: Optional[BrokerOperationsIncidentEscalator] = (
+                BrokerOperationsIncidentEscalator(store=signal_store)
+            )
+        else:
+            self.broker_operations_escalator = None
+
+        # Track received event IDs for deduplication (in-memory; should be
+        # backed by persistent storage in production)
+        self._seen_event_ids: set[str] = set()
+        self._event_id_lock = asyncio.Lock()
+
+        # Health tracking
+        self._last_message_at: Optional[datetime] = None
+        self._last_error: Optional[str] = None
+        self._message_count = 0
+        self._error_count = 0
+
+    async def start(self) -> None:
+        """Initialize the transport (webhook receiver should be started separately)."""
+        logger.info(f"Starting {self.name} transport")
+        # In a real implementation, this would register the webhook with AgentMail
+        # and start listening. For now, we assume the webhook endpoint is already
+        # running as part of the FastAPI app.
+
+    async def stop(self) -> None:
+        """Clean up resources."""
+        await self.http_client.aclose()
+        logger.info(f"Stopped {self.name} transport")
+
+    async def handle_webhook(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Handle incoming webhook from AgentMail.
+
+        Returns immediately with 200 OK after dedup and persistence.
+        Heavy processing happens asynchronously.
+
+        Args:
+            payload: Raw webhook payload from AgentMail
+
+        Returns:
+            {status: "ok", event_id: "..."} for immediate response
+        """
+        try:
+            event_id = payload.get("event_id")
+            event_type = payload.get("event_type")
+
+            if not event_id or event_type != "message.received":
+                logger.warning(f"Unexpected webhook: {event_type}")
+                return {"status": "ignored", "reason": "unexpected_event_type"}
+
+            # Dedup on event_id
+            async with self._event_id_lock:
+                if event_id in self._seen_event_ids:
+                    logger.debug(f"Duplicate event_id: {event_id}")
+                    return {"status": "ok", "event_id": event_id, "duplicate": True}
+                self._seen_event_ids.add(event_id)
+
+            # Parse webhook payload
+            webhook = AgentMailWebhookPayload(**payload)
+
+            # Persist raw receipt
+            receipt = await self._webhook_to_receipt(webhook)
+
+            # ACK AgentMail immediately
+            self._last_message_at = datetime.utcnow()
+            self._message_count += 1
+
+            # Schedule async processing
+            asyncio.create_task(self._process_receipt_async(receipt, webhook))
+
+            return {"status": "ok", "event_id": event_id}
+
+        except Exception as e:
+            self._last_error = str(e)
+            self._error_count += 1
+            logger.exception(f"Webhook error: {e}")
+            return {"status": "error", "error": str(e)}
+
+    async def _webhook_to_receipt(self, webhook: AgentMailWebhookPayload) -> SourceReceipt:
+        """Convert webhook payload to SourceReceipt."""
+        return SourceReceipt(
+            message_id=webhook.message_id_header,
+            inbox_id=f"agentmail:{webhook.inbox_id}",
+            thread_id=webhook.thread_id,
+            sender=webhook.sender,
+            recipients=webhook.recipients,
+            received_at=datetime.fromisoformat(webhook.received_at.replace('Z', '+00:00')),
+            subject=webhook.subject,
+            body_hash=hashlib.sha256(
+                (webhook.body_plain or webhook.body_html or "").encode()
+            ).hexdigest(),
+            body_representation=self._extract_body(webhook),
+            attachment_metadata=await self._parse_attachment_metadata(webhook.attachments),
+            transport_name=self.name,
+            event_id=webhook.event_id,
+            webhook_received_at=datetime.fromisoformat(webhook.timestamp.replace('Z', '+00:00')),
+            in_reply_to=webhook.in_reply_to,
+            references=webhook.references.split() if webhook.references else [],
+        )
+
+    def _extract_body(self, webhook: AgentMailWebhookPayload) -> str:
+        """Extract safe body representation from webhook.
+
+        Returns plain text preferentially; falls back to HTML-to-text conversion.
+        Limited to 10KB to avoid unbounded storage.
+        """
+        if webhook.body_plain and webhook.body_plain.strip():
+            return webhook.body_plain[:10000].strip()
+
+        if webhook.body_html and webhook.body_html.strip():
+            text = _strip_html_to_text(webhook.body_html)
+            return text[:10000].strip() if text else ""
+
+        return ""
+
+    async def _parse_attachment_metadata(
+        self,
+        attachments: list[dict[str, Any]]
+    ) -> list[EmailAttachmentMetadata]:
+        """Parse attachment metadata from webhook."""
+        metadata = []
+        for att in attachments:
+            quarantine_reason = None
+
+            # Check size (1MB max)
+            if att.get("size_bytes", 0) > 1024 * 1024:
+                quarantine_reason = "oversized"
+
+            # Check MIME type against whitelist
+            mime_type = att.get("mime_type", "application/octet-stream")
+            if not self._is_approved_mime_type(mime_type):
+                quarantine_reason = f"unapproved_mime_type:{mime_type}"
+
+            metadata.append(
+                EmailAttachmentMetadata(
+                    filename=att.get("filename", "unknown"),
+                    mime_type=mime_type,
+                    size_bytes=att.get("size_bytes", 0),
+                    hash_sha256=att.get("hash_sha256", ""),
+                    quarantine_reason=quarantine_reason,
+                )
+            )
+
+        return metadata
+
+    def _is_approved_mime_type(self, mime_type: str) -> bool:
+        """Check if MIME type is approved for extraction."""
+        approved = {
+            "text/plain",
+            "text/csv",
+            "application/pdf",
+            "application/json",
+            "image/png",
+            "image/jpeg",
+            "image/gif",
+        }
+        return mime_type in approved
+
+    def resolve_provider_identity(
+        self,
+        sender: str,
+        inbox_id: str,
+    ) -> dict[str, Any]:
+        """Resolve sender email to a provider identity.
+
+        Maps (sender, inbox_role) deterministically to a provider identifier.
+        Unknown senders return a needs_review state for manual routing.
+
+        Args:
+            sender: The email sender address
+            inbox_id: AgentMail inbox ID (e.g., "agentmail:signals")
+
+        Returns:
+            Dict with keys:
+            - provider: str or None (the mapped provider ID)
+            - analyst: str or None (extracted or configured analyst name)
+            - needs_review: bool (True if sender is unknown)
+            - reason: str (explanation for the mapping decision)
+        """
+        # Extract inbox role from inbox_id (format: "agentmail:signals")
+        inbox_role = inbox_id.split(":")[-1] if ":" in inbox_id else "signals"
+
+        identity = self.provider_identity_resolver.resolve(sender, inbox_role)
+
+        return {
+            "provider": identity.provider,
+            "analyst": identity.analyst,
+            "needs_review": identity.needs_review,
+            "reason": identity.reason,
+        }
+
+    async def _process_receipt_async(
+        self,
+        receipt: SourceReceipt,
+        webhook: AgentMailWebhookPayload
+    ) -> None:
+        """Process receipt asynchronously after webhook ACK."""
+        try:
+            # If content was truncated, retrieve full message
+            if webhook.content_truncated:
+                receipt = await self.get_receipt(
+                    receipt.inbox_id,
+                    receipt.message_id
+                )
+
+            # If this is an operations inbox, classify as broker operations event
+            if self._is_operations_inbox(receipt.inbox_id):
+                await self._process_broker_operations(receipt)
+            else:
+                # Emit signal receipts to signal pipeline
+                await self.on_receipt(receipt)
+
+        except Exception as e:
+            self._last_error = str(e)
+            self._error_count += 1
+            logger.exception(f"Error processing receipt {receipt.message_id}: {e}")
+
+    def _is_operations_inbox(self, inbox_id: str) -> bool:
+        """Check if inbox is the operations inbox.
+
+        Inbox ID format: "agentmail:operations" or similar.
+        """
+        return "operations" in inbox_id
+
+    async def _process_broker_operations(
+        self,
+        receipt: SourceReceipt
+    ) -> None:
+        """Process broker operations email and classify event.
+
+        Classifies operational emails from brokers into event types
+        (margin calls, trading restrictions, position adjustments, etc.)
+        for incident escalation and human notification.
+
+        Args:
+            receipt: The source email receipt to process
+        """
+        try:
+            # Classify the email
+            event = self.broker_operations_classifier.classify(
+                subject=receipt.subject,
+                sender=receipt.sender,
+                body_excerpt=receipt.body_representation,
+            )
+
+            # Log the classified event
+            logger.info(
+                f"Broker operations event classified: {event.event_type} | "
+                f"Severity: {event.severity} | From: {event.sender} | "
+                f"Subject: {event.subject[:50]}"
+            )
+
+            # Escalate the incident if escalator is available
+            if self.broker_operations_escalator:
+                try:
+                    # Extract account owner ID from inbox ID
+                    # Format: "transport:role:account_owner_id" or "transport:role"
+                    inbox_parts = receipt.inbox_id.split(":")
+                    account_owner_id = inbox_parts[2] if len(inbox_parts) > 2 else "unknown"
+
+                    escalation = self.broker_operations_escalator.escalate(
+                        event=event,
+                        inbox_id=receipt.inbox_id,
+                        account_owner_id=account_owner_id,
+                    )
+                    logger.info(
+                        f"Incident escalated | ID: {escalation.incident_id} | "
+                        f"Action: {escalation.action}"
+                    )
+                except Exception as e:
+                    logger.exception(f"Error escalating broker operations incident: {e}")
+            else:
+                logger.debug("Broker operations escalator not configured, incident logged only")
+
+        except Exception as e:
+            logger.exception(f"Error classifying broker operations email: {e}")
+
+    async def get_receipt(
+        self,
+        inbox_id: str,
+        message_id: str
+    ) -> SourceReceipt:
+        """Retrieve full message via API (when webhook was truncated)."""
+        try:
+            response = await self.http_client.get(
+                f"{self.config.api_base_url}/messages/{message_id}",
+                headers={"Authorization": f"Bearer {self.config.api_key}"},
+                params={"inbox_id": inbox_id},
+            )
+            response.raise_for_status()
+
+            data = response.json()
+            # Parse into SourceReceipt
+            return SourceReceipt(
+                message_id=data["message_id_header"],
+                inbox_id=f"agentmail:{data['inbox_id']}",
+                thread_id=data["thread_id"],
+                sender=data["sender"],
+                recipients=data.get("recipients", []),
+                received_at=datetime.fromisoformat(
+                    data["received_at"].replace('Z', '+00:00')
+                ),
+                subject=data["subject"],
+                body_hash=hashlib.sha256(
+                    (data.get("body_plain") or data.get("body_html") or "").encode()
+                ).hexdigest(),
+                body_representation=data.get("body_plain") or data.get("body_html") or "",
+                attachment_metadata=await self._parse_attachment_metadata(
+                    data.get("attachments", [])
+                ),
+                transport_name=self.name,
+                in_reply_to=data.get("in_reply_to"),
+                references=data.get("references", []),
+            )
+
+        except httpx.HTTPError as e:
+            logger.exception(f"API error retrieving {message_id}: {e}")
+            raise
+
+    async def get_message_content(
+        self,
+        inbox_id: str,
+        message_id: str
+    ) -> EmailMessageContent:
+        """Retrieve processed message content with HTML parsing.
+
+        Extracts plain text from both plain-text and HTML bodies,
+        and generates an HTML excerpt for preview.
+        """
+        receipt = await self.get_receipt(inbox_id, message_id)
+
+        # body_representation is already extracted as safe text
+        plain_text = receipt.body_representation.strip() if receipt.body_representation else None
+        html_excerpt = None
+
+        # If we have the webhook data, try to extract HTML excerpt
+        # This would be enhanced when full message retrieval includes original bodies
+
+        return EmailMessageContent(
+            plain_text=plain_text if plain_text else None,
+            html_excerpt=html_excerpt,
+            subject=receipt.subject,
+            sender=receipt.sender,
+            received_at=receipt.received_at,
+            attachments=receipt.attachment_metadata,
+        )
+
+    async def get_attachment(
+        self,
+        inbox_id: str,
+        message_id: str,
+        attachment_hash: str
+    ) -> bytes:
+        """Retrieve attachment content by hash."""
+        try:
+            response = await self.http_client.get(
+                f"{self.config.api_base_url}/messages/{message_id}/attachments/{attachment_hash}",
+                headers={"Authorization": f"Bearer {self.config.api_key}"},
+                params={"inbox_id": inbox_id},
+            )
+            response.raise_for_status()
+            return response.content
+
+        except httpx.HTTPError as e:
+            logger.exception(f"Error retrieving attachment {attachment_hash}: {e}")
+            raise ValueError(f"Attachment not found: {attachment_hash}") from e
+
+    async def health_status(self) -> dict[str, Any]:
+        """Return health status."""
+        return {
+            "transport": self.name,
+            "status": "ok" if not self._last_error else "error",
+            "last_message_received_at": self._last_message_at.isoformat() if self._last_message_at else None,
+            "last_error": self._last_error,
+            "messages_received": self._message_count,
+            "errors": self._error_count,
+            "inboxes": {
+                role.value: {"status": "configured"}
+                for role in self.config.inboxes.keys()
+            },
+        }
+
+    async def send_notification(
+        self,
+        to_inbox: str,
+        subject: str,
+        body: str,
+        severity: str = "informational"
+    ) -> bool:
+        """Send outbound notification email."""
+        try:
+            response = await self.http_client.post(
+                f"{self.config.api_base_url}/messages/send",
+                headers={"Authorization": f"Bearer {self.config.api_key}"},
+                json={
+                    "to": self.config.inboxes.get(InboxRole[to_inbox.upper()]),
+                    "subject": subject,
+                    "body": body,
+                    "severity": severity,
+                },
+            )
+            response.raise_for_status()
+            return True
+
+        except httpx.HTTPError as e:
+            logger.exception(f"Error sending notification: {e}")
+            return False
+
+    def verify_webhook_signature(
+        self,
+        payload: str,
+        signature: str
+    ) -> bool:
+        """Verify AgentMail webhook HMAC signature.
+
+        AgentMail signs webhooks with HMAC-SHA256 using the webhook secret.
+        The signature is provided in the X-AgentMail-Signature header.
+        """
+        expected_signature = hmac.new(
+            self.config.webhook_secret.encode(),
+            payload.encode(),
+            hashlib.sha256,
+        ).hexdigest()
+
+        return hmac.compare_digest(signature, expected_signature)

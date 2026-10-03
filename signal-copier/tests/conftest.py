@@ -16,6 +16,24 @@ from pathlib import Path
 import httpx
 import pytest
 
+# app.main takes the single-writer lease on its database at import time, so
+# every test process sharing one database file fences the others out
+# (FencedOutError). Give each pytest process its own database before anything
+# imports the app. xdist workers inherit the controller's environment, so the
+# path is tagged with its creator's pid and re-created whenever the inheriting
+# process is not the creator. A DATABASE_PATH set explicitly by the caller
+# (no tag) is left alone.
+_DB_OWNER_VAR = "SIGNAL_COPIER_TEST_DB_OWNER_PID"
+if "DATABASE_PATH" not in os.environ or (
+    _DB_OWNER_VAR in os.environ and os.environ[_DB_OWNER_VAR] != str(os.getpid())
+):
+    import tempfile
+
+    os.environ["DATABASE_PATH"] = str(
+        Path(tempfile.mkdtemp(prefix="signal_copier_tests_")) / "signal_copier.db"
+    )
+    os.environ[_DB_OWNER_VAR] = str(os.getpid())
+
 # Register the scenario evidence plugin
 pytest_plugins = ["tests.scenario_evidence"]
 

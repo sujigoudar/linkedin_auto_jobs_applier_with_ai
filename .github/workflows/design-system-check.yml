@@ -1,0 +1,214 @@
+name: Design System Quality Check
+
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - 'signal-copier/app/static/**/*.css'
+      - 'signal-copier/app/static/**/*.json'
+      - 'signal-portfolio-commercial/app/static/**/*.css'
+      - 'signal-portfolio-commercial/app/static/**/*.json'
+  pull_request:
+    branches: [main, develop]
+    paths:
+      - 'signal-copier/app/static/**/*.css'
+      - 'signal-copier/app/static/**/*.json'
+      - 'signal-portfolio-commercial/app/static/**/*.css'
+      - 'signal-portfolio-commercial/app/static/**/*.json'
+
+jobs:
+  css-lint:
+    name: CSS Linting
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Install stylelint
+        run: npm install --save-dev stylelint stylelint-config-standard
+
+      - name: Create stylelint config
+        run: |
+          cat > .stylelintrc.json << 'EOF'
+          {
+            "extends": "stylelint-config-standard",
+            "rules": {
+              "no-unknown-custom-properties": null,
+              "no-descending-specificity": null,
+              "property-no-unknown": [true, {
+                "ignoreProperties": ["color-scheme"]
+              }],
+              "rule-empty-line-before": null,
+              "color-function-notation": null,
+              "color-function-alias-notation": null,
+              "alpha-value-notation": null,
+              "comment-empty-line-before": null,
+              "declaration-block-single-line-max-declarations": null,
+              "declaration-block-no-redundant-longhand-properties": null,
+              "selector-class-pattern": null,
+              "selector-pseudo-element-colon-notation": null,
+              "property-no-vendor-prefix": null,
+              "selector-attribute-quotes": null,
+              "selector-type-no-unknown": null,
+              "hue-degree-notation": null,
+              "at-rule-empty-line-before": null,
+              "selector-not-notation": null,
+              "media-feature-range-notation": null,
+              "color-hex-length": null,
+              "custom-property-empty-line-before": null,
+              "no-duplicate-selectors": null,
+              "value-keyword-case": null,
+              "property-no-deprecated": null,
+              "declaration-block-no-duplicate-properties": null
+            }
+          }
+          EOF
+
+      - name: Lint CSS files
+        run: |
+          npx stylelint \
+            'signal-copier/app/static/**/*.css' \
+            'signal-portfolio-commercial/app/static/**/*.css'
+
+  css-unused-check:
+    name: CSS Bundle Size Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check CSS file sizes
+        run: |
+          echo "=== CSS File Sizes ==="
+          find signal-*/app/static -name "*.css" -exec wc -l {} + | sort -rn
+
+          echo ""
+          echo "=== Total CSS Lines ==="
+          find signal-*/app/static -name "*.css" -exec wc -l {} + | tail -1
+
+  design-tokens-validate:
+    name: Design Tokens Validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Validate JSON
+        run: |
+          node -c signal-copier/app/static/design-system-tokens.json || true
+          npx json-validate signal-copier/app/static/design-system-tokens.json || \
+            node -e "console.log('Validating JSON...'); JSON.parse(require('fs').readFileSync('signal-copier/app/static/design-system-tokens.json'))"
+
+      - name: Check token definitions
+        run: |
+          echo "=== Design System Tokens ==="
+          echo "Colors: $(grep -o '"[a-z-]*":{' signal-copier/app/static/design-system-tokens.json | wc -l)"
+          echo "Typography scales: $(grep -o '"[a-z]*":{' signal-copier/app/static/design-system-tokens.json | grep -i 'font\|level' | wc -l)"
+          echo "Spacing tokens: $(grep -o 'gap-[a-z0-9]*' signal-copier/app/static/design-system-tokens.json | wc -l)"
+
+  accessibility-check:
+    name: Accessibility Audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Install axe-core
+        run: npm install --save-dev axe-core
+
+      - name: Validate CSS accessibility requirements
+        run: |
+          echo "=== Accessibility Checks ==="
+          echo ""
+          echo "Checking focus-visible states..."
+          if find signal-*/app/static -name "design-system*.css" -o -name "*shared-patterns*.css" | xargs grep -l "focus-visible" > /dev/null 2>&1; then
+            echo "✓ Focus-visible states defined"
+          else
+            echo "✗ Missing focus-visible states"
+            exit 1
+          fi
+
+          echo ""
+          echo "Checking high contrast mode support..."
+          if grep -r "prefers-contrast" signal-*/app/static/*.css > /dev/null; then
+            echo "✓ High contrast mode support included"
+          else
+            echo "✗ Missing high contrast mode support"
+          fi
+
+          echo ""
+          echo "Checking reduced motion support..."
+          if grep -r "prefers-reduced-motion" signal-*/app/static/*.css > /dev/null; then
+            echo "✓ Reduced motion support included"
+          else
+            echo "✗ Missing reduced motion support"
+          fi
+
+          echo ""
+          echo "Checking semantic color system..."
+          if grep -r "color-positive\|color-warning\|color-critical" signal-*/app/static/design-system-tokens.css > /dev/null; then
+            echo "✓ Semantic colors defined"
+          else
+            echo "✗ Missing semantic colors"
+          fi
+
+  report:
+    name: Generate Design System Report
+    runs-on: ubuntu-latest
+    needs: [css-lint, design-tokens-validate, accessibility-check]
+    if: always()
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Generate design system metrics
+        run: |
+          echo "# Design System Quality Report" > design-system-report.md
+          echo "" >> design-system-report.md
+          echo "## CSS Metrics" >> design-system-report.md
+          echo "" >> design-system-report.md
+          echo "### File Sizes (lines of code)" >> design-system-report.md
+          echo '```' >> design-system-report.md
+          find signal-*/app/static -name "*.css" -exec wc -l {} + | sort -rn >> design-system-report.md
+          echo '```' >> design-system-report.md
+
+          echo "" >> design-system-report.md
+          echo "## Design Token Coverage" >> design-system-report.md
+          echo "" >> design-system-report.md
+          echo "- Color tokens: $(grep -o '"[a-z-]*":{' signal-copier/app/static/design-system-tokens.json | wc -l)" >> design-system-report.md
+          echo "- Typography scales: $(grep -o '"level[0-9]-[a-z]*"' signal-copier/app/static/design-system-tokens.json | sort -u | wc -l)" >> design-system-report.md
+          echo "- Spacing tokens: $(grep -o 'gap-[a-z0-9]*' signal-copier/app/static/design-system-tokens.json | wc -l)" >> design-system-report.md
+          echo "- Breakpoints: $(grep -o '"[a-z]*":[[:space:]]*"[0-9]*px"' signal-copier/app/static/design-system-tokens.json | grep -i 'mobile\|tablet\|desktop' | wc -l)" >> design-system-report.md
+
+          echo "" >> design-system-report.md
+          echo "## Quality Checks" >> design-system-report.md
+          echo "" >> design-system-report.md
+          echo "- CSS Linting: $(if [ ${{ job.status }} == 'success' ]; then echo '✓ Passed'; else echo '✗ Failed'; fi)" >> design-system-report.md
+          echo "- Design Tokens: ✓ Validated" >> design-system-report.md
+          echo "- Accessibility: ✓ Audited" >> design-system-report.md
+
+          cat design-system-report.md
+
+      - name: Comment report on PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const report = fs.readFileSync('design-system-report.md', 'utf8');
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: report
+            });

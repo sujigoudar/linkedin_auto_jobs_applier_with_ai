@@ -22,7 +22,7 @@ from collections import defaultdict
 from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable, Literal
+from typing import Any, Callable, Literal, Optional
 
 import httpx
 from fastapi import Body, Cookie, Depends, FastAPI, Form, Header, HTTPException, Query, Request, Response
@@ -120,6 +120,8 @@ from app.sources.telegram_user import TelegramUserSource
 from app.telegram_collectors import ConnectionMode, TelegramCollectorError
 from app.sources.email_source import EmailSource
 from app.email_collectors import EmailCollectorError
+from app.transports.agentmail import AgentMailTransport, AgentMailConfig, InboxRole
+from app.transports.webhook import create_agentmail_webhook_handler
 from app.notification_bridge import (
     ContentCompleteness,
     NotificationBridgeError,
@@ -272,6 +274,33 @@ webhook_source = WebhookSource(on_signal=engine.handle_signal, on_source_event=e
 sms_source = TwilioSMSSource(on_signal=engine.handle_signal)
 whatsapp_source = WhatsAppSource(on_signal=engine.handle_signal)
 ninjatrader_source = NinjaTraderSource(on_signal=engine.handle_signal)
+
+# AgentMail email transport (optional, event-driven webhook-based).
+# Initialized only if fully configured via env vars.
+agentmail_transport: Optional[AgentMailTransport] = None
+agentmail_webhook_handler: Optional[Any] = None
+if config.AGENTMAIL_API_KEY and config.AGENTMAIL_WEBHOOK_SECRET and config.AGENTMAIL_INBOXES:
+    from app.transports.agentmail import AgentMailConfig
+    agentmail_config = AgentMailConfig(
+        api_key=config.AGENTMAIL_API_KEY,
+        webhook_secret=config.AGENTMAIL_WEBHOOK_SECRET,
+        webhook_url=config.AGENTMAIL_WEBHOOK_URL,
+        inboxes={
+            InboxRole(role): addr
+            for role, addr in config.AGENTMAIL_INBOXES.items()
+        },
+    )
+    agentmail_transport = AgentMailTransport(
+        config=agentmail_config,
+        on_receipt=engine.handle_signal,  # type: ignore[arg-type]
+    )
+    agentmail_webhook_handler = create_agentmail_webhook_handler(
+        transport=agentmail_transport,
+        store=store,
+    )
+else:
+    logger.info("AgentMail not configured -- email transport disabled")
+
 reconciler = OrderReconciler(
     store=store,
     brokers=brokers,
@@ -533,6 +562,8 @@ async def lifespan(app: FastAPI):
     await lifecycle_manager.restore_from_store()
 
     await webhook_source.start()
+    if agentmail_transport:
+        await agentmail_transport.start()
     for source in _background_sources:
         try:
             await source.start()
@@ -594,6 +625,8 @@ async def lifespan(app: FastAPI):
     await provider_scout.stop()
     await price_monitor.stop()
     await reconciler.stop()
+    if agentmail_transport:
+        await agentmail_transport.stop()
     for source in _background_sources:
         await source.stop()
     # Every registered broker, not a hand-maintained subset: BrokerAdapter.close()
@@ -1552,6 +1585,197 @@ async def receive_webhook(
     if cache_key:
         store.save_idempotent_response(cache_key, response)
     return response
+
+
+@app.post("/api/webhooks/agentmail")
+async def agentmail_webhook(request: Request) -> Response:
+    """AgentMail webhook endpoint for message.received events.
+
+    AgentMail sends HMAC-SHA256 signed webhooks with:
+    - X-AgentMail-Signature header for integrity verification
+    - Event ID deduplication for idempotency
+    - Immediate 200 ACK response (<5s)
+    - Asynchronous processing of heavy work
+    """
+    if not agentmail_webhook_handler:
+        return Response(status_code=503, content="AgentMail webhook ingress is not configured")
+    return await agentmail_webhook_handler(request)
+
+
+@app.get("/api/agentmail/config")
+async def get_agentmail_config(_owner: dict = Depends(require_owner)) -> dict:
+    """Get current AgentMail configuration (owner-only).
+
+    Returns:
+    {
+        "enabled": true if configured,
+        "api_key_configured": true if API key is set,
+        "webhook_secret_configured": true if webhook secret is set,
+        "webhook_url": "...",
+        "inboxes": {
+            "operations": "agentmail:operations:account_id",
+            "signals": "...",
+            "reports": "..."
+        }
+    }
+    """
+    if not agentmail_transport:
+        return {
+            "enabled": False,
+            "api_key_configured": False,
+            "webhook_secret_configured": False,
+            "webhook_url": None,
+            "inboxes": {},
+        }
+
+    return {
+        "enabled": True,
+        "api_key_configured": bool(config.AGENTMAIL_API_KEY),
+        "webhook_secret_configured": bool(config.AGENTMAIL_WEBHOOK_SECRET),
+        "webhook_url": config.AGENTMAIL_WEBHOOK_URL,
+        "inboxes": {role.value: addr for role, addr in agentmail_transport.config.inboxes.items()},
+    }
+
+
+@app.get("/api/agentmail/health")
+async def get_agentmail_health() -> dict:
+    """Get AgentMail health status (public endpoint).
+
+    Returns:
+    {
+        "status": "healthy" | "degraded" | "unavailable",
+        "enabled": true if configured,
+        "webhook_configured": true if webhook endpoint is available,
+        "recent_events": number of events processed in last 24h,
+        "last_event_at": "2026-10-03T...",
+        "incident_queue_depth": number of pending escalations
+    }
+    """
+    if not agentmail_transport:
+        return {
+            "status": "unavailable",
+            "enabled": False,
+            "webhook_configured": False,
+            "recent_events": 0,
+            "last_event_at": None,
+            "incident_queue_depth": 0,
+        }
+
+    try:
+        # Get incident statistics from store
+        recent_incidents = store.list_broker_operations_incidents(
+            hours_back=24,
+            limit=1000,
+        ) if hasattr(store, 'list_broker_operations_incidents') else []
+
+        last_incident_time = (
+            recent_incidents[0]["created_at"] if recent_incidents else None
+        )
+
+        # Determine health status
+        if len(recent_incidents) > 0:
+            status = "healthy"
+        else:
+            status = "healthy" if agentmail_transport else "degraded"
+
+        return {
+            "status": status,
+            "enabled": True,
+            "webhook_configured": agentmail_webhook_handler is not None,
+            "recent_events": len(recent_incidents),
+            "last_event_at": last_incident_time,
+            "incident_queue_depth": 0,  # Async queue - tracked by store
+        }
+    except Exception as e:
+        logger.exception(f"Error getting AgentMail health: {e}")
+        return {
+            "status": "degraded",
+            "enabled": True,
+            "webhook_configured": agentmail_webhook_handler is not None,
+            "recent_events": 0,
+            "last_event_at": None,
+            "incident_queue_depth": 0,
+            "error": str(e),
+        }
+
+
+@app.get("/api/agentmail/statistics")
+async def get_agentmail_statistics(_owner: dict = Depends(require_owner)) -> dict:
+    """Get AgentMail incident escalation statistics (owner-only).
+
+    Returns:
+    {
+        "total_incidents": count,
+        "by_severity": {
+            "CRITICAL": count,
+            "WARNING": count,
+            "INFORMATIONAL": count
+        },
+        "by_action": {
+            "NOTIFY_IMMEDIATELY": count,
+            "QUEUE_FOR_REVIEW": count,
+            "LOG_ONLY": count
+        },
+        "by_event_type": {
+            "MARGIN_CALL": count,
+            ...
+        },
+        "deduplication_rate": percentage of duplicates,
+        "time_period": "last_24h" | "last_7d" | "all"
+    }
+    """
+    if not agentmail_transport:
+        return {
+            "total_incidents": 0,
+            "by_severity": {"CRITICAL": 0, "WARNING": 0, "INFORMATIONAL": 0},
+            "by_action": {"NOTIFY_IMMEDIATELY": 0, "QUEUE_FOR_REVIEW": 0, "LOG_ONLY": 0},
+            "by_event_type": {},
+            "deduplication_rate": 0.0,
+            "time_period": "all",
+        }
+
+    try:
+        # Get all incidents from store
+        incidents = store.list_broker_operations_incidents(
+            limit=10000,
+        ) if hasattr(store, 'list_broker_operations_incidents') else []
+
+        # Build statistics
+        by_severity: defaultdict[str, int] = defaultdict(int)
+        by_action: defaultdict[str, int] = defaultdict(int)
+        by_event_type: defaultdict[str, int] = defaultdict(int)
+        duplicate_count = 0
+
+        for incident in incidents:
+            by_severity[incident.get("severity", "INFORMATIONAL")] += 1
+            by_action[incident.get("action", "LOG_ONLY")] += 1
+            by_event_type[incident.get("event_type", "UNKNOWN")] += 1
+            if incident.get("is_duplicate"):
+                duplicate_count += 1
+
+        total = len(incidents)
+        dedup_rate = (duplicate_count / total * 100) if total > 0 else 0.0
+
+        return {
+            "total_incidents": total,
+            "by_severity": dict(by_severity),
+            "by_action": dict(by_action),
+            "by_event_type": dict(by_event_type),
+            "deduplication_rate": round(dedup_rate, 2),
+            "time_period": "all",
+            "duplicate_count": duplicate_count,
+        }
+    except Exception as e:
+        logger.exception(f"Error getting AgentMail statistics: {e}")
+        return {
+            "total_incidents": 0,
+            "by_severity": {},
+            "by_action": {},
+            "by_event_type": {},
+            "deduplication_rate": 0.0,
+            "time_period": "all",
+            "error": str(e),
+        }
 
 
 @app.post("/sms/twilio")
@@ -3543,29 +3767,36 @@ async def simulate_routing_rules(request: RoutingSimulateRequest, _owner: dict =
                 "reason": "no capital/risk exposure gate (max_notional_exposure, risk_percent_of_equity, or an owner-wide ceiling) is configured for this account -- the real engine's own _try_reserve_capital is a no-op the exact same way (see app/capital_allocator.py).",
             }
         else:
-            quantity = account.fixed_quantity if account.fixed_quantity is not None else (
-                (request.quantity if request.quantity is not None else 1.0) * account.multiplier
-            )
-            # A gate IS configured, so a missing price is now a real
-            # rejection (fail-closed), not a skip -- `_try_reserve_capital`
-            # itself makes that call; this dry run just reports whatever it
-            # genuinely decides, never a separately reimplemented "skip".
-            admitted, notional, rejection = await engine._try_reserve_capital(account, synthetic_signal, quantity)
-            if admitted:
-                # Real admit() really reserved `notional` against the real
-                # shared CapitalAllocator -- release it immediately so this
-                # dry run leaves the real in-memory ledger exactly as it
-                # found it (see this endpoint's own docstring).
-                engine.capital_allocator.release(account.account_id, notional, signal_id=synthetic_signal.id)
-            capital_admitted = admitted
-            capital_check = {
-                "status": "would_admit" if admitted else "would_reject",
-                "requested_notional": notional,
-                "deployed_notional": confirmed_open_notional(store, account.account_id).notional,
-                "reserved_notional": engine.capital_allocator.pending_reservation(account.account_id),
-                "max_notional_exposure": account.max_notional_exposure,
-                "reason": None if admitted else rejection.message if rejection else None,
-            }
+            if request.quantity is None and account.fixed_quantity is None:
+                capital_check = {
+                    "status": "rejected",
+                    "reason": "signal has no quantity and account has no fixed_quantity configured",
+                }
+                capital_admitted = False
+            else:
+                quantity = account.fixed_quantity if account.fixed_quantity is not None else (
+                    request.quantity * account.multiplier
+                )
+                # A gate IS configured, so a missing price is now a real
+                # rejection (fail-closed), not a skip -- `_try_reserve_capital`
+                # itself makes that call; this dry run just reports whatever it
+                # genuinely decides, never a separately reimplemented "skip".
+                admitted, notional, rejection = await engine._try_reserve_capital(account, synthetic_signal, quantity)
+                if admitted:
+                    # Real admit() really reserved `notional` against the real
+                    # shared CapitalAllocator -- release it immediately so this
+                    # dry run leaves the real in-memory ledger exactly as it
+                    # found it (see this endpoint's own docstring).
+                    engine.capital_allocator.release(account.account_id, notional, signal_id=synthetic_signal.id)
+                capital_admitted = admitted
+                capital_check = {
+                    "status": "would_admit" if admitted else "would_reject",
+                    "requested_notional": notional,
+                    "deployed_notional": confirmed_open_notional(store, account.account_id).notional,
+                    "reserved_notional": engine.capital_allocator.pending_reservation(account.account_id),
+                    "max_notional_exposure": account.max_notional_exposure,
+                    "reason": None if admitted else rejection.message if rejection else None,
+                }
 
         eligible = entry_allowed and broker_registered and asset_class_ok and capital_admitted
         would_receive = eligible

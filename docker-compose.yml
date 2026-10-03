@@ -40,7 +40,10 @@ services:
       POSTGRES_PASSWORD: local-sim-postgres-password
       POSTGRES_DB: commercial
     ports:
-      - "5432:5432"
+      # Loopback only: the database carries a fixed local-simulation password,
+      # so it must not be reachable from other hosts. Services reach it over the
+      # compose network, not through this published port.
+      - "127.0.0.1:5432:5432"
     volumes:
       - commercial_postgres_data:/var/lib/postgresql/data
     healthcheck:

@@ -357,7 +357,6 @@ class TestCCXTBrokerExchangeDeclaration:
 
 
 @pytest.mark.asyncio
-@pytest.mark.skipif(True, reason="ccxt is an optional dependency; skip in mutation test environment")
 async def test_ccxt_place_order_rejects_bracket_if_unsupported():
     """If stop_loss or take_profit is requested but exchange doesn't declare
     bracket support, must return REJECTED, not attempt to place the order."""
@@ -380,7 +379,6 @@ async def test_ccxt_place_order_rejects_bracket_if_unsupported():
 
 
 @pytest.mark.asyncio
-@pytest.mark.skipif(True, reason="ccxt is an optional dependency; skip in mutation test environment")
 async def test_ccxt_place_order_sets_stopLossPrice_when_present():
     """If stop_loss is present, params must include 'stopLossPrice' key."""
     broker = CCXTBroker(exchange_id="binance", sandbox=True)
@@ -404,7 +402,6 @@ async def test_ccxt_place_order_sets_stopLossPrice_when_present():
 
 
 @pytest.mark.asyncio
-@pytest.mark.skipif(True, reason="ccxt is an optional dependency; skip in mutation test environment")
 async def test_ccxt_place_order_sets_takeProfitPrice_when_present():
     """If take_profit is present, params must include 'takeProfitPrice' key."""
     broker = CCXTBroker(exchange_id="binance", sandbox=True)
