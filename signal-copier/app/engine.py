@@ -514,13 +514,17 @@ class SignalCopierEngine:
                 planned_risk_decimal = risk_per_unit * Decimal(str(quantity)) * Decimal(str(contract_multiplier))
                 planned_risk_cents = ceil_cents(planned_risk_decimal)
 
-            # Initial margin calculation
-            # For cash venues: 0
-            # For margin venues with max_gross_leverage: ceil(cash / max_gross_leverage)
-            # TODO: determine margin_type from physical account metadata
+            # Initial margin calculation (WP-53)
+            # Cash accounts (maintenance_margin is None): no margin requirement
+            # Margin accounts with leverage limit: initial_margin = ceil(notional / max_gross_leverage)
+            # Margin accounts without leverage limit: no initial margin requirement
             initial_margin_cents = 0
-            # NOTE: margin_type is not available on DestinationAccount yet;
-            # assuming cash venue for now (initial_margin_cents = 0)
+            if maintenance_cents is not None and account.max_gross_leverage is not None and account.max_gross_leverage > 1.0:
+                # Margin account with leverage limit: calculate initial margin requirement
+                # initial_margin = ceil(notional / max_gross_leverage)
+                if notional_cents > 0:
+                    margin_decimal = Decimal(str(notional_cents)) / Decimal(str(account.max_gross_leverage))
+                    initial_margin_cents = ceil_cents(margin_decimal)
 
             need = ResourceVector(
                 cash=cash_needed_cents,
