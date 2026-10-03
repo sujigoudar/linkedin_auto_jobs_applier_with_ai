@@ -29,6 +29,7 @@ from app.workflow.money import Cents
 class TestBinaryKellyArithmetic:
     """Test binary Kelly formula: f = p - (1-p)/b."""
 
+    @pytest.mark.scenario("KEL-001")
     def test_kelly_binary_p55_b14_full_kelly(self):
         """Spec §7.5 example: p=0.55, b=1.4 → f_K=0.228571..."""
         p = Decimal("0.55")
@@ -80,6 +81,7 @@ class TestBinaryKellyArithmetic:
 class TestEvidenceStates:
     """Test evidence state transitions and Kelly output."""
 
+    @pytest.mark.scenario("KEL-005")
     def test_no_history_empty_outcomes(self):
         """Empty outcomes → NO_HISTORY."""
         f, state = robust_candidate([])
@@ -229,6 +231,7 @@ class TestHierarchicalMin:
         assert fraction == Decimal("0.125")
         assert "lambda" in binding.lower()
 
+    @pytest.mark.scenario("KEL-002")
     def test_hierarchical_min_constraint_binds(self):
         """Constraint lower than Kelly binds."""
         kelly = Decimal("0.25")

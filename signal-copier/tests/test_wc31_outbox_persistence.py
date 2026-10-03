@@ -558,6 +558,7 @@ class TestRecoverOutboxOnRestart:
 class TestCrashScenarios:
     """Test crash recovery scenarios per spec §6.3."""
 
+    @pytest.mark.scenario("OPS-001")
     def test_crash_scenario_a_before_claim_item_still_outboxed(self, tmp_path):
         """Scenario (a): crash before claim → item still OUTBOXED and claimable."""
         store = SignalStore(tmp_path / "test.db")
@@ -585,6 +586,7 @@ class TestCrashScenarios:
         assert intent.intent_id not in recovery["marked_unknown"]
         assert fetched_item.item_id in recovery["outboxed_pending"]
 
+    @pytest.mark.scenario("OPS-002")
     def test_crash_scenario_b_after_claim_before_dispatch_marked_unknown(self, tmp_path):
         """Scenario (b): crash after claim before dispatch → marked UNKNOWN on restart."""
         store = SignalStore(tmp_path / "test.db")

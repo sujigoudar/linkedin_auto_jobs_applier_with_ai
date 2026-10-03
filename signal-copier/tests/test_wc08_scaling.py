@@ -231,6 +231,7 @@ class TestSpecExample13_3:
         expected_giveback = Cents(15 * 150)
         assert decision.current_equity_giveback_cents == expected_giveback
 
+    @pytest.mark.scenario("ADD-002")
     def test_example_13_3_admits_when_all_conditions_met(self):
         """Add should admit when all conditions are satisfied."""
         inputs = AddAdmissionInputs(

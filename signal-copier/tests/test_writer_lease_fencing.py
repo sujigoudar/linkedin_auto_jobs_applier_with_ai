@@ -193,6 +193,7 @@ def test_guard_require_active_passes_after_acquire(store):
     guard.require_active()  # must not raise
 
 
+@pytest.mark.scenario("OPS-005")
 def test_second_promotion_fences_out_the_first_guard_immediately(store):
     """The core scenario: two "writer" instances against the same DB. The
     second acquiring a new (genuinely-issued) fencing token must cause
