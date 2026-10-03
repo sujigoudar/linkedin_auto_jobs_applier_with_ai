@@ -9,6 +9,12 @@ Supported transports:
 - Gmail/IMAP: legacy IMAP polling (fallback; see app.sources.email_source)
 - Microsoft Graph: tenant-isolated multi-inbox support
 """
+from app.transports.broker_operations_classifier import (
+    BrokerOperationEvent,
+    BrokerOperationsClassifier,
+    EventSeverity,
+    OperationEventType,
+)
 from app.transports.provider_identity import (
     InboxProviderConfig,
     ProviderIdentity,
@@ -17,6 +23,10 @@ from app.transports.provider_identity import (
 )
 
 __all__ = [
+    "BrokerOperationEvent",
+    "BrokerOperationsClassifier",
+    "EventSeverity",
+    "OperationEventType",
     "ProviderIdentity",
     "ProviderIdentityResolver",
     "InboxProviderConfig",
