@@ -112,7 +112,7 @@ jobs:
           echo "=== Accessibility Checks ==="
           echo ""
           echo "Checking focus-visible states..."
-          if grep -r "focus-visible" signal-*/app/static/design-system*.css signal-*/app/static/*shared-patterns*.css > /dev/null; then
+          if find signal-*/app/static -name "design-system*.css" -o -name "*shared-patterns*.css" | xargs grep -l "focus-visible" > /dev/null 2>&1; then
             echo "✓ Focus-visible states defined"
           else
             echo "✗ Missing focus-visible states"
