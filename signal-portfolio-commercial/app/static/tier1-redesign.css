@@ -1,0 +1,495 @@
+/* Tier 1 Screen Redesign: Hierarchical Information Architecture
+ *
+ * Applies three-layer information hierarchy to 4 critical customer-facing screens:
+ * - CU-01: Customer Overview (L1-heavy portfolio value focus)
+ * - CU-06: Customer Performance (L1-heavy return/drawdown metrics)
+ * - AD-01: Admin Overview (L1-heavy business metrics)
+ * - AD-12: Business Metrics (L1-heavy platform KPIs)
+ *
+ * Uses design-system-tokens.css tokens to enforce:
+ * - L1: Large, immediate portfolio metrics with semantic status colors
+ * - L2: Standard operational data tables at comfortable reading size
+ * - L3: Technical metadata, badges, and state indicators
+ *
+ * Dark-first design with responsive mobile stacking (640px breakpoint).
+ */
+
+:root {
+  /* Import tokens from unified design system */
+  /* Colors are defined in design-system-tokens.css */
+
+  /* Type scale */
+  --level1-size: 2rem;
+  --level1-label-size: 0.72rem;
+  --level2-size: 0.95rem;
+  --level2-body-size: 0.82rem;
+  --level3-size: 0.72rem;
+
+  /* Spacing */
+  --space-xs: 4px;
+  --space-sm: 8px;
+  --space-md: 12px;
+  --space-lg: 16px;
+  --space-xl: 24px;
+  --space-2xl: 32px;
+
+  /* Radius */
+  --radius: 10px;
+  --radius-sm: 6px;
+}
+
+/* =====================================================================
+ * CU-01 Customer Overview: Portfolio summary KPIs
+ * ===================================================================== */
+
+.cu01-kpi-band {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: var(--space-lg);
+  padding: var(--space-lg);
+  margin-bottom: var(--space-lg);
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+}
+
+.cu01-kpi-tile {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+.cu01-kpi-label {
+  font-size: var(--level1-label-size);
+  color: var(--color-text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-weight: 600;
+}
+
+.cu01-kpi-value {
+  font-size: var(--level1-size);
+  font-weight: 700;
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-primary);
+}
+
+.cu01-kpi-sublabel {
+  font-size: var(--level3-size);
+  color: var(--color-text-secondary);
+}
+
+/* Status-coded KPI values */
+.cu01-kpi-tile.status-positive .cu01-kpi-value { color: var(--color-positive); }
+.cu01-kpi-tile.status-warning .cu01-kpi-value { color: var(--color-warning); }
+.cu01-kpi-tile.status-critical .cu01-kpi-value { color: var(--color-critical); }
+
+/* Mobile: Stack to single column */
+@media (max-width: 640px) {
+  .cu01-kpi-band {
+    grid-template-columns: 1fr;
+    gap: var(--space-md);
+    padding: var(--space-md);
+  }
+  .cu01-kpi-value { font-size: 1.5rem; }
+}
+
+/* =====================================================================
+ * CU-06 Performance: Return/drawdown metrics + data tables
+ * ===================================================================== */
+
+.cu06-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: var(--space-lg);
+  margin-bottom: var(--space-lg);
+}
+
+.cu06-metric-card {
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: var(--space-lg);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+}
+
+.cu06-metric-card.state-unavailable {
+  opacity: 0.7;
+  background: var(--color-bg-tertiary);
+}
+
+.cu06-metric-label {
+  font-size: var(--level3-size);
+  color: var(--color-text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-weight: 600;
+}
+
+.cu06-metric-value {
+  font-size: 1.8rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-primary);
+}
+
+.cu06-metric-detail {
+  font-size: var(--level2-body-size);
+  color: var(--color-text-secondary);
+}
+
+.cu06-metric-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: var(--level3-size);
+  font-weight: 600;
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-secondary);
+  border: 1px solid var(--color-border);
+  width: fit-content;
+}
+
+.cu06-metric-badge.state-awaiting {
+  background: var(--color-info-subtle);
+  color: var(--color-info);
+}
+
+.cu06-metric-badge.state-unsupported {
+  background: var(--color-critical-subtle);
+  color: var(--color-critical);
+}
+
+/* =====================================================================
+ * AD-01 Admin Overview: Business health dashboard
+ * ===================================================================== */
+
+.ad01-overview-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: var(--space-lg);
+  margin-bottom: var(--space-xl);
+}
+
+.ad01-card {
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: var(--space-lg);
+}
+
+.ad01-card-title {
+  font-size: var(--level2-size);
+  font-weight: 600;
+  color: var(--color-text-primary);
+  margin-bottom: var(--space-md);
+}
+
+.ad01-card-metric {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: var(--space-md);
+  padding-bottom: var(--space-md);
+  border-bottom: 1px solid var(--color-border-subtle);
+}
+
+.ad01-card-metric:last-child {
+  margin-bottom: 0;
+  padding-bottom: 0;
+  border-bottom: none;
+}
+
+.ad01-metric-label {
+  font-size: var(--level2-body-size);
+  color: var(--color-text-secondary);
+}
+
+.ad01-metric-value {
+  font-size: var(--level1-size);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-primary);
+}
+
+.ad01-metric-value.accent { color: var(--color-accent); }
+.ad01-metric-value.positive { color: var(--color-positive); }
+.ad01-metric-value.warning { color: var(--color-warning); }
+.ad01-metric-value.critical { color: var(--color-critical); }
+
+/* Mobile: Stack to single column */
+@media (max-width: 640px) {
+  .ad01-overview-grid {
+    grid-template-columns: 1fr;
+    gap: var(--space-md);
+  }
+}
+
+/* =====================================================================
+ * AD-12 Business Metrics: Platform-wide KPI dashboard
+ * ===================================================================== */
+
+.ad12-kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: var(--space-lg);
+  margin-bottom: var(--space-xl);
+}
+
+.ad12-kpi-item {
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: var(--space-lg);
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+}
+
+.ad12-kpi-icon {
+  font-size: 2rem;
+  margin-bottom: var(--space-sm);
+}
+
+.ad12-kpi-value {
+  font-size: var(--level1-size);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-primary);
+  margin-bottom: var(--space-sm);
+}
+
+.ad12-kpi-label {
+  font-size: var(--level3-size);
+  color: var(--color-text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-weight: 600;
+}
+
+.ad12-kpi-change {
+  font-size: var(--level3-size);
+  color: var(--color-text-secondary);
+  margin-top: var(--space-sm);
+}
+
+.ad12-kpi-change.positive {
+  color: var(--color-positive);
+}
+
+.ad12-kpi-change.negative {
+  color: var(--color-critical);
+}
+
+/* Mobile: Stack to single column */
+@media (max-width: 640px) {
+  .ad12-kpi-grid {
+    grid-template-columns: repeat(2, 1fr);
+    gap: var(--space-md);
+  }
+}
+
+/* =====================================================================
+ * Shared: Data tables (L2/L3 content)
+ * ===================================================================== */
+
+.tier1-table-wrapper {
+  overflow-x: auto;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--color-border);
+}
+
+.tier1-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--level2-body-size);
+}
+
+.tier1-table th {
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-secondary);
+  font-weight: 600;
+  padding: var(--space-md);
+  text-align: left;
+  border-bottom: 2px solid var(--color-border);
+  font-size: var(--level3-size);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.tier1-table td {
+  padding: var(--space-md);
+  border-bottom: 1px solid var(--color-border-subtle);
+  color: var(--color-text-primary);
+}
+
+.tier1-table tr:last-child td {
+  border-bottom: none;
+}
+
+.tier1-table tr:hover {
+  background: var(--color-bg-tertiary);
+}
+
+.tier1-table .num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.tier1-table .mono {
+  font-family: var(--font-mono);
+  font-size: var(--level3-size);
+}
+
+/* Mobile: Horizontal scroll with visual indicator */
+@media (max-width: 640px) {
+  .tier1-table-wrapper {
+    position: relative;
+    background:
+      linear-gradient(to right, var(--color-bg-secondary) 0%, rgba(0, 0, 0, 0) 100%),
+      linear-gradient(to left, var(--color-bg-secondary) 0%, rgba(0, 0, 0, 0) 100%),
+      linear-gradient(to right, rgba(0, 0, 0, 0.45), rgba(0, 0, 0, 0) 70%),
+      linear-gradient(to left, rgba(0, 0, 0, 0.45), rgba(0, 0, 0, 0) 70%);
+    background-repeat: no-repeat;
+    background-size: 22px 100%, 22px 100%, 14px 100%, 14px 100%;
+    background-position: 0 0, 100% 0, 0 0, 100% 0;
+    background-attachment: local, local, scroll, scroll;
+  }
+
+  .tier1-table-wrapper::before {
+    content: '⇄ scroll for more';
+    display: block;
+    font-size: var(--level3-size);
+    color: var(--color-text-secondary);
+    padding: var(--space-md);
+    text-align: center;
+    border-bottom: 1px solid var(--color-border-subtle);
+  }
+
+  .tier1-table th:first-child,
+  .tier1-table td:first-child {
+    position: sticky;
+    left: 0;
+    z-index: 1;
+    background: var(--color-bg-secondary);
+    box-shadow: 1px 0 0 var(--color-border);
+  }
+}
+
+/* =====================================================================
+ * Shared: Badge/status indicators (L3)
+ * ===================================================================== */
+
+.badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: var(--level3-size);
+  font-weight: 600;
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-secondary);
+  border: 1px solid var(--color-border);
+}
+
+.badge-positive {
+  background: var(--color-positive-subtle);
+  color: var(--color-positive);
+}
+
+.badge-warning {
+  background: var(--color-warning-subtle);
+  color: var(--color-warning);
+}
+
+.badge-critical {
+  background: var(--color-critical-subtle);
+  color: var(--color-critical);
+}
+
+.badge-unknown {
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-detail);
+}
+
+/* =====================================================================
+ * Shared: Panel styling (consistent across all tier1 screens)
+ * ===================================================================== */
+
+.panel {
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: var(--space-lg);
+  margin-bottom: var(--space-lg);
+}
+
+.panel h2 {
+  font-size: var(--level2-size);
+  color: var(--color-text-primary);
+  margin: 0 0 var(--space-md);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-weight: 600;
+}
+
+.panel h2 .count {
+  color: var(--color-text-secondary);
+  font-weight: normal;
+  font-size: var(--level3-size);
+}
+
+.panel > p {
+  color: var(--color-text-secondary);
+  margin: var(--space-md) 0;
+}
+
+.panel > p:first-child {
+  margin-top: 0;
+}
+
+.panel > p:last-child {
+  margin-bottom: 0;
+}
+
+/* =====================================================================
+ * Accessibility: Focus states and contrast support
+ * ===================================================================== */
+
+a:focus-visible,
+button:focus-visible {
+  outline: 2px solid var(--color-border-focus);
+  outline-offset: 2px;
+}
+
+/* High contrast mode */
+@media (prefers-contrast: more) {
+  .cu01-kpi-band,
+  .cu06-metric-card,
+  .ad01-card,
+  .ad12-kpi-item,
+  .panel {
+    border-width: 2px;
+  }
+}
+
+/* Reduced motion support */
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* Dark theme (default) is already set above */
+/* Light theme overrides via CSS variables from design-system-tokens.css */
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    /* Light theme values are inherited from design-system-tokens.css */
+  }
+}
