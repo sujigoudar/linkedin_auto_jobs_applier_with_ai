@@ -41,7 +41,12 @@ jobs:
               "no-descending-specificity": null,
               "property-no-unknown": [true, {
                 "ignoreProperties": ["color-scheme"]
-              }]
+              }],
+              "rule-empty-line-before": null,
+              "color-function-notation": null,
+              "color-function-alias-notation": null,
+              "alpha-value-notation": null,
+              "comment-empty-line-before": null
             }
           }
           EOF
