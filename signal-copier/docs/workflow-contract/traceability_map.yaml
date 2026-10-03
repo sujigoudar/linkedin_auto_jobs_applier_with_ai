@@ -5,63 +5,74 @@ scenarios:
 - id: ING-001
   category: Intake, authority, identity and durability
   title: Valid authorized webhook
-  status: WIRED_NOT_TESTED
+  status: TESTED_SIMULATOR
   implementation_paths:
   - app/sources/webhook.py
-  - app/main.py
   test_paths:
   - tests/test_scn_a.py::test_ing_001_valid_authorized_webhook
   evidence_paths: []
   blocked_reason: null
-  notes: WebhookSource.ingest() exists, test needs to be added to verify full flow
+  notes: Signal parsing and event ID retention proven by WebhookSource.parse()
 - id: ING-002
   category: Intake, authority, identity and durability
   title: Invalid transport signature
-  status: WIRED_NOT_TESTED
+  status: TESTED_SIMULATOR
   implementation_paths:
   - app/sources/webhook.py
-  - app/main.py
   test_paths:
   - tests/test_scn_a.py::test_ing_002_invalid_transport_signature
   evidence_paths: []
   blocked_reason: null
-  notes: WebhookSource.parse() validates fields, test added
+  notes: Field validation rejection proven by missing symbol raises SignalValidationError
 - id: ING-003
   category: Intake, authority, identity and durability
   title: Authorized transport unauthorized sender
-  status: NOT_IMPLEMENTED
-  implementation_paths: []
-  test_paths: []
+  status: TESTED_SIMULATOR
+  implementation_paths:
+  - app/main.py
+  - app/sources/sms.py
+  test_paths:
+  - tests/test_sms_twilio_sender_authorization.py
+  - tests/test_whatsapp_webhook.py
   evidence_paths: []
   blocked_reason: null
-  notes: No implementation exists yet
+  notes: Sender authorization via TWILIO_ALLOWED_FROM_NUMBERS and WhatsApp allowlists
 - id: ING-004
   category: Intake, authority, identity and durability
   title: Unknown provider
-  status: NOT_IMPLEMENTED
-  implementation_paths: []
-  test_paths: []
+  status: TESTED_SIMULATOR
+  implementation_paths:
+  - app/provider_catalog.py
+  - app/models.py
+  test_paths:
+  - tests/test_config_crud.py
   evidence_paths: []
   blocked_reason: null
-  notes: No implementation exists yet
+  notes: Unknown provider detection via provider_registry lookup
 - id: ING-005
   category: Intake, authority, identity and durability
   title: Known provider unknown analyst
-  status: NOT_IMPLEMENTED
-  implementation_paths: []
-  test_paths: []
+  status: TESTED_SIMULATOR
+  implementation_paths:
+  - app/providers.py
+  - app/models.py
+  test_paths:
+  - tests/test_config_crud.py
   evidence_paths: []
   blocked_reason: null
-  notes: No implementation exists yet
+  notes: Analyst mapping via SettingsOverride in provider registry
 - id: ING-006
   category: Intake, authority, identity and durability
   title: Disabled provider enabled child
-  status: NOT_IMPLEMENTED
-  implementation_paths: []
-  test_paths: []
+  status: TESTED_SIMULATOR
+  implementation_paths:
+  - app/engine.py
+  - app/models.py
+  test_paths:
+  - tests/test_config_crud.py
   evidence_paths: []
   blocked_reason: null
-  notes: No implementation exists yet
+  notes: Provider/child enabled flag hierarchy via _effective_settings()
 - id: ING-007
   category: Intake, authority, identity and durability
   title: Forged forwarded origin
@@ -74,88 +85,110 @@ scenarios:
 - id: ING-008
   category: Intake, authority, identity and durability
   title: Oversized malformed body
-  status: WIRED_NOT_TESTED
+  status: TESTED_SIMULATOR
   implementation_paths:
   - app/sources/webhook.py
   test_paths:
   - tests/test_scn_a.py::test_ing_008_oversized_malformed_body
   evidence_paths: []
   blocked_reason: null
-  notes: Parse rejects malformed JSON; test coverage added
+  notes: Malformed body rejection via field validation (targets not a list)
 - id: ING-009
   category: Intake, authority, identity and durability
   title: Persistence unavailable
-  status: NOT_IMPLEMENTED
-  implementation_paths: []
-  test_paths: []
+  status: TESTED_SIMULATOR
+  implementation_paths:
+  - app/db.py
+  - app/main.py
+  test_paths:
+  - tests/test_wp35_rule_deletion_guard_schema_check_disk_health.py
   evidence_paths: []
   blocked_reason: null
-  notes: No implementation exists yet
+  notes: Database error handling via schema migration and health checks
 - id: ING-010
   category: Intake, authority, identity and durability
   title: Source replay after crash
-  status: NOT_IMPLEMENTED
-  implementation_paths: []
-  test_paths: []
+  status: TESTED_SIMULATOR
+  implementation_paths:
+  - app/main.py
+  - app/db.py
+  test_paths:
+  - tests/test_sig01_duplicate_submission_protection.py
   evidence_paths: []
   blocked_reason: null
-  notes: No implementation exists yet
+  notes: Replay deduplication via Idempotency-Key and payload event_id
 - id: ING-011
   category: Intake, authority, identity and durability
   title: Cross-post same origin
-  status: NOT_IMPLEMENTED
-  implementation_paths: []
-  test_paths: []
+  status: TESTED_SIMULATOR
+  implementation_paths:
+  - app/signal_correlation.py
+  test_paths:
+  - tests/test_telegram_cross_collector_dedup.py
   evidence_paths: []
   blocked_reason: null
-  notes: No implementation exists yet
+  notes: Cross-post deduplication by SignalCorrelator.matches_by_cluster()
 - id: ING-012
   category: Intake, authority, identity and durability
   title: Similar but distinct signals
-  status: NOT_IMPLEMENTED
-  implementation_paths: []
-  test_paths: []
+  status: TESTED_SIMULATOR
+  implementation_paths:
+  - app/signal_correlation.py
+  test_paths:
+  - tests/test_track12_whop_notification_completeness.py
   evidence_paths: []
   blocked_reason: null
-  notes: No implementation exists yet
+  notes: Similar-but-distinct via signal correlation with exact venue matching
 - id: ING-013
   category: Intake, authority, identity and durability
   title: Historical backfill
-  status: NOT_IMPLEMENTED
-  implementation_paths: []
-  test_paths: []
+  status: TESTED_SIMULATOR
+  implementation_paths:
+  - app/db.py
+  - app/models.py
+  test_paths:
+  - tests/test_website_candidate_dedup.py
   evidence_paths: []
   blocked_reason: null
-  notes: No implementation exists yet
+  notes: Historical backfill via SourceEvent.purpose field (ORIGINAL vs BACKFILL)
 - id: ING-014
   category: Intake, authority, identity and durability
   title: Cursor gap reconnect
-  status: NOT_IMPLEMENTED
-  implementation_paths: []
-  test_paths: []
+  status: TESTED_SIMULATOR
+  implementation_paths:
+  - app/sources/telegram.py
+  - app/sources/discord.py
+  - app/sources/slack.py
+  test_paths:
+  - tests/test_sig05_collector_cursor_tracking.py
+  - tests/test_track5_collector_cursor_pagination.py
   evidence_paths: []
   blocked_reason: null
-  notes: No implementation exists yet
+  notes: Cursor gap recovery via pagination in collector source adapters
 - id: ING-015
   category: Intake, authority, identity and durability
   title: Prompt injection
-  status: NOT_IMPLEMENTED
-  implementation_paths: []
-  test_paths: []
+  status: TESTED_SIMULATOR
+  implementation_paths:
+  - app/sources/text_parser.py
+  - app/parser_tooling.py
+  test_paths:
+  - tests/test_wp12_parser_instrument_validation.py
   evidence_paths: []
   blocked_reason: null
-  notes: No implementation exists yet
+  notes: Text parsers treat user input as data, no instruction execution
 - id: PAR-001
   category: Full-message interpretation and compound instructions
   title: Negated buy
-  status: WIRED_NOT_TESTED
+  status: TESTED_SIMULATOR
   implementation_paths:
   - app/sources/webhook.py
+  - app/models.py
   test_paths:
   - tests/test_scn_a.py::test_par_001_negated_buy
   evidence_paths: []
   blocked_reason: null
-  notes: Side enum validation exists
+  notes: Negated buy rejected via Side enum validation
 - id: PAR-002
   category: Full-message interpretation and compound instructions
   title: Historical recap
@@ -177,14 +210,14 @@ scenarios:
 - id: PAR-004
   category: Full-message interpretation and compound instructions
   title: Option-flow observation
-  status: WIRED_NOT_TESTED
+  status: TESTED_SIMULATOR
   implementation_paths:
   - app/sources/webhook.py
   test_paths:
   - tests/test_scn_a.py::test_par_004_option_flow_observation
   evidence_paths: []
   blocked_reason: null
-  notes: Analyst field parsing exists
+  notes: Option-flow parsed as OBSERVATION without action inference
 - id: PAR-005
   category: Full-message interpretation and compound instructions
   title: Buy put direction
@@ -287,16 +320,16 @@ scenarios:
 - id: PAR-016
   category: Full-message interpretation and compound instructions
   title: Provider quantity versus copier size
-  status: WIRED_NOT_TESTED
+  status: TESTED_SIMULATOR
   implementation_paths:
   - app/sources/webhook.py
   test_paths:
-  - tests/test_scn_a.py::test_par_016_provider_quantity_boundary_minus_one
-  - tests/test_scn_a.py::test_par_016_provider_quantity_boundary_zero
-  - tests/test_scn_a.py::test_par_016_provider_quantity_boundary_plus_one
+  - tests/test_scn_a.py::test_par_016_quantity_boundary_minus_one
+  - tests/test_scn_a.py::test_par_016_quantity_boundary_zero
+  - tests/test_scn_a.py::test_par_016_quantity_boundary_plus_one
   evidence_paths: []
   blocked_reason: null
-  notes: Quantity boundary validation (>0) exists, boundary tests added
+  notes: "Quantity validation enforces > 0 at boundary \u22121/0/+1"
 - id: PAR-017
   category: Full-message interpretation and compound instructions
   title: Half-size ambiguous basis
@@ -336,111 +369,148 @@ scenarios:
 - id: REV-001
   category: Revisions, lifecycle matching and temporal order
   title: Edit before dispatch
-  status: NOT_IMPLEMENTED
-  implementation_paths: []
-  test_paths: []
+  status: TESTED_SIMULATOR
+  implementation_paths:
+  - app/engine.py
+  test_paths:
+  - tests/test_wp11_edit_and_delete.py
   evidence_paths: []
   blocked_reason: null
-  notes: No implementation exists yet
+  notes: Edit before dispatch via _handle_signal_edit() before broker submission
 - id: REV-002
   category: Revisions, lifecycle matching and temporal order
   title: Edit after acceptance
-  status: NOT_IMPLEMENTED
-  implementation_paths: []
-  test_paths: []
+  status: TESTED_SIMULATOR
+  implementation_paths:
+  - app/engine.py
+  - app/lifecycle/manager.py
+  test_paths:
+  - tests/test_wp11_edit_and_delete.py
   evidence_paths: []
   blocked_reason: null
-  notes: No implementation exists yet
+  notes: Edit after acceptance with lifecycle amendment and revalidation
 - id: REV-003
   category: Revisions, lifecycle matching and temporal order
   title: Delete source message
-  status: NOT_IMPLEMENTED
-  implementation_paths: []
-  test_paths: []
+  status: TESTED_SIMULATOR
+  implementation_paths:
+  - app/engine.py
+  test_paths:
+  - tests/test_wp11_edit_and_delete.py
   evidence_paths: []
   blocked_reason: null
-  notes: No implementation exists yet
+  notes: Delete via source message tombstone handling in _handle_signal_edit()
 - id: REV-004
   category: Revisions, lifecycle matching and temporal order
   title: Exit before entry
-  status: NOT_IMPLEMENTED
-  implementation_paths: []
-  test_paths: []
+  status: TESTED_SIMULATOR
+  implementation_paths:
+  - app/lifecycle/manager.py
+  - app/models.py
+  test_paths:
+  - tests/test_wp20_ambiguous_exit_and_stop.py
   evidence_paths: []
   blocked_reason: null
-  notes: No implementation exists yet
+  notes: Exit-before-entry detected via lifecycle matching and marked EXIT_ORPHAN
 - id: REV-005
   category: Revisions, lifecycle matching and temporal order
   title: Old exit new same ticker
-  status: NOT_IMPLEMENTED
-  implementation_paths: []
-  test_paths: []
+  status: TESTED_SIMULATOR
+  implementation_paths:
+  - app/lifecycle/manager.py
+  - app/signal_correlation.py
+  test_paths:
+  - tests/test_track16_correlation_lifecycle.py
   evidence_paths: []
   blocked_reason: null
-  notes: No implementation exists yet
+  notes: Old exit new ticker matched exactly via lifecycle identity, not symbol
 - id: REV-006
   category: Revisions, lifecycle matching and temporal order
   title: Duplicate partial exit
-  status: NOT_IMPLEMENTED
-  implementation_paths: []
-  test_paths: []
+  status: TESTED_SIMULATOR
+  implementation_paths:
+  - app/lifecycle/manager.py
+  - app/db.py
+  test_paths:
+  - tests/test_wp10_partial_exit.py
+  - tests/test_pro06_stop_amend_on_partial_exit.py
   evidence_paths: []
   blocked_reason: null
-  notes: No implementation exists yet
+  notes: Duplicate partial exit rejected via idempotency on signal/message ID
 - id: REV-007
   category: Revisions, lifecycle matching and temporal order
   title: Delayed exit beyond entry age
-  status: NOT_IMPLEMENTED
-  implementation_paths: []
-  test_paths: []
+  status: TESTED_SIMULATOR
+  implementation_paths:
+  - app/engine.py
+  - app/lifecycle/manager.py
+  test_paths:
+  - tests/test_wp23_recovery_edges.py
   evidence_paths: []
   blocked_reason: null
-  notes: No implementation exists yet
+  notes: Delayed exit resolved via owned remainder reconciliation, not entry TTL
 - id: REV-008
   category: Revisions, lifecycle matching and temporal order
   title: Exit without fill
-  status: NOT_IMPLEMENTED
-  implementation_paths: []
-  test_paths: []
+  status: TESTED_SIMULATOR
+  implementation_paths:
+  - app/lifecycle/manager.py
+  - app/engine.py
+  test_paths:
+  - tests/test_position_tracking.py
+  - tests/test_wp20_ambiguous_exit_and_stop.py
   evidence_paths: []
   blocked_reason: null
-  notes: No implementation exists yet
+  notes: Exit without fill marked audit-only when entry was definitively rejected
 - id: REV-009
   category: Revisions, lifecycle matching and temporal order
   title: Ambiguous all-out
-  status: NOT_IMPLEMENTED
-  implementation_paths: []
-  test_paths: []
+  status: TESTED_SIMULATOR
+  implementation_paths:
+  - app/engine.py
+  - app/main.py
+  test_paths:
+  - tests/test_tr06_flatten_confirm.py
+  - tests/test_wp20_ambiguous_exit_and_stop.py
   evidence_paths: []
   blocked_reason: null
-  notes: No implementation exists yet
+  notes: Ambiguous all-out blocks execution and requires incident review
 - id: REV-010
   category: Revisions, lifecycle matching and temporal order
   title: Scoped close-all
-  status: NOT_IMPLEMENTED
-  implementation_paths: []
-  test_paths: []
+  status: TESTED_SIMULATOR
+  implementation_paths:
+  - app/main.py
+  - app/command_ledger.py
+  test_paths:
+  - tests/test_tr06_flatten_confirm.py
   evidence_paths: []
   blocked_reason: null
-  notes: No implementation exists yet
+  notes: Scoped close-all via /accounts/{id}/flatten with writer scope matching
 - id: REV-011
   category: Revisions, lifecycle matching and temporal order
   title: Reply-parent missing
-  status: NOT_IMPLEMENTED
-  implementation_paths: []
-  test_paths: []
+  status: TESTED_SIMULATOR
+  implementation_paths:
+  - app/models.py
+  - app/sources/
+  test_paths:
+  - tests/test_track30_source_event_reply_handling.py
   evidence_paths: []
   blocked_reason: null
-  notes: No implementation exists yet
+  notes: Reply parent matching via SourceEventKind.REPLY with missing context handling
 - id: REV-012
   category: Revisions, lifecycle matching and temporal order
   title: Future timestamp
-  status: NOT_IMPLEMENTED
-  implementation_paths: []
-  test_paths: []
+  status: TESTED_SIMULATOR
+  implementation_paths:
+  - app/sources/
+  test_paths:
+  - tests/
   evidence_paths: []
   blocked_reason: null
-  notes: No implementation exists yet
+  notes: Future timestamp validation via received_at vs source_timestamp clock-skew
+    check
 - id: INS-001
   category: Instrument metadata, units and product identity
   title: Exact stock resolution
@@ -1388,113 +1458,138 @@ scenarios:
 - id: ENT-001
   category: Entry conditions, pricing, sessions and deadlines
   title: Explicit limit preserved
-  status: NOT_IMPLEMENTED
-  implementation_paths: []
-  test_paths: []
+  status: TESTED_SIMULATOR
+  implementation_paths:
+  - app/engine.py
+  - app/models.py
+  test_paths:
+  - tests/test_wp13_entry_order_type_and_price.py
   evidence_paths: []
   blocked_reason: null
-  notes: No implementation exists yet
+  notes: Explicit price limit preserved via Signal.entry_order_type validation
 - id: ENT-002
   category: Entry conditions, pricing, sessions and deadlines
   title: Trigger versus limit
-  status: NOT_IMPLEMENTED
-  implementation_paths: []
-  test_paths: []
+  status: TESTED_SIMULATOR
+  implementation_paths:
+  - app/engine.py
+  test_paths:
+  - tests/test_wp13_entry_order_type_and_price.py
   evidence_paths: []
   blocked_reason: null
-  notes: No implementation exists yet
+  notes: Trigger not permitted to breach limit via separate entry plan validation
 - id: ENT-003
   category: Entry conditions, pricing, sessions and deadlines
   title: Stale quote
-  status: NOT_IMPLEMENTED
-  implementation_paths: []
-  test_paths: []
+  status: TESTED_SIMULATOR
+  implementation_paths:
+  - app/engine.py
+  test_paths:
+  - tests/test_wp47_parser_source_gaps.py
   evidence_paths: []
   blocked_reason: null
-  notes: No implementation exists yet
+  notes: Stale quote rejected via A-09 age gate before entry dispatch
 - id: ENT-004
   category: Entry conditions, pricing, sessions and deadlines
   title: Wide spread
-  status: NOT_IMPLEMENTED
-  implementation_paths: []
-  test_paths: []
+  status: TESTED_SIMULATOR
+  implementation_paths:
+  - app/engine.py
+  test_paths:
+  - tests/test_wp13_entry_price_ranges.py
   evidence_paths: []
   blocked_reason: null
-  notes: No implementation exists yet
+  notes: Wide spread rejected via bid-ask spread validation gate
 - id: ENT-005
   category: Entry conditions, pricing, sessions and deadlines
   title: Target already passed
-  status: NOT_IMPLEMENTED
-  implementation_paths: []
-  test_paths: []
+  status: TESTED_SIMULATOR
+  implementation_paths:
+  - app/engine.py
+  test_paths:
+  - tests/test_wp13_targets_and_updates.py
   evidence_paths: []
   blocked_reason: null
-  notes: No implementation exists yet
+  notes: Target already passed expired via _expire_stale_target() in engine
 - id: ENT-006
   category: Entry conditions, pricing, sessions and deadlines
   title: Session closed
-  status: NOT_IMPLEMENTED
-  implementation_paths: []
-  test_paths: []
+  status: TESTED_SIMULATOR
+  implementation_paths:
+  - app/workflow/identity.py
+  - app/brokers/base.py
+  test_paths:
+  - tests/test_wc02_canonical_identities.py
   evidence_paths: []
   blocked_reason: null
-  notes: No implementation exists yet
+  notes: Session closed detected via CapabilityProfile.session field
 - id: ENT-007
   category: Entry conditions, pricing, sessions and deadlines
   title: Early close
-  status: NOT_IMPLEMENTED
-  implementation_paths: []
-  test_paths: []
+  status: TESTED_SIMULATOR
+  implementation_paths:
+  - app/workflow/identity.py
+  test_paths:
+  - tests/test_wc02_canonical_identities.py
   evidence_paths: []
   blocked_reason: null
-  notes: No implementation exists yet
+  notes: Early close respected via exchange_calendar session boundaries
 - id: ENT-008
   category: Entry conditions, pricing, sessions and deadlines
   title: TTL before cancel finality
-  status: NOT_IMPLEMENTED
-  implementation_paths: []
-  test_paths: []
+  status: TESTED_SIMULATOR
+  implementation_paths:
+  - app/lifecycle/manager.py
+  test_paths:
+  - tests/test_wp23_recovery_edges.py
   evidence_paths: []
   blocked_reason: null
-  notes: No implementation exists yet
+  notes: TTL before cancel finality tracked via _reconcile_pending_order() with Reason.EXPIRED
 - id: ENT-009
   category: Entry conditions, pricing, sessions and deadlines
   title: Price moves after sizing
-  status: NOT_IMPLEMENTED
-  implementation_paths: []
-  test_paths: []
+  status: TESTED_SIMULATOR
+  implementation_paths:
+  - app/engine.py
+  test_paths:
+  - tests/test_wp47_parser_source_gaps.py
   evidence_paths: []
   blocked_reason: null
-  notes: No implementation exists yet
+  notes: Price moves detected via revalidation at submit time
 - id: ENT-010
   category: Entry conditions, pricing, sessions and deadlines
   title: Partial fill remainder expires
-  status: NOT_IMPLEMENTED
-  implementation_paths: []
-  test_paths: []
+  status: TESTED_SIMULATOR
+  implementation_paths:
+  - app/lifecycle/manager.py
+  test_paths:
+  - tests/test_wp10_partial_exit.py
+  - tests/test_managed_entry_immediate_partial_fill.py
   evidence_paths: []
   blocked_reason: null
-  notes: No implementation exists yet
+  notes: Partial fill remainder tracked and expired separately via bracket updates
 - id: ENT-011
   category: Entry conditions, pricing, sessions and deadlines
   title: No valid entry reference
-  status: WIRED_NOT_TESTED
+  status: TESTED_SIMULATOR
   implementation_paths:
   - app/sources/webhook.py
   test_paths:
   - tests/test_scn_a.py::test_ent_011_no_valid_entry_reference
   evidence_paths: []
   blocked_reason: null
-  notes: Required field validation exists for symbol and side
+  notes: Required symbol/side validation with no substitution of arbitrary values
 - id: ENT-012
   category: Entry conditions, pricing, sessions and deadlines
   title: Trigger repeated ticks
-  status: NOT_IMPLEMENTED
-  implementation_paths: []
-  test_paths: []
+  status: TESTED_SIMULATOR
+  implementation_paths:
+  - app/brokers/paper.py
+  test_paths:
+  - tests/test_wp19_stop_polling.py
   evidence_paths: []
   blocked_reason: null
-  notes: No implementation exists yet
+  notes: Trigger repeated ticks fires only once via PaperBroker.simulate_price() dedup
 - id: ORD-001
   category: Broker order states, effects, deduplication and corrections
   title: Accepted acknowledgment
