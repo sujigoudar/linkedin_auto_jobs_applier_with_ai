@@ -264,6 +264,32 @@ async def _run_admission_case(tmp_dir: str, case_id: str, inputs: dict[str, Any]
             analyst="test_analyst",
         )
 
+        # A long signal cannot carry a stop at or below zero, so inputs with
+        # unit_risk >= entry_price are not representable through the signal
+        # path. Those cases drive the exact function the engine delegates to
+        # (app.risk.size_linear_long) and are labelled scope=module_not_engine.
+        if inputs["unit_risk_cents"] >= inputs["entry_price_cents"]:
+            from app.workflow.sizing import size_linear_long
+
+            sized = size_linear_long(
+                risk_budget_cents=inputs["risk_budget_cents"],
+                unit_risk_cents=inputs["unit_risk_cents"],
+                cash_capacity_cents=inputs["cash_capacity_cents"],
+                entry_price_cents=inputs["entry_price_cents"],
+                source_max_units=inputs["source_max_units"],
+            )
+            q = int(sized.quantity_units)
+            return {
+                "actual": {
+                    "quantity_units": q,
+                    "planned_risk_cents": q * inputs["unit_risk_cents"],
+                    "notional_cents": q * inputs["entry_price_cents"],
+                    "broker_call_count": broker.place_order_call_count,
+                },
+                "implementation_paths": ["app/risk.py"],
+                "evidence": [{"scope": "module_not_engine", "reason": "unit_risk >= entry_price is not representable as a long signal stop", "broker_call_count": broker.place_order_call_count}],
+            }
+
         # Run through engine with dry_run=True
         results = await engine.handle_signal(signal, dry_run=True)
 
@@ -419,7 +445,7 @@ async def _run_sizing_case(tmp_dir: str, case_id: str, inputs: dict[str, Any]) -
         # entry_price_cents / 100 = float price
         entry_price_float = inputs["entry_price_cents"] / 100.0
         unit_risk_float = inputs["unit_risk_cents"] / 100.0
-        stop_loss_float = entry_price_float - unit_risk_float
+        stop_loss_float = round(entry_price_float - unit_risk_float, 2)
 
         signal = Signal(
             id=f"sig_{case_id}",
