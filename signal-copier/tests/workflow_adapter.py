@@ -436,39 +436,26 @@ async def _run_sizing_case(tmp_dir: str, case_id: str, inputs: dict[str, Any]) -
         # Run through engine with dry_run=True
         results = await engine.handle_signal(signal, dry_run=True)
 
-        # Observe from decision traces and results
+        # Observe the engine's own durable decision: the budget reservation it
+        # created for this opportunity (needed_* are the sized figures). The
+        # reservation is RELEASED by the dry-run path but the row persists.
+        # Nothing here recomputes sizing -- an absent row means the engine
+        # sized nothing (quantity 0).
         quantity_units = 0
         planned_risk_cents = 0
         notional_cents = 0
         scope = "engine"
 
-        if results:
-            result = results[0]
-            if result.status == OrderStatus.PENDING and "planned:qty=" in result.message:
-                # Extract from message: "planned:qty=X"
-                import re
-
-                match = re.search(r"planned:qty=(\d+)", result.message)
-                if match:
-                    quantity_units = int(match.group(1))
-                    planned_risk_cents = quantity_units * inputs["unit_risk_cents"]
-                    notional_cents = quantity_units * inputs["entry_price_cents"]
-
-        # If engine didn't provide the figures, calculate directly using the oracle
-        # (simplified version without full risk_fraction_quantity call)
-        if quantity_units == 0 and planned_risk_cents == 0 and results:
-            # Try calling the sizing function directly
-            try:
-                from app.risk import risk_fraction_quantity
-
-                qty_result, reason = risk_fraction_quantity(signal, account, float(inputs["risk_budget_cents"] / 100))
-                if qty_result is not None:
-                    quantity_units = int(qty_result)
-                    planned_risk_cents = quantity_units * inputs["unit_risk_cents"]
-                    notional_cents = quantity_units * inputs["entry_price_cents"]
-                    scope = "module_not_engine"
-            except Exception:
-                pass
+        with store._connect() as conn:
+            row = conn.execute(
+                "SELECT needed_planned_risk_cents, needed_notional_cents "
+                "FROM budget_reservations WHERE opportunity_id IN "
+                "(SELECT opportunity_id FROM budget_reservations ORDER BY created_at DESC LIMIT 1)"
+            ).fetchone()
+        if row is not None:
+            planned_risk_cents = int(row[0])
+            notional_cents = int(row[1])
+            quantity_units = notional_cents // inputs["entry_price_cents"]
 
         # Implementation paths
         implementation_paths = [
