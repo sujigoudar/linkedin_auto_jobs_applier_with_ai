@@ -452,23 +452,29 @@ class OrderReconciler:
             # WP-55 (D-03): broker_owned is signed (negative for short).
             # confirmed_owned_quantity is also signed (negative for short).
             # Keep both signed for consistent deficit calculation.
-            # Check that broker and plan agree on side:
+            # Special case: broker_owned == 0 means position is closed, regardless of plan side.
+            # For non-zero positions, check that broker and plan agree on side:
             # - For BUY (long), broker_owned should be positive
             # - For SELL (short), broker_owned should be negative
             broker_owned_signed = broker_owned
-            expected_sign_positive = lifecycle.plan.side == Side.BUY
-            broker_is_positive = broker_owned_signed > 0
-            if expected_sign_positive != broker_is_positive:
-                # Venue holds the OPPOSITE side of what the plan expects
-                logger.warning(
-                    "broker position readback for account=%s symbol=%s returned opposite side (venue: %s, plan: %s)",
-                    lifecycle.plan.account_id,
-                    lifecycle.plan.symbol,
-                    broker_owned,
-                    "short" if broker_owned < 0 else "long",
-                )
-                continue
-            broker_owned_abs = broker_owned_signed
+            if broker_owned_signed == 0:
+                # Position is closed - treat as reconciling to zero
+                broker_owned_abs = 0
+            else:
+                # Non-zero position: verify side consistency
+                expected_sign_positive = lifecycle.plan.side == Side.BUY
+                broker_is_positive = broker_owned_signed > 0
+                if expected_sign_positive != broker_is_positive:
+                    # Venue holds the OPPOSITE side of what the plan expects
+                    logger.warning(
+                        "broker position readback for account=%s symbol=%s returned opposite side (venue: %s, plan: %s)",
+                        lifecycle.plan.account_id,
+                        lifecycle.plan.symbol,
+                        broker_owned,
+                        "short" if broker_owned < 0 else "long",
+                    )
+                    continue
+                broker_owned_abs = broker_owned_signed
 
             if exit_has_no_order_id_to_poll:
                 # Exit-side counterpart of the entry branch below: a
