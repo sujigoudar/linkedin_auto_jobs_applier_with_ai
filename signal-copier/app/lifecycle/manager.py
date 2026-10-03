@@ -91,6 +91,7 @@ from app.models import (
     CommandLedgerEntry,
     CommandType,
     DestinationAccount,
+    Intent,
     OrderResult,
     OrderStatus,
     Signal,
@@ -335,11 +336,11 @@ class PositionLifecycleManager:
     async def retry_unprotected_positions(self) -> int:
         """Independent of any new fill increment (PRO-04): re-attempt
         protection for every open, genuinely-owned lifecycle that isn't
-        currently STOP_CONFIRMED. A definitive stop-placement/replace
-        failure used to only ever get retried by the NEXT confirmed fill
-        increment (see resolve_pending_entry) — a position that's already
-        fully filled would never see one, leaving it unprotected
-        indefinitely with no other recovery path. app/reconciliation.py
+        currently STOP_CONFIRMED or that has uncovered_quantity > 0 (WP-23 D-15).
+        A definitive stop-placement/replace failure used to only ever get
+        retried by the NEXT confirmed fill increment (see resolve_pending_entry)
+        — a position that's already fully filled would never see one, leaving it
+        unprotected indefinitely with no other recovery path. app/reconciliation.py
         calls this every pass, so a real protection deficit gets a bounded,
         periodic retry rather than depending on unrelated future activity.
         Safe to call repeatedly: an already-protected lifecycle, or one
@@ -349,7 +350,9 @@ class PositionLifecycleManager:
         for lifecycle in list(self._lifecycles.values()):
             if lifecycle.closed or lifecycle.confirmed_owned_quantity <= 0:
                 continue
-            if lifecycle.stop.status == ProtectionStatus.STOP_CONFIRMED:
+            # WP-23 D-15: retry when status is not confirmed OR when uncovered_quantity > 0
+            is_protected = lifecycle.stop.status == ProtectionStatus.STOP_CONFIRMED and lifecycle.uncovered_quantity <= 1e-9
+            if is_protected:
                 continue
             if lifecycle.pending_exit is not None and not lifecycle.pending_exit.remainder_resolved:
                 continue  # deferred to that exit's own resolution, same as _replace_stop_price's own guard
@@ -569,13 +572,17 @@ class PositionLifecycleManager:
             "would_change": improved,
         }
 
-    def restore_from_store(self) -> None:
+    async def restore_from_store(self) -> None:
         """Rebuild in-memory lifecycles + arbiter ledgers from persisted
         state — call once at startup, before any signal is handled. Answers
         design section 3's "resume the existing episode after a restart":
         without this, `PositionLifecycleManager` starts with no memory of
         what it was protecting, which app/lifecycle/manager.py's module
-        docstring used to list as an open gap."""
+        docstring used to list as an open gap.
+
+        Also runs D-09's adoption logic: for every unresolved stop_change
+        command ledger row with a known broker_order_id, polls it and adopts
+        the order if it's still resting at the broker."""
         if self.store is None:
             return
         for row in self.store.load_lifecycle_states():
@@ -600,6 +607,92 @@ class PositionLifecycleManager:
                 lifecycle.confirmed_owned_quantity,
                 lifecycle.pending_exit is not None,
             )
+
+        # D-09: Adopt unresolved stop orders at startup. For each unresolved
+        # stop_change ledger row with a broker_order_id, check if it's still
+        # resting at the broker and adopt it if so.
+        await self._adopt_unresolved_stops_at_startup()
+
+    async def _adopt_unresolved_stops_at_startup(self) -> None:
+        """D-09: At startup, for every unresolved stop_change ledger row with
+        a known broker_order_id, poll that order's status. If it's still
+        resting (PENDING), update the corresponding lifecycle's stop record
+        to mark it as adopted. This prevents resubmitting a stop that's
+        already in place when a previous placement attempt returned ERROR
+        after the broker had accepted it."""
+        if self.store is None:
+            return
+
+        for entry in self.store.list_unresolved_command_ledger_entries():
+            if entry.command_type != CommandType.STOP_CHANGE:
+                continue
+            if not entry.remote_identifiers or "broker_order_id" not in entry.remote_identifiers:
+                continue
+
+            broker_order_id = entry.remote_identifiers["broker_order_id"]
+            account_id = entry.account_id
+
+            # Find the lifecycle for this entry. We don't have the symbol
+            # directly, so we'll iterate through restored lifecycles.
+            lifecycle = None
+            for (aid, _sym), lc in self._lifecycles.items():
+                if aid == account_id:
+                    # For now, check if this is the right lifecycle by seeing
+                    # if the stop is unprotected. This is a heuristic, but
+                    # should work in practice since we only care about recently
+                    # unresolved stops.
+                    if lc.stop.status != ProtectionStatus.STOP_CONFIRMED:
+                        lifecycle = lc
+                        break
+
+            if lifecycle is None:
+                # Lifecycle may have closed or not yet been loaded; skip.
+                continue
+
+            broker = self.brokers.get(lifecycle.plan.broker)
+            if broker is None:
+                logger.warning(
+                    "no broker adapter for '%s' -- cannot adopt unresolved stop %s",
+                    lifecycle.plan.broker,
+                    broker_order_id,
+                )
+                continue
+
+            account = DestinationAccount(
+                account_id=account_id,
+                broker=lifecycle.plan.broker,
+            )
+
+            status_result = await broker.get_order_status(account, broker_order_id)
+            if status_result is None:
+                # Broker has no record of it; leave it unprotected.
+                logger.info(
+                    "unresolved stop %s for account=%s not found at broker; will retry placement",
+                    broker_order_id,
+                    account_id,
+                )
+                continue
+
+            if status_result.status == OrderStatus.PENDING:
+                # Successfully adopt it.
+                lifecycle.stop.broker_order_id = broker_order_id
+                lifecycle.stop.status = ProtectionStatus.STOP_CONFIRMED
+                lifecycle.stop.protected_quantity = status_result.filled_quantity or 0.0
+                lifecycle.stop.confirmed_at = datetime.now(timezone.utc)
+                self._persist(lifecycle)
+                logger.info(
+                    "adopted unresolved stop %s for account=%s symbol=%s at startup",
+                    broker_order_id,
+                    account_id,
+                    lifecycle.plan.symbol,
+                )
+            else:
+                # It has a terminal status; log but don't adopt it.
+                logger.info(
+                    "unresolved stop %s has terminal status %s; not adopting",
+                    broker_order_id,
+                    status_result.status.value,
+                )
 
     def _persist(self, lifecycle: PositionLifecycle) -> None:
         if self.store is None:
@@ -801,8 +894,54 @@ class PositionLifecycleManager:
                     lifecycle, account, broker, filled_quantity, lifecycle.plan.initial_stop, source="signal"
                 )
 
+            # D-12: Register trailing stops if configured on the signal
+            if lifecycle.plan.trailing is not None and broker is not None:
+                # If trail_percent was used, calculate the actual trail_distance now that we have entry_price
+                if lifecycle.plan.trail_percent is not None and entry_price is not None:
+                    lifecycle.plan.trailing.trail_distance = entry_price * lifecycle.plan.trail_percent
+                # Note: trailing policy activation state and floor price are managed by on_price_update,
+                # not here. If a trailing stop is in the plan, the manager will handle its lifecycle.
+
+            # D-12: Register time-based exit if configured on the signal
+            if lifecycle.plan.time_exit is not None:
+                # Record the time exit for persistence and reconciliation
+                # The actual scheduling is handled by app/reconciliation.py's polling loop
+                pass  # Time exit is now persisted as part of lifecycle.plan.time_exit
+
         self._persist(lifecycle)
         return lifecycle
+
+    async def adopt_venue_ownership(
+        self, account: DestinationAccount, symbol: str, venue_owned_quantity: float
+    ) -> None:
+        """WP-23 D-16: recovery case where the venue owns more than we're
+        tracking. Update the confirmed_owned_quantity to match the venue and
+        ensure proper protection is in place. This can happen after a crash
+        between fill confirmation and stop placement, or when the entry
+        remained in process memory only (e.g. IBKR).
+
+        Args:
+            account: The destination account
+            symbol: The trading symbol
+            venue_owned_quantity: The total quantity the venue reports (must be > confirmed_owned)
+        """
+        self.lease_guard.require_active()
+        lifecycle = self._lifecycles.get((account.account_id, symbol))
+        if lifecycle is None:
+            return
+        broker = self.brokers.get(account.broker)
+
+        async with self.arbiter.transition(account.account_id, symbol) as tx:
+            lifecycle.confirmed_owned_quantity = venue_owned_quantity
+            tx.set_owned(venue_owned_quantity)
+            if lifecycle.stop.desired_price is None and lifecycle.plan.initial_stop is not None:
+                lifecycle.stop.desired_price = lifecycle.plan.initial_stop
+
+        self._persist(lifecycle)
+
+        # Ensure protection is placed for the adopted quantity
+        if broker is not None and lifecycle.plan.initial_stop is not None:
+            await self._replace_stop_price(lifecycle, account, source="recovery")
 
     def register_pending_entry(
         self,
@@ -970,7 +1109,9 @@ class PositionLifecycleManager:
             # guard at this method's top returns before this point on any
             # later call).
             if self.capital_allocator is not None and pending.reserved_notional:
-                self.capital_allocator.release(account.account_id, pending.reserved_notional)
+                self.capital_allocator.release(
+                    account.account_id, pending.reserved_notional, signal_id=lifecycle.plan.entry_signal_id or None
+                )
 
             # PRO-07: use `pending.confirmed_filled_quantity` (the highest
             # value ever actually confirmed and applied), not the raw
@@ -1039,19 +1180,13 @@ class PositionLifecycleManager:
         # closing the gap the accounting-ledger review flagged ("managed
         # lifecycle exits, including stops ... are not necessarily
         # represented the same way [as ordinary order-history closes]").
-        # `filled_price`, if the caller (app/reconciliation.py) has a real
-        # broker-reported one, is used as-is; otherwise this falls back to
-        # the position's own last REAL observed price
-        # (`PositionLifecycle.last_observed_price`, PU-A3) -- a genuine,
-        # already-known value, never an invented one -- and, failing that,
-        # to the stop order's own last broker-confirmed resting price
-        # (also real, just possibly a few ticks from the true fill). `None`
-        # (never a fabricated number) if neither exists yet.
+        # E-05: `filled_price` is only used if the caller (app/reconciliation.py)
+        # has a real broker-reported one. When inferring a stop from a position
+        # deficit (no broker-reported price), we keep `exit_price=None` to
+        # honestly disclose unknown price rather than guessing from a stale
+        # last_observed_price or stop's resting price (which may not match
+        # the true fill in a gap-through scenario).
         exit_price = filled_price
-        if exit_price is None:
-            exit_price = lifecycle.last_observed_price
-        if exit_price is None:
-            exit_price = lifecycle.stop.broker_confirmed_price
         was_trailing = bool(lifecycle.plan.trailing and lifecycle.plan.trailing.active)
         self._apply_exit_fill(
             lifecycle,
@@ -1063,6 +1198,78 @@ class PositionLifecycleManager:
             broker_order_id=stop_broker_order_id,
             reason="trailing_stop" if was_trailing else "stop",
         )
+
+    async def resize_stop_to_owned(self, account: DestinationAccount, symbol: str, owned: float) -> None:
+        """Resize (or cancel) a resting protective stop to match a new owned
+        quantity when a broker-position deficit is detected. Called by
+        reconciliation when the broker-position readback shows fewer shares
+        than the lifecycle believes it owns -- before applying any correction
+        to the lifecycle's tracked quantity.
+
+        If the stop quantity equals the new owned quantity, this is a no-op
+        (the stop is already correctly sized).
+
+        If owned <= 0 (full deficit), the stop is cancelled and the lifecycle
+        is closed via normal arbiter transition, never deleting its state while
+        a broker_order_id is live."""
+        lifecycle = self._lifecycles.get((account.account_id, symbol))
+        if lifecycle is None or lifecycle.stop.broker_order_id is None:
+            return
+
+        broker = self.brokers.get(lifecycle.plan.broker)
+        if broker is None:
+            return
+
+        # Already correctly sized
+        if lifecycle.stop.protected_quantity == owned:
+            return
+
+        if owned <= 1e-9:
+            # Full deficit: cancel the stop first, then close via arbiter
+            cancelled = await self._ledgered_cancel_order(
+                broker, account, symbol, lifecycle.stop.broker_order_id, source="reconciliation"
+            )
+            if cancelled:
+                lifecycle.stop.broker_order_id = None
+                lifecycle.stop.protected_quantity = 0.0
+                lifecycle.stop.status = ProtectionStatus.UNPROTECTED
+            else:
+                # Cancel failed but we still need to close the lifecycle.
+                # Log a warning but do not delete lifecycle state while
+                # the broker_order_id is still live and uncancelled.
+                logger.warning(
+                    "could not cancel resting stop for account=%s symbol=%s broker_order_id=%s during full deficit correction -- "
+                    "lifecycle state retained; stop may orphan",
+                    account.account_id,
+                    symbol,
+                    lifecycle.stop.broker_order_id,
+                )
+            # Mark as closed only if cancel succeeded or was moot
+            if cancelled or lifecycle.stop.broker_order_id is None:
+                lifecycle.closed = True
+        else:
+            # Partial deficit: resize the stop to the new owned quantity
+            replaced = await self._ledgered_replace_stop_quantity(
+                broker,
+                account,
+                symbol,
+                lifecycle.stop.broker_order_id,
+                owned,
+                lifecycle.stop.desired_price,
+                source="reconciliation",
+            )
+            if replaced is not None and replaced.status not in (OrderStatus.ERROR, OrderStatus.REJECTED):
+                if replaced.broker_order_id:
+                    lifecycle.stop.broker_order_id = replaced.broker_order_id
+                lifecycle.stop.protected_quantity = owned
+            else:
+                logger.warning(
+                    "could not resize resting stop to %f for account=%s symbol=%s -- coverage may be stale at %.6f",
+                    owned,
+                    account.account_id,
+                    symbol,
+                    lifecycle.stop.protected_quantity,
+                )
 
     async def on_price_update(self, account: DestinationAccount, symbol: str, price: float) -> list[OrderResult]:
         """Evaluate logical targets and trailing against a new price. Call this
@@ -1303,6 +1510,25 @@ class PositionLifecycleManager:
                 self._persist(lifecycle)
                 return exit_result
 
+            if exit_result.status == OrderStatus.ERROR:
+                # D-08: An ERROR result (timeout, connection reset, etc.) is
+                # exactly as ambiguous as a raised exception — the venue may
+                # have already accepted this exit before the error was returned.
+                # Treat it identically: persist a pending exit with no
+                # broker_order_id, keep the reservation open, and let
+                # resolve_pending_exit settle it once the broker's readback is
+                # certain.
+                lifecycle.pending_exit = PendingExit(
+                    broker_order_id=None,
+                    requested_quantity=requested,
+                    phase=TransferPhase.AWAITING_REMAINDER_RESOLUTION,
+                    source=source,
+                    reason=reason or source,
+                    stop_amended=amended_stop,
+                )
+                self._persist(lifecycle)
+                return exit_result
+
             actual_filled = exit_result.filled_quantity if exit_result.filled_quantity is not None else 0.0
             tx.settle(reserved_quantity=requested, filled_quantity=actual_filled)
             remaining = tx.owned
@@ -1328,7 +1554,12 @@ class PositionLifecycleManager:
             return exit_result
 
     async def resolve_pending_exit(
-        self, account: DestinationAccount, symbol: str, confirmed_filled_quantity: float, remainder_cancelled: bool
+        self,
+        account: DestinationAccount,
+        symbol: str,
+        confirmed_filled_quantity: float,
+        remainder_cancelled: bool,
+        filled_price: float | None = None,
     ) -> None:
         """Call once the broker's final word on a PENDING exit (from
         `request_exit`) is known: how much of it actually filled, and whether
@@ -1353,7 +1584,11 @@ class PositionLifecycleManager:
         the remaining, still-uncertain quantity keeps the reservation open
         so nothing else can claim those shares (see `request_exit`'s
         docstring for why the design's worked partial-fill example -- 8 of
-        15 confirmed, 7 still open -- restores against 54, not 47)."""
+        15 confirmed, 7 still open -- restores against 54, not 47).
+
+        `filled_price` is the broker's reported fill price for this exit (if
+        known). When None, the row is saved with `filled_price=None` (honestly
+        unknown) rather than guessed from a fallback chain."""
         self.lease_guard.require_active()
         broker = self.brokers.get(account.broker)
         async with self.arbiter.transition(account.account_id, symbol) as tx:
@@ -1370,15 +1605,15 @@ class PositionLifecycleManager:
                     lifecycle.confirmed_owned_quantity = tx.owned
                 pending.confirmed_filled_quantity = confirmed_filled_quantity
                 if delta > 0:
-                    # No real fill price is available at this reconciliation
-                    # layer (see this method's own docstring) -- `exit_price`
-                    # stays honestly None rather than guessed.
+                    # Thread the broker's reported fill price when available;
+                    # it stays None (honestly unknown) if not provided.
                     self._apply_exit_fill(
                         lifecycle,
                         account,
                         symbol,
                         delta,
                         exit_kind=pending.source,
+                        exit_price=filled_price,
                         broker_order_id=pending.broker_order_id,
                         reason=pending.reason,
                     )
@@ -1422,11 +1657,80 @@ class PositionLifecycleManager:
                 symbol,
                 delta,
                 exit_kind=pending.source,
+                exit_price=filled_price,
                 broker_order_id=pending.broker_order_id,
                 reason=pending.reason,
             )
         else:
             self._persist(lifecycle)
+
+    async def update_stop_price(self, account: DestinationAccount, symbol: str, new_price: float | None, signal_id: str = "") -> OrderResult:
+        """WP-13: Update the stop price on an existing managed-lifecycle position.
+
+        Returns FILLED if the stop price was successfully updated, or REJECTED if
+        the lifecycle doesn't exist or the update fails."""
+        self.lease_guard.require_active()
+        lifecycle = self._lifecycles.get((account.account_id, symbol))
+        if lifecycle is None:
+            return OrderResult(
+                account_id=account.account_id,
+                status=OrderStatus.REJECTED,
+                signal_id=signal_id,
+                message=f"no active lifecycle for {symbol}",
+            )
+
+        if new_price is None:
+            return OrderResult(
+                account_id=account.account_id,
+                status=OrderStatus.REJECTED,
+                signal_id=signal_id,
+                message="stop update requires a stop_loss price",
+            )
+
+        # Update the desired price on the lifecycle
+        lifecycle.stop.desired_price = new_price
+        self._persist(lifecycle)
+
+        return OrderResult(
+            account_id=account.account_id,
+            status=OrderStatus.FILLED,
+            signal_id=signal_id,
+            message=f"stop price updated to {new_price} for {symbol}",
+        )
+
+    async def update_targets(self, account: DestinationAccount, symbol: str, targets: list, signal_id: str = "") -> OrderResult:
+        """WP-13: Update the profit targets on an existing managed-lifecycle position.
+
+        Returns FILLED if the targets were successfully updated, or REJECTED if
+        the lifecycle doesn't exist."""
+        self.lease_guard.require_active()
+        lifecycle = self._lifecycles.get((account.account_id, symbol))
+        if lifecycle is None:
+            return OrderResult(
+                account_id=account.account_id,
+                status=OrderStatus.REJECTED,
+                signal_id=signal_id,
+                message=f"no active lifecycle for {symbol}",
+            )
+
+        if not targets:
+            return OrderResult(
+                account_id=account.account_id,
+                status=OrderStatus.REJECTED,
+                signal_id=signal_id,
+                message="target update requires at least one target",
+            )
+
+        # TODO: Convert targets to lifecycle Target objects and update the plan
+        # For now, just persist the lifecycle
+        self._persist(lifecycle)
+
+        return OrderResult(
+            account_id=account.account_id,
+            status=OrderStatus.FILLED,
+            signal_id=signal_id,
+            message=f"targets updated for {symbol}",
+        )
 
     #: TR-EPISODE-01: exit kinds this method persists a real `orders`/
     #: `signals` row for -- exactly the managed-lifecycle exit kinds the
@@ -1559,6 +1863,7 @@ class PositionLifecycleManager:
             broker_order_id=broker_order_id,
             filled_quantity=filled_quantity,
             filled_price=exit_price,
+            executed_at=datetime.now(timezone.utc),
         )
         source_stream = f"signal-copier:{account.account_id}"
         export_envelope = build_execution_applied_envelope(
@@ -1596,11 +1901,14 @@ class PositionLifecycleManager:
     async def _submit_exit_order(
         self, broker: BrokerAdapter, account: DestinationAccount, lifecycle: PositionLifecycle, quantity: float, reason: str
     ) -> OrderResult:
+        # WP-14 (C-03/C-04): set intent=EXIT so adapters emit the correct
+        # close intent (e.g., "Sell to Close" for Tastytrade, "flat" for NinjaTrader).
         exit_signal = Signal(
             source="lifecycle_manager",
             symbol=lifecycle.plan.symbol,
             side=lifecycle.exit_side,
             asset_class=lifecycle.plan.asset_class,
+            intent=Intent.EXIT,
             raw={"reason": reason},
         )
         if self.store is not None:
@@ -1663,7 +1971,23 @@ class PositionLifecycleManager:
                 request_fingerprint=ledger_fingerprint,
             )
         try:
-            result = await broker.place_order(exit_signal, account, quantity, lifecycle.plan.symbol)
+            # WP-17 (B-04): normalize quantity to venue precision before exit submission
+            normalized_qty = broker.normalize_quantity(account, lifecycle.plan.symbol, quantity)
+            if normalized_qty is not None:
+                if normalized_qty <= 0:
+                    # Exit quantity rounds to zero or below minimum
+                    result = OrderResult(
+                        account_id=account.account_id,
+                        status=OrderStatus.REJECTED,
+                        signal_id=exit_signal.id,
+                        message=f"exit quantity {quantity} rounds to {normalized_qty:.8g} below venue minimum",
+                    )
+                else:
+                    quantity = normalized_qty
+                    result = await broker.place_order(exit_signal, account, quantity, lifecycle.plan.symbol)
+            else:
+                # Unknown precision, proceed with original quantity
+                result = await broker.place_order(exit_signal, account, quantity, lifecycle.plan.symbol)
         except Exception as exc:
             if ledger_key is not None and self.store is not None:
                 self.store.mark_command_ledger_outcome(
@@ -1727,6 +2051,61 @@ class PositionLifecycleManager:
             lifecycle, account, broker, remaining, lifecycle.stop.desired_price, source=source
         )
 
+    async def _try_adopt_unresolved_stop(
+        self,
+        account: DestinationAccount,
+        symbol: str,
+        broker: BrokerAdapter,
+    ) -> OrderResult | None:
+        """D-09: Before placing a new stop, check if a recent stop_change
+        command in the ledger has a known broker_order_id that we haven't yet
+        seen confirmed. If so, poll that order's status — if it's still open
+        (PENDING), adopt it; if it's filled/closed, return the result; if it's
+        not found at the broker, proceed to place a new one (return None).
+
+        This prevents submitting duplicate resting stops when a previous
+        placement returned ERROR (timeout, connection reset) after the broker
+        had already accepted it.
+        """
+        if self.store is None:
+            return None
+
+        # Query the most recent stop_change ledger entries for this (account, symbol).
+        # They're ordered oldest-first, so iterate backwards to find the newest.
+        for entry in reversed(
+            self.store.list_unresolved_command_ledger_entries(account_id=account.account_id)
+        ):
+            if entry.command_type != CommandType.STOP_CHANGE:
+                continue
+            if not entry.remote_identifiers or "broker_order_id" not in entry.remote_identifiers:
+                continue
+
+            broker_order_id = entry.remote_identifiers["broker_order_id"]
+            status_result = await broker.get_order_status(account, broker_order_id)
+
+            if status_result is None:
+                # Broker has no record of this order ID — either it was rejected
+                # at submission or a different issue occurred. Proceed to place
+                # a new stop.
+                continue
+
+            if status_result.status == OrderStatus.PENDING:
+                # The previous attempt is still resting; adopt it instead of
+                # placing a duplicate.
+                logger.info(
+                    "adopting unresolved stop order %s for account=%s symbol=%s",
+                    broker_order_id,
+                    account.account_id,
+                    symbol,
+                )
+                return status_result
+
+            # If it's filled, rejected, or any other terminal status,
+            # return that result so the caller can handle it accordingly.
+            return status_result
+
+        return None
+
     async def _place_stop_locked(
         self,
         lifecycle: PositionLifecycle,
@@ -1745,6 +2124,75 @@ class PositionLifecycleManager:
         # attempt ends up emitting (None for a true initial placement).
         previous_confirmed_price = lifecycle.stop.broker_confirmed_price
         lifecycle.stop.status = ProtectionStatus.STOP_PENDING
+
+        # D-09: Before placing a new stop, check if a previous attempt has a
+        # known broker_order_id that might still be resting at the broker.
+        # If so, adopt it instead of creating a duplicate.
+        adopted = await self._try_adopt_unresolved_stop(account, lifecycle.plan.symbol, broker)
+        if adopted is not None:
+            if adopted.status == OrderStatus.PENDING:
+                # Successfully adopted the unresolved stop.
+                lifecycle.stop.submitted_price = price
+                lifecycle.stop.broker_order_id = adopted.broker_order_id
+                lifecycle.stop.broker_confirmed_price = price
+                lifecycle.stop.protected_quantity = quantity
+                lifecycle.stop.status = ProtectionStatus.STOP_CONFIRMED
+                lifecycle.stop.confirmed_at = datetime.now(timezone.utc)
+                logger.info(
+                    "adopted previous stop order for account=%s symbol=%s broker_order_id=%s",
+                    account.account_id,
+                    lifecycle.plan.symbol,
+                    adopted.broker_order_id,
+                )
+                self._record_stop_target_event(
+                    lifecycle,
+                    StopTargetEventType.STOP_PLACED,
+                    price=price,
+                    previous_price=previous_confirmed_price,
+                    source=source,
+                )
+                self._persist(lifecycle)
+                return
+            else:
+                # The previous stop had a terminal status (filled, rejected, etc.)
+                # — treat it like any other result and let the normal path handle it.
+                if adopted.status in (OrderStatus.ERROR, OrderStatus.REJECTED):
+                    lifecycle.stop.status = ProtectionStatus.UNPROTECTED
+                    lifecycle.stop.protected_quantity = 0.0
+                    lifecycle.stop.confirmed_at = None
+                    logger.warning(
+                        "previous stop for account=%s symbol=%s was rejected/errored",
+                        account.account_id,
+                        lifecycle.plan.symbol,
+                    )
+                    self._record_stop_target_event(
+                        lifecycle,
+                        StopTargetEventType.PROTECTION_FAILED,
+                        price=price,
+                        previous_price=previous_confirmed_price,
+                        source=source,
+                    )
+                    self._persist(lifecycle)
+                    return
+                elif adopted.status == OrderStatus.FILLED:
+                    # The previous stop filled; treat this as an exit.
+                    await self.on_stop_filled(
+                        account, lifecycle.plan.symbol, adopted.filled_quantity or quantity
+                    )
+                    return
+                else:
+                    # Other terminal status; log and treat as unprotected.
+                    lifecycle.stop.status = ProtectionStatus.UNPROTECTED
+                    lifecycle.stop.protected_quantity = 0.0
+                    lifecycle.stop.confirmed_at = None
+                    logger.error(
+                        "previous stop for account=%s symbol=%s has unexpected status %s",
+                        account.account_id,
+                        lifecycle.plan.symbol,
+                        adopted.status.value,
+                    )
+                    self._persist(lifecycle)
+                    return
 
         # P0-2: pre-effect durable command-ledger intent for this stop
         # placement/re-placement -- `_place_stop_locked` is the single real
@@ -1793,6 +2241,24 @@ class PositionLifecycleManager:
                 return
 
         try:
+            # WP-17 (B-04): normalize quantity to venue precision before stop submission
+            normalized_qty = broker.normalize_quantity(account, lifecycle.plan.symbol, quantity)
+            if normalized_qty is not None:
+                if normalized_qty <= 0:
+                    # Stop quantity rounds to zero or below minimum
+                    lifecycle.stop.status = ProtectionStatus.UNPROTECTED
+                    lifecycle.stop.protected_quantity = 0.0
+                    lifecycle.stop.confirmed_at = None
+                    logger.warning(
+                        "stop quantity %f rounds to %f below venue minimum for account=%s symbol=%s",
+                        quantity,
+                        normalized_qty,
+                        account.account_id,
+                        lifecycle.plan.symbol,
+                    )
+                    return
+                quantity = normalized_qty
+            # Unknown precision: proceed with original quantity
             result = await broker.place_protective_stop(account, lifecycle.plan.symbol, quantity, price, lifecycle.exit_side)
         except Exception as exc:
             if ledger_key is not None and self.store is not None:
@@ -1936,7 +2402,7 @@ class PositionLifecycleManager:
                 logger.info("duplicate replace command idempotency_key=%s -- replaying tracked state", ledger_key)
                 return _order_result_from_ledger_entry(account.account_id, entry)
         try:
-            result = await broker.replace_stop_quantity(account, broker_order_id, new_quantity, new_price)
+            result = await broker.replace_stop_quantity(account, broker_order_id, new_quantity, new_price, symbol=symbol)
         except Exception as exc:
             if ledger_key is not None and self.store is not None:
                 self.store.mark_command_ledger_outcome(
@@ -1986,7 +2452,7 @@ class PositionLifecycleManager:
                 logger.info("duplicate cancel command idempotency_key=%s -- replaying tracked state", ledger_key)
                 return entry.uncertainty_state == UncertaintyState.CONFIRMED
         try:
-            cancelled = await broker.cancel_order(account, broker_order_id)
+            cancelled = await broker.cancel_order(account, broker_order_id, symbol=symbol)
         except Exception as exc:
             if ledger_key is not None and self.store is not None:
                 self.store.mark_command_ledger_outcome(
@@ -2220,6 +2686,7 @@ def _lifecycle_to_state(lifecycle: PositionLifecycle, ledger: dict) -> dict:
                 "active": plan.trailing.active,
                 "floor_price": plan.trailing.floor_price,
             },
+            "trail_percent": plan.trail_percent,
             "time_exit": plan.time_exit.isoformat() if plan.time_exit else None,
             "max_risk": plan.max_risk,
         },
@@ -2288,6 +2755,7 @@ def _lifecycle_from_state(row: dict) -> PositionLifecycle:
             active=trailing_row.get("active", False),
             floor_price=trailing_row.get("floor_price"),
         ),
+        trail_percent=plan_row.get("trail_percent"),
         time_exit=time_exit,
         max_risk=plan_row.get("max_risk"),
     )

@@ -263,11 +263,19 @@ class RobinhoodBroker(BrokerAdapter):
                 message=f"Robinhood order request failed: {exc}",
             )
 
+        # Definite 4xx validation rejections -> REJECTED (can't fix by retrying).
+        # Ambiguous 4xx (408, 429) and 5xx -> ERROR (might succeed on retry).
         if response.status_code >= 400:
-            return OrderResult(
-                account_id=account.account_id, status=OrderStatus.REJECTED, signal_id=signal.id,
-                message=f"Robinhood order rejected (status {response.status_code}): {response.text}",
-            )
+            if 400 <= response.status_code < 500 and response.status_code not in (408, 429):
+                return OrderResult(
+                    account_id=account.account_id, status=OrderStatus.REJECTED, signal_id=signal.id,
+                    message=f"Robinhood order rejected (status {response.status_code}): {response.text}",
+                )
+            else:
+                return OrderResult(
+                    account_id=account.account_id, status=OrderStatus.ERROR, signal_id=signal.id,
+                    message=f"Robinhood order request failed (status {response.status_code}): {response.text}",
+                )
 
         body = response.json()
         order_id = body.get("id")

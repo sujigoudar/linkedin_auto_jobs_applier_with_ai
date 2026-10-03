@@ -1,13 +1,22 @@
 # Which sources feed which destination accounts.
 # `source` matches the source adapter's `name` (or a webhook's source_name
 # path segment, e.g. POST /webhook/tradingview -> source == "tradingview").
+#
+# ALLOC-01 `delivery_mode`:
+#   single    (default) destinations are ALTERNATIVES for ONE intended trade,
+#             in priority order. Exactly one account is selected per signal;
+#             matching `single` rules for a source are merged into one pool
+#             (earlier rule, then earlier destination, wins ties).
+#   replicate explicit fan-out: EVERY listed destination receives its own,
+#             separately authorized copy. Never inferred from account count.
 rules:
   - source: tradingview
-    destinations: [paper_main, binance_sub1]
+    destinations: [paper_main, binance_sub1]   # one of these, paper_main first
 
   - source: tradingview
     destinations: [binance_sub2]
-    symbol_filter: [BTCUSDT]   # only copy BTCUSDT signals to this account
+    symbol_filter: [BTCUSDT]   # joins the same pool for BTCUSDT signals only
 
   - source: telegram
-    destinations: [paper_main]
+    destinations: [paper_main, paper_backup]
+    delivery_mode: replicate   # deliberate copy to both accounts

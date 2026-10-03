@@ -305,19 +305,36 @@ def classify_candidate(
 ) -> Optional[CorrelationOutcome]:
     """Classifies ONE already-fingerprint-matched candidate against the
     new signal. Returns `None` -- "not eligible to compare, say nothing"
-    -- whenever either side is missing a real price to compare (this
-    layer never guesses at price agreement it can't check) or the two
-    timestamps fall outside `window_seconds` of each other (too far
-    apart to plausibly be the same live alert, regardless of price
-    agreement -- never silently correlated across an arbitrary time
-    gap). Otherwise: `CORROBORATING` when side matches AND price is
+    -- whenever:
+    - Either side is missing a real price AND the other has one (A-14: never
+      merge priceless with priced signals, only priceless with priceless)
+    - Both are missing prices (can't compare)
+    - The two timestamps fall outside `window_seconds` of each other (A-14:
+      >15 minutes apart means separate real-world alerts, not duplicates)
+
+    Otherwise: `CORROBORATING` when side matches AND price is
     within `price_tolerance_pct`; `CONFLICTING` for anything else that
     reached this point (a fingerprint-key match that disagrees on side
     outright, or whose price is outside tolerance)."""
-    if new_price is None or candidate_price is None:
+    # A-14: Priceless signals never merge with priced signals
+    priceless_new = new_price is None
+    priceless_candidate = candidate_price is None
+    if priceless_new != priceless_candidate:
+        # One has price, one doesn't -- never compare them
         return None
+
+    # Both are priceless or both have prices -- can compare on timing
     if not within_timestamp_window(new_received_at, candidate_received_at, window_seconds=window_seconds):
+        # A-14: Signals >15 minutes apart are separate real-world events
         return None
+
+    # Both priceless: just match on side (no price to check)
+    if priceless_new and priceless_candidate:
+        if new_side != candidate_side:
+            return CorrelationOutcome.CONFLICTING
+        return CorrelationOutcome.CORROBORATING
+
+    # Both priced: compare price and side
     if new_side != candidate_side:
         return CorrelationOutcome.CONFLICTING
     if prices_within_tolerance(new_price, candidate_price, tolerance_pct=price_tolerance_pct):

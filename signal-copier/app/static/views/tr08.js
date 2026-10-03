@@ -252,12 +252,46 @@
       flushCapStates(els.capabilities);
     }
 
+    let originalAccount = null; // Track the original account for change detection
+
     function currentDraft() {
       return {
         adapter: els.adapter.querySelector("#tr08-adapter-select").value,
         accountLabel: els.identity.querySelector("#tr08-account-label").value.trim(),
         symbolMapRaw: els.products.querySelector("#tr08-symbol-map").value.trim(),
+        multiplier: parseFloat(els.review.querySelector("#tr08-multiplier")?.value || "1.0"),
+        fixedQuantity: els.review.querySelector("#tr08-fixed-quantity")?.value ? parseFloat(els.review.querySelector("#tr08-fixed-quantity").value) : null,
+        managedLifecycle: els.review.querySelector("#tr08-managed-lifecycle")?.checked || false,
+        maxExposure: els.review.querySelector("#tr08-max-exposure")?.value ? parseFloat(els.review.querySelector("#tr08-max-exposure").value) : null,
+        riskPercentOfEquity: els.review.querySelector("#tr08-risk-percent-of-equity")?.value ? parseFloat(els.review.querySelector("#tr08-risk-percent-of-equity").value) : null,
+        maxNotionalExposure: els.review.querySelector("#tr08-max-notional-exposure")?.value ? parseFloat(els.review.querySelector("#tr08-max-notional-exposure").value) : null,
+        allowShort: els.review.querySelector("#tr08-allow-short")?.checked || false,
+        currency: els.review.querySelector("#tr08-currency")?.value || null,
+        maxGrossLeverage: els.review.querySelector("#tr08-max-gross-leverage")?.value ? parseFloat(els.review.querySelector("#tr08-max-gross-leverage").value) : null,
+        dailyLossLimitPercent: els.review.querySelector("#tr08-daily-loss-limit-percent")?.value ? parseFloat(els.review.querySelector("#tr08-daily-loss-limit-percent").value) : null,
+        minEquityThreshold: els.review.querySelector("#tr08-min-equity-threshold")?.value ? parseFloat(els.review.querySelector("#tr08-min-equity-threshold").value) : null,
+        sizingMode: els.review.querySelector("#tr08-sizing-mode")?.value || null,
+        riskFraction: els.review.querySelector("#tr08-risk-fraction")?.value ? parseFloat(els.review.querySelector("#tr08-risk-fraction").value) : null,
       };
+    }
+
+    function computePreview(draft) {
+      const parts = [];
+      if (draft.riskPercentOfEquity) {
+        parts.push(`Risk ${(draft.riskPercentOfEquity * 100).toFixed(1)}% of equity per trade`);
+      }
+      if (draft.allowShort) {
+        parts.push("long and short");
+      } else {
+        parts.push("long only");
+      }
+      if (draft.dailyLossLimitPercent) {
+        parts.push(`halt at −${draft.dailyLossLimitPercent.toFixed(1)}% day`);
+      }
+      if (draft.currency) {
+        parts.push(draft.currency);
+      }
+      return parts.length > 0 ? parts.join(", ") : "No preview available";
     }
 
     function renderReview() {
@@ -266,14 +300,41 @@
         ["Account label set", draft.accountLabel ? pill("yes", "ok") : pill("no", "bad"), draft.accountLabel ? "OK" : "MISSING_LABEL", "form"],
         ["Adapter chosen from live registry", draft.adapter ? pill("yes", "ok") : pill("no", "bad"), draft.adapter ? "OK" : "MISSING_ADAPTER", "GET /brokers"],
       ];
+      const preview = computePreview(draft);
+
       StateMatrix.render(els.review, {
         state: "ready",
         html: `${table(["Condition", "Outcome", "Reason code", "Evidence"], checks, "No conditions.")}
-          <h3 class="section-note" style="margin-top:12px;">Additional configuration required by this build's account model (not individually named in the spec's field table)</h3>
-          <label>Multiplier<input type="number" step="any" id="tr08-multiplier" value="1.0"></label>
-          <label>Fixed quantity (optional)<input type="number" step="any" id="tr08-fixed-quantity"></label>
+          <h3 class="section-note" style="margin-top:12px;">Position sizing &amp; risk controls</h3>
+          <div id="tr08-sizing-mode-group">
+            <label>Sizing mode <select id="tr08-sizing-mode">
+              <option value="">None</option>
+              <option value="multiplier">Multiplier</option>
+              <option value="fixed">Fixed quantity</option>
+              <option value="risk_fraction">Risk fraction</option>
+            </select></label>
+            <div id="tr08-sizing-inputs" style="display:none;">
+              <label id="tr08-multiplier-label" style="display:none;">Multiplier <input type="number" step="any" id="tr08-multiplier" value="1.0"></label>
+              <label id="tr08-fixed-quantity-label" style="display:none;">Fixed quantity <input type="number" step="any" id="tr08-fixed-quantity"></label>
+              <label id="tr08-risk-fraction-label" style="display:none;">Risk fraction (0-1) <input type="number" step="0.01" min="0" max="1" id="tr08-risk-fraction"></label>
+            </div>
+          </div>
+          <label>Risk % of equity (optional) <input type="number" step="0.01" min="0" max="1" id="tr08-risk-percent-of-equity"></label>
+          <label>Max notional exposure (optional) <input type="number" step="any" id="tr08-max-notional-exposure"></label>
+          <label>Max gross leverage (optional) <input type="number" step="0.01" min="0" id="tr08-max-gross-leverage"></label>
+
+          <h3 class="section-note" style="margin-top:12px;">Position &amp; account controls</h3>
+          <label class="checkbox"><input type="checkbox" id="tr08-allow-short"> Allow short positions</label>
+          <label>Currency (ISO 4217) <input type="text" id="tr08-currency" placeholder="USD"></label>
+          <label>Daily loss limit % <input type="number" step="0.01" min="0" id="tr08-daily-loss-limit-percent"></label>
+          <label>Min equity threshold <input type="number" step="any" id="tr08-min-equity-threshold"></label>
+
+          <h3 class="section-note" style="margin-top:12px;">Lifecycle &amp; management</h3>
           <label class="checkbox"><input type="checkbox" id="tr08-managed-lifecycle"> Managed lifecycle</label>
-          <label>Notional ceiling (optional)<input type="number" step="any" id="tr08-max-exposure"></label>
+
+          <h3 class="section-note" style="margin-top:12px;">What this account will do</h3>
+          <p id="tr08-preview" style="font-weight:bold;color:#0066cc;">${escapeHtml(preview)}</p>
+
           <div class="form-error" id="tr08-form-error"></div>
           <div class="tr-controls-row">
             <button type="button" id="tr08-save">Save inactive account</button>
@@ -283,6 +344,29 @@
           <p class="section-note">Save always persists <code>enabled=false</code> -- this build has no separate two-stage release gate, so Save never itself admits new trading. Activation is a distinct, separate operation (see "Review activation").</p>
           <div id="tr08-action-result"></div>`,
       });
+
+      // Setup sizing mode switcher
+      const sizingModeSelect = els.review.querySelector("#tr08-sizing-mode");
+      const sizingInputsDiv = els.review.querySelector("#tr08-sizing-inputs");
+      sizingModeSelect.addEventListener("change", (e) => {
+        els.review.querySelector("#tr08-multiplier-label").style.display = e.target.value === "multiplier" ? "block" : "none";
+        els.review.querySelector("#tr08-fixed-quantity-label").style.display = e.target.value === "fixed" ? "block" : "none";
+        els.review.querySelector("#tr08-risk-fraction-label").style.display = e.target.value === "risk_fraction" ? "block" : "none";
+        sizingInputsDiv.style.display = e.target.value ? "block" : "none";
+        updatePreview();
+      });
+
+      // Setup preview update listener
+      const updatePreview = () => {
+        const newDraft = currentDraft();
+        const newPreview = computePreview(newDraft);
+        els.review.querySelector("#tr08-preview").textContent = newPreview;
+      };
+
+      for (const id of ["tr08-risk-percent-of-equity", "tr08-allow-short", "tr08-currency", "tr08-daily-loss-limit-percent"]) {
+        const el = els.review.querySelector(`#${id}`);
+        if (el) el.addEventListener("change", updatePreview);
+      }
 
       els.review.querySelector("#tr08-save").addEventListener("click", () => doSave());
       els.review.querySelector("#tr08-run-checks").addEventListener("click", async () => {
@@ -302,6 +386,12 @@
       const draft = currentDraft();
       const errorEl = els.review.querySelector("#tr08-form-error");
       errorEl.textContent = "";
+
+      // Clear any previous field errors
+      for (const el of els.review.querySelectorAll(".field-error")) {
+        el.remove();
+      }
+
       if (!draft.accountLabel) {
         errorEl.textContent = "Account label is required.";
         return;
@@ -310,6 +400,7 @@
         errorEl.textContent = "Adapter is required.";
         return;
       }
+
       let symbolMap = {};
       if (draft.symbolMapRaw) {
         try {
@@ -319,20 +410,114 @@
           return;
         }
       }
-      const multiplier = parseFloat(els.review.querySelector("#tr08-multiplier").value || "1.0");
-      const fixedQuantityRaw = els.review.querySelector("#tr08-fixed-quantity").value;
-      const maxExposureRaw = els.review.querySelector("#tr08-max-exposure").value;
+
       try {
-        await postJSON("/accounts", {
-          account_id: draft.accountLabel,
-          broker: draft.adapter,
-          multiplier,
-          fixed_quantity: fixedQuantityRaw ? parseFloat(fixedQuantityRaw) : null,
-          symbol_map: symbolMap,
-          enabled: false, // "Save never enables trading" -- always inactive.
-          managed_lifecycle: els.review.querySelector("#tr08-managed-lifecycle").checked,
-          max_notional_exposure: maxExposureRaw ? parseFloat(maxExposureRaw) : null,
-        });
+        // Check if account already exists
+        const accountsRes = await ctx.fetchJSON("/accounts");
+        originalAccount = (accountsRes.data && accountsRes.data.accounts.find((a) => a.account_id === draft.accountLabel)) || undefined;
+
+        // Build payload with only changed fields for PATCH
+        const payload = {};
+
+        // Always include these for new accounts
+        if (!originalAccount) {
+          payload.account_id = draft.accountLabel;
+          payload.broker = draft.adapter;
+          payload.symbol_map = symbolMap;
+          payload.enabled = false;
+          payload.multiplier = draft.multiplier;
+          payload.fixed_quantity = draft.fixedQuantity;
+          payload.managed_lifecycle = draft.managedLifecycle;
+          payload.max_notional_exposure = draft.maxNotionalExposure;
+          payload.risk_percent_of_equity = draft.riskPercentOfEquity;
+          payload.allow_short = draft.allowShort;
+          payload.currency = draft.currency;
+          payload.max_gross_leverage = draft.maxGrossLeverage;
+          payload.daily_loss_limit_percent = draft.dailyLossLimitPercent;
+          payload.min_equity_threshold = draft.minEquityThreshold;
+          if (draft.sizingMode) payload.sizing_mode = draft.sizingMode;
+          if (draft.riskFraction) payload.risk_fraction = draft.riskFraction;
+        } else {
+          // For PATCH, only include fields that changed
+          if (originalAccount.broker !== draft.adapter) payload.broker = draft.adapter;
+          if (originalAccount.multiplier !== draft.multiplier) payload.multiplier = draft.multiplier;
+          if (originalAccount.fixed_quantity !== draft.fixedQuantity) payload.fixed_quantity = draft.fixedQuantity;
+          if (JSON.stringify(originalAccount.symbol_map) !== JSON.stringify(symbolMap)) payload.symbol_map = symbolMap;
+          if (originalAccount.managed_lifecycle !== draft.managedLifecycle) payload.managed_lifecycle = draft.managedLifecycle;
+          if (originalAccount.max_notional_exposure !== draft.maxNotionalExposure) payload.max_notional_exposure = draft.maxNotionalExposure;
+          if (originalAccount.risk_percent_of_equity !== draft.riskPercentOfEquity) payload.risk_percent_of_equity = draft.riskPercentOfEquity;
+          if (originalAccount.allow_short !== draft.allowShort) payload.allow_short = draft.allowShort;
+          if (originalAccount.currency !== draft.currency) payload.currency = draft.currency;
+          if (originalAccount.max_gross_leverage !== draft.maxGrossLeverage) payload.max_gross_leverage = draft.maxGrossLeverage;
+          if (originalAccount.daily_loss_limit_percent !== draft.dailyLossLimitPercent) payload.daily_loss_limit_percent = draft.dailyLossLimitPercent;
+          if (originalAccount.min_equity_threshold !== draft.minEquityThreshold) payload.min_equity_threshold = draft.minEquityThreshold;
+          if (originalAccount.sizing_mode !== draft.sizingMode) payload.sizing_mode = draft.sizingMode;
+          if (originalAccount.risk_fraction !== draft.riskFraction) payload.risk_fraction = draft.riskFraction;
+        }
+
+        let response;
+        const csrfToken = sessionStorage.getItem("scr_csrf_token") || "";
+        if (originalAccount) {
+          // Use PATCH for existing account
+          response = await fetch(`/accounts/${encodeURIComponent(draft.accountLabel)}`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfToken },
+            body: JSON.stringify(payload),
+          });
+        } else {
+          // Use POST for new account
+          response = await fetch("/accounts", {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfToken },
+            body: JSON.stringify(payload),
+          });
+        }
+
+        if (response.status === 409 || response.status === 422) {
+          const errData = await response.json();
+          const detail = errData.detail || "Validation error";
+
+          // Handle managed_lifecycle 409 -- disable the field with tooltip
+          if (detail.includes("managed_lifecycle") || detail.includes("exposure")) {
+            const mlCheckbox = els.review.querySelector("#tr08-managed-lifecycle");
+            if (mlCheckbox) {
+              mlCheckbox.disabled = true;
+              mlCheckbox.title = "Cannot change while account has open exposure";
+              // Revert to original value
+              if (originalAccount) {
+                mlCheckbox.checked = originalAccount.managed_lifecycle;
+              }
+            }
+          }
+
+          // Display error message next to relevant field
+          errorEl.textContent = detail;
+
+          // Revert draft values to original
+          if (originalAccount) {
+            els.review.querySelector("#tr08-adapter-select").value = originalAccount.broker;
+            els.review.querySelector("#tr08-multiplier").value = originalAccount.multiplier || "1.0";
+            els.review.querySelector("#tr08-fixed-quantity").value = originalAccount.fixed_quantity || "";
+            els.review.querySelector("#tr08-managed-lifecycle").checked = originalAccount.managed_lifecycle;
+            els.review.querySelector("#tr08-max-notional-exposure").value = originalAccount.max_notional_exposure || "";
+            els.review.querySelector("#tr08-risk-percent-of-equity").value = originalAccount.risk_percent_of_equity || "";
+            els.review.querySelector("#tr08-allow-short").checked = originalAccount.allow_short;
+            els.review.querySelector("#tr08-currency").value = originalAccount.currency || "";
+            els.review.querySelector("#tr08-max-gross-leverage").value = originalAccount.max_gross_leverage || "";
+            els.review.querySelector("#tr08-daily-loss-limit-percent").value = originalAccount.daily_loss_limit_percent || "";
+            els.review.querySelector("#tr08-min-equity-threshold").value = originalAccount.min_equity_threshold || "";
+            els.review.querySelector("#tr08-sizing-mode").value = originalAccount.sizing_mode || "";
+            els.review.querySelector("#tr08-risk-fraction").value = originalAccount.risk_fraction || "";
+          }
+          return;
+        }
+
+        if (!response.ok) {
+          const errData = await response.json().catch(() => ({ detail: response.statusText }));
+          errorEl.textContent = errData.detail || "Failed to save account";
+          return;
+        }
+
         els.review.querySelector("#tr08-action-result").innerHTML = `<p class="section-note">Saved as an inactive account draft. <a href="#/trade/accounts">Open Broker accounts and capabilities (TR-07)</a> to review it.</p>`;
       } catch (err) {
         errorEl.textContent = err.message;

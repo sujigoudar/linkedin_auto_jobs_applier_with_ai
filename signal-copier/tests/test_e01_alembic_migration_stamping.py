@@ -8,8 +8,15 @@ import sqlite3
 
 from alembic import command
 from alembic.config import Config as AlembicConfig
-from app.db import SCHEMA, SignalStore, _ALEMBIC_DIR, _alembic_config
+from app.db import SCHEMA, SignalStore, _ALEMBIC_DIR, _alembic_config, alembic_code_head
 from app.models import Side, Signal
+
+
+def _current_head() -> str:
+    """The single alembic head this code ships, never a pinned number."""
+    head = alembic_code_head()
+    assert head is not None
+    return head
 
 
 def test_fresh_database_is_stamped_at_head(tmp_path):
@@ -20,7 +27,7 @@ def test_fresh_database_is_stamped_at_head(tmp_path):
     row = conn.execute("SELECT version_num FROM alembic_version").fetchone()
     conn.close()
 
-    assert row == ("0036",)  # current head -- see alembic/versions/0036_add_fee_and_daily_loss_tracking.py
+    assert row == (_current_head(),)
 
 
 def test_legacy_pre_alembic_database_is_stamped_not_recreated(tmp_path):
@@ -50,7 +57,7 @@ def test_legacy_pre_alembic_database_is_stamped_not_recreated(tmp_path):
     signal_row = conn.execute("SELECT id FROM signals WHERE id = ?", (signal.id,)).fetchone()
     conn.close()
 
-    assert version_row == ("0036",)  # current head -- see alembic/versions/0036_add_fee_and_daily_loss_tracking.py
+    assert version_row == (_current_head(),)
     assert signal_row is not None  # the pre-existing row survived untouched
 
 
@@ -155,7 +162,7 @@ def test_alembic_upgrade_head_from_genuinely_empty_database_matches_bootstrap(tm
     conn = sqlite3.connect(alembic_db_path)
     version_row = conn.execute("SELECT version_num FROM alembic_version").fetchone()
     conn.close()
-    assert version_row == ("0036",)  # reached real head, not stuck partway through
+    assert version_row == (_current_head(),)  # reached real head, not stuck partway through
 
     bootstrap_db_path = tmp_path / "bootstrap.db"
     SignalStore(bootstrap_db_path)  # the real, SignalStore-backed path

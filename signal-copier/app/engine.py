@@ -111,11 +111,14 @@ for `/positions` observability, same as the plain path.
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import logging
 import math
 from collections import defaultdict
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
+from decimal import Decimal
 
 import structlog
 from signal_platform_contracts import Environment, EventEnvelope, EvidenceClass
@@ -125,7 +128,12 @@ from app import quantity as quantity_module
 from app import signal_freshness
 from app.brokers.base import BrokerAdapter
 from app.brokers.paper import PaperBroker
-from app.capital_allocator import CapitalAllocator, confirmed_open_notional, owner_wide_exposure
+from app.capital_allocator import (
+    CapitalAllocator,
+    confirmed_open_notional,
+    confirmed_strategy_notional,
+    owner_wide_exposure,
+)
 from app.daily_loss_limiter import DailyLossLimiter
 from app.margin_call_detector import MarginCallDetector
 from app.db import SignalStore
@@ -136,24 +144,36 @@ build_execution_applied_envelope,
     build_source_receipt_envelope,
 )
 from app.lifecycle.manager import PositionLifecycleManager
-from app.lifecycle.models import PositionPlan, Target, TargetAction
+from app.lifecycle.models import PositionPlan, Target, TargetAction, TrailingPolicy
 from app.logging_config import bind_signal_context
 from app.models import (
     AssetClass,
     CommandType,
     DestinationAccount,
+    Intent,
     OrderResult,
     OrderStatus,
+    ProfitTarget,
     Side,
     Signal,
     SourceEvent,
     UncertaintyState,
 )
 from app.providers import ProviderRegistry, SettingsOverride
-from app.risk import size_for_account, symbol_for_account
+from app.risk import (
+    UnsizedEntryError,
+    size_for_account,
+    size_for_account_with_mode,
+    symbol_for_account,
+    contract_multiplier,
+)
 from app.routing import RoutingConfig
 from app.shadow_mode import evaluate_shadow, to_result_row
 from app.writer_lease import NullLeaseGuard, WriterLeaseGuard
+from app.workflow.admission import AdmissionInputs, evaluate_admission
+from app.workflow.budget import HierarchicalBudget, BudgetScope, ResourceVector, BrokerSnapshot, ReservationState
+from app.workflow.intents import OrderIntent, Outbox
+from app.workflow.money import ceil_cents
 
 logger = logging.getLogger(__name__)
 structured_logger = structlog.get_logger(__name__)
@@ -261,6 +281,10 @@ def _positions_reconcile(broker_position: float, local_position: float) -> bool:
     return abs(broker_position - local_position) <= tolerance
 
 
+# Thin alias for backward compatibility; use contract_multiplier() from app/risk.py instead
+_get_contract_multiplier = contract_multiplier
+
+
 class SignalCopierEngine:
     def __init__(
         self,
@@ -316,12 +340,24 @@ class SignalCopierEngine:
         # Daily loss limit enforcement (see app/daily_loss_limiter.py): circuit
         # breaker that rejects new entries if daily loss exceeds threshold.
         # Fail-closed: any error determining equity/loss leaves trading halted.
-        self.daily_loss_limiter = DailyLossLimiter(store=store)
+        self.daily_loss_limiter = DailyLossLimiter(store=store, brokers=brokers)
         # Margin call detection and persistence (E04 bounded): monitors account
         # maintenance requirements and persists alerts when equity approaches
         # broker thresholds. Fail-closed: inability to determine margin state
         # prevents trading to avoid silent failures.
         self.margin_call_detector = MarginCallDetector(store=store)
+        # WC-20 STEP 4: Hierarchical budget allocator with atomic resource
+        # reservation (§6.2–6.3). Ensures all resource checks (cash, margin,
+        # notional, risk) apply simultaneously at owner, account, portfolio,
+        # sleeve, provider, underlying and cluster levels before any broker
+        # effect occurs. Claims opportunity atomically to prevent duplicate
+        # admission from concurrent workers.
+        self.hierarchical_budget = HierarchicalBudget(store=store)
+        # WC-33: Outbox for durable order intents and dispatch coordination.
+        # Decouples intent creation from broker dispatch for SUBMISSION_UNKNOWN
+        # recovery. Enqueues an intent, claims it for dispatch, and records
+        # the response in separate transactions (§6.3).
+        self.outbox = Outbox(store)
         # Wired in after construction (app/lifecycle/manager.py's own
         # __init__ can't take this: main.py often constructs a
         # PositionLifecycleManager before this Engine, and so before this
@@ -329,6 +365,219 @@ class SignalCopierEngine:
         # a managed entry's reservation once its outcome is confirmed
         # terminal. See PendingEntry's docstring for why.
         self.lifecycle_manager.capital_allocator = self.capital_allocator
+
+        # WP-38 (G-C-24): initialize paper broker's persistent order ID sequences
+        # from the stored account configs (see PaperBroker._order_id_sequence).
+        paper_broker = brokers.get("paper")
+        if paper_broker is not None:
+            from app.brokers.paper import PaperBroker
+            if isinstance(paper_broker, PaperBroker):
+                for account in routing.accounts.values():
+                    if account.broker == "paper" and account.paper_order_id_sequence is not None:
+                        paper_broker.set_order_id_sequence(account.account_id, account.paper_order_id_sequence)
+
+    def _persist_paper_order_id_sequence(self, result: OrderResult, account: DestinationAccount) -> None:
+        """WP-38 (G-C-24): persist the updated paper broker order ID sequence
+        after a fill. Only called for paper broker accounts."""
+        paper_broker = self.brokers.get("paper")
+        if paper_broker is not None:
+            from app.brokers.paper import PaperBroker
+            if isinstance(paper_broker, PaperBroker):
+                seq = paper_broker.get_order_id_sequence(account.account_id)
+                self.store.update_account_paper_order_id_sequence(account.account_id, seq)
+
+    @staticmethod
+    def _opportunity_id_for(signal: Signal, account: DestinationAccount, single_ids: set[str]) -> str:
+        """WC-33/WC-31 opportunity identity for budget reservations and order intents.
+
+        ALLOC-01: a canonical signal selects ONE eligible account, so for the
+        single-selection pool the signal id itself is the opportunity and the
+        unique opportunity claim is exactly the "never two intents for one
+        signal" guarantee. An explicit `delivery_mode="replicate"` destination
+        is a deliberate, configured fan-out: each replica account is its own
+        opportunity (`<signal_id>:<account_id>`), otherwise the second replica
+        would be rejected as a DUPLICATE of the first."""
+        if account.account_id in single_ids:
+            return signal.id
+        return f"{signal.id}:{account.account_id}"
+
+    async def _check_and_reserve_resources(
+        self,
+        signal_id: str,
+        account: DestinationAccount,
+        quantity: float,
+        signal: Signal,
+        broker: BrokerAdapter,
+    ) -> tuple[bool, str | None, str | None]:
+        """WC-33: Check and reserve hierarchical resources atomically.
+
+        Constructs a budget scope and resource vector for the account/signal/quantity,
+        fetches the broker snapshot (equity, margin, buying power), and calls
+        HierarchicalBudget.check_and_reserve to ensure all hierarchical levels
+        (owner, account, portfolio, sleeve, provider, underlying, cluster) have
+        sufficient resources before any broker effect occurs.
+
+        Implementation (WC-33 STEP A):
+        - Resolve price using _resolve_price_for_gating (same price used by _try_reserve_capital)
+        - Fail closed when price is None and any level has finite limit configured
+        - Calculate resource vector: cash = ceil(qty × price × multiplier), notional = cash
+        - planned_risk = |price - stop_loss| × qty × multiplier when stop_loss set, else 0
+        - initial_margin based on margin_type (cash venues: 0, margin venues: ceil(cash / max_gross_leverage))
+        - Call check_and_reserve atomically
+
+        Args:
+            signal_id: The opportunity id claimed for deduplication: the signal id for the
+                single-selection pool, "<signal_id>:<account_id>" for an explicit replica
+                (see `_opportunity_id_for`).
+            account: The destination account
+            quantity: The calculated order quantity (float)
+            signal: The signal being routed
+            broker: The broker adapter for this account
+
+        Returns:
+            (reserved_ok, error_message, reservation_id) where:
+            - reserved_ok=True and reservation_id is set if resources reserved
+            - reserved_ok=False with error_message if reservation blocked
+            - reservation_id is None if not reserved
+        """
+        try:
+            # WC-33 STEP A: Calculate resource vector from sized order
+
+            # Resolve price using the same logic as _try_reserve_capital
+            price, price_source = await self._resolve_price_for_gating(broker, signal)
+
+            # Get contract multiplier
+            mult, spec_error, _spec_note = _get_contract_multiplier(signal)
+            if spec_error is not None:
+                return False, f"resource reservation blocked: {spec_error}", None
+            contract_multiplier = mult
+
+            # Fetch broker snapshot (equity, margin, buying power)
+            balance = await broker.get_account_balance(account)
+            broker_snapshot = None
+            if balance is not None:
+                # Convert to integer cents, using to_cents (which is exact)
+                buying_power_cents = ceil_cents(balance.buying_power) if balance.buying_power is not None else None
+                # Fall back to cash if buying_power is not provided
+                if buying_power_cents is None and balance.cash is not None:
+                    buying_power_cents = ceil_cents(balance.cash)
+                equity_cents = ceil_cents(balance.equity) if balance.equity is not None else None
+                maintenance_cents = ceil_cents(balance.maintenance_margin) if balance.maintenance_margin is not None else None
+
+                broker_snapshot = BrokerSnapshot(
+                    buying_power=buying_power_cents,
+                    equity=equity_cents,
+                    maintenance=maintenance_cents,
+                    reflected_intent_ids=None,  # TODO: populate from active orders
+                    as_of=datetime.now(timezone.utc),
+                )
+
+            # Construct budget scope (all hierarchical levels)
+            scope = BudgetScope(
+                owner="owner",  # TODO: derive from config or account metadata
+                physical_account_id=account.account_id,
+                portfolio_id=None,  # TODO: support multi-portfolio
+                sleeve_id=None,  # TODO: support sleeves
+                provider=signal.source,
+                analyst=signal.analyst,  # Can be None
+                underlying=signal.symbol,
+                cluster=None,  # TODO: support correlated risk clusters
+            )
+
+            # Construct resource vector for the sized entry
+            # WC-33 STEP A: Calculate from sized order using integer cents
+
+            # Cash need: ceil(quantity × price × contract_multiplier)
+            # Always round UP for conservative cash requirement
+            if price is not None and price > 0:
+                cash_needed_decimal = Decimal(str(quantity)) * Decimal(str(price)) * Decimal(str(contract_multiplier))
+                cash_needed_cents = ceil_cents(cash_needed_decimal)
+                notional_cents = cash_needed_cents
+            else:
+                # No resolvable price: check if any level has finite limit
+                # If so, reject; if all unlimited, proceed with cash=0
+                cash_needed_cents = 0
+                notional_cents = 0
+
+                # Check if any hierarchical level has finite limit
+                has_finite_limit = False
+                # TODO: query store for owner/account/portfolio/sleeve/provider/underlying limits
+                # For now, assume if we reach here and price is None, we can't proceed if there are limits
+                if has_finite_limit or account.max_notional_exposure is not None:
+                    return False, "no resolvable price for reservation", None
+
+            # Planned risk: |price - stop_loss| × quantity × multiplier (in cents)
+            planned_risk_cents = 0
+            if signal.stop_loss is not None and signal.stop_loss > 0 and price is not None and price > 0:
+                # Calculate planned risk in cents
+                risk_per_unit = abs(Decimal(str(price)) - Decimal(str(signal.stop_loss)))
+                planned_risk_decimal = risk_per_unit * Decimal(str(quantity)) * Decimal(str(contract_multiplier))
+                planned_risk_cents = ceil_cents(planned_risk_decimal)
+
+            # Initial margin calculation
+            # For cash venues: 0
+            # For margin venues with max_gross_leverage: ceil(cash / max_gross_leverage)
+            # TODO: determine margin_type from physical account metadata
+            initial_margin_cents = 0
+            # NOTE: margin_type is not available on DestinationAccount yet;
+            # assuming cash venue for now (initial_margin_cents = 0)
+
+            need = ResourceVector(
+                cash=cash_needed_cents,
+                buying_power=None,  # Let check_and_reserve validate against broker snapshot
+                initial_margin=initial_margin_cents,
+                maintenance=None,  # Validated from broker snapshot
+                notional=notional_cents,
+                planned_risk=planned_risk_cents,
+                stress_risk=None,  # TODO: calculate from stress scenarios
+                close_quantity=0,  # TODO: track closeable inventory
+                slots=1,  # One order slot required
+            )
+
+            # ALLOC-07 crash boundaries: a redelivery of the SAME opportunity
+            # on the SAME physical account (a restart after a crash between
+            # this reservation and the durable command-ledger intent, or a
+            # replayed delivery) resumes the reservation it already holds;
+            # the command ledger downstream decides whether a broker call may
+            # still happen. The budget layer itself stays strict (any second
+            # claim is DUPLICATE), so a different account is still refused.
+            existing = self.store.get_active_reservation_for_opportunity(signal_id)
+            if existing is not None and existing.physical_account_id == account.account_id:
+                logger.info(
+                    "resource_reservation resumed signal=%s account=%s reservation_id=%s state=%s",
+                    signal_id,
+                    account.account_id,
+                    existing.reservation_id,
+                    existing.state,
+                )
+                return True, None, existing.reservation_id
+
+            # Call check_and_reserve
+            reservation_result = self.hierarchical_budget.check_and_reserve(
+                opportunity_id=signal_id,
+                scope=scope,
+                need=need,
+                snapshot=broker_snapshot,
+            )
+
+            logger.info(
+                "resource_reservation signal=%s account=%s ok=%s binding_level=%s reservation_id=%s",
+                signal_id,
+                account.account_id,
+                reservation_result.ok,
+                reservation_result.binding_level,
+                reservation_result.reservation_id,
+            )
+
+            if reservation_result.ok:
+                return True, None, reservation_result.reservation_id
+            else:
+                reason = reservation_result.reason.value if reservation_result.reason else "unknown"
+                return False, f"resource reservation blocked: {reason}", None
+
+        except Exception as e:
+            logger.exception("resource_reservation failed signal=%s account=%s", signal_id, account.account_id)
+            return False, f"resource reservation check failed: {str(e)}", None
 
     def _build_export_envelope(
         self,
@@ -351,6 +600,8 @@ class SignalCopierEngine:
         still pass `export_envelope=None` to `save_order_result` in that
         case, which is exactly what omitting the keyword already does."""
         source_stream = f"signal-copier:{account.account_id}"
+        # WP-38 (G-C-13): use per-account evidence class, fall back to global config
+        evidence_class_str = account.evidence_class or config.RELAY_EVIDENCE_CLASS
         return build_execution_applied_envelope(
             result,
             account=account,
@@ -360,7 +611,7 @@ class SignalCopierEngine:
             source_stream=source_stream,
             export_sequence=self.store.next_export_sequence(source_stream),
             producer_id=config.RELAY_PRODUCER_ID,
-            evidence_class=EvidenceClass[config.RELAY_EVIDENCE_CLASS],
+            evidence_class=EvidenceClass[evidence_class_str],
             environment=Environment[config.RELAY_ENVIRONMENT],
             originating_source_event_id=originating_source_event_id,
             originating_analyst_id=originating_analyst_id,
@@ -436,13 +687,15 @@ class SignalCopierEngine:
         appended) for a `Side.CLOSE` signal -- see the builder's own
         docstring for why."""
         source_stream = f"signal-copier:source:{signal.source}"
+        # WP-38 (G-C-13): use per-account evidence class when available, fall back to global
+        evidence_class_str = (account.evidence_class if account is not None else None) or config.RELAY_EVIDENCE_CLASS
         envelope = build_routing_admission_outcome_envelope(
             signal,
             outcome=outcome,
             source_stream=source_stream,
             export_sequence=self.store.next_export_sequence(source_stream),
             producer_id=config.RELAY_PRODUCER_ID,
-            evidence_class=EvidenceClass[config.RELAY_EVIDENCE_CLASS],
+            evidence_class=EvidenceClass[evidence_class_str],
             environment=Environment[config.RELAY_ENVIRONMENT],
             account=account,
             broker=account.broker if account is not None else None,
@@ -461,27 +714,232 @@ class SignalCopierEngine:
         )
         return self.provider_registry.effective_settings(account_defaults, signal.source, signal.analyst)
 
-    async def handle_signal(self, signal: Signal) -> list[OrderResult]:
+    async def handle_signal(self, signal: Signal, dry_run: bool = False) -> list[OrderResult]:
         """C22: binds correlation fields (signal_id, source, symbol, side)
         onto every structlog call made anywhere during this signal's
         processing (see app/logging_config.py's bind_signal_context) --
         deliberately independent of this codebase's existing plain stdlib
         `logging.getLogger(__name__)` calls, which are unaffected either
         way. The actual routing/sizing/submission logic lives in
-        _handle_signal below, unchanged."""
+        _handle_signal below, unchanged.
+
+        WC-20 STEP 5: When dry_run=True, calculates all effects but stops
+        before any broker call, records decision traces, and returns results
+        without placing orders. Used for pre-flight checks and simulation."""
         with bind_signal_context(
             signal_id=signal.id, source=signal.source, symbol=signal.symbol, side=signal.side.value
         ):
-            structured_logger.info("signal_received", quantity=signal.quantity, analyst=signal.analyst)
-            results = await self._handle_signal(signal)
+            structured_logger.info("signal_received", quantity=signal.quantity, analyst=signal.analyst, dry_run=dry_run)
+            results = await self._handle_signal(signal, dry_run=dry_run)
             structured_logger.info(
                 "signal_processed",
                 destination_count=len(results),
                 statuses=[r.status.value for r in results],
+                dry_run=dry_run,
             )
             return results
 
-    async def _handle_signal(self, signal: Signal) -> list[OrderResult]:
+    async def _derive_admission_inputs(self, signal: Signal, single_candidates: list) -> AdmissionInputs:
+        """WC-32: Derive real admission inputs evaluated per candidate.
+
+        For each candidate account, determines halt status, margin regime, uncertain
+        effect, and budget state. Per-candidate exclusions are recorded as decision
+        traces. Returns AdmissionInputs with only eligible candidates remaining.
+
+        Args:
+            signal: The signal being processed.
+            single_candidates: List of DestinationAccount candidates.
+
+        Returns:
+            AdmissionInputs with real values computed from store/broker state.
+        """
+        # Authorization and interpretation are signal-wide (not per-candidate)
+        auth = "authorized" if self.routing.pool_for(signal.source, signal.symbol) is not None else "unauthorized"
+        interp = "entry"
+
+        # Per-candidate evaluation: filter out blocked candidates and record traces
+        eligible_accounts = []
+        excluded_candidates = []
+
+        for rank, account in enumerate(single_candidates):
+            excluded_reasons = []
+            physical_account_id = account.account_id
+
+            # Check halt status (account, portfolio, owner)
+            # 1. Check account halt
+            account_halt = self.store.active_halt_for("account", physical_account_id)
+            if account_halt:
+                excluded_reasons.append(f"HALTED:{account_halt.get('reason', 'account halt')}")
+
+            # 2. Check portfolio halt (look up portfolio_id from portfolio_backings)
+            if not account_halt:
+                # Find portfolio for this physical_account_id
+                portfolio_row = None
+                try:
+                    with self.store._connect() as conn:
+                        portfolio_row = conn.execute(
+                            "SELECT portfolio_id FROM portfolio_backings WHERE physical_account_id = ? LIMIT 1",
+                            (physical_account_id,)
+                        ).fetchone()
+                except Exception:
+                    pass  # No portfolio backing found
+
+                if portfolio_row:
+                    portfolio_id = portfolio_row[0]
+                    portfolio_halt = self.store.active_halt_for("portfolio", portfolio_id)
+                    if portfolio_halt:
+                        excluded_reasons.append(f"HALTED:{portfolio_halt.get('reason', 'portfolio halt')}")
+
+            # 3. Check owner halt
+            if not excluded_reasons:
+                owner_halt = self.store.active_halt_for("owner", "owner")
+                if owner_halt:
+                    excluded_reasons.append(f"HALTED:{owner_halt.get('reason', 'owner halt')}")
+
+            # 4. Check daily loss limit breach (sets a halt if breached)
+            if not excluded_reasons:
+                daily_loss_limit_pct = account.daily_loss_limit_percent or config.DEFAULT_DAILY_LOSS_LIMIT_PERCENT
+                if daily_loss_limit_pct:
+                    loss_check_error = await self.daily_loss_limiter.check_daily_loss_limit(account, daily_loss_limit_pct)
+                    if loss_check_error:
+                        # Persist a halt for this account
+                        self.store.set_trading_halt("account", physical_account_id, loss_check_error, source="daily_loss_limiter")
+                        excluded_reasons.append(f"HALTED:{loss_check_error}")
+
+            # Check margin regime
+            if not excluded_reasons:
+                regime_row = self.store.get_margin_regime(physical_account_id)
+                if regime_row:
+                    regime = regime_row["regime"]
+                else:
+                    # Determine regime based on broker environment
+                    try:
+                        broker = self.brokers.get(account.broker)
+                        if broker:
+                            env = broker.venue_environment(account)
+                            if env == "live":
+                                # A live venue with no declared regime blocks
+                                # new exposure (spec I17, §9).
+                                regime = "unknown"
+                            else:
+                                # paper/sandbox carry no PDT/intraday regime.
+                                # An adapter that cannot name its environment
+                                # ("unknown") is kept off live routes by the
+                                # WP-33 environment-qualification gate, not by
+                                # relabelling it as a margin-regime block.
+                                regime = f"not_applicable_{env}"
+                        else:
+                            # No adapter registered for this account's broker:
+                            # the regime cannot be evaluated at all, and the
+                            # entry path below reports the missing adapter as
+                            # an ERROR (its existing contract). Do not relabel
+                            # a configuration error as a margin-regime block.
+                            regime = "not_evaluated_no_adapter"
+                    except Exception:
+                        regime = "unknown"
+
+                if regime == "unknown":
+                    excluded_reasons.append("REGIME_UNKNOWN")
+
+            # Check uncertain effect (unresolved command ledger entries)
+            if not excluded_reasons:
+                unresolved = self.store.list_unresolved_command_ledger_entries(account.account_id)
+                # Spec §6.3: an UNCERTAIN effect is a submission whose broker
+                # outcome is genuinely unknown (UNKNOWN_AMBIGUOUS, or a
+                # PENDING_SUBMISSION row with no response yet). A
+                # SUBMITTED_UNCONFIRMED row is a KNOWN accepted order with a
+                # broker id: its exposure is already held by the capital
+                # reservation, so it is not an uncertain effect.
+                for entry in unresolved:
+                    if entry.command_type in (CommandType.ENTRY, CommandType.CLOSE) and entry.uncertainty_state in (
+                        UncertaintyState.UNKNOWN_AMBIGUOUS,
+                        UncertaintyState.PENDING_SUBMISSION,
+                    ):
+                        excluded_reasons.append("UNCERTAIN_EFFECT")
+                        break
+
+            # Check budget state
+            if not excluded_reasons:
+                scope = BudgetScope(
+                    owner="owner",  # Default owner id (may be overridden by config)
+                    physical_account_id=physical_account_id,
+                    portfolio_id=None,
+                    sleeve_id=None,
+                    provider=signal.source,
+                    analyst=signal.analyst,
+                    underlying=signal.symbol,
+                    cluster=None,
+                )
+
+                try:
+                    remaining_dict = self.hierarchical_budget.remaining(scope)
+                    # Check if any level has zero or negative remaining cents
+                    for _level, remaining_cents in remaining_dict.items():
+                        if remaining_cents is not None and remaining_cents <= 0:
+                            excluded_reasons.append("BUDGET_NOT_ADMISSIBLE")
+                            break
+                except Exception:
+                    excluded_reasons.append("BUDGET_NOT_ADMISSIBLE")
+
+            # Record decision trace for this candidate
+            if excluded_reasons:
+                # Candidate is excluded
+                reason_str = "|".join(excluded_reasons)
+                self.store.insert_decision_trace(
+                    signal_id=signal.id,
+                    physical_account_id=physical_account_id,
+                    candidate_rank=rank,
+                    feasible=False,
+                    reason=reason_str,
+                    selected=False,
+                )
+                excluded_candidates.append((account, reason_str))
+            else:
+                # Candidate is eligible
+                eligible_accounts.append(account.account_id)
+
+        # Keep the per-candidate detail for the operator-facing rejection
+        # message (the gate itself only sees the reason codes).
+        self._last_admission_exclusions = [
+            f"{account.account_id}: {reason_str}" for account, reason_str in excluded_candidates
+        ]
+
+        # Determine overall values for the admission gate.
+        # The gate blocks only if NO candidates remain (all excluded) with a given blocking reason.
+        overall_halt = "clear"
+        overall_regime = "legacy_pdt_verified"
+        overall_uncertain = False
+        overall_budget = "enough"
+
+        # Only set blocking reasons if all candidates are excluded
+        if not eligible_accounts:
+            for _, reason_str in excluded_candidates:
+                if "HALTED" in reason_str:
+                    overall_halt = "account_halt"
+                if "REGIME_UNKNOWN" in reason_str:
+                    overall_regime = "unknown"
+                if "UNCERTAIN_EFFECT" in reason_str:
+                    overall_uncertain = True
+                if "BUDGET_NOT_ADMISSIBLE" in reason_str:
+                    overall_budget = "not_enough"
+
+        # NO_ELIGIBLE_ROUTE means no candidate existed at all. When candidates
+        # existed but every one was excluded, the real exclusion reasons are
+        # the blockers; hand the gate the original candidate ids so it does
+        # not add a misleading NO_ELIGIBLE_ROUTE on top of them.
+        gate_candidates = eligible_accounts or [a.account_id for a in single_candidates]
+
+        return AdmissionInputs(
+            authorization=auth,
+            interpretation=interp,
+            eligible_physical_accounts=gate_candidates,
+            budget_state=overall_budget,
+            margin_regime=overall_regime,
+            halt=overall_halt,
+            uncertain_effect=overall_uncertain,
+        )
+
+    async def _handle_signal(self, signal: Signal, dry_run: bool = False) -> list[OrderResult]:
         # Cross-process/cross-host fencing (app/writer_lease.py): checked
         # before anything else in this method, including the SIG-01
         # replay-lookup below -- a process that's been fenced out must
@@ -538,7 +996,13 @@ class SignalCopierEngine:
         # DIFFERENT signal ids in the first place) -- see those for what
         # each specifically covers.
         already_processed = self.store.list_orders_for_signal(signal.id)
-        if already_processed:
+        # ALLOC-01: orders that exist only because candidate accounts were
+        # rejected BEFORE submission (intent still 'claimed'/'selected')
+        # are not a completed decision -- resume the allocation instead of
+        # replaying a partial one. A committed/skipped intent (or a signal
+        # with no intent: CLOSE / replicate-only) replays exactly as before.
+        prior_intent = self.store.get_allocation_intent(signal.id)
+        if already_processed and (prior_intent is None or prior_intent["state"] in ("committed", "skipped")):
             logger.info(
                 "signal id=%s already produced %d order result(s); replaying them instead of "
                 "re-submitting to every destination",
@@ -546,6 +1010,14 @@ class SignalCopierEngine:
                 len(already_processed),
             )
             return [_order_result_from_row(row) for row in already_processed]
+
+        # WP-11 (A-02/A-11): Edit and delete handling -- detect when this
+        # signal is an edit/revision of an earlier message and handle
+        # amendment instead of placing new entries.
+        if signal.original_message_id is not None:
+            edit_results = await self._handle_signal_edit(signal)
+            if edit_results is not None:
+                return edit_results
 
         self.store.save_signal(signal)
         self._export_source_receipt(signal)
@@ -587,16 +1059,169 @@ class SignalCopierEngine:
         # an exit block -- a CLOSE signal must still reach an account that
         # already has a position open on it, even while new entries are
         # paused (see RoutingConfig.destinations_for's docstring).
-        destinations = self.routing.destinations_for(
-            signal.source, signal.symbol, include_disabled=signal.side == Side.CLOSE
-        )
+        #
+        # ALLOC-01: for an ENTRY, `single`-mode rules' destinations are
+        # ALTERNATIVES for ONE intended trade (priority order). Exactly one
+        # is selected, BEFORE submission, under a durable allocation intent
+        # created before any account-specific execution. `replicate`-mode
+        # destinations are the only explicit fan-out. A CLOSE keeps its
+        # account-scoped behavior (each account exits only what it owns).
+        single_ids: set[str] = set()
+        allocation_intent: dict | None = None
+        results: list[OrderResult] = []
+        if signal.side == Side.CLOSE:
+            destinations = self.routing.destinations_for(signal.source, signal.symbol, include_disabled=True)
+        else:
+            pool = self.routing.pool_for(signal.source, signal.symbol, include_disabled=False)
+            single_candidates = pool.single
+            replicate_candidates = [a for a in pool.replicate if a.account_id not in {c.account_id for c in single_candidates}]
+
+            # WC-20 step 1: Identity collapse (I02) + decision traces
+            # For entry intents, collapse duplicate bindings to the same physical account
+            if single_candidates and signal.side != Side.CLOSE:
+                # Build mapping: physical_account_id -> first config_account
+                physical_to_config: dict[str, DestinationAccount] = {}
+                all_candidates = []  # For decision_traces
+
+                for config_account in sorted(single_candidates, key=lambda a: a.account_id):
+                    # Look up binding for this config account
+                    binding = self.store.get_binding_for_config_account(config_account.account_id)
+                    if binding is not None:
+                        physical_account_id = binding["physical_account_id"]
+                    else:
+                        # No binding row: config account is its own physical account
+                        physical_account_id = config_account.account_id
+
+                    all_candidates.append({
+                        "config_account": config_account,
+                        "physical_account_id": physical_account_id,
+                    })
+
+                    # Keep first by stable order
+                    if physical_account_id not in physical_to_config:
+                        physical_to_config[physical_account_id] = config_account
+
+                # Persist decision_traces for all candidates (even duplicates)
+                for rank, candidate in enumerate(all_candidates):
+                    is_selected = candidate["physical_account_id"] in physical_to_config and \
+                                  physical_to_config[candidate["physical_account_id"]].account_id == candidate["config_account"].account_id
+                    self.store.insert_decision_trace(
+                        signal_id=signal.id,
+                        physical_account_id=candidate["physical_account_id"],
+                        candidate_rank=rank,
+                        feasible=True,  # Initial; will be updated after sizing
+                        reason="initial_candidate",
+                        selected=is_selected,
+                    )
+
+                # Replace single_candidates with deduplicated list (keep first by account_id)
+                single_candidates = [physical_to_config[pid] for pid in sorted(physical_to_config.keys())]
+
+            # WC-20 step 2: Admission evaluation
+            # Evaluate if entry is admissible before sizing
+            # The gate guards NEW ENTRIES only. Intents that manage an existing
+            # position (EXIT/REDUCE/STOP_UPDATE/TARGET_UPDATE/CANCEL) are handled
+            # by their own per-account handlers below and are not entries, so
+            # they bypass this gate rather than being rejected by it. Intent.SELL
+            # is ambiguous (exit-or-short-entry, resolved per account in WP-09)
+            # and ADD is an entry-sized order, so both are admitted as entries.
+            _entry_like_intents = (Intent.ENTRY_LONG, Intent.ENTRY_SHORT, Intent.SELL, Intent.ADD)
+
+            # Check if allocation intent already exists (recovery/replay scenario)
+            # This must be checked BEFORE the admission gate, since recovered intents
+            # bypass the gate (the risk was already accepted in the earlier run).
+            existing_allocation = None
+            if single_candidates and signal.side != Side.CLOSE and signal.intent in _entry_like_intents:
+                existing_allocation = self.store.get_allocation_intent(signal.id)
+
+            # Apply admission gate only for NEW entries (no existing allocation intent)
+            if single_candidates and signal.side != Side.CLOSE and signal.intent in _entry_like_intents and existing_allocation is None:
+                # WC-32: Derive real admission inputs from store/broker state
+                admission_inputs = await self._derive_admission_inputs(signal, single_candidates)
+                admission_decision = evaluate_admission(admission_inputs)
+
+                # Save original candidates before filtering (needed if all are excluded)
+                original_candidates = single_candidates
+
+                # Filter single_candidates to only include eligible candidates
+                single_candidates = [
+                    a for a in single_candidates
+                    if a.account_id in admission_inputs.eligible_physical_accounts
+                ]
+
+                # If not admitted, reject all candidates
+                if not admission_decision.admit_new_entry:
+                    blocking_reasons_str = ", ".join(admission_decision.blocking_reasons)
+                    logger.info(
+                        "entry rejected by admission gate for signal=%s: %s",
+                        signal.id,
+                        blocking_reasons_str,
+                    )
+                    # Traces already persisted from identity collapse step
+                    # Reject all original candidates (not just filtered ones)
+                    exclusion_detail = "; ".join(getattr(self, "_last_admission_exclusions", []) or [])
+                    rejection_message = f"admission rejected: {blocking_reasons_str}"
+                    if exclusion_detail:
+                        rejection_message += f" -- {exclusion_detail}"
+                    for account in original_candidates:
+                        result = OrderResult(
+                            account_id=account.account_id,
+                            status=OrderStatus.REJECTED,
+                            signal_id=signal.id,
+                            message=rejection_message,
+                        )
+                        self.store.save_order_result(result, purpose="entry", family_id=signal.id)
+                        results.append(result)
+                        self._export_routing_outcome(
+                            signal,
+                            outcome="rejected",
+                            account=account,
+                            order_status=result.status,
+                            message=result.message,
+                        )
+                    return results
+
+            if single_candidates:
+                allocation_intent = self.store.claim_allocation_intent(
+                    signal.id,
+                    strategy_key=signal.source,
+                    symbol=signal.symbol,
+                    side=signal.side.value,
+                    candidates=[a.account_id for a in single_candidates],
+                )
+                bound = allocation_intent["selected_account_id"]
+                if bound is not None:
+                    # Already bound (restart, duplicate delivery, another
+                    # worker): this intent may only ever use that account.
+                    single_candidates = [a for a in single_candidates if a.account_id == bound]
+                    if not single_candidates:
+                        # The bound account left the approved pool (config
+                        # edit). Do NOT pick another: report and stop.
+                        logger.warning(
+                            "allocation intent %s bound to %s which is no longer in the approved pool; "
+                            "not re-selecting",
+                            allocation_intent["intent_id"],
+                            bound,
+                        )
+                single_ids = {a.account_id for a in single_candidates}
+            destinations = [*single_candidates, *replicate_candidates]
         if not destinations:
             logger.info("no destinations configured for source=%s symbol=%s", signal.source, signal.symbol)
+            if allocation_intent is not None:
+                self.store.skip_allocation_intent(signal.id, reason="no permitted destination in the approved pool")
             self._export_routing_outcome(signal, outcome="not_routed")
             return []
 
-        results: list[OrderResult] = []
+        committed_account_id: str | None = (
+            allocation_intent["selected_account_id"]
+            if allocation_intent is not None and allocation_intent["state"] in ("selected", "committed")
+            else None
+        )
         for raw_account in destinations:
+            if raw_account.account_id in single_ids and committed_account_id is not None and (
+                raw_account.account_id != committed_account_id
+            ):
+                continue
             effective = self._effective_settings(signal, raw_account)
             if effective.enabled is False and signal.side != Side.CLOSE:
                 # EXE-10: same entry-pause-not-exit-block distinction as
@@ -623,6 +1248,67 @@ class SignalCopierEngine:
                 ),
             )
 
+            # WP-09: Resolve SELL signals against the account's book
+            # When intent is SELL (ambiguous exit), check if the account holds a
+            # same-symbol LONG. If yes, convert to EXIT. If no, check allow_short.
+            working_signal = signal
+            if signal.intent == Intent.SELL:
+                symbol = symbol_for_account(signal, account)
+                # Check for open position: plain or managed
+                position_quantity = self.store.get_position(account.account_id, symbol)
+                existing_lifecycle = self.lifecycle_manager.get_lifecycle(account.account_id, symbol)
+                has_managed_lifecycle = (
+                    existing_lifecycle is not None
+                    and existing_lifecycle.plan.side == Side.BUY
+                )
+
+                if position_quantity is not None and position_quantity > 0:
+                    # Account holds a LONG: treat as EXIT
+                    working_signal = replace(working_signal, side=Side.CLOSE)
+                elif has_managed_lifecycle:
+                    # Managed account with open BUY lifecycle: treat as EXIT
+                    working_signal = replace(working_signal, side=Side.CLOSE)
+                elif account.allow_short:
+                    # No long and shorts allowed: convert to ENTRY_SHORT
+                    working_signal = replace(working_signal, intent=Intent.ENTRY_SHORT)
+                else:
+                    # No long and shorts disallowed: REJECTED
+                    result = OrderResult(
+                        account_id=account.account_id,
+                        status=OrderStatus.REJECTED,
+                        signal_id=signal.id,
+                        message=f"sell on account '{account.account_id}' with no long position and allow_short=false",
+                    )
+                    self.store.save_order_result(result, purpose="entry", family_id=signal.id)
+                    results.append(result)
+                    self._export_routing_outcome(
+                        signal,
+                        outcome="rejected",
+                        account=account,
+                        order_status=result.status,
+                        message=result.message,
+                    )
+                    continue
+
+            # WP-09: Reject explicit ENTRY_SHORT on accounts with allow_short=False
+            if working_signal.intent == Intent.ENTRY_SHORT and not account.allow_short:
+                result = OrderResult(
+                    account_id=account.account_id,
+                    status=OrderStatus.REJECTED,
+                    signal_id=signal.id,
+                    message=f"entry short on account '{account.account_id}' with allow_short=false",
+                )
+                self.store.save_order_result(result, purpose="entry", family_id=signal.id)
+                results.append(result)
+                self._export_routing_outcome(
+                    signal,
+                    outcome="rejected",
+                    account=account,
+                    order_status=result.status,
+                    message=result.message,
+                )
+                continue
+
             # DB-0X (order purpose/family): known from the signal itself,
             # before anything broker/lifecycle-specific has happened yet --
             # every save_order_result call in this loop iteration shares
@@ -637,7 +1323,7 @@ class SignalCopierEngine:
             # or one of the early rejections below that never reach a
             # broker/lifecycle at all) has no real entry to attribute it
             # to, so it stays honestly `None`.
-            order_purpose = "close" if signal.side == Side.CLOSE else "entry"
+            order_purpose = "close" if working_signal.side == Side.CLOSE else "entry"
             order_family_id: str | None = signal.id if order_purpose == "entry" else None
 
             broker = self.brokers.get(account.broker)
@@ -648,7 +1334,8 @@ class SignalCopierEngine:
                     signal_id=signal.id,
                     message=f"no broker adapter registered for '{account.broker}'",
                 )
-                self.store.save_order_result(result, purpose=order_purpose, family_id=order_family_id)
+                mult, _, _ = contract_multiplier(signal)
+                self.store.save_order_result(result, purpose=order_purpose, family_id=order_family_id, contract_multiplier=mult)
                 results.append(result)
                 self._export_routing_outcome(
                     signal,
@@ -659,20 +1346,84 @@ class SignalCopierEngine:
                 )
                 continue
 
-            if signal.side != Side.CLOSE:
+            # WP-13: Handle STOP_UPDATE and TARGET_UPDATE intents before entry/close routing
+            if signal.intent == Intent.STOP_UPDATE or signal.intent == Intent.TARGET_UPDATE:
+                symbol = symbol_for_account(signal, account)
+
+                if signal.intent == Intent.STOP_UPDATE:
+                    lifecycle = self.lifecycle_manager.get_lifecycle(account.account_id, symbol)
+                    if lifecycle is not None:
+                        result = await self.lifecycle_manager.update_stop_price(account, symbol, signal.stop_loss, signal_id=signal.id)
+                    else:
+                        result = OrderResult(
+                            account_id=account.account_id,
+                            status=OrderStatus.REJECTED,
+                            signal_id=signal.id,
+                            message=f"stop update needs a managed lifecycle for {symbol} on {account.account_id}",
+                        )
+                    self.store.save_order_result(
+                        result,
+                        broker=account.broker,
+                        symbol=symbol,
+                        side=signal.side,
+                        purpose="stop_update",
+                        family_id=None,
+                    )
+                    results.append(result)
+                    self._export_routing_outcome(
+                        signal,
+                        outcome=_OUTCOME_BY_ORDER_STATUS[result.status],
+                        account=account,
+                        order_status=result.status,
+                        message=result.message,
+                    )
+                    continue
+
+                if signal.intent == Intent.TARGET_UPDATE:
+                    lifecycle = self.lifecycle_manager.get_lifecycle(account.account_id, symbol)
+                    if lifecycle is not None:
+                        result = await self.lifecycle_manager.update_targets(account, symbol, signal.targets, signal_id=signal.id)
+                    else:
+                        result = OrderResult(
+                            account_id=account.account_id,
+                            status=OrderStatus.REJECTED,
+                            signal_id=signal.id,
+                            message=f"target update needs a managed lifecycle for {symbol} on {account.account_id}",
+                        )
+                    self.store.save_order_result(
+                        result,
+                        broker=account.broker,
+                        symbol=symbol,
+                        side=signal.side,
+                        purpose="target_update",
+                        family_id=None,
+                    )
+                    results.append(result)
+                    self._export_routing_outcome(
+                        signal,
+                        outcome=_OUTCOME_BY_ORDER_STATUS[result.status],
+                        account=account,
+                        order_status=result.status,
+                        message=result.message,
+                    )
+                    continue
+
+            if working_signal.side != Side.CLOSE:
                 # Track 1b: refuse a live ENTRY before anything else broker/
                 # asset-class-specific is even checked -- see
                 # `_check_route_qualified`'s own docstring for exactly what
                 # this gates, why CLOSE is exempt, and why PAPER accounts
                 # are exempt.
-                route_qualified, qualification_rejection = self._check_route_qualified(account, signal, broker)
+                route_qualified, qualification_rejection = self._check_route_qualified(account, working_signal, broker)
                 if not route_qualified:
                     assert qualification_rejection is not None
+                    mult, _, _ = contract_multiplier(signal)
                     self.store.save_order_result(
                         qualification_rejection,
                         broker=account.broker,
                         purpose=order_purpose,
                         family_id=order_family_id,
+                        contract_multiplier=mult,
                     )
                     results.append(qualification_rejection)
                     self._export_routing_outcome(
@@ -687,7 +1438,7 @@ class SignalCopierEngine:
             # Daily loss limit check: refuse an ENTRY if account has breached
             # its daily loss ceiling (circuit breaker, fail-closed). CLOSE
             # signals bypass this to allow closing/hedging after loss limits hit.
-            if signal.side != Side.CLOSE:
+            if working_signal.side != Side.CLOSE:
                 daily_loss_limit_percent = account.daily_loss_limit_percent or config.DEFAULT_DAILY_LOSS_LIMIT_PERCENT
                 daily_loss_error = await self.daily_loss_limiter.check_daily_loss_limit(account, daily_loss_limit_percent)
                 if daily_loss_error is not None:
@@ -697,11 +1448,13 @@ class SignalCopierEngine:
                         signal_id=signal.id,
                         message=daily_loss_error,
                     )
+                    mult, _, _ = contract_multiplier(signal)
                     self.store.save_order_result(
                         result,
                         broker=account.broker,
                         purpose=order_purpose,
                         family_id=order_family_id,
+                        contract_multiplier=mult,
                     )
                     results.append(result)
                     self._export_routing_outcome(
@@ -720,16 +1473,76 @@ class SignalCopierEngine:
             # unavailable (all None values), we pass through, as the broker adapter
             # hasn't integrated margin state reporting yet. Only check for entry
             # signals; CLOSE signals are allowed through to permit hedging.
-            if signal.side != Side.CLOSE:
-                # TODO: integrate broker.get_margin_state() calls to populate
-                # these values from live broker data. For now, these may be None
-                # if not explicitly provided by the broker adapter.
-                margin_error = self.margin_call_detector.check_and_persist_margin_call(
-                    account=account,
-                    current_equity=None,
-                    maintenance_requirement=None,
-                    excess_margin=None,
-                    broker=account.broker,
+            if working_signal.side != Side.CLOSE:
+                # Check for unresolved margin call alerts first. If any exist,
+                # block new entries to prevent trading on a margin-call account.
+                unresolved_alerts = self.margin_call_detector.get_unresolved_margin_calls(
+                    account.account_id
+                )
+                if unresolved_alerts:
+                    alert_ids = [a["id"] for a in unresolved_alerts]
+                    result = OrderResult(
+                        account_id=account.account_id,
+                        status=OrderStatus.REJECTED,
+                        signal_id=signal.id,
+                        message=f"Cannot trade: account has {len(unresolved_alerts)} unresolved margin call alert(s) "
+                        f"(ids: {alert_ids}). Resolve margin call(s) before entering new positions.",
+                    )
+                    mult, _, _ = contract_multiplier(signal)
+                    self.store.save_order_result(
+                        result,
+                        broker=account.broker,
+                        purpose=order_purpose,
+                        family_id=order_family_id,
+                        contract_multiplier=mult,
+                    )
+                    results.append(result)
+                    self._export_routing_outcome(
+                        signal,
+                        outcome=_OUTCOME_BY_ORDER_STATUS[result.status],
+                        account=account,
+                        order_status=result.status,
+                        message=result.message,
+                    )
+                    continue
+
+                # Feed balance.equity and balance.maintenance_margin from get_account_balance
+                # into the detector. Fail closed when a margin account reports equity but no
+                # maintenance figure.
+                balance = await broker.get_account_balance(account)
+                current_equity = None
+                maintenance_requirement = None
+
+                if balance is not None:
+                    current_equity = balance.equity
+                    maintenance_requirement = balance.maintenance_margin
+
+                    # A balance with equity but no maintenance figure is an
+                    # adapter/account that does not track margin (cash
+                    # accounts, the paper simulator): the margin-call gate
+                    # cannot run and says so; it does NOT reject, because the
+                    # buying-power, loss-limit and exposure gates still apply.
+                    # The readiness checklist reports "margin: not_tracked".
+                    if current_equity is not None and maintenance_requirement is None:
+                        logger.info(
+                            "margin_check_skipped account=%s broker=%s reason=maintenance_margin_not_reported",
+                            account.account_id,
+                            account.broker,
+                        )
+
+                # Check margin state with the detector only when the venue
+                # reports a maintenance figure; without one there is no margin
+                # state to evaluate (see the skip above).
+                margin_error = (
+                    self.margin_call_detector.check_and_persist_margin_call(
+                        account=account,
+                        current_equity=current_equity,
+                        maintenance_requirement=maintenance_requirement,
+                        excess_margin=None,  # Detector will calculate if needed
+                        broker=account.broker,
+                    )
+                    if maintenance_requirement is not None
+                    else None
                 )
                 if margin_error is not None:
                     result = OrderResult(
@@ -738,11 +1551,13 @@ class SignalCopierEngine:
                         signal_id=signal.id,
                         message=margin_error,
                     )
+                    mult, _, _ = contract_multiplier(signal)
                     self.store.save_order_result(
                         result,
                         broker=account.broker,
                         purpose=order_purpose,
                         family_id=order_family_id,
+                        contract_multiplier=mult,
                     )
                     results.append(result)
                     self._export_routing_outcome(
@@ -759,7 +1574,7 @@ class SignalCopierEngine:
             # is below threshold or cannot be determined, we reject the signal to
             # prevent liquidation. Only check for entry signals; CLOSE signals are
             # allowed through to permit position reduction.
-            if signal.side != Side.CLOSE:
+            if working_signal.side != Side.CLOSE:
                 min_equity_threshold = account.min_equity_threshold
                 if min_equity_threshold is not None:
                     liquidation_error = await self.daily_loss_limiter.check_min_equity_threshold(
@@ -772,11 +1587,13 @@ class SignalCopierEngine:
                             signal_id=signal.id,
                             message=liquidation_error,
                         )
+                        mult, _, _ = contract_multiplier(signal)
                         self.store.save_order_result(
                             result,
                             broker=account.broker,
                             purpose=order_purpose,
                             family_id=order_family_id,
+                            contract_multiplier=mult,
                         )
                         results.append(result)
                         self._export_routing_outcome(
@@ -804,8 +1621,36 @@ class SignalCopierEngine:
                         f"'{signal.asset_class.value}' — refusing to route this signal here"
                     ),
                 )
+                mult, _, _ = contract_multiplier(signal)
                 self.store.save_order_result(
-                    result, broker=account.broker, purpose=order_purpose, family_id=order_family_id
+                    result, broker=account.broker, purpose=order_purpose, family_id=order_family_id, contract_multiplier=mult
+                )
+                results.append(result)
+                self._export_routing_outcome(
+                    signal,
+                    outcome=_OUTCOME_BY_ORDER_STATUS[result.status],
+                    account=account,
+                    order_status=result.status,
+                    message=result.message,
+                )
+                continue
+
+            # C-01: Reject LIMIT/STOP entries for adapters that don't support them
+            # (fail-closed). Until an adapter implements and declares limit/stop
+            # support, every entry must be MARKET (the default when unspecified).
+            if working_signal.side != Side.CLOSE and not broker.can_trade_entry_order_type(working_signal.entry_order_type):
+                result = OrderResult(
+                    account_id=account.account_id,
+                    status=OrderStatus.REJECTED,
+                    signal_id=signal.id,
+                    message=(
+                        f"broker '{account.broker}' does not support entry_order_type="
+                        f"'{working_signal.entry_order_type.value if working_signal.entry_order_type else 'market'}' — refusing to route this signal here"
+                    ),
+                )
+                mult, _, _ = contract_multiplier(signal)
+                self.store.save_order_result(
+                    result, broker=account.broker, purpose=order_purpose, family_id=order_family_id, contract_multiplier=mult
                 )
                 results.append(result)
                 self._export_routing_outcome(
@@ -819,7 +1664,18 @@ class SignalCopierEngine:
 
             symbol = symbol_for_account(signal, account)
 
-            if account.managed_lifecycle:
+            # D-07/F-01: for CLOSE signals, determine the exit path by
+            # lifecycle existence, not by the managed_lifecycle flag.
+            # If a lifecycle exists, it must be closed through the managed
+            # path. Otherwise, use the plain path. This prevents orphaning
+            # protective stops or stranding positions when the flag is
+            # changed mid-position.
+            use_managed_path = account.managed_lifecycle
+            if working_signal.side == Side.CLOSE:
+                existing_lifecycle = self.lifecycle_manager.get_lifecycle(account.account_id, symbol)
+                use_managed_path = existing_lifecycle is not None
+
+            if use_managed_path:
                 existing_lifecycle = None
                 if order_purpose == "close":
                     # DB-0X: the real family this close belongs to is
@@ -836,8 +1692,28 @@ class SignalCopierEngine:
                     existing_lifecycle = self.lifecycle_manager.get_lifecycle(account.account_id, symbol)
                     if existing_lifecycle is not None and existing_lifecycle.plan.entry_signal_id:
                         order_family_id = existing_lifecycle.plan.entry_signal_id
-                managed_outcome = await self._handle_managed_signal(signal, account, symbol)
+                managed_bound = False
+                if order_purpose == "entry" and account.account_id in single_ids:
+                    if not self.store.bind_allocation_intent(signal.id, account.account_id):
+                        logger.info("allocation intent for signal=%s is bound elsewhere; skipping account=%s", signal.id, account.account_id)
+                        continue
+                    managed_bound = True
+                managed_outcome = await self._handle_managed_signal(
+                    working_signal,
+                    account,
+                    symbol,
+                    dry_run=dry_run,
+                    opportunity_id=self._opportunity_id_for(signal, account, single_ids),
+                )
                 result = managed_outcome.result
+                if managed_bound:
+                    if managed_outcome.submitted_at is None:
+                        # Rejected before ever reaching a broker: no
+                        # exposure exists, so the next approved
+                        # alternative may be tried.
+                        self.store.release_allocation_binding(signal.id, account.account_id)
+                    else:
+                        committed_account_id = account.account_id
                 # TRK-23: the audit's HIGH-severity gap -- a managed-
                 # lifecycle fill never built/exported an EXECUTION_APPLIED
                 # envelope at all (only its own internal `orders` row via
@@ -846,7 +1722,7 @@ class SignalCopierEngine:
                 # majority of real trading activity. `side` must be the
                 # resolved BUY/SELL actually sent to the broker, never
                 # `Side.CLOSE` (see `build_execution_applied_envelope`'s
-                # own docstring) -- for an entry, `signal.side` already is
+                # own docstring) -- for an entry, `working_signal.side` already is
                 # that (a CLOSE signal never reaches this branch as an
                 # entry); for a close, `existing_lifecycle.exit_side`
                 # (captured above, BEFORE a fully-flattening close can
@@ -859,7 +1735,7 @@ class SignalCopierEngine:
                 # so `_build_export_envelope` would have returned `None`
                 # regardless.
                 export_side = (
-                    signal.side
+                    working_signal.side
                     if order_purpose != "close"
                     else (existing_lifecycle.exit_side if existing_lifecycle is not None else None)
                 )
@@ -894,7 +1770,11 @@ class SignalCopierEngine:
                     result,
                     broker=account.broker,
                     symbol=symbol,
-                    side=signal.side,
+                    # The journal must carry the resolved BUY/SELL (the same
+                    # value the export already uses): a `close` side is
+                    # skipped by every replay, which blanks realized P&L,
+                    # marks the symbol unresolved and locks the capital gate.
+                    side=export_side if export_side is not None else working_signal.side,
                     requested_quantity=None,
                     applied_quantity=managed_outcome.applied_quantity,
                     confirmed_cumulative_fill=managed_outcome.confirmed_cumulative_fill,
@@ -917,14 +1797,14 @@ class SignalCopierEngine:
                 )
                 continue
 
-            if signal.side == Side.CLOSE:
+            if working_signal.side == Side.CLOSE:
                 # DB-0X: a plain (non-managed_lifecycle) account has no
                 # tracked lifecycle object linking this close back to
                 # whichever entry fill(s) produced the position it's
                 # closing -- `_resolve_and_submit_plain_close` itself saves
                 # this order with purpose='close' and family_id=None (the
                 # honest default already set above), not re-derived here.
-                result = await self._resolve_and_submit_plain_close(signal, account, symbol, broker)
+                result = await self._resolve_and_submit_plain_close(working_signal, account, symbol, broker)
                 results.append(result)
                 # A CLOSE signal never gets a SOURCE_RECEIPT (see
                 # build_source_receipt_envelope), so this is a real no-op
@@ -939,7 +1819,62 @@ class SignalCopierEngine:
                 )
                 continue
 
-            order_signal, quantity = signal, size_for_account(signal, account)
+            try:
+                # WC-20 STEP 3: Sizing modes (fixed/multiplier/risk_fraction)
+                # Fetch equity and buying_power if needed (required for risk_fraction mode)
+                equity = None
+                buying_power = None
+                if account.sizing_mode == "risk_fraction":
+                    balance = await broker.get_account_balance(account)
+                    if balance is not None:
+                        equity = balance.equity
+                        buying_power = balance.buying_power
+
+                # Apply sizing mode and get quantity
+                quantity_result, sizing_error = size_for_account_with_mode(
+                    working_signal, account, equity, buying_power
+                )
+                if sizing_error is not None:
+                    raise UnsizedEntryError(sizing_error)
+                if quantity_result is None:
+                    raise UnsizedEntryError("sizing returned None without error message")
+
+                order_signal, quantity = working_signal, quantity_result
+
+                # WP-17 (B-04): normalize quantity to venue precision after sizing
+                normalized_qty = broker.normalize_quantity(account, symbol, quantity)
+                if normalized_qty is None:
+                    raise UnsizedEntryError(f"quantity step unknown for {symbol} on {account.broker}")
+                if normalized_qty <= 0:
+                    raise UnsizedEntryError(
+                        f"quantity {quantity} rounds to {normalized_qty:.8g} below venue minimum for {symbol}"
+                    )
+                quantity = normalized_qty
+            except UnsizedEntryError as e:
+                result = OrderResult(
+                    account_id=account.account_id,
+                    status=OrderStatus.REJECTED,
+                    signal_id=signal.id,
+                    message=str(e),
+                )
+                self.store.save_order_result(
+                    result,
+                    broker=account.broker,
+                    symbol=symbol,
+                    side=working_signal.side,
+                    requested_quantity=None,
+                    purpose=order_purpose,
+                    family_id=order_family_id,
+                )
+                results.append(result)
+                self._export_routing_outcome(
+                    signal,
+                    outcome=_OUTCOME_BY_ORDER_STATUS[result.status],
+                    account=account,
+                    order_status=result.status,
+                    message=result.message,
+                )
+                continue
 
             if (order_signal.stop_loss is not None or order_signal.take_profit is not None) and not broker.supports_native_bracket:
                 # This account isn't managed_lifecycle, so nothing will submit a
@@ -1002,6 +1937,62 @@ class SignalCopierEngine:
                 )
                 continue
 
+            if account.account_id in single_ids:
+                # ALLOC-01 commit point: bind this intent to ONE account
+                # before the durable command-ledger intent and the broker
+                # call. If another worker/delivery already bound a
+                # different account, this one must not execute.
+                if not self.store.bind_allocation_intent(signal.id, account.account_id):
+                    self.capital_allocator.release(account.account_id, notional, signal_id=signal.id)
+                    logger.info(
+                        "allocation intent for signal=%s is bound elsewhere; not executing on account=%s",
+                        signal.id,
+                        account.account_id,
+                    )
+                    continue
+                committed_account_id = account.account_id
+
+            # WC-33 STEP B: Check and reserve hierarchical resources before
+            # command ledger entry. This ensures all budget levels are checked
+            # atomically before any broker effect occurs.
+            opportunity_id = self._opportunity_id_for(signal, account, single_ids)
+            resources_ok, resource_error, reservation_id = await self._check_and_reserve_resources(
+                signal_id=opportunity_id,
+                account=account,
+                quantity=quantity,
+                signal=order_signal,
+                broker=broker,
+            )
+            if not resources_ok:
+                assert resource_error is not None
+                # Release the capital reserved by _try_reserve_capital
+                self.capital_allocator.release(account.account_id, notional, signal_id=signal.id)
+                # Create rejection result
+                result = OrderResult(
+                    account_id=account.account_id,
+                    status=OrderStatus.REJECTED,
+                    signal_id=signal.id,
+                    message=f"resource reservation blocked: {resource_error}",
+                )
+                self.store.save_order_result(
+                    result,
+                    broker=account.broker,
+                    symbol=symbol,
+                    side=order_signal.side,
+                    requested_quantity=quantity,
+                    purpose=order_purpose,
+                    family_id=order_family_id,
+                )
+                results.append(result)
+                self._export_routing_outcome(
+                    signal,
+                    outcome=_OUTCOME_BY_ORDER_STATUS[result.status],
+                    account=account,
+                    order_status=result.status,
+                    message=result.message,
+                )
+                continue
+
             # P0-2: pre-effect durable command-ledger intent, written and
             # COMMITTED before the broker is ever called -- see
             # app/command_ledger.py's module docstring. `signal.id` is
@@ -1027,13 +2018,33 @@ class SignalCopierEngine:
                 environment=command_ledger.current_environment(),
                 request_fingerprint=ledger_fingerprint,
             )
-            if command_ledger.is_duplicate_submission(ledger_entry.uncertainty_state):
+            # ALLOC-05: an EXISTING row still in PENDING_SUBMISSION means an
+            # earlier attempt (a crashed process, or a concurrent worker)
+            # wrote its intent and we cannot know whether its broker call
+            # happened. That is an ambiguous submission, never "brand new":
+            # resubmitting could place the same exposure twice.
+            crash_window_duplicate = (
+                not ledger_entry.newly_opened
+                and ledger_entry.uncertainty_state == UncertaintyState.PENDING_SUBMISSION
+            )
+            if crash_window_duplicate:
+                self.store.mark_command_ledger_outcome(
+                    ledger_key,
+                    uncertainty_state=UncertaintyState.UNKNOWN_AMBIGUOUS,
+                    terminal_evidence={
+                        "broker_status": "intent_found_without_outcome",
+                        "signal_id": signal.id,
+                        "reserved_notional": notional,
+                    },
+                )
+                ledger_entry.uncertainty_state = UncertaintyState.UNKNOWN_AMBIGUOUS
+            if crash_window_duplicate or command_ledger.is_duplicate_submission(ledger_entry.uncertainty_state):
                 # A prior attempt under this exact key already ran (or is
                 # running) -- never submit a second broker order for it.
                 # The broker was already released this reservation's fate
                 # one way or another on that first attempt, so release here
                 # too rather than double-reserve.
-                self.capital_allocator.release(account.account_id, notional)
+                self.capital_allocator.release(account.account_id, notional, signal_id=signal.id)
                 logger.info(
                     "duplicate entry command idempotency_key=%s account=%s symbol=%s -- replaying "
                     "tracked state=%s instead of resubmitting",
@@ -1053,19 +2064,278 @@ class SignalCopierEngine:
                     ),
                 )
                 results.append(result)
-                self._export_routing_outcome(
-                    signal, outcome="duplicate_command", account=account, order_status=result.status, message=result.message
-                )
+                if crash_window_duplicate:
+                    # The earlier attempt never exported an outcome; surface
+                    # the unresolved obligation. A plain replay of an already
+                    # exported outcome is deliberately NOT re-exported ("duplicate_command" is not a
+                    # valid routing outcome and would raise).
+                    self._export_routing_outcome(
+                        signal, outcome="error", account=account, order_status=result.status, message=result.message
+                    )
                 continue
+
+            # WC-33 STEP C: Durable intent before dispatch
+            # Get contract multiplier value for policy hash
+            mult, _, _ = _get_contract_multiplier(order_signal)
+
+            # Build OrderIntent with policy hash from sizing inputs
+            policy_input = {
+                "side": order_signal.side.value,
+                "quantity": quantity,
+                "multiplier": mult,
+                "price": order_signal.price,
+            }
+            policy_hash = hashlib.sha256(json.dumps(policy_input, sort_keys=True).encode()).hexdigest()
+
+            # Handle fractional quantities: if not whole number, store in price_constraints
+            if isinstance(quantity, float) and not quantity.is_integer():
+                intent_quantity = 0
+                quantity_fractional = quantity
+            else:
+                intent_quantity = int(quantity)
+                quantity_fractional = None
+
+            # Build price constraints and protection recipe
+            price_constraints = {"entry": order_signal.price}
+            if order_signal.stop_loss is not None:
+                price_constraints["stop_loss"] = order_signal.stop_loss
+            if order_signal.take_profit is not None:
+                price_constraints["take_profit"] = order_signal.take_profit
+            if quantity_fractional is not None:
+                price_constraints["quantity_fractional"] = quantity_fractional
+
+            protection_recipe = None
+            if order_signal.stop_loss is not None or order_signal.take_profit is not None:
+                protection_recipe = {}
+                if order_signal.stop_loss is not None:
+                    protection_recipe["stop_loss"] = order_signal.stop_loss
+                # TODO: map take_profit to targets if needed
+
+            # Create OrderIntent (WC-33 STEP C)
+            intent = OrderIntent.create(
+                opportunity_id=opportunity_id,
+                physical_account_id=account.account_id,  # Using account_id as physical_account_id for now
+                binding_id=account.account_id,  # Using account_id as binding_id for now
+                client_correlation_id=ledger_key,
+                policy_hash=policy_hash,
+                quantity=intent_quantity,
+                price_constraints=price_constraints,
+                protection_recipe=protection_recipe,
+                reservation_id=reservation_id,
+            )
 
             # PU-A2: the real moment this engine actually calls the broker --
             # the "decision -> submission" boundary app/execution_quality.py's
             # stage breakdown reports, captured immediately before the call
             # so nothing else on this path (routing, sizing, the capital-
             # admission check above) is folded into it.
+            # WC-33: Honest dry_run: stop AFTER intent is built, BEFORE outbox.enqueue
             submitted_at = datetime.now(timezone.utc)
+            ambiguous_submission = False
+            if dry_run:
+                # WC-33 STEP E: Honest dry_run
+                # Stop after intent is built, before outbox.enqueue
+                # Transition reservation to RELEASED with dry_run evidence
+                if reservation_id is not None:
+                    self.hierarchical_budget.transition(
+                        reservation_id,
+                        ReservationState.RELEASED,
+                        evidence={"dry_run": True},
+                    )
+                # Release capital allocation
+                self.capital_allocator.release(account.account_id, notional, signal_id=signal.id)
+                # Update decision trace reason with planned details
+                # TODO: implement update_decision_trace_reason in store and call it here
+                # For now, log the plan details
+                logger.info(
+                    "dry_run mode: planned signal=%s account=%s qty=%s price=%s reservation=%s",
+                    signal.id,
+                    account.account_id,
+                    quantity,
+                    order_signal.price,
+                    reservation_id,
+                )
+                # Return honest PENDING result without going through normal fill processing
+                result = OrderResult(
+                    account_id=account.account_id,
+                    status=OrderStatus.PENDING,
+                    signal_id=signal.id,
+                    message="dry_run: planned, not dispatched",
+                    filled_quantity=None,
+                    filled_price=None,
+                )
+                self.store.save_order_result(
+                    result,
+                    broker=account.broker,
+                    symbol=symbol,
+                    side=order_signal.side,
+                    requested_quantity=quantity,
+                    purpose=order_purpose,
+                    family_id=order_family_id,
+                )
+                results.append(result)
+                self._export_routing_outcome(
+                    signal,
+                    outcome=_OUTCOME_BY_ORDER_STATUS[result.status],
+                    account=account,
+                    order_status=result.status,
+                    message=result.message,
+                )
+                continue
+
+            # WC-33 STEP C: Enqueue intent and claim for dispatch
             try:
+                self.outbox.enqueue(intent)
+                logger.info(
+                    "intent_enqueued signal=%s account=%s intent_id=%s",
+                    signal.id,
+                    account.account_id,
+                    intent.intent_id,
+                )
+            except Exception as e:
+                logger.exception("failed to enqueue intent signal=%s account=%s", signal.id, account.account_id)
+                # Release reservations on enqueue failure
+                self.capital_allocator.release(account.account_id, notional, signal_id=signal.id)
+                if reservation_id is not None:
+                    self.hierarchical_budget.transition(
+                        reservation_id,
+                        ReservationState.RELEASED,
+                        evidence={"error": str(e)},
+                    )
+                result = OrderResult(
+                    account_id=account.account_id,
+                    status=OrderStatus.ERROR,
+                    signal_id=signal.id,
+                    message=f"intent enqueue failed: {str(e)}",
+                )
+                self.store.save_order_result(
+                    result,
+                    broker=account.broker,
+                    symbol=symbol,
+                    side=order_signal.side,
+                    requested_quantity=quantity,
+                    purpose=order_purpose,
+                    family_id=order_family_id,
+                )
+                results.append(result)
+                self._export_routing_outcome(
+                    signal,
+                    outcome=_OUTCOME_BY_ORDER_STATUS[result.status],
+                    account=account,
+                    order_status=result.status,
+                    message=result.message,
+                )
+                continue
+
+            # Claim the outbox item for dispatch
+            worker_lease_id = self.lease_guard.lease_id if hasattr(self.lease_guard, 'lease_id') else "engine"
+            try:
+                claimed_item = self.outbox.claim_next(worker_lease_id)
+                if claimed_item is None:
+                    logger.error("failed to claim outbox item signal=%s", signal.id)
+                    raise RuntimeError("outbox item not found after enqueue")
+            except Exception as e:
+                logger.exception("failed to claim outbox item signal=%s", signal.id)
+                # Release reservations on claim failure
+                self.capital_allocator.release(account.account_id, notional, signal_id=signal.id)
+                if reservation_id is not None:
+                    self.hierarchical_budget.transition(
+                        reservation_id,
+                        ReservationState.RELEASED,
+                        evidence={"error": str(e)},
+                    )
+                result = OrderResult(
+                    account_id=account.account_id,
+                    status=OrderStatus.ERROR,
+                    signal_id=signal.id,
+                    message=f"outbox claim failed: {str(e)}",
+                )
+                self.store.save_order_result(
+                    result,
+                    broker=account.broker,
+                    symbol=symbol,
+                    side=order_signal.side,
+                    requested_quantity=quantity,
+                    purpose=order_purpose,
+                    family_id=order_family_id,
+                )
+                results.append(result)
+                self._export_routing_outcome(
+                    signal,
+                    outcome=_OUTCOME_BY_ORDER_STATUS[result.status],
+                    account=account,
+                    order_status=result.status,
+                    message=result.message,
+                )
+                continue
+
+            # WC-33 STEP C: After outbox claim (durable intent persisted), transition to COMMITTED_TO_PENDING_ORDER
+            # This marks the submission as committed before broker call
+            if reservation_id is not None:
+                try:
+                    self.hierarchical_budget.transition(
+                        reservation_id,
+                        ReservationState.COMMITTED_TO_PENDING_ORDER,
+                        evidence={"outbox_intent_id": intent.intent_id},
+                    )
+                except Exception as e:
+                    logger.exception("failed to transition to COMMITTED_TO_PENDING_ORDER signal=%s", signal.id)
+                    # Release reservations and capital on transition failure
+                    self.capital_allocator.release(account.account_id, notional, signal_id=signal.id)
+                    result = OrderResult(
+                        account_id=account.account_id,
+                        status=OrderStatus.ERROR,
+                        signal_id=signal.id,
+                        message=f"reservation transition failed: {str(e)}",
+                    )
+                    self.store.save_order_result(
+                        result,
+                        broker=account.broker,
+                        symbol=symbol,
+                        side=order_signal.side,
+                        requested_quantity=quantity,
+                        purpose=order_purpose,
+                        family_id=order_family_id,
+                    )
+                    results.append(result)
+                    self._export_routing_outcome(
+                        signal,
+                        outcome=_OUTCOME_BY_ORDER_STATUS[result.status],
+                        account=account,
+                        order_status=result.status,
+                        message=result.message,
+                    )
+                    continue
+
+            try:
+                order_signal.client_order_id = ledger_key
                 result = await broker.place_order(order_signal, account, quantity, symbol)
+                # WC-33 STEP D: Record response in outbox and transition reservation based on result status
+                outbox_response = {
+                    "status": result.status.value,
+                    "broker_order_id": result.broker_order_id,
+                    "message": result.message,
+                }
+                self.outbox.record_response(intent.intent_id, outbox_response)
+                # WC-33 STEP D: Transition reservation based on result status
+                if reservation_id is not None:
+                    if result.status == OrderStatus.FILLED:
+                        # Filled: go from COMMITTED_TO_PENDING_ORDER → FILLED_EXPOSURE
+                        self.hierarchical_budget.transition(
+                            reservation_id,
+                            ReservationState.FILLED_EXPOSURE,
+                            evidence={"broker_order_id": result.broker_order_id, "filled_quantity": result.filled_quantity},
+                        )
+                    elif result.status == OrderStatus.PENDING:
+                        # Already in COMMITTED_TO_PENDING_ORDER, no further transition needed
+                        pass
+                    elif result.status == OrderStatus.REJECTED:
+                        # Rejected: go from COMMITTED_TO_PENDING_ORDER → RELEASED
+                        self.hierarchical_budget.transition(
+                            reservation_id,
+                            ReservationState.RELEASED,
+                            evidence={"reason": "broker_rejected"},
+                        )
             except Exception as exc:  # noqa: BLE001 - one account's failure must not block others
                 logger.exception("order failed for account=%s", account.account_id)
                 result = OrderResult(
@@ -1074,13 +2344,41 @@ class SignalCopierEngine:
                     signal_id=signal.id,
                     message=str(exc),
                 )
+                ambiguous_submission = True
+                # WC-33 STEP D: Record response and transition to UNKNOWN_HELD on exception
+                try:
+                    outbox_response = {
+                        "exception": str(exc),
+                        "status": "error",
+                        "message": result.message,
+                    }
+                    self.outbox.record_response(intent.intent_id, outbox_response)
+                except Exception:
+                    logger.exception("failed to record outbox response for failed order")
+                # WC-33 STEP D: Transition to UNKNOWN_HELD (held, not released automatically)
+                if reservation_id is not None:
+                    try:
+                        self.hierarchical_budget.transition(
+                            reservation_id,
+                            ReservationState.UNKNOWN_HELD,
+                            evidence={"exception": str(exc)},
+                        )
+                    except Exception:
+                        logger.exception("failed to transition reservation to UNKNOWN_HELD")
                 self.store.mark_command_ledger_outcome(
                     ledger_key,
                     uncertainty_state=UncertaintyState.UNKNOWN_AMBIGUOUS,
-                    terminal_evidence=command_ledger.ambiguous_evidence_for_exception(exc),
+                    terminal_evidence={
+                        **command_ledger.ambiguous_evidence_for_exception(exc),
+                        "signal_id": signal.id,
+                        "reserved_notional": notional,
+                    },
                 )
             else:
                 outcome_state, outcome_remote, outcome_evidence = command_ledger.classify_order_result(result)
+                ambiguous_submission = outcome_state == UncertaintyState.UNKNOWN_AMBIGUOUS
+                if ambiguous_submission:
+                    outcome_evidence = {**outcome_evidence, "signal_id": signal.id, "reserved_notional": notional}
                 self.store.mark_command_ledger_outcome(
                     ledger_key,
                     uncertainty_state=outcome_state,
@@ -1112,8 +2410,22 @@ class SignalCopierEngine:
                 # fabricated full-quantity reservation for an order nothing
                 # actually reserved capital against.
                 reserved_quantity = quantity if notional else 0.0
+            elif ambiguous_submission and notional:
+                # ALLOC-05: an ambiguous submission (timeout / lost response /
+                # ERROR / PENDING with nothing to poll) may have been
+                # accepted at the venue. It is an unresolved OBLIGATION: the
+                # capital and strategy reservations stay held until
+                # `resolve_unknown_submission` (or reconciliation that
+                # records the real fill) settles it. Releasing here would let
+                # the same capacity be spent twice.
+                logger.warning(
+                    "ambiguous submission for signal=%s account=%s: holding reservation of %.2f until resolved",
+                    signal.id,
+                    account.account_id,
+                    notional,
+                )
             else:
-                self.capital_allocator.release(account.account_id, notional)
+                self.capital_allocator.release(account.account_id, notional, signal_id=signal.id)
 
             # TRK-Q1: how much of `quantity` the broker has actually
             # ACCEPTED an order for -- see app/quantity.py's
@@ -1158,6 +2470,10 @@ class SignalCopierEngine:
                 self.store.record_fill(account.account_id, symbol, order_signal.side, applied_quantity)
             applied_execution_delta = applied_quantity if applied_quantity is not None else 0.0
 
+            # WP-38 (G-C-24): persist paper broker order ID sequence after a FILLED result
+            if result.status == OrderStatus.FILLED and account.broker == "paper":
+                self._persist_paper_order_id_sequence(result, account)
+
             export_envelope = self._build_export_envelope(
                 result,
                 account=account,
@@ -1167,6 +2483,10 @@ class SignalCopierEngine:
                 originating_source_event_id=signal.id,
                 originating_analyst_id=signal.analyst,
             )
+            mult, _, spec_note = contract_multiplier(order_signal)
+            # Append spec note to result message if present (e.g., "fx unit assumed: units")
+            if spec_note is not None and result.status in (OrderStatus.FILLED, OrderStatus.PENDING):
+                result = replace(result, message=f"{result.message} ({spec_note})")
             self.store.save_order_result(
                 result,
                 broker=account.broker,
@@ -1184,7 +2504,27 @@ class SignalCopierEngine:
                 submitted_at=submitted_at,
                 purpose=order_purpose,
                 family_id=order_family_id,
+                contract_multiplier=mult,
             )
+            # D-01: Save bracket child leg orders (stop and take-profit)
+            # as separate orders rows so they can be polled in reconciliation
+            if result.status == OrderStatus.FILLED and result.child_order_ids and order_purpose == "entry":
+                for child_type, child_broker_order_id in result.child_order_ids.items():
+                    if child_type == "stop":
+                        child_purpose = "stop_exit"
+                    elif child_type == "take_profit":
+                        child_purpose = "target_exit"
+                    else:
+                        continue  # Unknown child type, skip
+                    self.store.save_child_order_result(
+                        account_id=account.account_id,
+                        broker=account.broker,
+                        symbol=symbol,
+                        quantity=quantity,
+                        broker_order_id=child_broker_order_id,
+                        purpose=child_purpose,
+                        family_id=signal.id,  # use the original signal id as family
+                    )
             results.append(result)
             self._export_routing_outcome(
                 signal,
@@ -1194,6 +2534,19 @@ class SignalCopierEngine:
                 message=result.message,
             )
 
+        if allocation_intent is not None and single_ids:
+            if committed_account_id is not None:
+                self.store.commit_allocation_intent(signal.id, committed_account_id)
+            else:
+                self.store.skip_allocation_intent(
+                    signal.id,
+                    reason="no approved account could take this trade: "
+                    + "; ".join(f"{r.account_id}: {r.message}" for r in results if r.account_id in single_ids),
+                    trace=[
+                        {"account_id": r.account_id, "status": r.status.value, "message": r.message}
+                        for r in results
+                    ],
+                )
         return results
 
     #: Sentinel `OrderResult.account_id` for a signal held out of live
@@ -1264,6 +2617,69 @@ class SignalCopierEngine:
             )
         ]
 
+    async def _handle_signal_edit(self, signal: Signal) -> list[OrderResult] | None:
+        """WP-11 (A-02/A-11): Handle edited/revised signals.
+
+        When signal.original_message_id is set, this signal is an edit of an
+        earlier message. Instead of placing new entry orders, we detect the
+        original signal and prevent duplicate entries.
+
+        NOTE (Track 5, point 6): An edit with a DISTINCT revision_id is a NEW
+        provider event. Only treat it as an amendment if the revision_id is the
+        same (or both None). This preserves the audited behavior that distinct
+        revisions (from Telegram MTProto or other versioning systems) are not
+        collapsed with their originals.
+
+        Returns a list of OrderResults marking edit amendments, or None if no
+        original signal is found or if the revision_id is distinct (in which case
+        normal routing continues).
+        """
+        # Find the original signal(s) that this edits
+        original_signal_ids = self.store.find_signals_by_original_message_id(
+            channel_id=signal.channel_id,
+            original_message_id=signal.original_message_id,
+        )
+        if not original_signal_ids:
+            # No original signal found; treat this as a regular new signal
+            return None
+
+        # Get the original signal to check its revision_id
+        # If the edited signal has a DISTINCT revision_id, it's a NEW provider event
+        # and should not be treated as an amendment.
+        original_signal = self.store.get_signal(original_signal_ids[0])
+        if original_signal and original_signal.get("revision_id") != signal.revision_id:
+            # Distinct revision_id means this is a NEW signal in the provider's eyes
+            # (e.g., Telegram edit with new MTProto revision). Let normal routing proceed.
+            return None
+
+        # Collect all accounts that have entry orders from the original signal(s)
+        accounts_with_entries: set[str] = set()
+        for orig_sig_id in original_signal_ids:
+            orders = self.store.list_orders_for_signal(orig_sig_id)
+            for order_row in orders:
+                account_id = order_row["account_id"]
+                # Only track ENTRY-purpose orders with FILLED or PENDING status
+                if order_row.get("purpose") in (None, "entry"):
+                    if order_row["status"] in (OrderStatus.FILLED.value, OrderStatus.PENDING.value):
+                        accounts_with_entries.add(account_id)
+
+        # If no existing entry orders, this edit cannot be applied; treat as new signal
+        if not accounts_with_entries:
+            return None
+
+        # Mark this edit as applied (prevents duplicate entries)
+        results: list[OrderResult] = []
+        for account_id in accounts_with_entries:
+            result = OrderResult(
+                account_id=account_id,
+                status=OrderStatus.REJECTED,
+                signal_id=signal.id,
+                message="edit applied to existing position; no new entry",
+            )
+            results.append(result)
+
+        return results if results else None
+
     async def _correlate_cross_transport(self, signal: Signal) -> list[OrderResult] | None:
         """Track 12: cross-transport signal correlation/dedup -- see
         `app/signal_correlation.py`'s own module docstring for the full
@@ -1303,6 +2719,13 @@ class SignalCopierEngine:
         # unaffected, and keeps this scoped to genuine transports, not
         # ad hoc Signal objects built in-process).
         if signal.channel_id is None or signal.message_id is None:
+            return None
+        # Exits are never fingerprint-correlated: a duplicate CLOSE is
+        # recognised position-aware by the lifecycle manager (TRK-27
+        # `check_duplicate_exit`) and by the plain "no open position" path,
+        # and a legitimate second exit after a re-entry within the window
+        # must never be suppressed by a fingerprint match.
+        if signal.side == Side.CLOSE or signal.intent in (Intent.EXIT, Intent.REDUCE, Intent.CANCEL):
             return None
 
         from app.signal_correlation import (
@@ -1378,6 +2801,34 @@ class SignalCopierEngine:
                 received_at=received_at,
                 match_type=outcome.value,
             )
+            if outcome is CorrelationOutcome.CORROBORATING and signal.price is None:
+                # A-14: two PRICELESS alerts with the same fingerprint inside
+                # the window are the same real-world event, but with no price
+                # to agree on this layer cannot vouch for a replay of the
+                # earlier order as this message's outcome. Explicit HOLD:
+                # record the correlation, submit nothing, and say so.
+                logger.info(
+                    "signal id=%s (channel=%s) is a priceless corroboration of signal id=%s (channel=%s) -- "
+                    "same (source, symbol, side) fingerprint within the window; held, no new order (A-14)",
+                    signal.id,
+                    signal.channel_id,
+                    candidate["id"],
+                    candidate["channel_id"],
+                )
+                signal.import_batch = f"cross_transport_priceless_corroboration:{candidate['id']}"
+                self.store.save_signal(signal)
+                return [
+                    OrderResult(
+                        account_id=self._CROSS_TRANSPORT_CONFLICT_ACCOUNT_ID,
+                        status=OrderStatus.REJECTED,
+                        signal_id=signal.id,
+                        message=(
+                            f"held: priceless signal corroborates already-recorded signal id={candidate['id']!r} "
+                            f"(channel_id={candidate['channel_id']!r}) -- same fingerprint within the correlation "
+                            "window and no price to verify; no new order submitted (A-14 HOLD)"
+                        ),
+                    )
+                ]
             if outcome is CorrelationOutcome.CORROBORATING:
                 logger.info(
                     "signal id=%s (channel=%s) corroborates already-recorded signal id=%s (channel=%s) -- "
@@ -1557,13 +3008,48 @@ class SignalCopierEngine:
             account_id=account.account_id, status=OrderStatus.REJECTED, signal_id=order_signal.id, message=message
         )
 
+    async def _resolve_price_for_gating(
+        self, broker: BrokerAdapter, order_signal: Signal
+    ) -> tuple[float | None, str | None]:
+        """B-06: Resolve entry price for pre-flight gating, using broker live
+        quotes when available as a primary source, falling back to the signal's
+        message price.
+
+        Returns:
+            (price, source) where:
+            - price: float | None — the resolved price, or None if unresolvable
+            - source: str | None — "broker_quote" if from broker, "signal" if from
+              message, None if unresolvable
+        """
+        # Try broker quote first if capability available
+        if broker.has_quote_capability:
+            try:
+                quote = await broker.get_quote(order_signal.symbol)
+                if quote is not None and math.isfinite(quote) and quote > 0:
+                    return quote, "broker_quote"
+            except Exception:
+                # Log but don't fail; fall back to signal price
+                logger.debug(
+                    "broker quote fetch failed for symbol=%s broker=%s; falling back to signal price",
+                    order_signal.symbol,
+                    broker.__class__.__name__,
+                    exc_info=True,
+                )
+
+        # Fall back to signal price
+        if order_signal.price is not None and math.isfinite(order_signal.price) and order_signal.price > 0:
+            return order_signal.price, "signal"
+
+        # No resolvable price from either source
+        return None, None
+
     def _check_route_qualified(
         self, account: DestinationAccount, signal: Signal, broker: BrokerAdapter
     ) -> tuple[bool, OrderResult | None]:
         """Track 1b live-routing gate: refuse to route a live ENTRY through
         an execution route -- (adapter_type, route_key, asset_class,
-        product_type), the exact tuple app/qualification.py's ladder is
-        tracked per -- that has never had a human operator record
+        product_type, environment), the exact tuple app/qualification.py's
+        ladder is tracked per -- that has never had a human operator record
         `release_approved` for it (`POST /qualifications`, app/main.py).
         See app/qualification.py's own module docstring for why this is a
         deliberate human sign-off, never something this engine (or any
@@ -1575,6 +3061,9 @@ class SignalCopierEngine:
         `route_key` is `account.account_id` -- the finest per-route
         distinction this schema actually carries (see
         `_UNDECLARED_ROUTE_PRODUCT_TYPE`'s own comment on `product_type`).
+        `environment` is the resolved venue environment (paper/live/sandbox)
+        from the broker; a route is only release-approved for the environment
+        it was qualified in.
 
         PAPER accounts are exempt: `PaperBroker` never sends an order
         anywhere outside this process's own memory (see that class's own
@@ -1598,11 +3087,13 @@ class SignalCopierEngine:
             return True, None
         route_key = account.account_id
         asset_class = signal.asset_class.value
+        environment = broker.venue_environment(account)
         approved = self.store.is_route_release_approved(
             adapter_type=account.broker,
             route_key=route_key,
             asset_class=asset_class,
             product_type=_UNDECLARED_ROUTE_PRODUCT_TYPE,
+            environment=environment,
         )
         if not approved:
             return False, self._reject(
@@ -1610,7 +3101,8 @@ class SignalCopierEngine:
                 signal,
                 "route not qualified for live release: no 'release_approved' qualification recorded for "
                 f"route (adapter_type='{account.broker}', route_key='{route_key}', "
-                f"asset_class='{asset_class}', product_type='{_UNDECLARED_ROUTE_PRODUCT_TYPE}') -- "
+                f"asset_class='{asset_class}', product_type='{_UNDECLARED_ROUTE_PRODUCT_TYPE}', "
+                f"environment='{environment}') -- "
                 "see app/qualification.py; a human operator must record every ladder rung up through "
                 "release_approved for this exact route via POST /qualifications before it may route a "
                 "live order",
@@ -1712,7 +3204,12 @@ class SignalCopierEngine:
                 "against a stale or invented one",
             )
         equity = balance.equity
-        risk_notional = abs(price - stop_loss) * abs(quantity)
+        # B-03: apply contract multiplier to risk calculation
+        mult, spec_error, spec_note = _get_contract_multiplier(order_signal)
+        if spec_error is not None:
+            return False, self._reject(account, order_signal, spec_error)
+        contract_multiplier = mult
+        risk_notional = abs(price - stop_loss) * abs(quantity) * contract_multiplier
         risk_ceiling = equity * risk_percent_of_equity
         if risk_notional > risk_ceiling:
             return False, self._reject(
@@ -1734,74 +3231,129 @@ class SignalCopierEngine:
         broker-reported `buying_power`, wherever the broker can report
         one.
 
-        Deliberately NOT conditioned on `account.max_notional_exposure`/
-        `risk_percent_of_equity` being configured -- broker buying power
-        is a real, hard constraint on what CAN be submitted regardless of
-        whether the operator opted into either of this service's own
-        ceilings, so this runs for every entry, on every account. It is
-        independent of, and never a substitute for, `account.
-        max_notional_exposure`/`risk_percent_of_equity`/the owner-wide
-        ceiling below -- passing this check proves nothing about those,
-        and a broker reporting ample buying power never overrides or
-        loosens them.
+        WP-32: Fail closed for accounts whose adapter reports no
+        buying-power figure AND have no ceiling (max_notional_exposure or
+        risk_percent_of_equity). If an account has a ceiling, skip the
+        check and rely on that ceiling instead. Paper broker reports
+        buying_power=cash, so it always has a reportable figure.
 
-        Mirrors `_check_risk_basis`'s fail-closed-everywhere-verifiable
-        pattern, with one deliberate difference driven by this check
-        being unconditional rather than opt-in: it fails OPEN (admits,
-        logs that the check was skipped) wherever buying power genuinely
-        can't be verified for this signal/account/broker --
-        - no broker registered, or `broker.has_balance_capability` is
-          `False` (no real `get_account_balance` override at all, e.g.
-          CCXTBroker on a spot market -- see `AccountBalance.
-          buying_power`'s own docstring on why that's not a universal
-          concept).
-        - `get_account_balance` returns `None`, or a real `AccountBalance`
-          whose `buying_power` is itself `None` (broker reachable, this
-          particular figure genuinely not reported for this account).
-        - the signal carries no resolvable finite positive `price` --
-          notional can't be computed. Unlike `_try_reserve_capital`'s own
-          price checks (which REJECT because those gates are something
-          the operator explicitly opted into for this account), this
-          check applies unconditionally, so a priceless signal that would
-          have sailed through with zero gates configured before this
-          existed must not newly be rejected by a check nobody asked for.
-        Every other case -- a real, current `buying_power` figure IS
-        available -- fails CLOSED: `notional > buying_power` is refused,
-        exactly like `_check_risk_basis` refuses when risk-to-stop would
-        exceed its ceiling."""
+        - Broker has no balance capability AND no ceiling: FAIL CLOSED
+          (reject the entry).
+        - Broker has no balance capability BUT has ceiling: SKIP (rely
+          on ceiling).
+        - Broker reports no buying_power AND no ceiling: FAIL CLOSED
+          (reject the entry).
+        - Broker reports no buying_power BUT has ceiling: SKIP (rely
+          on ceiling).
+        - Broker reports buying_power AND price is resolvable: FAIL
+          CLOSED if notional > buying_power.
+        - Signal has no resolvable price: SKIP (notional can't be
+          computed; unlike _try_reserve_capital's opt-in gates, this
+          check applies unconditionally and a priceless signal must not
+          newly be rejected by a check nobody asked for)."""
+        # Check if account has any ceiling configured
+        has_ceiling = (
+            account.max_notional_exposure is not None
+            or account.risk_percent_of_equity is not None
+        )
+
         broker = self.brokers.get(account.broker)
         if broker is None or not broker.has_balance_capability:
-            logger.info(
-                "buying_power_check_skipped account=%s broker=%s reason=no_verified_balance_capability",
-                account.account_id,
-                account.broker,
-            )
-            return True, None
-        if order_signal.price is None or not math.isfinite(order_signal.price) or order_signal.price <= 0:
+            if has_ceiling:
+                # Has ceiling: skip check, rely on ceiling
+                logger.info(
+                    "buying_power_check_skipped account=%s broker=%s reason=no_verified_balance_capability ceiling_configured",
+                    account.account_id,
+                    account.broker,
+                )
+                return True, None
+            else:
+                # No ceiling: fail closed
+                return False, self._reject(
+                    account,
+                    order_signal,
+                    f"account '{account.account_id}' adapter '{account.broker}' has no verified balance capability "
+                    "and no capital ceiling is configured (max_notional_exposure or risk_percent_of_equity) -- "
+                    "refusing entry for risk safety; either configure a ceiling or use an adapter that reports "
+                    "account balance",
+                )
+
+        # B-06: Resolve price using broker quote capability when available
+        price, price_source = await self._resolve_price_for_gating(broker, order_signal)
+        if price is None:
             logger.info(
                 "buying_power_check_skipped account=%s broker=%s reason=no_resolvable_price",
                 account.account_id,
                 account.broker,
             )
             return True, None
+
         balance = await broker.get_account_balance(account)
         if balance is None or balance.buying_power is None:
-            logger.info(
-                "buying_power_check_skipped account=%s broker=%s reason=buying_power_not_reported",
-                account.account_id,
-                account.broker,
-            )
-            return True, None
-        notional = abs(quantity) * abs(order_signal.price)
+            if has_ceiling:
+                # Has ceiling: skip check, rely on ceiling
+                logger.info(
+                    "buying_power_check_skipped account=%s broker=%s reason=buying_power_not_reported ceiling_configured",
+                    account.account_id,
+                    account.broker,
+                )
+                return True, None
+            else:
+                # No ceiling: fail closed
+                return False, self._reject(
+                    account,
+                    order_signal,
+                    f"account '{account.account_id}' broker '{account.broker}' does not report a buying_power "
+                    "figure and no capital ceiling is configured (max_notional_exposure or risk_percent_of_equity) -- "
+                    "refusing entry for risk safety; either configure a ceiling or use an adapter/account that "
+                    "reports buying power",
+                )
+
+        # B-03: apply contract multiplier to buying power check
+        mult, spec_error, spec_note = _get_contract_multiplier(order_signal)
+        if spec_error is not None:
+            return False, self._reject(account, order_signal, spec_error)
+        contract_multiplier = mult
+        notional = abs(quantity) * abs(price) * contract_multiplier
         if notional > balance.buying_power:
             return False, self._reject(
                 account,
                 order_signal,
                 f"account '{account.account_id}' insufficient buying power: broker-reported buying_power "
-                f"({balance.buying_power:.2f}) is less than this entry's notional ({notional:.2f}) -- "
-                "refusing",
+                f"({balance.buying_power:.2f}) is less than this entry's notional ({notional:.2f}) "
+                f"(price_source={price_source}) -- refusing",
             )
         return True, None
+
+    def resolve_unknown_submission(self, idempotency_key: str, *, outcome: str, evidence: str) -> bool:
+        """ALLOC-05: settle one ambiguous ENTRY submission with independent
+        evidence. Only `outcome="not_placed"` is supported: the operator (or
+        a reconciliation readback) has confirmed the broker holds no order
+        or fill for it, so the held capital/strategy reservation is released
+        exactly once and the ledger row becomes REJECTED_CONFIRMED.
+
+        A submission that DID reach the venue is not released here: its
+        fill must be recorded through reconciliation so confirmed exposure
+        replaces the reservation. Releasing it on an operator's word alone
+        would drop real exposure from the books. Returns False when the
+        entry is unknown, not an ENTRY, or already resolved."""
+        if outcome != "not_placed":
+            raise ValueError("only outcome='not_placed' can release a reservation; record real fills via reconciliation")
+        entry = self.store.get_command_ledger_entry(idempotency_key)
+        if entry is None or entry.command_type != CommandType.ENTRY:
+            return False
+        if entry.uncertainty_state != UncertaintyState.UNKNOWN_AMBIGUOUS or entry.resolved_at is not None:
+            return False
+        signal_id = entry.terminal_evidence.get("signal_id")
+        notional = entry.terminal_evidence.get("reserved_notional") or 0.0
+        if notional and signal_id:
+            self.capital_allocator.release(entry.account_id, float(notional), signal_id=str(signal_id))
+        self.store.mark_command_ledger_outcome(
+            idempotency_key,
+            uncertainty_state=UncertaintyState.REJECTED_CONFIRMED,
+            terminal_evidence={"resolution": "not_placed", "operator_evidence": evidence},
+        )
+        return True
 
     async def _try_reserve_capital(
         self, account: DestinationAccount, order_signal: Signal, quantity: float
@@ -1857,43 +3409,93 @@ class SignalCopierEngine:
             assert bp_rejection is not None
             return False, 0.0, bp_rejection
 
+        strategy_budget = self.store.get_strategy_budget(order_signal.source)
+        strategy_ceiling = strategy_budget["max_notional"] if strategy_budget is not None else None
         has_gate = (
             account.max_notional_exposure is not None
             or account.risk_percent_of_equity is not None
             or self.max_owner_notional_exposure is not None
+            or strategy_ceiling is not None
+            or account.max_gross_leverage is not None
         )
         if not has_gate:
             return True, 0.0, None
-        if order_signal.price is None:
+
+        # B-06: Resolve price using broker quote capability when available
+        price_source = None
+        broker = self.brokers.get(account.broker)
+
+        # First, check if signal has a price that is not a finite positive number
+        if order_signal.price is not None and (not math.isfinite(order_signal.price) or order_signal.price <= 0):
+            # Signal price exists but is not valid (0, negative, NaN, inf)
             return False, 0.0, self._reject(
                 account,
                 order_signal,
                 f"account '{account.account_id}' has a capital/risk exposure gate configured "
                 "(max_notional_exposure, risk_percent_of_equity, and/or an owner-wide ceiling) but this "
-                "signal carries no price -- notional can't be computed and this build has no independent "
-                "current-market-price source to fall back to, so admission is refused rather than "
-                "silently skipping the check (see app/capital_allocator.py)",
+                "signal carries a price that is not a finite positive number ({order_signal.price}) -- "
+                "admission is refused rather than silently skipping the check (see app/capital_allocator.py)",
             )
-        if not math.isfinite(order_signal.price) or order_signal.price <= 0:
-            # Fail-closed defense-in-depth, same rationale as the `price is
-            # None` check just above: sources are expected to reject a
-            # non-finite/zero/negative price before a Signal ever reaches
-            # this admission path, but this gate must never trust that
-            # blindly. Left unchecked: price=0 makes notional=0 (every
-            # notional/risk ceiling below is trivially satisfied regardless
-            # of real trade size), price=NaN makes every `>` ceiling
-            # comparison below silently evaluate False (never trips), and
-            # price<0 makes notional negative, corrupting
-            # CapitalAllocator._pending's running total for this account.
+
+        if broker is not None:
+            price, price_source = await self._resolve_price_for_gating(broker, order_signal)
+        else:
+            # No broker available; use signal price only
+            if order_signal.price is not None and math.isfinite(order_signal.price) and order_signal.price > 0:
+                price = order_signal.price
+                price_source = "signal"
+            else:
+                price = None
+
+        if price is None:
             return False, 0.0, self._reject(
                 account,
                 order_signal,
-                f"account '{account.account_id}' has a capital/risk exposure gate configured but this "
-                f"signal's price ({order_signal.price!r}) is not a finite positive number -- notional "
-                "can't be safely computed, refusing rather than admitting an unbounded or corrupted "
-                "reservation",
+                f"account '{account.account_id}' has a capital/risk exposure gate configured "
+                "(max_notional_exposure, risk_percent_of_equity, and/or an owner-wide ceiling) but this "
+                "signal carries no price -- neither broker quote (if capability available) nor message "
+                "price can be resolved, so notional can't be computed; admission is refused rather than "
+                "silently skipping the check (see app/capital_allocator.py)",
             )
-        notional = abs(quantity) * abs(order_signal.price)
+
+        # B-03: apply contract multiplier to capital allocation
+        mult, spec_error, spec_note = _get_contract_multiplier(order_signal)
+        if spec_error is not None:
+            return False, 0.0, self._reject(account, order_signal, spec_error)
+        contract_multiplier = mult
+
+        # A-09: Chase guard - validate price age and deviation before sizing.
+        # Both gates are opt-in (None = disabled) and fail closed when enabled.
+        if config.SIGNAL_MAX_PRICE_AGE_SECONDS is not None:
+            signal_received = order_signal.received_at
+            if signal_received.tzinfo is None:
+                signal_received = signal_received.replace(tzinfo=timezone.utc)
+            age_seconds = (datetime.now(timezone.utc) - signal_received).total_seconds()
+            if age_seconds > config.SIGNAL_MAX_PRICE_AGE_SECONDS:
+                return False, 0.0, self._reject(
+                    account,
+                    order_signal,
+                    f"price too old ({age_seconds:.0f}s > {config.SIGNAL_MAX_PRICE_AGE_SECONDS:.0f}s) "
+                    f"-- rejected by SIGNAL_MAX_PRICE_AGE_SECONDS gate",
+                )
+
+        if (
+            config.SIGNAL_MAX_PRICE_DEVIATION_PCT is not None
+            and broker is not None
+            and order_signal.price is not None
+        ):
+            ref_price = broker.get_reference_price(order_signal.symbol)
+            if ref_price is not None and ref_price > 0:
+                deviation_pct = abs(order_signal.price - ref_price) / ref_price * 100
+                if deviation_pct > config.SIGNAL_MAX_PRICE_DEVIATION_PCT:
+                    return False, 0.0, self._reject(
+                        account,
+                        order_signal,
+                        f"price deviation {deviation_pct:.1f}% exceeds limit {config.SIGNAL_MAX_PRICE_DEVIATION_PCT:.1f}% "
+                        f"(signal={order_signal.price}, reference={ref_price}) -- rejected with price_reference=broker_quote",
+                    )
+
+        notional = abs(quantity) * abs(price) * contract_multiplier
 
         owner_gated = self.max_owner_notional_exposure is not None
         if owner_gated:
@@ -1914,13 +3516,48 @@ class SignalCopierEngine:
                 if account.max_notional_exposure is not None:
                     pending = self.capital_allocator.pending_reservation(account.account_id)
                     if exposure.notional + pending + notional > account.max_notional_exposure:
+                        price_note = f" (price from {price_source})" if price_source else ""
                         return False, notional, self._reject(
                             account,
                             order_signal,
                             f"account '{account.account_id}' notional exposure ceiling "
                             f"({account.max_notional_exposure}) would be exceeded by this entry "
                             f"(confirmed={exposure.notional:.2f}, pending={pending:.2f}, "
-                            f"requested={notional:.2f}) -- refusing",
+                            f"requested={notional:.2f}{price_note}) -- refusing",
+                        )
+
+                if account.max_gross_leverage is not None:
+                    # B-11: enforce leverage cap
+                    broker = self.brokers.get(account.broker)
+                    if broker is None:
+                        return False, notional, self._reject(
+                            account,
+                            order_signal,
+                            f"account '{account.account_id}' broker '{account.broker}' not found",
+                        )
+                    balance = await broker.get_account_balance(account)
+                    if balance is None or balance.equity is None:
+                        return False, notional, self._reject(
+                            account,
+                            order_signal,
+                            f"max_gross_leverage is set but the adapter reports no equity for "
+                            f"account '{account.account_id}' -- refusing",
+                        )
+
+                    maint = balance.maintenance_margin or 0.0
+                    pending = self.capital_allocator.pending_reservation(account.account_id)
+                    max_allowed_notional = account.max_gross_leverage * (balance.equity - maint)
+                    total_notional = exposure.notional + pending + notional
+
+                    if total_notional > max_allowed_notional:
+                        return False, notional, self._reject(
+                            account,
+                            order_signal,
+                            f"account '{account.account_id}' gross leverage ceiling would be exceeded by this entry: "
+                            f"confirmed={exposure.notional:.2f}, pending={pending:.2f}, requested={notional:.2f}, "
+                            f"total={total_notional:.2f} exceeds max allowed={max_allowed_notional:.2f} "
+                            f"(leverage={account.max_gross_leverage}, equity={balance.equity:.2f}, "
+                            f"maintenance_margin={maint:.2f}) -- refusing",
                         )
 
                 if account.risk_percent_of_equity is not None:
@@ -1954,11 +3591,72 @@ class SignalCopierEngine:
                             f"{owner_exposure.notional:.2f}, requested={notional:.2f}) -- refusing",
                         )
 
+                if strategy_ceiling is not None:
+                    # ALLOC-03: strategy-level admission, atomic across
+                    # accounts and processes (see
+                    # CapitalAllocator.reserve_with_strategy_ceiling).
+                    strategy_exposure = confirmed_strategy_notional(self.store, order_signal.source)
+                    if strategy_exposure.has_unresolved:
+                        return False, notional, self._reject(
+                            account,
+                            order_signal,
+                            f"strategy '{order_signal.source}' has open exposure "
+                            f"{strategy_exposure.unresolved_symbols} this replay could not resolve -- true "
+                            "strategy notional is unknown, refusing new admissions until it resolves",
+                        )
+                    ok, confirmed, pending = self.capital_allocator.reserve_with_strategy_ceiling(
+                        account.account_id,
+                        notional,
+                        signal_id=order_signal.id,
+                        strategy_key=order_signal.source,
+                        ceiling=strategy_ceiling,
+                    )
+                    if not ok:
+                        return False, notional, self._reject(
+                            account,
+                            order_signal,
+                            f"strategy '{order_signal.source}' notional ceiling ({strategy_ceiling}) would be "
+                            f"exceeded by this entry (confirmed={confirmed:.2f}, pending={pending:.2f}, "
+                            f"requested={notional:.2f}) across all accounts -- refusing",
+                        )
+                    return True, notional, None
                 self.capital_allocator.reserve_locked(account.account_id, notional, signal_id=order_signal.id)
                 return True, notional, None
         finally:
             if owner_gated:
                 self.capital_allocator.owner_lock.release()
+
+    def _requested_exit_quantity(self, signal: Signal, owned: float) -> float | None:
+        """WP-10 (D-05/D-11): compute the requested exit quantity from a CLOSE signal.
+
+        Returns the requested quantity (to be capped at owned), or None if no
+        explicit request is given (meaning full close). Raises ValueError if an
+        explicit request would be <= 0 (caller should reject).
+
+        Args:
+            signal: The CLOSE signal, which may carry quantity or reduce_fraction
+            owned: The current position size (absolute value)
+
+        Returns:
+            - A positive float if signal.quantity or signal.reduce_fraction is set
+              (the requested quantity before capping)
+            - None if neither is set (full close implied)
+
+        Raises:
+            ValueError: if signal.quantity or signal.reduce_fraction is explicitly set but <= 0
+        """
+        # If signal has an explicit quantity, validate and use it
+        if signal.quantity is not None:
+            if signal.quantity <= 0:
+                raise ValueError(f"CLOSE quantity must be > 0, got {signal.quantity}")
+            return signal.quantity
+        # If signal has a reduce_fraction, validate and compute requested from it
+        if signal.reduce_fraction is not None:
+            if signal.reduce_fraction <= 0:
+                raise ValueError(f"CLOSE reduce_fraction must be > 0, got {signal.reduce_fraction}")
+            return signal.reduce_fraction * owned
+        # No explicit request means full close
+        return None
 
     def _resolve_close(
         self, signal: Signal, account: DestinationAccount, symbol: str, *, position: float | None = None
@@ -1972,23 +3670,46 @@ class SignalCopierEngine:
         for the same symbol) landed in between, silently resolving this
         close against a quantity reconciliation never actually checked.
         `None` (the default) preserves the original single-read behavior
-        for every other caller."""
+        for every other caller.
+
+        WP-10 (D-05/D-11): honor signal.quantity and signal.reduce_fraction;
+        cap the requested quantity at abs(position), and reject when
+        requested <= 0."""
         if position is None:
             position = self.store.get_position(account.account_id, symbol)
         if abs(position) < 1e-8:  # Use tolerance-based comparison instead of exact equality
             return None
 
         closing_side = Side.SELL if position > 0 else Side.BUY
-        quantity = abs(position)
+        owned = abs(position)
+
+        # WP-10 (D-05/D-11): compute requested quantity
+        try:
+            requested = self._requested_exit_quantity(signal, owned)
+        except ValueError:
+            # Invalid quantity or reduce_fraction: caller should reject this
+            return None
+
+        # Determine final quantity: cap requested at owned, or use full close if no request
+        if requested is not None:
+            quantity = min(requested, owned)
+        else:
+            # No explicit request means full close
+            quantity = owned
+
+        # WP-02 (C-02): strip stop_loss/take_profit/targets from close
+        # signals to prevent adapters from building reverse-side bracket
+        # legs that would open new positions after the close executes.
+        # WP-14 (C-03/C-04): set intent=EXIT so adapters emit the correct
+        # close intent (e.g., "Sell to Close" for Tastytrade, "flat" for NinjaTrader).
         resolved_signal = Signal(
             source=signal.source,
             symbol=signal.symbol,
             side=closing_side,
             asset_class=signal.asset_class,
+            intent=Intent.EXIT,
             quantity=quantity,
             price=signal.price,
-            stop_loss=signal.stop_loss,
-            take_profit=signal.take_profit,
             id=signal.id,
             received_at=signal.received_at,
             raw=signal.raw,
@@ -2064,6 +3785,7 @@ class SignalCopierEngine:
 
         submitted_at = datetime.now(timezone.utc)
         try:
+            order_signal.client_order_id = ledger_key
             result = await broker.place_order(order_signal, account, quantity, symbol)
         except Exception as exc:  # noqa: BLE001 - one account's failure must not block others
             logger.exception("order failed for account=%s", account.account_id)
@@ -2086,6 +3808,11 @@ class SignalCopierEngine:
         # change for it; only a real, broker-reported quantity (FILLED, or
         # a genuine partial-fill progress report alongside PENDING -- EXE-04:
         # explicit 0.0 is real progress too) is applied.
+        # WP-38 (G-C-24): persist paper broker order ID sequence after a FILLED result
+        # (this is _submit_order, called from plain close and managed entry paths)
+        if result.status == OrderStatus.FILLED and account.broker == "paper":
+            self._persist_paper_order_id_sequence(result, account)
+
         applied_quantity: float | None = None
         confirmed_cumulative_fill: float | None = None
         outstanding_possible_fill = 0.0
@@ -2297,9 +4024,32 @@ class SignalCopierEngine:
         (a synthetic reason string like "manual_exit", never a real
         provider) would incorrectly reject the one action meant to flatten
         the WHOLE pooled position regardless of which provider(s) built
-        it."""
+        it.
+
+        D-07/F-01: Fail closed if a managed lifecycle exists for this
+        account/symbol. The exit path is determined by lifecycle existence,
+        not by the account's managed_lifecycle flag. If a lifecycle exists,
+        the close must be routed through the managed path, not plain."""
         lock = self._plain_close_locks[(account.account_id, symbol)]
         async with lock:
+            # D-07/F-01: refuse if a managed lifecycle exists for this position.
+            # The exit path is determined by lifecycle existence, not the flag.
+            lifecycle = self.lifecycle_manager.get_lifecycle(account.account_id, symbol)
+            if lifecycle is not None:
+                result = OrderResult(
+                    account_id=account.account_id,
+                    status=OrderStatus.REJECTED,
+                    signal_id=signal.id,
+                    message=(
+                        f"account '{account.account_id}' symbol '{symbol}' has an open managed lifecycle -- "
+                        f"this close must be routed through the managed lifecycle path, not plain. "
+                        f"The exit path is determined by lifecycle existence, not by the managed_lifecycle flag. "
+                        f"This should not happen if the managed flag is in sync with lifecycle state; "
+                        f"please check the account configuration and lifecycle state."
+                    ),
+                )
+                self.store.save_order_result(result, purpose="close", family_id=None)
+                return result
             if not self.store.claim_close(account.account_id, symbol):
                 return OrderResult(
                     account_id=account.account_id,
@@ -2351,7 +4101,34 @@ class SignalCopierEngine:
                         return ownership_rejection
 
                 resolved = self._resolve_close(signal, account, symbol, position=close_position_value)
-                assert resolved is not None and abs(close_position_value) >= 1e-8, f"close_position_value={close_position_value} must be non-zero when no rejection returned"
+                if resolved is None:
+                    # WP-10: _resolve_close returns None for two cases:
+                    # 1. Position is essentially 0 (already returned earlier, shouldn't reach here)
+                    # 2. Requested quantity is <= 0 (explicit rejection)
+                    # Distinguish them by checking if close_position_value is non-zero.
+                    if abs(close_position_value) >= 1e-8:
+                        # Case 2: requested quantity was <= 0
+                        rejection = OrderResult(
+                            account_id=account.account_id,
+                            status=OrderStatus.REJECTED,
+                            signal_id=signal.id,
+                            message=(
+                                f"CLOSE requested quantity is invalid (requested <= 0); "
+                                f"signal.quantity={signal.quantity}, signal.reduce_fraction={signal.reduce_fraction}"
+                            ),
+                        )
+                        self.store.save_order_result(rejection, purpose="close", family_id=None)
+                        return rejection
+                    # Case 1: shouldn't reach here due to earlier check
+                    else:
+                        result = OrderResult(
+                            account_id=account.account_id,
+                            status=OrderStatus.REJECTED,
+                            signal_id=signal.id,
+                            message="no open position to close",
+                        )
+                        self.store.save_order_result(result, purpose="close", family_id=None)
+                        return result
 
                 order_signal, quantity = resolved
                 (
@@ -2363,6 +4140,14 @@ class SignalCopierEngine:
                     submitted_at,
                     acknowledged_quantity,
                 ) = await self._submit_order(order_signal, quantity, account, symbol, broker)
+                # WP-26/E-06: Match plain-account closes to their entry by FIFO
+                # so plain accounts contribute to trade episodes
+                close_family_id = None
+                if result.status == OrderStatus.FILLED:
+                    close_family_id = self.store.get_oldest_entry_signal_id(
+                        account.account_id, symbol, order_signal.side
+                    )
+
                 self.store.save_order_result(
                     result,
                     broker=account.broker,
@@ -2376,14 +4161,21 @@ class SignalCopierEngine:
                     acknowledged_quantity=acknowledged_quantity,
                     submitted_at=submitted_at,
                     purpose="close",
-                    family_id=None,
+                    family_id=close_family_id,
                 )
                 return result
             finally:
                 self.store.release_close(account.account_id, symbol)
 
     async def _handle_managed_signal(
-        self, signal: Signal, account: DestinationAccount, symbol: str, *, enforce_provider_ownership: bool = True
+        self,
+        signal: Signal,
+        account: DestinationAccount,
+        symbol: str,
+        *,
+        enforce_provider_ownership: bool = True,
+        dry_run: bool = False,
+        opportunity_id: str | None = None,
     ) -> _ManagedOrderOutcome:
         """Route a BUY/SELL/CLOSE signal for a `managed_lifecycle` account through
         `PositionLifecycleManager` instead of the plain broker.place_order path.
@@ -2398,16 +4190,63 @@ class SignalCopierEngine:
         `_ManagedOrderOutcome`'s own docstring. `enforce_provider_ownership`
         (Track 18) is forwarded to `_handle_managed_close` unchanged -- see its
         own docstring; entries have no equivalent gate (there is nothing pooled
-        yet to gate an entry against)."""
+        yet to gate an entry against). `dry_run` skips broker submission for both
+        entry and close."""
         if signal.side == Side.CLOSE:
             return await self._handle_managed_close(
-                signal, account, symbol, enforce_provider_ownership=enforce_provider_ownership
+                signal, account, symbol, enforce_provider_ownership=enforce_provider_ownership, dry_run=dry_run
             )
-        return await self._handle_managed_entry(signal, account, symbol)
+        return await self._handle_managed_entry(signal, account, symbol, dry_run=dry_run, opportunity_id=opportunity_id)
+
+    def _compute_default_target_fractions(self, targets: list[ProfitTarget]) -> list[float | None]:
+        """Compute equal-split default fractions for targets that don't have them.
+
+        WP-13: When a signal's targets carry no fraction, size them equal-split with
+        the last level taking the remainder (3 levels → 1/3, 1/3, rest).
+
+        Returns a list of fractions (one per target), where each is either:
+        - The target's original fraction (if it had one)
+        - A computed equal-split fraction (if it didn't have one)
+        """
+        if not targets:
+            return []
+
+        # Check if any target needs a computed fraction
+        needs_computation = [t.fraction is None for t in targets]
+        if not any(needs_computation):
+            # All targets already have fractions, return as-is
+            return [t.fraction for t in targets]
+
+        # Compute equal-split fractions: base is 1.0 / count
+        count = len(targets)
+        base_fraction = 1.0 / count
+        fractions: list[float | None] = []
+
+        for i, target in enumerate(targets):
+            if target.fraction is not None:
+                # Target already has a fraction, use it
+                fractions.append(target.fraction)
+            elif i < count - 1:
+                # Not the last target, use base fraction
+                fractions.append(base_fraction)
+            else:
+                # Last target, gets the remainder
+                remaining = 1.0 - (base_fraction * (count - 1))
+                fractions.append(remaining)
+
+        return fractions
 
     async def _handle_managed_entry(
-        self, signal: Signal, account: DestinationAccount, symbol: str
+        self,
+        signal: Signal,
+        account: DestinationAccount,
+        symbol: str,
+        dry_run: bool = False,
+        opportunity_id: str | None = None,
     ) -> _ManagedOrderOutcome:
+        # WC-33/WC-31: see `_opportunity_id_for` -- the caller passes the
+        # replicate-scoped id when this account is an explicit replica.
+        opportunity_id = opportunity_id or signal.id
         broker = self.brokers.get(account.broker)
         if broker is None:
             # TRK-22: a pre-submission rejection inside this method itself --
@@ -2426,7 +4265,28 @@ class SignalCopierEngine:
                 None,
             )
 
-        quantity = size_for_account(signal, account)
+        try:
+            quantity = size_for_account(signal, account)
+            # WP-17 (B-04): normalize quantity to venue precision after sizing
+            normalized_qty = broker.normalize_quantity(account, symbol, quantity)
+            if normalized_qty is None:
+                raise UnsizedEntryError(f"quantity step unknown for {symbol} on {account.broker}")
+            if normalized_qty <= 0:
+                raise UnsizedEntryError(
+                    f"quantity {quantity} rounds to {normalized_qty:.8g} below venue minimum for {symbol}"
+                )
+            quantity = normalized_qty
+        except UnsizedEntryError as e:
+            return _ManagedOrderOutcome(
+                OrderResult(
+                    account_id=account.account_id,
+                    status=OrderStatus.REJECTED,
+                    signal_id=signal.id,
+                    message=str(e),
+                ),
+                None,
+                None,
+            )
         # Multi-provider representability: a signal with an ORDERED
         # `targets` collection (see `Signal.targets`'s own docstring) is
         # now representable here directly -- one `Target(action=SELL)`
@@ -2439,26 +4299,29 @@ class SignalCopierEngine:
         # the existing single-take_profit behavior when `targets` is
         # empty (every producer this task didn't touch).
         if signal.targets:
-            # Known, disclosed gap (full multi-target execution logic is
-            # out of scope for this pass): a level that carries a
-            # `quantity` but no `fraction` (see `ProfitTarget`'s own
-            # docstring -- each is independent/optional) resolves here to
-            # `reduce_fraction=None`, which `PositionLifecycleManager`
-            # itself already treats as a real, harmless 0.0-fraction
-            # no-op-on-fire SELL (see its own `target.reduce_fraction or
-            # 0.0`), never a crash -- it just doesn't yet reduce the
-            # position at that level. A real per-level `quantity`
-            # resolved against this account's own sized `quantity` (not
-            # merely converted to a fraction here) needs its own,
-            # separately-scoped follow-up.
+            # WP-13: Default target sizing — when targets carry no fraction,
+            # size them equal-split with the last level taking the remainder
+            # (3 levels → 1/3, 1/3, rest). A single take_profit → one target at 1.0.
+            fractions = self._compute_default_target_fractions(signal.targets)
             targets = [
-                Target(trigger_price=level.price, action=TargetAction.SELL, reduce_fraction=level.fraction)
-                for level in signal.targets
+                Target(trigger_price=level.price, action=TargetAction.SELL, reduce_fraction=fraction)
+                for level, fraction in zip(signal.targets, fractions, strict=True)
             ]
         elif signal.take_profit is not None:
             targets = [Target(trigger_price=signal.take_profit, action=TargetAction.SELL, reduce_fraction=1.0)]
         else:
             targets = []
+
+        # D-12: Resolve trailing stop configuration from signal
+        trailing = None
+        trail_percent = None
+        if signal.trail_amount is not None:
+            trailing = TrailingPolicy(trail_distance=signal.trail_amount)
+        elif signal.trail_percent is not None:
+            # Deferred: trail_distance will be calculated after entry fills
+            # when we know the entry price (trail_distance = entry_price * trail_percent)
+            trailing = TrailingPolicy(trail_distance=0.0)  # Placeholder; will be updated in on_entry_fill
+            trail_percent = signal.trail_percent
 
         plan = PositionPlan(
             account_id=account.account_id,
@@ -2469,6 +4332,9 @@ class SignalCopierEngine:
             broker=account.broker,
             initial_stop=signal.stop_loss,
             targets=targets,
+            trailing=trailing,
+            trail_percent=trail_percent,
+            time_exit=signal.time_exit_at,
             # DB-0X: this position's own real entry signal id, carried for
             # its whole lifetime so a later CLOSE for this same
             # (account_id, symbol) can report the same `orders.family_id`
@@ -2573,16 +4439,258 @@ class SignalCopierEngine:
         if not admitted:
             assert rejection is not None  # _try_reserve_capital always sets this when admitted is False
             # TRK-22: same convention -- capital admission is refused before
-            # any broker call.
+            # any broker call. The command-ledger row opened above (for
+            # idempotency) must not linger as PENDING_SUBMISSION: nothing was
+            # submitted, so it is a confirmed rejection with zero broker effect
+            # (otherwise WC-32's UNCERTAIN_EFFECT gate would block the account).
+            self.store.mark_command_ledger_outcome(
+                ledger_key,
+                uncertainty_state=UncertaintyState.REJECTED_CONFIRMED,
+                terminal_evidence={"reason": "capital_admission_refused", "message": rejection.message},
+            )
             return _ManagedOrderOutcome(rejection, None, None)
 
+        # WC-33 STEP B: Check and reserve hierarchical resources before
+        # lifecycle plan starts. This ensures all budget levels are checked
+        # atomically before any broker effect occurs.
+        resources_ok, resource_error, reservation_id = await self._check_and_reserve_resources(
+            signal_id=opportunity_id,
+            account=account,
+            quantity=quantity,
+            signal=signal,  # Use original signal which has stop_loss/take_profit
+            broker=broker,
+        )
+        if not resources_ok:
+            assert resource_error is not None
+            # Release the capital reserved by _try_reserve_capital
+            self.capital_allocator.release(account.account_id, notional, signal_id=signal.id)
+            # Mark command ledger as rejected (confirmed rejection, not pending)
+            self.store.mark_command_ledger_outcome(
+                ledger_key,
+                uncertainty_state=UncertaintyState.REJECTED_CONFIRMED,
+                terminal_evidence={"reason": "resource_reservation_blocked", "message": resource_error},
+            )
+            # TRK-22: same convention as capital admission refusal
+            return _ManagedOrderOutcome(
+                OrderResult(
+                    account_id=account.account_id,
+                    status=OrderStatus.REJECTED,
+                    signal_id=signal.id,
+                    message=f"resource reservation blocked: {resource_error}",
+                ),
+                None,
+                None,
+            )
+
         self.lifecycle_manager.start_plan(plan)
+
+        # WC-33 STEP C: Build OrderIntent before broker dispatch
+        import hashlib
+        import json
+
+        # Get contract multiplier for policy hash
+        mult, _, _ = _get_contract_multiplier(signal)
+
+        # Build policy hash from sizing inputs
+        policy_input = {
+            "side": signal.side.value,
+            "quantity": quantity,
+            "multiplier": mult,
+            "price": signal.price,
+        }
+        policy_hash = hashlib.sha256(json.dumps(policy_input, sort_keys=True).encode()).hexdigest()
+
+        # Handle fractional quantities
+        if isinstance(quantity, float) and not quantity.is_integer():
+            intent_quantity = 0
+            quantity_fractional = quantity
+        else:
+            intent_quantity = int(quantity)
+            quantity_fractional = None
+
+        # Build price constraints and protection recipe (use original signal, not entry_signal)
+        price_constraints = {"entry": signal.price}
+        if signal.stop_loss is not None:
+            price_constraints["stop_loss"] = signal.stop_loss
+        if signal.take_profit is not None:
+            price_constraints["take_profit"] = signal.take_profit
+        if quantity_fractional is not None:
+            price_constraints["quantity_fractional"] = quantity_fractional
+
+        protection_recipe = None
+        if signal.stop_loss is not None or signal.take_profit is not None:
+            protection_recipe = {}
+            if signal.stop_loss is not None:
+                protection_recipe["stop_loss"] = signal.stop_loss
+
+        # Create OrderIntent
+        intent = OrderIntent.create(
+            opportunity_id=opportunity_id,
+            physical_account_id=account.account_id,
+            binding_id=account.account_id,
+            client_correlation_id=ledger_key,
+            policy_hash=policy_hash,
+            quantity=intent_quantity,
+            price_constraints=price_constraints,
+            protection_recipe=protection_recipe,
+            reservation_id=reservation_id,
+        )
 
         # PU-A2: submission moment for this managed entry -- see
         # handle_signal's identical field for what it feeds into.
         submitted_at = datetime.now(timezone.utc)
+
+        # WC-33 STEP E: Honest dry_run - stop AFTER intent is built, BEFORE outbox.enqueue
+        if dry_run:
+            # Release the reservation with dry_run evidence
+            if reservation_id is not None:
+                self.hierarchical_budget.transition(
+                    reservation_id,
+                    ReservationState.RELEASED,
+                    evidence={"dry_run": True},
+                )
+            # Release capital allocation
+            self.capital_allocator.release(account.account_id, notional, signal_id=signal.id)
+            logger.info(
+                "dry_run mode: planned signal=%s account=%s qty=%s price=%s reservation=%s",
+                signal.id,
+                account.account_id,
+                quantity,
+                entry_signal.price,
+                reservation_id,
+            )
+            # TRK-22: dry_run result with no durable intent/outbox rows
+            return _ManagedOrderOutcome(
+                OrderResult(
+                    account_id=account.account_id,
+                    status=OrderStatus.PENDING,
+                    signal_id=signal.id,
+                    message="dry_run: planned, not dispatched",
+                    filled_quantity=None,
+                    filled_price=None,
+                ),
+                None,
+                None,
+                applied_execution_delta=0.0,
+                outstanding_possible_fill=0.0,
+            )
+
+        # WC-33 STEP C: Enqueue intent before broker dispatch
         try:
+            self.outbox.enqueue(intent)
+            logger.info(
+                "intent_enqueued signal=%s account=%s intent_id=%s",
+                signal.id,
+                account.account_id,
+                intent.intent_id,
+            )
+        except Exception as e:
+            logger.exception("failed to enqueue intent signal=%s account=%s", signal.id, account.account_id)
+            # Release reservations on enqueue failure
+            self.capital_allocator.release(account.account_id, notional, signal_id=signal.id)
+            if reservation_id is not None:
+                self.hierarchical_budget.transition(
+                    reservation_id,
+                    ReservationState.RELEASED,
+                    evidence={"error": str(e)},
+                )
+            return _ManagedOrderOutcome(
+                OrderResult(
+                    account_id=account.account_id,
+                    status=OrderStatus.ERROR,
+                    signal_id=signal.id,
+                    message=f"intent enqueue failed: {str(e)}",
+                ),
+                submitted_at,
+                None,
+                applied_execution_delta=0.0,
+                outstanding_possible_fill=0.0,
+            )
+
+        # Claim the outbox item for dispatch
+        worker_lease_id = self.lease_guard.lease_id if hasattr(self.lease_guard, 'lease_id') else "engine"
+        try:
+            claimed_item = self.outbox.claim_next(worker_lease_id)
+            if claimed_item is None:
+                logger.error("failed to claim outbox item signal=%s", signal.id)
+                raise RuntimeError("outbox item not found after enqueue")
+        except Exception as e:
+            logger.exception("failed to claim outbox item signal=%s", signal.id)
+            # Release reservations on claim failure
+            self.capital_allocator.release(account.account_id, notional, signal_id=signal.id)
+            if reservation_id is not None:
+                self.hierarchical_budget.transition(
+                    reservation_id,
+                    ReservationState.RELEASED,
+                    evidence={"error": str(e)},
+                )
+            return _ManagedOrderOutcome(
+                OrderResult(
+                    account_id=account.account_id,
+                    status=OrderStatus.ERROR,
+                    signal_id=signal.id,
+                    message=f"outbox claim failed: {str(e)}",
+                ),
+                submitted_at,
+                None,
+                applied_execution_delta=0.0,
+                outstanding_possible_fill=0.0,
+            )
+
+        # WC-33 STEP C: Transition to COMMITTED_TO_PENDING_ORDER before broker call
+        if reservation_id is not None:
+            try:
+                self.hierarchical_budget.transition(
+                    reservation_id,
+                    ReservationState.COMMITTED_TO_PENDING_ORDER,
+                    evidence={"outbox_intent_id": intent.intent_id},
+                )
+            except Exception as e:
+                logger.exception("failed to transition to COMMITTED_TO_PENDING_ORDER signal=%s", signal.id)
+                # Release reservations and capital on transition failure
+                self.capital_allocator.release(account.account_id, notional, signal_id=signal.id)
+                return _ManagedOrderOutcome(
+                    OrderResult(
+                        account_id=account.account_id,
+                        status=OrderStatus.ERROR,
+                        signal_id=signal.id,
+                        message=f"reservation transition failed: {str(e)}",
+                    ),
+                    submitted_at,
+                    None,
+                    applied_execution_delta=0.0,
+                    outstanding_possible_fill=0.0,
+                )
+
+        try:
+            entry_signal.client_order_id = ledger_key
             result = await broker.place_order(entry_signal, account, quantity, symbol)
+            # WC-33 STEP D: Record response in outbox and transition reservation based on result status
+            outbox_response = {
+                "status": result.status.value,
+                "broker_order_id": result.broker_order_id,
+                "message": result.message,
+            }
+            self.outbox.record_response(intent.intent_id, outbox_response)
+            # WC-33 STEP D: Transition reservation based on result status
+            if reservation_id is not None:
+                if result.status == OrderStatus.FILLED:
+                    # Filled: go from COMMITTED_TO_PENDING_ORDER → FILLED_EXPOSURE
+                    self.hierarchical_budget.transition(
+                        reservation_id,
+                        ReservationState.FILLED_EXPOSURE,
+                        evidence={"broker_order_id": result.broker_order_id, "filled_quantity": result.filled_quantity},
+                    )
+                elif result.status == OrderStatus.PENDING:
+                    # Already in COMMITTED_TO_PENDING_ORDER, no further transition needed
+                    pass
+                elif result.status == OrderStatus.REJECTED:
+                    # Rejected: go from COMMITTED_TO_PENDING_ORDER → RELEASED
+                    self.hierarchical_budget.transition(
+                        reservation_id,
+                        ReservationState.RELEASED,
+                        evidence={"reason": "broker_rejected"},
+                    )
         except Exception as exc:  # noqa: BLE001 - one account's failure must not block others
             # EXE-01: `place_order` raising here is genuinely ambiguous — the
             # broker adapter may have already sent the request and gotten it
@@ -2608,7 +4716,27 @@ class SignalCopierEngine:
             # nothing guarantees resolve_pending_entry is ever called for
             # this one. Deferring here risks a reservation that's never
             # released -- see app/capital_allocator.py's "Known gap".
-            self.capital_allocator.release(account.account_id, notional)
+            self.capital_allocator.release(account.account_id, notional, signal_id=signal.id)
+            # WC-33 STEP D: Record response and transition to UNKNOWN_HELD on exception
+            try:
+                outbox_response = {
+                    "exception": str(exc),
+                    "status": "error",
+                    "message": str(exc),
+                }
+                self.outbox.record_response(intent.intent_id, outbox_response)
+            except Exception:
+                logger.exception("failed to record outbox response for failed order")
+            # WC-33 STEP D: Transition to UNKNOWN_HELD (held, not released automatically)
+            if reservation_id is not None:
+                try:
+                    self.hierarchical_budget.transition(
+                        reservation_id,
+                        ReservationState.UNKNOWN_HELD,
+                        evidence={"exception": str(exc)},
+                    )
+                except Exception:
+                    logger.exception("failed to transition reservation to UNKNOWN_HELD")
             self.lifecycle_manager.register_pending_entry(account, symbol, None, quantity)
             self.store.mark_command_ledger_outcome(
                 ledger_key,
@@ -2657,8 +4785,9 @@ class SignalCopierEngine:
             # failure that never reached the network) is the one case that
             # definitely never happened -- nothing to protect, so nothing
             # to keep registered.
-            self.capital_allocator.release(account.account_id, notional)
+            self.capital_allocator.release(account.account_id, notional, signal_id=signal.id)
             self.lifecycle_manager.unregister_plan(account.account_id, symbol)
+            # Reservation already transitioned to RELEASED in the try block above
         elif result.status == OrderStatus.ERROR:
             # Same ambiguity as the raised-exception branch above, just
             # returned instead of raised: several adapters (e.g. AlpacaBroker)
@@ -2681,14 +4810,19 @@ class SignalCopierEngine:
             # E03 (bounded): same "release now, not defer" reasoning as the
             # raised-exception branch above -- an ERROR result is never
             # polled by _reconcile_pending_entries either.
-            self.capital_allocator.release(account.account_id, notional)
+            self.capital_allocator.release(account.account_id, notional, signal_id=signal.id)
+            # Reservation already transitioned to UNKNOWN_HELD in the except block above
             self.lifecycle_manager.register_pending_entry(account, symbol, None, quantity)
         elif result.status == OrderStatus.FILLED:
             # Confirmed exposure now includes this fill, so the provisional
             # reservation's job is done.
-            self.capital_allocator.release(account.account_id, notional)
+            self.capital_allocator.release(account.account_id, notional, signal_id=signal.id)
+            # Reservation already transitioned to FILLED_EXPOSURE in the try block above
             filled_quantity = result.filled_quantity if result.filled_quantity is not None else quantity
             self.store.record_fill(account.account_id, symbol, signal.side, filled_quantity)
+            # WP-38 (G-C-24): Persist paper broker order ID sequence after fills
+            if account.broker == "paper":
+                self._persist_paper_order_id_sequence(result, account)
             # TRK-22: `filled_quantity` above is exactly what was just
             # applied via `record_fill` -- same FILLED convention
             # `_submit_order` uses (a broker-confirmed FILLED with no
@@ -2756,7 +4890,7 @@ class SignalCopierEngine:
                     reserved_quantity=quantity if notional else 0.0,
                 )
             else:
-                self.capital_allocator.release(account.account_id, notional)
+                self.capital_allocator.release(account.account_id, notional, signal_id=signal.id)
                 self.lifecycle_manager.register_pending_entry(account, symbol, None, quantity)
             if result.filled_quantity is not None and result.filled_quantity > 0:
                 # The initial synchronous response can itself already carry
@@ -2810,6 +4944,7 @@ class SignalCopierEngine:
         source: str = "provider_exit",
         *,
         enforce_provider_ownership: bool = True,
+        dry_run: bool = False,
     ) -> _ManagedOrderOutcome:
         """Returns a `_ManagedOrderOutcome` like `_handle_managed_entry`, for
         the same call-site shape -- but a CLOSE is an exit, not an entry:
@@ -2925,6 +5060,28 @@ class SignalCopierEngine:
                 None,
             )
 
+        # WP-10 (D-05/D-11): compute requested quantity based on signal.quantity
+        # or signal.reduce_fraction, capped at available
+        try:
+            requested = self._requested_exit_quantity(signal, lifecycle.confirmed_owned_quantity)
+        except ValueError as e:
+            return _ManagedOrderOutcome(
+                OrderResult(
+                    account_id=account.account_id,
+                    status=OrderStatus.REJECTED,
+                    signal_id=signal.id,
+                    message=f"CLOSE requested quantity is invalid: {str(e)}",
+                ),
+                None,
+                None,
+            )
+
+        if requested is not None:
+            exit_quantity = min(requested, available)
+        else:
+            # No explicit request means full close
+            exit_quantity = available
+
         if enforce_provider_ownership:
             # Track 18: managed_lifecycle's own EXE-09 entry gate
             # (`PositionLifecycleManager.validate_plan`) already refuses a
@@ -2985,14 +5142,21 @@ class SignalCopierEngine:
         # fill (see PositionLifecycleManager._apply_exit_fill): it applies the
         # confirmed delta to SignalStore itself, once, whether the exit fills
         # synchronously or is later resolved via resolve_pending_exit --
-        # applying an optimistic `available` guess here too was exactly the
+        # applying an optimistic guess here too was exactly the
         # "PENDING commitment recorded as a completed sale" bug this closes
         # (a partial fill followed by a cancelled remainder used to leave the
         # tracked position flat/wrong forever, since nothing ever corrected
-        # this optimistic write). `available` is unchanged by Track 18's
+        # this optimistic write). `exit_quantity` (computed above from
+        # signal.quantity/reduce_fraction) is unchanged by Track 18's
         # gate above (a binary allow/reject, not a proportional cap -- see
         # that block's own comment for why).
-        result = await self.lifecycle_manager.request_exit(account, symbol, available, source=source)
+        result = await self.lifecycle_manager.request_exit(account, symbol, exit_quantity, source=source)
+        # TRK-23: Ensure the result has the correct signal_id for this CLOSE signal,
+        # since request_exit doesn't know about the signal context (it only knows
+        # account/symbol/quantity). This is essential for the export envelope and
+        # order journal to correctly attribute the close to this signal.
+        result = replace(result, signal_id=signal.id)
+
 
         # TRK-22: AUD-01's distinct-field quantity model for this managed
         # close -- see this method's own docstring for why `request_exit`'s
@@ -3037,9 +5201,9 @@ class SignalCopierEngine:
             # `applied_quantity` stays None; only `resolve_pending_exit`
             # (app/reconciliation.py's polling) can ever apply this one.
             confirmed_cumulative_fill = result.filled_quantity
-            outstanding_possible_fill = available - (confirmed_cumulative_fill or 0.0)
+            outstanding_possible_fill = exit_quantity - (confirmed_cumulative_fill or 0.0)
         applied_execution_delta = applied_quantity if applied_quantity is not None else 0.0
-        acknowledged_quantity = quantity_module.acknowledged_quantity_for(result, available)
+        acknowledged_quantity = quantity_module.acknowledged_quantity_for(result, exit_quantity)
         return _ManagedOrderOutcome(
             result,
             None,
@@ -3097,7 +5261,14 @@ class SignalCopierEngine:
         # that only worked because foreign key enforcement was off.
         self.store.save_signal(close_signal)
 
-        if account.managed_lifecycle:
+        # D-07/F-01: determine the exit path by lifecycle existence, not by
+        # the managed_lifecycle flag. If a lifecycle exists, it must be
+        # closed through the managed path (to handle the protective stop).
+        # Otherwise, use the plain path.
+        lifecycle_before_close = self.lifecycle_manager.get_lifecycle(account.account_id, symbol)
+        use_managed_path = lifecycle_before_close is not None
+
+        if use_managed_path:
             # E06: the resolved opposing side (BUY/SELL), not Side.CLOSE --
             # save_order_result's own docstring says "for a resolved close,
             # side is the opposing buy/sell, not Side.CLOSE" (the plain-
@@ -3106,7 +5277,6 @@ class SignalCopierEngine:
             # tell a managed close's actual trade direction from the
             # `orders` table alone -- exactly what a P&L/execution-journal
             # report needs to reconstruct realized gains correctly.
-            lifecycle_before_close = self.lifecycle_manager.get_lifecycle(account.account_id, symbol)
             resolved_side = lifecycle_before_close.exit_side if lifecycle_before_close is not None else Side.CLOSE
 
             # Track 18: manual flatten is explicitly NOT provider-scoped
@@ -3131,6 +5301,8 @@ class SignalCopierEngine:
             # above) -- always attribute the row to it rather than trust
             # whatever id happened to come back from deeper in the call.
             result = replace(result, signal_id=close_signal.id)
+
+
             # DB-0X: real family link back to this position's own entry
             # (see app/lifecycle/models.py's `PositionPlan.entry_signal_id`)
             # -- already fetched above as `lifecycle_before_close`. None

@@ -1,0 +1,35 @@
+{
+  "scope": "SPECIFICATION_PACKAGE_HELPERS_ONLY",
+  "python": "3.13.5",
+  "helper_tests_executed": 15,
+  "helper_tests_passed": 15,
+  "helper_tests_failed": 0,
+  "named_requirements": 292,
+  "named_application_tests_executed": 0,
+  "named_application_status": "ALL_NOT_RUN",
+  "generated_input_vectors": 9228,
+  "generated_vectors_executed_against_application": 0,
+  "negative_controls": [
+    {
+      "check": "unbound_application_runner",
+      "observed_exit_code": 2,
+      "expected_exit_code": 2,
+      "negative_control_passed": true,
+      "stdout": "",
+      "stderr": "NOT_BOUND: No application adapter configured. Zero application tests executed.\n"
+    },
+    {
+      "check": "untested_catalog_evidence",
+      "observed_exit_code": 1,
+      "expected_exit_code": 1,
+      "negative_control_passed": true,
+      "stdout": "{\n  \"status\": \"INCOMPLETE\",\n  \"issues\": 292,\n  \"first_20\": [\n    \"ING-001: not tested (NOT_RUN)\",\n    \"ING-002: not tested (NOT_RUN)\",\n    \"ING-003: not tested (NOT_RUN)\",\n    \"ING-004: not tested (NOT_RUN)\",\n    \"ING-005: not tested (NOT_RUN)\",\n    \"ING-006: not tested (NOT_RUN)\",\n    \"ING-007: not tested (NOT_RUN)\",\n    \"ING-008: not tested (NOT_RUN)\",\n    \"ING-009: not tested (NOT_RUN)\",\n    \"ING-010: not tested (NOT_RUN)\",\n    \"ING-011: not tested (NOT_RUN)\",\n    \"ING-012: not tested (NOT_RUN)\",\n    \"ING-013: not tested (NOT_RUN)\",\n    \"ING-014: not tested (NOT_RUN)\",\n    \"ING-015: not tested (NOT_RUN)\",\n    \"PAR-001: not tested (NOT_RUN)\",\n    \"PAR-002: not tested (NOT_RUN)\",\n    \"PAR-003: not tested (NOT_RUN)\",\n    \"PAR-004: not tested (NOT_RUN)\",\n    \"PAR-005: not tested (NOT_RUN)\"\n  ]\n}\n",
+      "stderr": ""
+    }
+  ],
+  "current_repository_inspected": false,
+  "deployed_configuration_verified": false,
+  "broker_account_accessed": false,
+  "live_trades_or_cancellations": 0,
+  "profitability_established": false
+}

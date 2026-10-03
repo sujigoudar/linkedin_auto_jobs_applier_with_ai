@@ -522,6 +522,125 @@ row — see that column's own comment in `app/db.py` for why this
 adapter's checkpoint lives there instead of widening the `collectors`
 table's closed `CollectorKind` enum).
 
+## `budget_reservations`
+
+WC-30: Hierarchical resource reservations per opportunity, enforcing
+capital allocation gates at fund/strategy/portfolio/account/provider/
+analyst/underlying/cluster levels. One row per unique `opportunity_id`
+(the signal id for single-selection pool, or `<signal_id>:<account_id>`
+for explicit replicate destinations per WC-33). The state machine
+transitions: `CLAIMED` (initial reservation) → `COMMITTED` (broker call
+succeeded) → `RELEASED` (position closed or allocation reversed).
+
+| column | type | notes |
+|---|---|---|
+| `reservation_id` | TEXT PK | uuid |
+| `opportunity_id` | TEXT NOT NULL UNIQUE | WC-33: canonical signal/account pair (single-selection or replicate) |
+| `owner` | TEXT NOT NULL | fund owner |
+| `physical_account_id` | TEXT NOT NULL | destination broker account |
+| `portfolio_id` / `sleeve_id` | TEXT | hierarchical budget scope |
+| `provider` | TEXT NOT NULL | signal source provider |
+| `analyst` | TEXT | signal analyst within source |
+| `underlying` | TEXT NOT NULL | traded symbol |
+| `cluster_id` | TEXT | correlated-risk grouping |
+| `needed_cash_cents` | INTEGER NOT NULL | resource vector component (integer cents) |
+| `needed_margin_cents` | INTEGER NOT NULL | |
+| `needed_notional_cents` | INTEGER NOT NULL | |
+| `needed_planned_risk_cents` | INTEGER NOT NULL | |
+| `needed_stress_risk_cents` | INTEGER | optional stress VaR |
+| `state` | TEXT NOT NULL | `CLAIMED` / `COMMITTED` / `RELEASED` |
+| `created_at` / `updated_at` | TIMESTAMP NOT NULL | |
+| `evidence` | TEXT | optional audit trail JSON |
+
+Indexes: `idx_budget_reservations_owner`, `idx_budget_reservations_account`,
+`idx_budget_reservations_state`, `idx_budget_reservations_opportunity`.
+
+## `budget_limits`
+
+WC-30: Per-level exposure ceilings (account, analyst, underlying, cluster).
+A row defines `max_cents` for a specific `(level, key)` pair. Checked
+atomically in `HierarchicalBudget.check_and_reserve` before any resource
+is committed.
+
+| column | type | notes |
+|---|---|---|
+| `limit_id` | TEXT PK | uuid |
+| `level` | TEXT NOT NULL | `account` / `analyst` / `underlying` / `cluster` |
+| `key` | TEXT NOT NULL | the specific account/analyst/symbol/cluster identifier |
+| `max_cents` | INTEGER NOT NULL | notional ceiling in cents |
+| `created_at` / `updated_at` | TIMESTAMP NOT NULL | |
+
+Unique constraint: `(level, key)`. Indexes: `idx_budget_limits_level_key`.
+
+## `order_intents`
+
+WC-06/WC-31: Durable workflow intents, mapped from signal intents
+(ENTRY_LONG, ENTRY_SHORT, REDUCE, STOP_UPDATE, etc.) to order intents
+(allocate, hedge, rebalance, reduce_risk). One row per unique
+`opportunity_id`; written atomically with an `outbox` row in the same
+transaction. Crash recovery reprocesses any unresolved intents on restart.
+
+| column | type | notes |
+|---|---|---|
+| `intent_id` | TEXT PK | uuid |
+| `opportunity_id` | TEXT NOT NULL UNIQUE | WC-33: signal or signal:account pair |
+| `physical_account_id` | TEXT NOT NULL | destination account |
+| `binding_id` | TEXT NOT NULL | logical portfolio/strategy binding |
+| `client_correlation_id` | TEXT NOT NULL | request idempotency key |
+| `policy_hash` | TEXT NOT NULL | SHA-256 of admission decision + account state |
+| `quantity` | INTEGER NOT NULL | sized order quantity (integer units per asset class) |
+| `price_constraints` | TEXT | JSON: acceptable price range or limit price |
+| `protection_recipe` | TEXT | JSON: stop-loss, take-profit, trailing policy |
+| `reservation_id` | TEXT NOT NULL | FK -> `budget_reservations.reservation_id` |
+| `created_at` | TIMESTAMP NOT NULL | |
+
+Indexes: `ux_order_intents_opportunity` (unique on opportunity_id),
+`ix_order_intents_account`, `ix_order_intents_binding`,
+`ix_order_intents_reservation`.
+
+## `outbox`
+
+WC-06/WC-31: Transactional outbox for intent delivery and crash recovery.
+Every new `order_intents` row gets a paired `outbox` row in the same
+transaction. Separate polling process claims items, dispatches them,
+records responses. State machine: `outboxed` → `dispatching` → `delivered`
+or `failed`.
+
+| column | type | notes |
+|---|---|---|
+| `item_id` | TEXT PK | uuid |
+| `intent_id` | TEXT NOT NULL | FK -> `order_intents.intent_id` |
+| `state` | TEXT NOT NULL DEFAULT `'outboxed'` | `outboxed` / `dispatching` / `delivered` / `failed` |
+| `created_at` | TIMESTAMP NOT NULL | |
+| `claimed_at` | TIMESTAMP | when worker claimed the item |
+| `claimed_by` | TEXT | worker/lease id that claimed it |
+| `response` | TEXT | JSON response from dispatch (broker order id, error, etc.) |
+| `response_recorded_at` | TIMESTAMP | when response was recorded |
+
+Indexes: `ix_outbox_state_created` (for polling outboxed items),
+`ix_outbox_intent`.
+
+## `trading_halts`
+
+WC-32: Risk-halt records, per scope (account, portfolio, owner). A row
+indicates a halt active from `created_at` until `cleared_at` (NULL = still
+active). Checked before every new entry admission; a halt on any scope
+covering an account blocks that account's entries. Operator clears via
+`POST /risk-halts/{account_id}/clear` with an evidence message.
+
+| column | type | notes |
+|---|---|---|
+| `halt_id` | TEXT PK | uuid |
+| `scope` | TEXT NOT NULL CHECK(scope IN ('account','portfolio','owner')) | |
+| `scope_id` | TEXT NOT NULL | account_id / portfolio_id / owner identifier |
+| `reason` | TEXT NOT NULL | human-readable halt cause |
+| `source` | TEXT NOT NULL | what triggered it (`loss_limit_breach`, `margin_call`, manual operator) |
+| `created_at` | TIMESTAMP NOT NULL | halt start time |
+| `cleared_at` | TIMESTAMP | NULL = active; set when operator clears |
+| `cleared_by` | TEXT | operator identity who cleared it |
+
+Index: `ix_trading_halts_active` (partial, on active halts for fast lookup).
+
 ## `alembic_version`
 
 Standard Alembic bookkeeping table (not created by `SCHEMA` — created

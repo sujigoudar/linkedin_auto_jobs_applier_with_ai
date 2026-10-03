@@ -90,10 +90,10 @@ async def test_sell_fill_credits_cash_by_notional_minus_fee():
 
 
 @pytest.mark.asyncio
-async def test_fill_with_no_signal_price_reports_zero_not_a_fabricated_price():
+async def test_fill_with_no_signal_price_reports_none_not_a_fabricated_price():
     """This module's own docstring: "Fills every order instantly at the
     signal's price (or 0.0 if none given)." A signal with no `price` set
-    must report `filled_price == 0.0` (and move zero cash), never a
+    must report `filled_price is None` (and move zero cash), never a
     fabricated non-zero default."""
     broker = PaperBroker()
     account = DestinationAccount(account_id="acct1", broker="paper")
@@ -102,7 +102,7 @@ async def test_fill_with_no_signal_price_reports_zero_not_a_fabricated_price():
         Signal(source="test", symbol="AAPL", side=Side.BUY), account, quantity=10.0, symbol="AAPL"
     )
 
-    assert result.filled_price == 0.0
+    assert result.filled_price is None
     balance = await broker.get_account_balance(account)
     assert balance.cash == 100_000.0  # zero notional moved -- no price to fill at
 

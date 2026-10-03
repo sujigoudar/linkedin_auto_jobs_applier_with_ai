@@ -97,7 +97,7 @@
         if (seen.has(accountId)) continue;
         const account = accountsById.get(accountId);
         if (account && (account.enabled || includeDisabled)) {
-          out.push(account);
+          out.push({ ...account, delivery_mode: rule.delivery_mode || "single" });
           seen.add(accountId);
         }
       }
@@ -164,11 +164,14 @@
       String(idx + 1),
       escapeHtml(r.source),
       r.destinations.length ? escapeHtml(r.destinations.join(", ")) : pill("none", "bad"),
+      (r.delivery_mode || "single") === "replicate"
+        ? pill("replicate: every destination gets a copy", "warn")
+        : pill("single: ONE account selected, in this order", "ok"),
     ]);
     StateMatrix.render(els.priority, {
       state: "ready",
       html: `<p class="section-note">This build has no explicit priority integer -- rules are evaluated in this exact order (ascending rule id / DB insertion order, per app/routing.py's evaluate/destinations_for), shown as "Evaluation order".</p>${table(
-        ["Rule", "Evaluation order", "Provider/analyst", "Destinations"],
+        ["Rule", "Evaluation order", "Provider/analyst", "Destinations", "Delivery mode"],
         priorityRows,
         "No rules."
       )}`,
@@ -244,11 +247,19 @@
       const symbol = els.preview.querySelector("#tr11-preview-symbol").value.trim();
       const admitted = destinationsFor(rules, accountsById, source, symbol, false);
       const allMatches = destinationsFor(rules, accountsById, source, symbol, true);
-      const rows = allMatches.map((a) => [
-        `<span class="mono">${escapeHtml(a.account_id)}</span>`,
-        boolPill(a.enabled, "admits new entries", "paused (exit-only)"),
-        admitted.some((x) => x.account_id === a.account_id) ? pill("would receive this entry", "ok") : pill("deduped/paused", "warn"),
-      ]);
+      const firstSingle = admitted.find((x) => x.delivery_mode !== "replicate");
+      const rows = allMatches.map((a) => {
+        const isAdmitted = admitted.some((x) => x.account_id === a.account_id);
+        let outcome = pill("deduped/paused", "warn");
+        if (isAdmitted && a.delivery_mode === "replicate") outcome = pill("would receive this entry (replicate)", "ok");
+        else if (isAdmitted && firstSingle && firstSingle.account_id === a.account_id) outcome = pill("selected (first eligible; capital/health gates run in the simulator)", "ok");
+        else if (isAdmitted) outcome = pill("alternative -- not selected unless an earlier account is ineligible", "muted");
+        return [
+          `<span class="mono">${escapeHtml(a.account_id)}</span>`,
+          boolPill(a.enabled, "admits new entries", "paused (exit-only)"),
+          outcome,
+        ];
+      });
       const resultEl = els.preview.querySelector("#tr11-preview-result");
       resultEl.innerHTML = rows.length
         ? table(["Destination", "Entry admission", "Outcome"], rows, "No destinations.")
@@ -267,6 +278,10 @@
           <label>Source<input type="text" id="tr11-draft-source" maxlength="80" placeholder="tradingview"></label>
           <label>Destinations (comma-separated account IDs)<input type="text" id="tr11-draft-destinations" placeholder="acct1,acct2"></label>
           <label>Symbol filter (comma-separated, optional -- blank = all symbols)<input type="text" id="tr11-draft-symbols"></label>
+          <label>Delivery mode<select id="tr11-draft-mode">
+            <option value="single">single -- destinations are alternatives; ONE account is selected per signal (first eligible, in the order listed)</option>
+            <option value="replicate">replicate -- every destination receives its own copy (explicit fan-out)</option>
+          </select></label>
           <div class="form-error" id="tr11-draft-error"></div>
           <div class="tr-controls-row">
             <button type="button" class="ghost" id="tr11-draft-preview">Preview change (diff + position impact)</button>
@@ -284,7 +299,8 @@
         const destinations = els.draft.querySelector("#tr11-draft-destinations").value.split(",").map((s) => s.trim()).filter(Boolean);
         const symbolFilterRaw = els.draft.querySelector("#tr11-draft-symbols").value.trim();
         const symbolFilter = symbolFilterRaw ? symbolFilterRaw.split(",").map((s) => s.trim()).filter(Boolean) : null;
-        return { source, destinations, symbolFilter };
+        const deliveryMode = els.draft.querySelector("#tr11-draft-mode").value;
+        return { source, destinations, symbolFilter, deliveryMode };
       }
 
       const ruleSelect = els.draft.querySelector("#tr11-draft-rule");
@@ -293,6 +309,7 @@
         els.draft.querySelector("#tr11-draft-source").value = rule ? rule.source : "";
         els.draft.querySelector("#tr11-draft-destinations").value = rule ? rule.destinations.join(",") : "";
         els.draft.querySelector("#tr11-draft-symbols").value = rule && rule.symbol_filter ? rule.symbol_filter.join(",") : "";
+        els.draft.querySelector("#tr11-draft-mode").value = rule ? rule.delivery_mode || "single" : "single";
         renderDiffAndImpact(rule || null, currentFields(), ctx, els.diff);
         lastPreviewedSignature = null;
       });
@@ -309,11 +326,11 @@
       els.draft.querySelector("#tr11-draft-save").addEventListener("click", async () => {
         const errorEl = els.draft.querySelector("#tr11-draft-error");
         errorEl.textContent = "";
-        const { source, destinations, symbolFilter } = currentFields();
+        const { source, destinations, symbolFilter, deliveryMode } = currentFields();
         if (!source) { errorEl.textContent = "Source is required."; return; }
         if (!destinations.length) { errorEl.textContent = "At least one destination account is required."; return; }
         const ruleId = ruleSelect.value;
-        const signature = fieldsSignature({ ruleId, source, destinations, symbolFilter });
+        const signature = fieldsSignature({ ruleId, source, destinations, symbolFilter, deliveryMode });
         if (signature !== lastPreviewedSignature) {
           // Before-you-save gate: force a real diff + position-impact
           // preview against these exact pending values before the first
@@ -325,9 +342,9 @@
         }
         try {
           if (ruleId) {
-            await putJSON(`/routing-rules/${encodeURIComponent(ruleId)}`, { source, destinations, symbol_filter: symbolFilter });
+            await putJSON(`/routing-rules/${encodeURIComponent(ruleId)}`, { source, destinations, symbol_filter: symbolFilter, delivery_mode: deliveryMode });
           } else {
-            await postJSON("/routing-rules", { source, destinations, symbol_filter: symbolFilter });
+            await postJSON("/routing-rules", { source, destinations, symbol_filter: symbolFilter, delivery_mode: deliveryMode });
           }
           els.draft.querySelector("#tr11-draft-result").innerHTML = `<p class="section-note">Saved -- this is now the live routing config for source "${escapeHtml(source)}".</p>`;
           await load(ctx);
@@ -376,6 +393,8 @@
     const sourceChanged = beforeSource !== fields.source;
     const destChanged = JSON.stringify([...beforeDestinations].sort()) !== JSON.stringify([...fields.destinations].sort());
     const symbolChanged = JSON.stringify(beforeSymbolFilter) !== JSON.stringify(fields.symbolFilter);
+    const beforeMode = rule ? rule.delivery_mode || "single" : null;
+    const modeChanged = beforeMode !== fields.deliveryMode;
 
     const diffRows = [
       diffRow("Source", rule ? escapeHtml(beforeSource) : pill("n/a (new rule)", "muted"), escapeHtml(fields.source || "(blank)"), sourceChanged),
@@ -386,8 +405,14 @@
         fields.symbolFilter ? escapeHtml(fields.symbolFilter.join(", ")) : pill("all symbols", "muted"),
         symbolChanged
       ),
+      diffRow(
+        "Delivery mode",
+        beforeMode ? escapeHtml(beforeMode) : pill("n/a (new rule)", "muted"),
+        escapeHtml(fields.deliveryMode || "single"),
+        modeChanged
+      ),
     ];
-    const anyChange = sourceChanged || destChanged || symbolChanged;
+    const anyChange = sourceChanged || destChanged || symbolChanged || modeChanged;
 
     let diffHtml = `
       <p class="section-note">${rule ? `Diff for rule #${rule.id} against your pending, not-yet-saved edit.` : "Diff for a brand-new rule against your pending, not-yet-saved fields."} This build tracks no routing-rule revision history (config_routing_rules stores only the current row) -- this is a real BEFORE/AFTER comparison of the currently-saved values vs. your pending form edit, not a rollback-capable version history.</p>
@@ -516,7 +541,7 @@
         statusPill(a.entry_admission.status === "admitted"),
         statusPill(a.asset_class_admission.status === "admitted"),
         capCell,
-        a.would_receive_this_signal ? pill("FINAL DESTINATION", "ok") : pill("would not receive it", "bad"),
+        a.would_receive_this_signal ? pill(a.allocation && a.allocation.status === "selected" ? "SELECTED (one account per signal)" : "FINAL DESTINATION", "ok") : (a.allocation && a.allocation.status === "eligible_not_selected" ? pill("eligible alternative -- not selected", "muted") : pill("would not receive it", "bad")),
       ];
     });
 

@@ -128,6 +128,11 @@ class PositionPlan:
     initial_stop: float | None = None
     targets: list[Target] = field(default_factory=list)
     trailing: TrailingPolicy | None = None
+    #: D-12: Percentage-based trailing stop (0-1 scale, e.g., 0.02 for 2%).
+    #: When set, the actual trail_distance is calculated in on_entry_fill
+    #: using the entry price: trail_distance = entry_price * trail_percent.
+    #: Mutually exclusive with trail_amount (they're both optional).
+    trail_percent: float | None = None
     time_exit: datetime | None = None
     max_risk: float | None = None
     #: DB-0X (order purpose/family): the id of the real `Signal` that

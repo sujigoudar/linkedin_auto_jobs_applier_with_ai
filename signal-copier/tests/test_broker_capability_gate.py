@@ -57,8 +57,10 @@ def _force_release_approved(store, *, adapter_type, route_key, asset_class, prod
 
 
 def test_paper_broker_has_no_native_bracket_but_real_protective_stop():
+    # WP-18: PaperBroker now supports native bracket and tracks child legs;
+    # still supports protective stops for managed-lifecycle positions.
     broker = PaperBroker()
-    assert broker.supports_native_bracket is False
+    assert broker.supports_native_bracket is True
     assert broker.has_protective_stop_capability is True
     assert broker.can_protect_a_managed_position() is True
 
@@ -120,14 +122,14 @@ async def test_plain_path_allows_entry_with_no_protection_requested(store, monke
         return _Resp()
 
     monkeypatch.setattr(broker._client, "post", fake_post)
-    account = DestinationAccount(account_id="acct1", broker="signalstack")
+    account = DestinationAccount(account_id="acct1", broker="signalstack", max_notional_exposure=100000.0)
     routing = RoutingConfig(
         rules=[RoutingRule(source="tradingview", destinations=["acct1"])], accounts={"acct1": account}
     )
     engine = SignalCopierEngine(routing=routing, brokers={"signalstack": broker}, store=store)
     _force_release_approved(store, adapter_type="signalstack", route_key="acct1", asset_class="crypto")
 
-    signal = Signal(source="tradingview", symbol="AAPL", side=Side.BUY, quantity=10.0)  # no stop_loss requested
+    signal = Signal(source="tradingview", symbol="AAPL", side=Side.BUY, quantity=10.0, price=100.0)  # no stop_loss requested
     results = await engine.handle_signal(signal)
 
     assert results[0].status == OrderStatus.PENDING  # unchanged pre-existing behavior
@@ -137,10 +139,8 @@ async def test_plain_path_allows_entry_with_no_protection_requested(store, monke
 @pytest.mark.asyncio
 async def test_plain_path_allows_stop_loss_on_a_broker_that_actually_embeds_it(store):
     broker = PaperBroker()
-    # PaperBroker doesn't override place_order to embed SL/TP either -- it's a
-    # mock broker without supports_native_bracket, so this documents that even
-    # paper requires managed_lifecycle for real protection, matching the same
-    # rule as any other non-bracket broker.
+    # WP-18: PaperBroker now supports native bracket and tracks child legs,
+    # so a plain path entry with a stop_loss is accepted and embedded.
     account = DestinationAccount(account_id="acct1", broker="paper")
     routing = RoutingConfig(
         rules=[RoutingRule(source="tradingview", destinations=["acct1"])], accounts={"acct1": account}
@@ -150,8 +150,8 @@ async def test_plain_path_allows_stop_loss_on_a_broker_that_actually_embeds_it(s
     signal = Signal(source="tradingview", symbol="AAPL", side=Side.BUY, quantity=10.0, stop_loss=48.50)
     results = await engine.handle_signal(signal)
 
-    assert results[0].status == OrderStatus.REJECTED
-    assert "silently open unprotected" in results[0].message
+    assert results[0].status == OrderStatus.FILLED
+    assert len(results[0].child_order_ids) == 1  # stop order tracked as child
 
 
 @pytest.mark.asyncio

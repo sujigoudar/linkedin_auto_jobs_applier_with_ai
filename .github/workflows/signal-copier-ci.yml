@@ -57,7 +57,10 @@ jobs:
                app/parser_tooling.py app/connection_catalog.py \
                app/sources/adapter_contract.py app/sources/url_safety.py app/sources/rss_source.py \
                app/export_events.py \
-               --follow-imports=silent
+               app/workflow/__init__.py app/workflow/reasons.py app/workflow/money.py app/workflow/intents.py \
+               app/workflow/identity.py app/workflow/admission.py app/workflow/selection.py \
+               app/workflow/kelly.py app/workflow/sizing.py app/workflow/scaling.py app/workflow/margin.py \
+               --follow-imports=silent --cache-dir=/dev/null
 
       - name: Run tests
         run: pytest -q

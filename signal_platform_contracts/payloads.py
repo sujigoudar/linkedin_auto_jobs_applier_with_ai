@@ -294,6 +294,8 @@ _KNOWN_ROUTING_OUTCOMES = (
     "admitted_unfilled",  # admitted but only PENDING so far (INT-027's own "unfilled")
     "rejected",  # a real, checked refusal: routing/asset-class/risk/capital/broker rejection
     "error",  # an operational failure (no broker adapter, broker call raised/errored)
+    "eligible_not_selected",  # eligible for routing but not selected in replicate-mode fan-out (WP-38)
+    "skipped",  # signal processing skipped this account (e.g., held-out stale signal, WP-38)
 )
 
 

@@ -107,6 +107,16 @@ class AlpacaBroker(BrokerAdapter):
             )
         return api_key, api_secret, base_url
 
+    def venue_environment(self, account: DestinationAccount) -> str:
+        """Return the Alpaca venue environment: 'paper' or 'live' based on the base URL."""
+        _, _, base_url = self._credentials_for(account)
+        if "paper-api" in base_url:
+            return "paper"
+        elif "api.alpaca" in base_url:
+            return "live"
+        else:
+            return "unknown"
+
     async def place_order(
         self, signal: Signal, account: DestinationAccount, quantity: float, symbol: str
     ) -> OrderResult:
@@ -135,6 +145,8 @@ class AlpacaBroker(BrokerAdapter):
             "type": "market",
             "time_in_force": "day",
         }
+        if signal.client_order_id:
+            order_payload["client_order_id"] = signal.client_order_id
         if signal.stop_loss and signal.take_profit:
             # Both legs present: OTOCO bracket order.
             order_payload["order_class"] = "bracket"
@@ -155,6 +167,24 @@ class AlpacaBroker(BrokerAdapter):
                 json=order_payload,
             )
             response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            # Definite 4xx validation rejections (400, 403, 422, etc.) -> REJECTED (can't fix by retrying).
+            # Ambiguous 4xx (408, 429) and 5xx -> ERROR (might succeed on retry).
+            status_code = exc.response.status_code
+            if 400 <= status_code < 500 and status_code not in (408, 429):
+                return OrderResult(
+                    account_id=account.account_id,
+                    status=OrderStatus.REJECTED,
+                    signal_id=signal.id,
+                    message=f"Alpaca order rejected (HTTP {status_code}): {exc.response.text}",
+                )
+            else:
+                return OrderResult(
+                    account_id=account.account_id,
+                    status=OrderStatus.ERROR,
+                    signal_id=signal.id,
+                    message=f"Alpaca order request failed (HTTP {status_code}): {exc}",
+                )
         except httpx.HTTPError as exc:
             return OrderResult(
                 account_id=account.account_id,
@@ -164,13 +194,29 @@ class AlpacaBroker(BrokerAdapter):
             )
 
         order = response.json()
+        child_order_ids: dict[str, str] = {}
+        # D-01: Extract bracket child leg IDs from Alpaca response
+        if "legs" in order:
+            for leg in order["legs"]:
+                leg_id = leg.get("id")
+                if leg_id:
+                    # Identify leg type from the order payload
+                    if leg.get("order_class") == "stop_loss" or "stop_price" in leg:
+                        child_order_ids["stop"] = _coerce_broker_order_id(leg_id) or str(leg_id)
+                    elif leg.get("order_class") == "take_profit" or "limit_price" in leg:
+                        child_order_ids["take_profit"] = _coerce_broker_order_id(leg_id) or str(leg_id)
         return OrderResult(
             account_id=account.account_id,
             status=OrderStatus.PENDING,
             signal_id=signal.id,
             broker_order_id=_coerce_broker_order_id(order.get("id")),
             message=f"submitted to Alpaca (status: {order.get('status')})",
+            child_order_ids=child_order_ids,
         )
+
+    def normalize_quantity(self, account: DestinationAccount, symbol: str, quantity: float) -> float | None:
+        """Alpaca requires whole-share quantities."""
+        return float(int(quantity))
 
     async def get_order_status(
         self, account: DestinationAccount, broker_order_id: str
@@ -259,7 +305,9 @@ class AlpacaBroker(BrokerAdapter):
     #: finishes cancelling it.
     _TERMINAL_CANCELLED_STATUSES = frozenset({"canceled", "expired"})
 
-    async def cancel_order(self, account: DestinationAccount, broker_order_id: str) -> bool:
+    async def cancel_order(
+        self, account: DestinationAccount, broker_order_id: str, symbol: str | None = None
+    ) -> bool:
         try:
             api_key, api_secret, base_url = self._credentials_for(account)
         except RuntimeError:
@@ -291,12 +339,41 @@ class AlpacaBroker(BrokerAdapter):
 
         return status_response.json().get("status") in self._TERMINAL_CANCELLED_STATUSES
 
+    async def find_order_by_client_id(
+        self, account: DestinationAccount, client_order_id: str
+    ) -> str | None:
+        """Look up an order by its client-assigned id.
+
+        Returns the broker_order_id if found, or None if not found or lookup fails.
+        Uses Alpaca's /v2/orders:by_client_order_id endpoint.
+        """
+        try:
+            api_key, api_secret, base_url = self._credentials_for(account)
+        except RuntimeError:
+            return None
+
+        try:
+            response = await self._client.get(
+                f"{base_url}/v2/orders:by_client_order_id",
+                params={"client_order_id": client_order_id},
+                headers={"APCA-API-KEY-ID": api_key, "APCA-API-SECRET-KEY": api_secret},
+            )
+            # 404 means not found, which is fine
+            if response.status_code == 404:
+                return None
+            response.raise_for_status()
+            order = response.json()
+            return _coerce_broker_order_id(order.get("id"))
+        except httpx.HTTPError:
+            return None
+
     async def replace_stop_quantity(
         self,
         account: DestinationAccount,
         broker_order_id: str,
         new_quantity: float,
         new_price: float | None = None,
+        symbol: str | None = None,
     ) -> OrderResult | None:
         try:
             api_key, api_secret, base_url = self._credentials_for(account)

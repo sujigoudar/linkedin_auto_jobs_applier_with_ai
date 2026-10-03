@@ -63,5 +63,5 @@ def test_returns_extended_shape_with_honest_unknowns(client):
     assert body["realized"]["gross_realized"] == pytest.approx(100.0)
     assert body["realized"]["fees"] == "unknown"
     assert body["returns"]["twr"] is None
-    # paper broker doesn't implement get_account_balance -- NAV/equity stay honestly unavailable.
-    assert body["account"]["nav"] is None
+    # PaperBroker reports cash-only equity when flat (no open positions).
+    assert body["account"]["nav"] == 100000.0

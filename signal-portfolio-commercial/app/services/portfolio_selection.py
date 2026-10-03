@@ -4,12 +4,13 @@ contract this implements a bounded slice of.
 
 "Manage selections and versions without creating unintended orders" is
 implemented literally: `create_portfolio_selection` refuses any
-product_id that is not both real, this customer's OWN tenant's product,
-AND genuinely PUBLISHED (`PRODUCT_NOT_PUBLISHED_OR_NOT_FOUND` -- a
-customer can never select a DRAFT/VALIDATED/APPROVED product by
-guessing its id), and a selection carries no quantity, broker, or
-execution field at all -- there is nothing here that could route to a
-broker or place an order.
+product_id that is not both real AND genuinely PUBLISHED
+(`PRODUCT_NOT_PUBLISHED_OR_NOT_FOUND` -- a customer can never select a
+DRAFT/VALIDATED/APPROVED product by guessing its id). G-C-10 fix: allows
+selecting PUBLISHED products from any tenant (e.g., operator's products
+selected by self-signup customers). A selection carries no quantity,
+broker, or execution field at all -- there is nothing here that could
+route to a broker or place an order.
 """
 from __future__ import annotations
 
@@ -18,9 +19,8 @@ from datetime import datetime, timezone
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models.product import ProductLifecycleState
+from app.models.product import Product, ProductLifecycleState
 from app.models.portfolio_selection import PortfolioSelection, PortfolioSelectionState
-from app.services.product_admin import get_product
 
 
 class InvalidPortfolioSelectionError(Exception):
@@ -52,10 +52,14 @@ def get_own_portfolio_selection(
 def create_portfolio_selection(
     session: Session, *, tenant_id: str, user_id: str, product_id: str
 ) -> PortfolioSelection:
-    product = get_product(session, product_id, tenant_id=tenant_id)
+    # G-C-10: allow selecting any PUBLISHED product, even if owned by another
+    # tenant (e.g. operator's products selected by self-signup customers).
+    # get_product() scopes to the caller's tenant, so fetch it directly with
+    # a PUBLISHED state check instead.
+    product = session.get(Product, product_id)
     if product is None or product.lifecycle_state != ProductLifecycleState.PUBLISHED:
         raise InvalidPortfolioSelectionError(
-            f"PRODUCT_NOT_PUBLISHED_OR_NOT_FOUND: {product_id!r} is not a published product of this tenant"
+            f"PRODUCT_NOT_PUBLISHED_OR_NOT_FOUND: {product_id!r} is not a published product"
         )
 
     existing = session.scalars(

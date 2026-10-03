@@ -74,7 +74,7 @@ import time
 import httpx
 
 from app.brokers.base import BrokerAdapter
-from app.models import AssetClass, DestinationAccount, OrderResult, OrderStatus, Side, Signal
+from app.models import AssetClass, DestinationAccount, Intent, OrderResult, OrderStatus, Side, Signal
 
 _LIVE_URL = "https://api.tastyworks.com"
 _CERT_URL = "https://api.cert.tastyworks.com"
@@ -87,7 +87,7 @@ _REJECTED_STATUSES = {"cancelled", "rejected", "expired"}
 
 class TastytradeBroker(BrokerAdapter):
     name = "tastytrade"
-    supported_asset_classes = frozenset({AssetClass.EQUITY, AssetClass.OPTION})
+    supported_asset_classes = frozenset({AssetClass.EQUITY})
 
     def __init__(self, timeout: float = 10.0):
         self._client = httpx.AsyncClient(timeout=timeout)
@@ -156,9 +156,11 @@ class TastytradeBroker(BrokerAdapter):
             )
 
         base_url = self._base_url_for(creds["ENV"])
-        # See this module's own docstring's "open/close intent" section --
-        # always the "Open" variant, a disclosed, not a hidden, limitation.
-        action = "Buy to Open" if signal.side == Side.BUY else "Sell to Open"
+        # Check if this is an exit order based on signal intent
+        if signal.intent == Intent.EXIT:
+            action = "Buy to Close" if signal.side == Side.BUY else "Sell to Close"
+        else:
+            action = "Buy to Open" if signal.side == Side.BUY else "Sell to Open"
         try:
             response = await self._client.post(
                 f"{base_url}/accounts/{creds['TT_ACCOUNT_NUMBER']}/orders",

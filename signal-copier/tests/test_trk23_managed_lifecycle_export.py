@@ -144,7 +144,7 @@ async def test_synchronous_managed_entry_fill_exports_exactly_one_execution_appl
     assert envelope.payload["filled_quantity"] == "10.0"
     assert envelope.payload["broker_order_id"] == results[0].broker_order_id
     assert envelope.payload["account"]["account_id"] == "acct1"
-    assert envelope.payload["fee"] is None  # never fabricated
+    assert envelope.payload["fee"] == "0.0"  # PaperBroker sets fee=0.0 (WP-29: E-09)
 
 
 @pytest.mark.asyncio

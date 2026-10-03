@@ -217,7 +217,7 @@ async def test_persisted_lifecycle_resumes_after_restart_with_deficit_intact(acc
 
     # simulate a process restart: a brand new manager, seeded only from the store
     manager2 = PositionLifecycleManager(brokers={"paper": broker}, store=store)
-    manager2.restore_from_store()
+    await manager2.restore_from_store()
 
     lifecycle = manager2.get_lifecycle("acct1", "AAPL")
     assert lifecycle is not None

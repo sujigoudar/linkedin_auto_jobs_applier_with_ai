@@ -97,6 +97,7 @@ async def test_second_same_symbol_entry_is_refused_not_silently_merged(manager, 
 
 
 @pytest.mark.asyncio
+@pytest.mark.scenario("PRO-001")
 async def test_partial_fill_sets_confirmed_owned_not_planned_quantity(manager, account, broker):
     plan = _plan(planned_quantity=100.0)
     lifecycle = await _enter(manager, broker, account, plan, 62.0)
@@ -106,6 +107,7 @@ async def test_partial_fill_sets_confirmed_owned_not_planned_quantity(manager, a
 
 
 @pytest.mark.asyncio
+@pytest.mark.scenario("PRO-002")
 async def test_protection_submitted_and_confirmed_after_fill(manager, account, broker):
     lifecycle = await _enter(manager, broker, account, _plan(initial_stop=48.50), 62.0)
 
@@ -119,6 +121,7 @@ async def test_protection_submitted_and_confirmed_after_fill(manager, account, b
 
 
 @pytest.mark.asyncio
+@pytest.mark.scenario("PRO-009", "PRO-004")
 async def test_target_resize_matches_worked_example_full_fill(manager, account, broker):
     """Design's worked example: 62 owned, 62-share stop, target sells 15 (fully
     filled) -> remaining 47, stop resized to 47."""
@@ -137,6 +140,7 @@ async def test_target_resize_matches_worked_example_full_fill(manager, account, 
 
 
 @pytest.mark.asyncio
+@pytest.mark.scenario("PRO-009")
 async def test_target_resize_with_partial_fill_matches_worked_example(manager, account, broker, monkeypatch):
     """Design section 6: requested 15, only 8 actually fill -> remaining stop
     quantity must be 54 (62 - 8), not the planned 47 (62 - 15)."""
@@ -162,6 +166,7 @@ async def test_target_resize_with_partial_fill_matches_worked_example(manager, a
 
 
 @pytest.mark.asyncio
+@pytest.mark.scenario("PRO-007")
 async def test_close_arbiter_prevents_overselling_from_two_targets(manager, account, broker):
     await _enter(manager, broker, account, _plan(planned_quantity=100.0, initial_stop=48.50), 62.0)
 
@@ -176,6 +181,7 @@ async def test_close_arbiter_prevents_overselling_from_two_targets(manager, acco
 
 
 @pytest.mark.asyncio
+@pytest.mark.scenario("EXT-001")
 async def test_stop_fill_closes_lifecycle(manager, account, broker):
     await _enter(manager, broker, account, _plan(planned_quantity=62.0, initial_stop=48.50), 62.0)
 
@@ -190,6 +196,7 @@ async def test_stop_fill_closes_lifecycle(manager, account, broker):
 
 
 @pytest.mark.asyncio
+@pytest.mark.scenario("EXT-001")
 async def test_stop_fill_applies_to_the_tracked_position(account, broker, tmp_path):
     """EXE-05: on_stop_filled used to only update the in-memory/persisted
     lifecycle ledger, never SignalStore.positions -- local holdings could
@@ -212,6 +219,7 @@ async def test_stop_fill_applies_to_the_tracked_position(account, broker, tmp_pa
 
 
 @pytest.mark.asyncio
+@pytest.mark.scenario("PRO-009")
 async def test_partial_stop_fill_preserves_remaining_coverage_and_order_id(account, broker, tmp_path, monkeypatch):
     """EXE-05: a stop notification can itself be a partial fill -- the
     remainder may still be resting at the broker under the same order id.
@@ -238,6 +246,7 @@ async def test_partial_stop_fill_preserves_remaining_coverage_and_order_id(accou
 
 
 @pytest.mark.asyncio
+@pytest.mark.scenario("EXT-008")
 async def test_exit_after_stop_already_filled_is_rejected_not_oversold(manager, account, broker):
     """Design section 7: a target firing after the stop already filled must not
     also execute — the arbiter must have nothing left to sell."""
@@ -287,6 +296,7 @@ async def test_target_does_not_fire_twice(manager, account, broker):
 
 
 @pytest.mark.asyncio
+@pytest.mark.scenario("PRO-005")
 async def test_failed_target_exit_is_not_marked_fired_and_can_retry(manager, account, broker, monkeypatch):
     """PRO-03: marking the target fired BEFORE calling request_exit meant a
     failure (e.g. the stop cancellation couldn't be confirmed) still
@@ -299,10 +309,10 @@ async def test_failed_target_exit_is_not_marked_fired_and_can_retry(manager, acc
     )
     await _enter(manager, broker, account, plan, 100.0)
 
-    async def unsupported_replace(account, broker_order_id, new_quantity, new_price=None):
+    async def unsupported_replace(account, broker_order_id, new_quantity, new_price=None, symbol=None):
         return None  # PaperBroker still amends by default -- force the cancel/resubmit fallback path here
 
-    async def failing_cancel(account, broker_order_id):
+    async def failing_cancel(account, broker_order_id, symbol=None):
         return False  # cancellation can't be confirmed -- request_exit refuses to proceed
 
     monkeypatch.setattr(broker, "replace_stop_quantity", unsupported_replace)
@@ -325,6 +335,7 @@ async def test_failed_target_exit_is_not_marked_fired_and_can_retry(manager, acc
 
 
 @pytest.mark.asyncio
+@pytest.mark.scenario("PRO-003")
 async def test_stop_placement_missing_a_broker_order_id_is_not_confirmed(manager, account, broker, monkeypatch):
     """PRO-05: a resting-order result with no broker_order_id is
     unmanageable (it can never be cancelled/resized later) -- reporting it
@@ -343,6 +354,7 @@ async def test_stop_placement_missing_a_broker_order_id_is_not_confirmed(manager
 
 
 @pytest.mark.asyncio
+@pytest.mark.scenario("PRO-003")
 async def test_stop_that_fills_immediately_on_submission_is_not_confirmed_coverage(manager, account, broker, monkeypatch):
     """PRO-05: a FILLED result means the stop already executed on
     submission (e.g. price was already past the trigger) -- that's a real
@@ -363,6 +375,7 @@ async def test_stop_that_fills_immediately_on_submission_is_not_confirmed_covera
 
 
 @pytest.mark.asyncio
+@pytest.mark.scenario("PRO-015")
 async def test_trailing_stop_ratchets_up_and_never_loosens(manager, account, broker):
     plan = _plan(
         planned_quantity=62.0,
@@ -457,7 +470,7 @@ async def test_replace_that_returns_a_new_order_id_updates_tracked_id(manager, a
     await _enter(manager, broker, account, plan, 62.0)
     original_stop_id = manager.get_lifecycle("acct1", "AAPL").stop.broker_order_id
 
-    async def replace_with_new_id(account, broker_order_id, new_quantity, new_price=None):
+    async def replace_with_new_id(account, broker_order_id, new_quantity, new_price=None, symbol=None):
         return OrderResult(
             account_id=account.account_id,
             status=OrderStatus.PENDING,

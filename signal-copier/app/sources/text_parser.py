@@ -19,9 +19,10 @@ from __future__ import annotations
 import enum
 import re
 from dataclasses import dataclass
+from typing import Any
 
 from app.errors import SignalValidationError
-from app.models import AssetClass, ProfitTarget, Signal, Side
+from app.models import AssetClass, Intent, OptionContractSpec, ProfitTarget, Signal, Side  # noqa: F401
 
 #: This parser's own exact interpretation implementation -- see
 #: `Signal.parser_version`'s own docstring. Bump whenever this grammar's
@@ -36,7 +37,23 @@ _SIDE_ALIASES = {
     "short": Side.SELL,
     "close": Side.CLOSE,
     "exit": Side.CLOSE,
+    "trim": Side.CLOSE,
+    "reduce": Side.CLOSE,
+    "take": Side.CLOSE,  # for "take profit on"
 }
+
+#: Symbols that are stop-words and should never be treated as an instrument
+_SYMBOL_STOP_WORDS = {
+    "TO", "HALF", "ALL", "AT", "THE", "A", "AND", "OPEN", "CLOSE", "NOW"
+}
+
+#: Keywords that indicate a REDUCE intent (trim/reduce/take profit on)
+_REDUCE_KEYWORDS = {"trim", "reduce", "take"}  # "take" for "take profit on"
+
+#: Pattern to extract reduce_fraction from text like "half", "all", or "25%"
+_REDUCE_FRACTION_PATTERN = re.compile(
+    r"\b(?:half|all|\d+(?:\.\d+)?%)", re.IGNORECASE
+)
 
 #: SIG-XX (this pass): a bare `-?\d+(?:\.\d+)?` stops matching at the first
 #: character it doesn't recognize -- for "1,000" that means it captures
@@ -56,7 +73,8 @@ _NUMBER = r"-?\d[\d,]*(?:\.\d+)?"
 
 _PATTERN = re.compile(
     r"""
-    (?P<side>buy|sell|long|short|close|exit)\s+
+    (?P<side>buy|sell|long|short|close|exit|trim|reduce|take)\s+
+    (?:\s*(?:half|all|\d+(?:\.\d+)?%)\s+)?  # Optional reduce fraction (half/all/N%) - not captured, just skipped
     (?P<symbol>[A-Za-z0-9/.\-]+)
     (?:\s+(?P<quantity>""" + _NUMBER + r""")\s*(?:lots?|units?|shares?)?)?
     (?:\s*@\s*(?P<price>""" + _NUMBER + r"""))?
@@ -71,7 +89,7 @@ _PATTERN = re.compile(
 # and SELL MSFT 5") -- picking just the first one and silently discarding
 # the rest would trade on less than what the message actually said. Refuse
 # rather than guess.
-_SIDE_WORD_PATTERN = re.compile(r"\b(?:buy|sell|long|short|close|exit)\b", re.IGNORECASE)
+_SIDE_WORD_PATTERN = re.compile(r"\b(?:buy|sell|long|short|close|exit|trim|reduce|take)\b", re.IGNORECASE)
 
 #: Every TP mention in the message, each with its own optional level number
 #: (bare "TP"/"TP:" has an empty `num`; "TP1", "TP2", ... carry one) and its
@@ -95,17 +113,40 @@ _NEGATION_OR_CONDITIONAL_WORDS = {
     "won't", "wont", "wouldn't", "wouldnt", "shouldn't", "shouldnt",
     "never", "no", "avoid", "skip", "cancel", "cancelled", "canceled",
     "if", "unless", "maybe", "possibly", "might", "considering", "consider",
-    "wait", "waiting", "hold", "holding", "ignore", "disregard",
+    "wait", "waiting", "ignore", "disregard",
     # SIG-02: past-tense reporting of someone else's instruction ("Yesterday
     # I said BUY AAPL 10") is a description of a signal, not the signal
     # itself.
     "yesterday", "said",
 }
+#: Words that indicate a time horizon, not a negation -- "hold for swing",
+#: "hold for breakout" are management horizons, not instructions to NOT buy.
+_HORIZON_WORDS = {"hold", "holding"}
 _WORDS_BEFORE_MATCH_TO_CHECK = 4
 
 
 def _words(text: str) -> list[str]:
     return re.findall(r"[A-Za-z']+", text.lower())
+
+
+def _is_negation_or_conditional(words: list[str], text: str) -> bool:
+    """Check if text contains negation/conditional words, excluding false positives.
+
+    Special case: "hold" or "holding" followed by "for" (e.g. "hold for swing",
+    "holding for breakout") is a time horizon, not a negation -- return False
+    for these cases."""
+    for i, w in enumerate(words):
+        if w in _NEGATION_OR_CONDITIONAL_WORDS:
+            return True
+        # Check for horizon usage of "hold"/"holding": followed by "for"
+        if w in _HORIZON_WORDS:
+            # Look for "for" in the next 2-3 words
+            if i + 1 < len(words) and words[i + 1] == "for":
+                # This is a horizon, not a negation
+                continue
+            # If "for" is not found nearby, treat as a negation
+            return True
+    return False
 
 
 # SIG-03: a trader posting an OCC-style option contract sometimes puts a
@@ -124,6 +165,100 @@ _OPTION_FRAGMENT_AFTER_SYMBOL = re.compile(r"\b(?P<sym>[A-Za-z]{1,6})\s+(?P<optf
 
 def _merge_split_option_symbols(text: str) -> str:
     return _OPTION_FRAGMENT_AFTER_SYMBOL.sub(lambda m: f"{m.group('sym')}{m.group('optfrag')}", text)
+
+
+def _is_valid_symbol(symbol: str) -> bool:
+    """WP-12: validate that a symbol is not purely numeric or a stop-word."""
+    if symbol.isdigit():
+        return False
+    if symbol.upper() in _SYMBOL_STOP_WORDS:
+        return False
+    return True
+
+
+def _try_parse_option_contract(symbol: str, text_after_symbol: str) -> tuple[str, str, float, str] | None:
+    """WP-12: try to parse an option contract from symbol and following text.
+
+    Returns (underlying, expiry_str, strike) if successful, None otherwise.
+    Handles patterns like:
+    - "AAPL 150C 1/17" -> ("AAPL", "2026-01-17", 150.0)
+    - "AAPL 150C" -> (None - incomplete)
+    - "AAPL 150call 1/17" -> ("AAPL", "2026-01-17", 150.0)
+    """
+    # Extract any existing OCC-style notation from symbol (e.g., "AAPL260118C00150000")
+    if _OPTION_SYMBOL_PATTERN.match(symbol):
+        # Already OCC format, don't re-parse
+        return None
+
+    # Check if symbol is a plain ticker (letters only)
+    if not symbol.replace("/", "").replace("-", "").isalpha():
+        return None
+
+    underlying = symbol
+
+    # Look for strike + call/put + expiry in the following text
+    # Pattern: number(optional decimal) followed by C or P (case-insensitive), then call/put word
+    strike_pattern = r"(?P<strike>\d+(?:\.\d+)?)\s*(?P<right>[CP]|call|put)\b"
+    strike_match = re.search(strike_pattern, text_after_symbol, re.IGNORECASE)
+
+    if not strike_match:
+        return None
+
+    try:
+        strike = float(strike_match.group("strike"))
+    except (ValueError, AttributeError):
+        return None
+
+    right_str = strike_match.group("right").lower()
+    if right_str not in ("c", "call", "p", "put"):
+        return None
+    right = "call" if right_str in ("c", "call") else "put"
+
+    # Look for expiry after the strike pattern
+    # Try to find M/D, M/D/YY, or ISO date formats
+    text_after_strike = text_after_symbol[strike_match.end():]
+
+    # Common patterns: M/D, M/D/YY, ISO date
+    expiry_patterns = [
+        (r"(\d{1,2})/(\d{1,2})/(\d{2,4})", "mdy"),  # M/D/YY or M/D/YYYY
+        (r"(\d{1,2})/(\d{1,2})(?:\D|$)", "md"),      # M/D (with lookahead to ensure not followed by digit)
+        (r"(\d{4})-(\d{2})-(\d{2})", "iso"),         # ISO format
+    ]
+
+    expiry_str = None
+    for pattern, fmt in expiry_patterns:
+        m = re.search(pattern, text_after_strike)
+        if m:
+            if fmt == "mdy":
+                month, day, year = m.groups()
+                year_int = int(year)
+                # Handle 2-digit year: 00-99 -> 2000-2099
+                if year_int < 100:
+                    year_int += 2000
+                expiry_str = f"{year_int:04d}-{int(month):02d}-{int(day):02d}"
+            elif fmt == "md":
+                month, day = m.groups()
+                # Assume current or next year
+                import datetime
+                today = datetime.date.today()
+                year = today.year
+                try:
+                    test_date = datetime.date(year, int(month), int(day))
+                    if test_date < today:
+                        year += 1
+                    expiry_str = f"{year:04d}-{int(month):02d}-{int(day):02d}"
+                except ValueError:
+                    continue
+            elif fmt == "iso":
+                year, month, day = m.groups()
+                expiry_str = f"{year}-{month}-{day}"
+            break
+
+    if expiry_str is None:
+        # No expiry found
+        return None
+
+    return (underlying, expiry_str, strike, right)
 
 
 # SIG-03: every text source defaults to (or is configured with) ONE fixed
@@ -155,10 +290,12 @@ _CRYPTO_BASE_HINTS = {
 
 def _infer_asset_class(symbol: str) -> AssetClass | None:
     """Best-effort instrument classification from the symbol's shape alone.
-    Returns None when the shape doesn't confidently match any known
-    convention (e.g. a bare 3-letter string could be a stock ticker or half
-    of a currency pair) -- the caller must not guess further in that case,
-    only fall back to whatever asset_class it already trusted."""
+    WP-12: Never infers FUTURE or CRYPTO from shape alone; keeps the source-
+    declared class when uncertain. Returns None when the shape doesn't
+    confidently match any known convention (e.g. a bare 3-letter string could
+    be a stock ticker or half of a currency pair) -- the caller must not
+    guess further in that case, only fall back to whatever asset_class it
+    already trusted."""
     bare = symbol.replace("/", "").upper()
 
     if _OPTION_SYMBOL_PATTERN.match(bare):
@@ -172,13 +309,14 @@ def _infer_asset_class(symbol: str) -> AssetClass | None:
     ):
         return AssetClass.FOREX
 
-    if bare.endswith(_CRYPTO_QUOTE_SUFFIXES):
-        for suffix in _CRYPTO_QUOTE_SUFFIXES:
-            if bare.endswith(suffix) and len(bare) > len(suffix):
-                return AssetClass.CRYPTO
-    for base in _CRYPTO_BASE_HINTS:
-        if bare.startswith(base) and bare[len(base):] in ("USD", "EUR", "GBP", "BTC", "ETH"):
-            return AssetClass.CRYPTO
+    # WP-12: Never infer CRYPTO from symbol shape alone
+    # if bare.endswith(_CRYPTO_QUOTE_SUFFIXES):
+    #     for suffix in _CRYPTO_QUOTE_SUFFIXES:
+    #         if bare.endswith(suffix) and len(bare) > len(suffix):
+    #             return AssetClass.CRYPTO
+    # for base in _CRYPTO_BASE_HINTS:
+    #     if bare.startswith(base) and bare[len(base):] in ("USD", "EUR", "GBP", "BTC", "ETH"):
+    #         return AssetClass.CRYPTO
 
     if bare.isalpha() and 1 <= len(bare) <= 5:
         return AssetClass.EQUITY
@@ -271,6 +409,67 @@ def _resolve_take_profit_targets(stripped: str) -> str | tuple[str | None, list[
     return (targets_raw[0].value, targets_raw)
 
 
+def _determine_intent_and_reduce_fraction(side: Side, text: str) -> tuple[Intent | None, float | None]:
+    """WP-08: determine intent and reduce_fraction from the side and text.
+
+    Maps side keywords to intent values and extracts reduce_fraction from
+    "half", "all", or "N%" patterns when a reduce verb is detected.
+
+    Returns (intent, reduce_fraction) where intent can be None (to be derived
+    in Signal.__post_init__) and reduce_fraction is None unless the message
+    indicates a partial reduction.
+    """
+    # Map side to intent
+    intent = None
+    if side == Side.BUY:
+        intent = Intent.ENTRY_LONG
+    elif side == Side.SELL:
+        # "short" keyword maps to ENTRY_SHORT intent
+        if "short" in text.lower():
+            intent = Intent.ENTRY_SHORT
+        else:
+            # "sell" by itself is SELL intent (ambiguous, resolved by engine)
+            intent = Intent.SELL
+    elif side == Side.CLOSE:
+        # "close"/"exit"/"flat" → EXIT intent, but could be REDUCE if reducing
+        text_lower = text.lower()
+        if any(kw in text_lower for kw in _REDUCE_KEYWORDS):
+            intent = Intent.REDUCE
+        else:
+            intent = Intent.EXIT
+
+    # Extract reduce_fraction for REDUCE intents or CLOSE with a fraction
+    reduce_fraction = None
+    text_lower = text.lower()
+
+    # Look for reduce fraction indicators ("half", "all", or "N%")
+    if "half" in text_lower:
+        reduce_fraction = 0.5
+    elif "all" in text_lower:
+        reduce_fraction = 1.0
+    else:
+        # Look for a percentage pattern (e.g., "25%")
+        fraction_match = _REDUCE_FRACTION_PATTERN.search(text)
+        if fraction_match:
+            frac_text = fraction_match.group(0).lower()
+            if frac_text.endswith("%"):
+                # Extract percentage and convert to fraction
+                try:
+                    percent_value = float(frac_text[:-1])
+                    reduce_fraction = percent_value / 100.0
+                    # Ensure it's in valid range (0, 1]
+                    if reduce_fraction <= 0 or reduce_fraction > 1.0:
+                        reduce_fraction = None
+                except ValueError:
+                    reduce_fraction = None
+
+    # If a reduce_fraction was found and side is CLOSE, map to REDUCE intent
+    if reduce_fraction is not None and intent == Intent.EXIT:
+        intent = Intent.REDUCE
+
+    return intent, reduce_fraction
+
+
 def classify_text_signal(
     text: str, *, source: str, asset_class: AssetClass = AssetClass.CRYPTO, analyst: str | None = None
 ) -> MessageDisposition:
@@ -293,7 +492,8 @@ def classify_text_signal(
 
     preceding = _words(stripped[: match.start()])[-_WORDS_BEFORE_MATCH_TO_CHECK:]
     following = _words(stripped[match.end() :])
-    if any(w in _NEGATION_OR_CONDITIONAL_WORDS for w in preceding + following):
+    all_surrounding_words = preceding + following
+    if _is_negation_or_conditional(all_surrounding_words, stripped):
         return MessageDisposition(
             text=text,
             outcome=DispositionOutcome.IGNORED,
@@ -348,10 +548,43 @@ def classify_text_signal(
     side = _SIDE_ALIASES[match.group("side").lower()]
     symbol = match.group("symbol").upper()
 
-    inferred_asset_class = _infer_asset_class(symbol)
-    resolved_asset_class = (
-        inferred_asset_class if inferred_asset_class is not None else asset_class
-    )
+    # WP-12: Validate symbol - reject stop-words and purely numeric symbols
+    if not _is_valid_symbol(symbol):
+        return MessageDisposition(
+            text=text,
+            outcome=DispositionOutcome.MISSING_DATA,
+            detail=f"symbol '{symbol}' is not a valid instrument (stop-word or purely numeric)",
+        )
+
+    # WP-12: Try to parse option contracts
+    text_after_symbol = stripped[match.end("symbol"):]
+    option_parse_result = _try_parse_option_contract(symbol, text_after_symbol)
+    option_contract = None
+    if option_parse_result is not None:
+        underlying, expiry_str, strike, right = option_parse_result
+        option_contract = OptionContractSpec(
+            underlying=underlying,
+            expiry=expiry_str,
+            strike=strike,
+            right=right,
+        )
+        resolved_asset_class = AssetClass.OPTION
+    else:
+        # Check if the symbol looks like an incomplete option
+        strike_pattern = r"\d+(?:\.\d+)?\s*[CP](?:\s|$)"
+        if re.search(strike_pattern, text_after_symbol, re.IGNORECASE):
+            # Found strike+C/P but no expiry
+            return MessageDisposition(
+                text=text,
+                outcome=DispositionOutcome.MISSING_DATA,
+                detail="option contract incomplete (missing expiry date)",
+            )
+
+        # Standard asset class inference
+        inferred_asset_class = _infer_asset_class(symbol)
+        resolved_asset_class = (
+            inferred_asset_class if inferred_asset_class is not None else asset_class
+        )
 
     # Only a GENUINE multi-target message (2+ cleanly-numbered TP levels)
     # populates `targets` -- a single TP mention keeps this parser's
@@ -362,6 +595,16 @@ def classify_text_signal(
         if len(targets_raw) > 1
         else []
     )
+
+    # WP-12: Mark if asset class was inferred from symbol shape
+    raw_data: dict[str, Any] = {"text": text}
+    was_inferred = False
+    if option_contract is None and inferred_asset_class is not None:
+        was_inferred = inferred_asset_class != asset_class
+        raw_data["asset_class_inferred"] = was_inferred
+
+    # WP-08: Determine intent and reduce_fraction from side and text
+    intent, reduce_fraction = _determine_intent_and_reduce_fraction(side, text)
 
     signal = Signal(
         source=source,
@@ -374,8 +617,11 @@ def classify_text_signal(
         stop_loss=_optional_float(match.group("sl")),
         take_profit=_optional_float(take_profit_raw),
         targets=targets,
+        intent=intent,
+        reduce_fraction=reduce_fraction,
+        option=option_contract,
         parser_version=PARSER_VERSION,
-        raw={"text": text},
+        raw=raw_data,
     )
     return MessageDisposition(text=text, outcome=DispositionOutcome.PARSED, signal=signal)
 

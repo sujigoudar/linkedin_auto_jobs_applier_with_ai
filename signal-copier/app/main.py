@@ -22,10 +22,10 @@ from collections import defaultdict
 from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Literal
 
 import httpx
-from fastapi import Cookie, Depends, FastAPI, Form, Header, HTTPException, Query, Request, Response
+from fastapi import Body, Cookie, Depends, FastAPI, Form, Header, HTTPException, Query, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
@@ -71,7 +71,16 @@ from app.metrics import render_metrics
 from app.errors import SignalValidationError
 from app.lifecycle.manager import PositionLifecycleManager
 from app.lifecycle.models import ProtectionStatus
-from app.models import AccountBalance, AssetClass, ManagementRecipe, Side, Signal, SourceEvent, SourceEventKind
+from app.models import (
+    AccountBalance,
+    AssetClass,
+    CommandLedgerEntry,
+    ManagementRecipe,
+    Side,
+    Signal,
+    SourceEvent,
+    SourceEventKind,
+)
 from app.parser_tooling import (
     ExtractedFields,
     MessageType,
@@ -93,7 +102,7 @@ from app.services.catalog_fit_sim_auth import (
     StaleCatalogFitSimTimestampError,
     verify_catalog_fit_sim_signature,
 )
-from app.risk import size_for_account, symbol_for_account
+from app.risk import UnsizedEntryError, size_for_account, symbol_for_account
 from app.routing import RoutingConfig, RoutingRule, load_routing_config_from_store
 from app.sources.text_parser import DispositionOutcome, classify_batch, classify_text_signal
 from app.sources.discord import DiscordSource
@@ -249,7 +258,8 @@ if not config.STANDBY_MODE:
     # holds the lease -- see that error's docstring.
     writer_lease_guard.acquire()
 lifecycle_manager = PositionLifecycleManager(brokers=brokers, store=store)
-lifecycle_manager.restore_from_store()  # resume any managed-lifecycle positions from before a restart
+# Note: restore_from_store() is called asynchronously in the lifespan handler
+# below, before starting reconciliation and other background tasks.
 engine = SignalCopierEngine(
     routing=routing_config,
     brokers=brokers,
@@ -518,6 +528,10 @@ async def lifespan(app: FastAPI):
         raise
     _heartbeat_task = asyncio.create_task(_writer_lease_heartbeat())
 
+    # Restore managed lifecycles and adopt any unresolved stops from before
+    # the restart (D-09). Must happen before reconciler starts polling.
+    await lifecycle_manager.restore_from_store()
+
     await webhook_source.start()
     for source in _background_sources:
         try:
@@ -536,6 +550,38 @@ async def lifespan(app: FastAPI):
         await relay_scheduler.start()
     else:
         logger.info("RELAY_INGRESS_URL is not set -- relay scheduler not started")
+
+    # WP-34: startup sweep of stale allocation intents. Mark allocation intents
+    # that were left in 'claimed' or 'selected' state (crash-window) as 'skipped'
+    # with reason "stale after restart", and raise an alert for each.
+    try:
+        from app.alerts import AlertSink
+
+        alert_sink = AlertSink(store)
+        stale_seconds = getattr(config, "ALLOCATION_INTENT_STALE_SECONDS", 3600)
+        stale_intents = store.list_allocation_intents(state="claimed") + store.list_allocation_intents(state="selected")
+        now = datetime.now(timezone.utc)
+        for intent in stale_intents:
+            created = datetime.fromisoformat(intent.get("created_at", ""))
+            if (now - created).total_seconds() > stale_seconds:
+                store.skip_allocation_intent(
+                    intent["signal_id"],
+                    reason="stale after restart",
+                    trace=[{"event": "startup_sweep", "timestamp": now.isoformat()}],
+                )
+                alert_sink.record(
+                    kind="skipped_allocation",
+                    account_id=None,
+                    message=f"Stale allocation intent {intent['intent_id']} swept on startup",
+                    payload={
+                        "intent_id": intent["intent_id"],
+                        "signal_id": intent["signal_id"],
+                        "strategy_key": intent["strategy_key"],
+                        "reason": "stale after restart",
+                    },
+                )
+    except Exception:
+        logger.exception("Failed to sweep stale allocation intents on startup")
 
     yield
 
@@ -647,7 +693,12 @@ async def health() -> dict:
     protected are making progress -- no account IDs, balances, or other
     private data belongs here (see docs on why this stays unauthenticated).
     `*_ok` is False both when a worker hasn't completed a pass recently
-    (stuck/dead task) and before its very first pass after startup."""
+    (stuck/dead task) and before its very first pass after startup.
+
+    F-08: Includes disk write capability (database_write_ok) and free space
+    check (disk_free_bytes) to detect full/read-only filesystems."""
+    import shutil
+
     now = datetime.now(timezone.utc)
 
     def _fresh(last_success: datetime | None, interval_seconds: float) -> bool:
@@ -660,6 +711,23 @@ async def health() -> dict:
         db_ok = True
     except Exception:  # noqa: BLE001 - health check must never raise
         db_ok = False
+
+    # F-08: Test write capability via heartbeat probe
+    try:
+        database_write_ok = store.database_write_ok()
+    except Exception:  # noqa: BLE001 - health check must never raise
+        database_write_ok = False
+
+    # F-08: Check free disk space on the volume containing the database
+    disk_free_bytes: int | None = None
+    disk_usage_ok = True
+    try:
+        disk_usage = shutil.disk_usage(store.db_path)
+        disk_free_bytes = disk_usage.free
+        # Fail closed: if free space is less than 1MB, consider disk unhealthy
+        disk_usage_ok = disk_free_bytes > (1024 * 1024)
+    except Exception:  # noqa: BLE001 - health check must never raise
+        disk_usage_ok = False
 
     price_monitor_ok = _fresh(price_monitor.last_success_at, config.PRICE_MONITOR_INTERVAL_SECONDS)
     reconciler_ok = _fresh(reconciler.last_success_at, config.RECONCILE_INTERVAL_SECONDS)
@@ -737,8 +805,12 @@ async def health() -> dict:
         # right next to it -- a fresh startup (before either worker's
         # first successful pass) or a genuinely stuck worker still
         # reported "ok" overall while its own detail flag said otherwise.
-        "status": "ok" if (db_ok and price_monitor_ok and reconciler_ok and writer_lease_ok is not False) else "degraded",
+        # F-08: Now also includes database_write_ok and disk_usage_ok
+        "status": "ok" if (db_ok and database_write_ok and disk_usage_ok and price_monitor_ok and reconciler_ok and writer_lease_ok is not False) else "degraded",
         "database_ok": db_ok,
+        "database_write_ok": database_write_ok,
+        "disk_usage_ok": disk_usage_ok,
+        "disk_free_bytes": disk_free_bytes,
         "price_monitor_ok": price_monitor_ok,
         "reconciler_ok": reconciler_ok,
         "provider_scout_ok": provider_scout_ok,
@@ -1085,6 +1157,165 @@ async def system_readiness(_owner: dict = Depends(require_owner_read)) -> dict:
         "reason": "No qualification/release-approval taxonomy exists yet in this build. FOLLOW-UP: integrate with the P0-7 qualification/release-state work once it lands.",
     }
 
+    # --- per-account readiness checklist (WP-45) ---
+    account_readiness_items: list[dict] = []
+    for account_id, account in routing_config.accounts.items():
+        items: list[dict[str, Any]] = []
+        broker = brokers.get(account.broker)
+
+        # 1. Sizing configured
+        sizing_ok = False
+        sizing_reason = "No sizing configured"
+        if account.fixed_quantity is not None:
+            sizing_ok = True
+            sizing_reason = f"fixed_quantity={account.fixed_quantity}"
+        elif account.multiplier != 1.0:
+            sizing_ok = True
+            sizing_reason = f"multiplier={account.multiplier}"
+        # Check for sizing_mode if it exists
+        elif hasattr(account, "sizing_mode") and account.sizing_mode == "risk_fraction" and hasattr(account, "risk_fraction") and account.risk_fraction is not None:
+            sizing_ok = True
+            sizing_reason = f"sizing_mode=risk_fraction, risk_fraction={account.risk_fraction}"
+
+        items.append({
+            "key": "sizing",
+            "status": "ok" if sizing_ok else "blocked",
+            "reason": sizing_reason,
+            "fix_route": "#/trade/accounts" if not sizing_ok else None,
+        })
+
+        # 2. Loss limit configured
+        loss_limit_ok = account.daily_loss_limit_percent is not None
+        items.append({
+            "key": "loss_limit",
+            "status": "ok" if loss_limit_ok else "not_tracked",
+            "reason": (f"daily_loss_limit_percent={account.daily_loss_limit_percent}%"
+                      if loss_limit_ok else "no daily loss limit configured (optional)"),
+            "fix_route": "#/trade/accounts" if not loss_limit_ok else None,
+        })
+
+        # 3. Buying power or ceiling available
+        buying_power_ok = False
+        buying_power_reason = ""
+        if broker is None:
+            buying_power_reason = f"no broker adapter registered for '{account.broker}'"
+        elif broker.has_balance_capability:
+            buying_power_ok = True
+            buying_power_reason = "adapter has balance capability"
+        elif account.max_notional_exposure is not None:
+            buying_power_ok = True
+            buying_power_reason = f"max_notional_exposure={account.max_notional_exposure}"
+        else:
+            buying_power_reason = "adapter has no balance capability and no max_notional_exposure set"
+
+        items.append({
+            "key": "buying_power",
+            "status": "ok" if buying_power_ok else "blocked" if broker is not None else "blocked",
+            "reason": buying_power_reason,
+            "fix_route": "#/trade/accounts" if not buying_power_ok else None,
+        })
+
+        # 4. Adapter can route entries
+        entries_ok = broker is not None and broker.entries_admissible()
+        broker_name = broker.name if broker is not None else "unknown"
+        items.append({
+            "key": "entries_admissible",
+            "status": "ok" if entries_ok else "blocked",
+            "reason": (f"{broker_name} adapter can route entries"
+                      if entries_ok else f"{broker_name} adapter cannot route entries"),
+            "fix_route": None if entries_ok else "#/trade/accounts",
+        })
+
+        # 5. Venue environment known
+        venue_env = "not_tracked"
+        venue_env_reason = "adapter does not expose venue environment"
+        if broker is not None and hasattr(broker, "venue_environment"):
+            try:
+                ve = broker.venue_environment(account)
+                if ve and ve != "unknown":
+                    venue_env = "ok"
+                    venue_env_reason = f"venue environment: {ve}"
+            except Exception:
+                venue_env_reason = "could not determine venue environment"
+
+        items.append({
+            "key": "venue_environment",
+            "status": "ok" if venue_env == "ok" else venue_env,
+            "reason": venue_env_reason,
+            "fix_route": None,
+        })
+
+        # 6. Route qualification
+        # Paper accounts are always "ok"; otherwise check release-approved
+        route_qual_ok = False
+        route_qual_reason = ""
+        if broker is not None and account.broker == "paper":
+            route_qual_ok = True
+            route_qual_reason = "paper broker (always approved)"
+        elif broker is None:
+            route_qual_reason = f"no broker adapter registered for '{account.broker}'"
+        else:
+            # Check if any route for this account/broker is release-approved
+            # For now, check default equity asset class
+            is_approved = store.is_route_release_approved(
+                adapter_type=broker.__class__.__name__.replace("Broker", "").lower(),
+                route_key=account.broker,
+                asset_class="equity",
+                product_type="default"
+            )
+            if is_approved:
+                route_qual_ok = True
+                route_qual_reason = "route is release-approved"
+            else:
+                route_qual_reason = "route not yet release-approved"
+
+        items.append({
+            "key": "route_qualification",
+            "status": "ok" if route_qual_ok else "blocked" if broker is None else "blocked",
+            "reason": route_qual_reason,
+            "fix_route": None,
+        })
+
+        # 7. Alerts path configured
+        alerts_ok = bool(getattr(config, "ALERT_WEBHOOK_URL", ""))
+        items.append({
+            "key": "alerts_path",
+            "status": "ok" if alerts_ok else "not_tracked",
+            "reason": "ALERT_WEBHOOK_URL is configured" if alerts_ok else "ALERT_WEBHOOK_URL not configured (optional)",
+            "fix_route": None,
+        })
+
+        # 8. Writer lease active
+        writer_lease_ok = trading_authority["status"] == "held"
+        items.append({
+            "key": "writer_lease",
+            "status": "ok" if writer_lease_ok else trading_authority["status"],
+            "reason": trading_authority["reason"],
+            "fix_route": None,
+        })
+
+        # 9. Margin tracking
+        margin_ok = "not_tracked"
+        margin_reason = "margin tracking not yet verified"
+        # Try to get latest balance for this account
+        margin_data = [a for a in account_rows if a.get("account_id") == account_id]
+        if margin_data and margin_data[0].get("status") == "fresh":
+            # Would need to check balance.maintenance_margin from get_account_balance
+            # For now, mark as not_tracked since we can't tell from the summary
+            margin_reason = "margin capability not exposed in readiness summary"
+
+        items.append({
+            "key": "margin_tracking",
+            "status": margin_ok,
+            "reason": margin_reason,
+            "fix_route": None,
+        })
+
+        account_readiness_items.append({
+            "account_id": account_id,
+            "items": items,
+        })
+
     relay_down = bool(config.RELAY_INGRESS_URL) and health_body.get("relay_ok") is False
     rollup = _compute_readiness_rollup(
         standby_mode=config.STANDBY_MODE,
@@ -1100,6 +1331,12 @@ async def system_readiness(_owner: dict = Depends(require_owner_read)) -> dict:
         relay_down=relay_down,
     )
 
+    # --- WC-21: reservation and intent health ---
+    workflow = {
+        "reservations": store.reservation_health(),
+        "intents": store.intent_health(),
+    }
+
     return {
         "liveness": liveness,
         "data_readiness": data_readiness,
@@ -1108,7 +1345,9 @@ async def system_readiness(_owner: dict = Depends(require_owner_read)) -> dict:
         "protection_readiness": protection_readiness,
         "release_status": release_status,
         "rollup": rollup,
+        "workflow": workflow,
         "standby_mode": config.STANDBY_MODE,
+        "accounts": account_readiness_items,
     }
 
 
@@ -1732,10 +1971,10 @@ async def get_capital_allocation(_owner: dict = Depends(require_owner_read)) -> 
 # plus the one case (no quantity on the signal at all) app/risk.py's own
 # `size_for_account` special-cases to a 1.0 base.
 _SIZING_PREVIEW_SCENARIOS: list[dict[str, Any]] = [
-    {"label": "No quantity on signal (defaults to 1.0)", "quantity": None},
     {"label": "Small signal (quantity 1)", "quantity": 1.0},
     {"label": "Typical signal (quantity 5)", "quantity": 5.0},
     {"label": "Large signal (quantity 25)", "quantity": 25.0},
+    {"label": "Very large signal (quantity 100)", "quantity": 100.0},
 ]
 
 
@@ -1791,8 +2030,11 @@ async def get_sizing_preview(
             deployed = exposure.notional
             reserved = engine.capital_allocator.pending_reservation(account_id)
             max_exposure = account.max_notional_exposure
-            expected_quantity = size_for_account(real_signal, account)
-            notional = expected_quantity * real_signal.price if real_signal.price is not None else None
+            try:
+                expected_quantity = size_for_account(real_signal, account)
+            except UnsizedEntryError:
+                expected_quantity = None
+            notional = expected_quantity * real_signal.price if expected_quantity is not None and real_signal.price is not None else None
             # A ceiling check against a known-incomplete `deployed` figure
             # would understate real exposure -- report unknown rather than
             # a falsely-reassuring `False` (see ExposureReport.has_unresolved).
@@ -1825,7 +2067,7 @@ async def get_sizing_preview(
         deployed = exposure.notional
         reserved = engine.capital_allocator.pending_reservation(account_id)
         max_exposure = account.max_notional_exposure
-        scenario_rows = []
+        scenario_rows: list[dict[str, Any]] = []
         for scenario in _SIZING_PREVIEW_SCENARIOS:
             hypothetical_signal = Signal(
                 source="__tr12_sizing_preview__",
@@ -1833,8 +2075,11 @@ async def get_sizing_preview(
                 side=Side.BUY,
                 quantity=scenario["quantity"],
             )
-            expected_quantity = size_for_account(hypothetical_signal, account)
-            notional = expected_quantity * price if price is not None else None
+            try:
+                expected_quantity = size_for_account(hypothetical_signal, account)
+            except UnsizedEntryError:
+                expected_quantity = None
+            notional = expected_quantity * price if expected_quantity is not None and price is not None else None
             would_exceed_ceiling = (
                 None
                 if exposure.has_unresolved
@@ -1853,18 +2098,17 @@ async def get_sizing_preview(
                     "would_exceed_ceiling": would_exceed_ceiling,
                 }
             )
-        accounts_out.append(
-            {
-                "account_id": account_id,
-                "fixed_quantity": account.fixed_quantity,
-                "multiplier": account.multiplier,
-                "deployed_notional": deployed,
-                "reserved_notional": reserved,
-                "max_notional_exposure": max_exposure,
-                "unresolved_symbols": exposure.unresolved_symbols,
-                "scenarios": scenario_rows,
-            }
-        )
+        account_row: dict[str, Any] = {
+            "account_id": account_id,
+            "fixed_quantity": account.fixed_quantity,
+            "multiplier": account.multiplier,
+            "deployed_notional": deployed,
+            "reserved_notional": reserved,
+            "max_notional_exposure": max_exposure,
+            "unresolved_symbols": exposure.unresolved_symbols,
+            "scenarios": scenario_rows,
+        }
+        accounts_out.append(account_row)
     return {"price": price, "accounts": accounts_out}
 
 
@@ -2137,6 +2381,57 @@ async def preview_position_stop_change(
     return lifecycle_manager.preview_stop_change(account_id, symbol, price)
 
 
+@app.post("/lifecycles/{account_id}/{symbol}/unregister")
+async def unregister_lifecycle(
+    account_id: str,
+    symbol: str,
+    _owner: dict = Depends(require_owner),
+) -> dict:
+    """WP-23 D-14/D-20: owner endpoint to unregister a managed-lifecycle plan
+    that has no open position (confirmed_owned_quantity == 0) and no live stop
+    order. Used to recover from lost-response entry scenarios where a plan was
+    created but never filled and has been blocking the account/symbol from
+    re-entry forever.
+
+    Returns 404 if no lifecycle exists for this account/symbol.
+    Returns 409 if the lifecycle still holds a position or has an active stop.
+    Returns 200 with success details on unregistration."""
+    if account_id not in routing_config.accounts:
+        raise HTTPException(status_code=404, detail=f"no account '{account_id}'")
+
+    if lifecycle_manager is None:
+        raise HTTPException(status_code=409, detail="managed lifecycles not configured")
+
+    lifecycle = lifecycle_manager.get_lifecycle(account_id, symbol)
+    if lifecycle is None:
+        raise HTTPException(status_code=404, detail=f"no open lifecycle for {account_id}/{symbol}")
+
+    # Check preconditions: no owned position, no live stop
+    if lifecycle.confirmed_owned_quantity > 1e-9:
+        raise HTTPException(
+            status_code=409,
+            detail=f"lifecycle for {account_id}/{symbol} still holds {lifecycle.confirmed_owned_quantity:.6f} "
+            "— unregister requires confirmed_owned_quantity == 0",
+        )
+
+    if lifecycle.stop.broker_order_id is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=f"lifecycle for {account_id}/{symbol} has a live stop order (id={lifecycle.stop.broker_order_id}) "
+            "— cancel it first or wait for it to fill",
+        )
+
+    # Unregister by calling the internal cleanup
+    lifecycle_manager.unregister_plan(account_id, symbol)
+
+    return {
+        "account_id": account_id,
+        "symbol": symbol,
+        "status": "unregistered",
+        "message": f"lifecycle for {account_id}/{symbol} successfully unregistered",
+    }
+
+
 @app.get("/brokers")
 async def list_broker_capabilities(_owner: dict = Depends(require_owner_read)) -> dict:
     """Every registered broker's actual, code-verified capabilities — not a
@@ -2161,6 +2456,7 @@ async def list_broker_capabilities(_owner: dict = Depends(require_owner_read)) -
                 "has_last_price_capability": broker.has_last_price_capability,
                 "has_balance_capability": broker.has_balance_capability,
                 "can_protect_a_managed_position": broker.can_protect_a_managed_position(),
+                "entries_admissible": broker.entries_admissible(),
                 "supported_asset_classes": (
                     sorted(a.value for a in broker.supported_asset_classes)
                     if broker.supported_asset_classes is not None
@@ -2418,9 +2714,27 @@ class AccountRequest(BaseModel):
     #: P0-5: off by default -- see DestinationAccount.exclusive_writer_qualified's
     #: own docstring for exactly what setting this True asserts and allows.
     exclusive_writer_qualified: bool = False
+    #: WP-08/B-14: whether this account is allowed to open short positions
+    allow_short: bool = False
+    #: WP-28/E-11: account base currency (ISO 4217 code)
+    currency: str | None = None
+    #: WP-32/B-11: maximum gross leverage ceiling
+    max_gross_leverage: float | None = Field(default=None, gt=0)
+    #: WP-30/B-08: daily loss limit as a percentage of equity (e.g., 5 for 5%)
+    daily_loss_limit_percent: float | None = Field(default=None, gt=0, le=100)
+    #: WP-30/B-08: minimum equity threshold (in account currency)
+    min_equity_threshold: float | None = Field(default=None, gt=0)
+    #: WP-16/B-01: sizing strategy for this account: "multiplier" (default),
+    #: "fixed", or "risk_fraction".
+    sizing_mode: str = Field(default="multiplier", pattern="^(multiplier|fixed|risk_fraction)$")
+    #: WP-16/B-01: for sizing_mode="risk_fraction", the fraction of equity to risk
+    #: per trade (e.g., 0.01 for 1%). Must be between 0 and 1.
+    risk_fraction: float | None = Field(default=None, gt=0, le=1)
 
     _reject_bool_multiplier = field_validator(
-        "multiplier", "fixed_quantity", "max_notional_exposure", "risk_percent_of_equity", mode="before"
+        "multiplier", "fixed_quantity", "max_notional_exposure", "risk_percent_of_equity",
+        "max_gross_leverage", "daily_loss_limit_percent", "min_equity_threshold", "risk_fraction",
+        mode="before"
     )(_reject_bool_scaling_value)
 
     @field_validator("management_recipe")
@@ -2447,30 +2761,97 @@ async def list_accounts(_owner: dict = Depends(require_owner_read)) -> dict:
     return {"accounts": store.list_config_accounts()}
 
 
+class AccountPatchRequest(BaseModel):
+    """Partial account update: every field is optional (None = unchanged).
+    Use this for partial updates; POST /accounts is full-replace only."""
+    account_id: str | None = None
+    broker: str | None = None
+    multiplier: float | None = Field(default=None, gt=0)
+    fixed_quantity: float | None = Field(default=None, gt=0)
+    symbol_map: dict[str, str] | None = None
+    enabled: bool | None = None
+    managed_lifecycle: bool | None = None
+    max_notional_exposure: float | None = Field(default=None, gt=0)
+    risk_percent_of_equity: float | None = Field(default=None, gt=0, le=1)
+    management_recipe: str | None = None
+    qualification_level: str | None = None
+    exclusive_writer_qualified: bool | None = None
+    #: WP-08/B-14: whether this account is allowed to open short positions
+    allow_short: bool | None = None
+    #: WP-28/E-11: account base currency (ISO 4217 code)
+    currency: str | None = None
+    #: WP-32/B-11: maximum gross leverage ceiling
+    max_gross_leverage: float | None = Field(default=None, gt=0)
+    #: WP-30/B-08: daily loss limit as a percentage of equity (e.g., 5 for 5%)
+    daily_loss_limit_percent: float | None = Field(default=None, gt=0, le=100)
+    #: WP-30/B-08: minimum equity threshold (in account currency)
+    min_equity_threshold: float | None = Field(default=None, gt=0)
+    #: WP-16/B-01: sizing strategy: "multiplier", "fixed", or "risk_fraction"
+    sizing_mode: str | None = Field(default=None, pattern="^(multiplier|fixed|risk_fraction)$")
+    #: WP-16/B-01: for sizing_mode="risk_fraction", the fraction of equity to risk per trade
+    risk_fraction: float | None = Field(default=None, gt=0, le=1)
+
+    _reject_bool_multiplier = field_validator(
+        "multiplier", "fixed_quantity", "max_notional_exposure", "risk_percent_of_equity",
+        "max_gross_leverage", "daily_loss_limit_percent", "min_equity_threshold", "risk_fraction",
+        mode="before"
+    )(_reject_bool_scaling_value)
+
+    @field_validator("management_recipe")
+    @classmethod
+    def _validate_management_recipe(cls, v: str | None) -> str | None:
+        if v is None:
+            return v
+        try:
+            ManagementRecipe(v)
+        except ValueError as exc:
+            raise ValueError(
+                f"management_recipe must be one of {[m.value for m in ManagementRecipe]}"
+            ) from exc
+        return v
+
+
 @app.post("/accounts")
 async def create_or_update_account(request: AccountRequest, _owner: dict = Depends(require_owner)) -> dict:
-    """Create or update (by `account_id`) a destination account. Takes
-    effect on the very next signal — no restart. This does NOT set broker
-    credentials: those remain environment variables per the project's
-    "never store secrets in config" rule (see README.md's Security
-    notes) — create the account here, then set that broker's
-    `{BROKER}_{ACCOUNT_ID}_...` env vars separately.
+    """Create or update (by `account_id`) a destination account with full-replace semantics
+    (all fields required; omitted fields revert to defaults). Use PATCH /accounts/{account_id}
+    for partial updates. Takes effect on the very next signal — no restart. This does NOT set
+    broker credentials: those remain environment variables per the project's "never store secrets
+    in config" rule (see README.md's Security notes) — create the account here, then set that
+    broker's `{BROKER}_{ACCOUNT_ID}_...` env vars separately.
 
     EXE-10: changing `broker` on an account that has real exposure
     (`account_id` still shows up in list_open_positions or an open
     managed lifecycle) is refused -- the tracked position was recorded
     against the OLD broker; retargeting the account to a different one
     would strand it with nothing that ever placed or can now manage its
-    exit."""
+    exit.
+
+    D-07/F-01: changing `managed_lifecycle` on an account that has real
+    exposure is also refused -- the exit path (managed vs plain) is
+    determined by lifecycle existence, not the flag; changing the flag
+    while a position is open can orphan the resting protective stop or
+    strand a position that cannot be closed (plain → managed flip)."""
     existing = next((a for a in store.list_config_accounts() if a["account_id"] == request.account_id), None)
-    if existing is not None and existing["broker"] != request.broker and _account_has_exposure(request.account_id):
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                f"account '{request.account_id}' has an open position/lifecycle tracked against broker "
-                f"'{existing['broker']}' -- refusing to change its broker to '{request.broker}' and strand it"
-            ),
-        )
+    if existing is not None and _account_has_exposure(request.account_id):
+        if existing["broker"] != request.broker:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"account '{request.account_id}' has an open position/lifecycle tracked against broker "
+                    f"'{existing['broker']}' -- refusing to change its broker to '{request.broker}' and strand it"
+                ),
+            )
+        if existing["managed_lifecycle"] != request.managed_lifecycle:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"account '{request.account_id}' has an open position/lifecycle -- refusing to change "
+                    f"managed_lifecycle from {existing['managed_lifecycle']} to {request.managed_lifecycle} "
+                    f"(the exit path is determined by lifecycle existence, not the flag; flipping it mid-position "
+                    f"orphans the protective stop or strands the position)"
+                ),
+            )
     store.upsert_config_account(
         account_id=request.account_id,
         broker=request.broker,
@@ -2484,6 +2865,13 @@ async def create_or_update_account(request: AccountRequest, _owner: dict = Depen
         management_recipe=request.management_recipe,
         qualification_level=request.qualification_level,
         exclusive_writer_qualified=request.exclusive_writer_qualified,
+        allow_short=request.allow_short,
+        currency=request.currency,
+        max_gross_leverage=request.max_gross_leverage,
+        daily_loss_limit_percent=request.daily_loss_limit_percent,
+        min_equity_threshold=request.min_equity_threshold,
+        sizing_mode=request.sizing_mode,
+        risk_fraction=request.risk_fraction,
     )
     _reload_routing_config()
     return {"account_id": request.account_id, "status": "saved"}
@@ -2506,16 +2894,250 @@ async def delete_account(account_id: str, _owner: dict = Depends(require_owner))
     return {"account_id": account_id, "status": "deleted"}
 
 
+@app.patch("/accounts/{account_id}")
+async def patch_account(account_id: str, request: AccountPatchRequest, _owner: dict = Depends(require_owner)) -> dict:
+    """Partial account update: merge non-None fields with the stored row.
+    Takes effect on the very next signal — no restart.
+
+    F-03: applies the same exposure guards as POST (broker change,
+    managed_lifecycle change mid-position)."""
+    # Load stored account
+    stored = next((a for a in store.list_config_accounts() if a["account_id"] == account_id), None)
+    if stored is None:
+        raise HTTPException(status_code=404, detail=f"account '{account_id}' not found")
+
+    # Merge non-None fields from request with stored values
+    merged = {**stored}
+    if request.broker is not None:
+        merged["broker"] = request.broker
+    if request.multiplier is not None:
+        merged["multiplier"] = request.multiplier
+    if request.fixed_quantity is not None:
+        merged["fixed_quantity"] = request.fixed_quantity
+    if request.symbol_map is not None:
+        merged["symbol_map"] = request.symbol_map
+    if request.enabled is not None:
+        merged["enabled"] = request.enabled
+    if request.managed_lifecycle is not None:
+        merged["managed_lifecycle"] = request.managed_lifecycle
+    if request.max_notional_exposure is not None:
+        merged["max_notional_exposure"] = request.max_notional_exposure
+    if request.risk_percent_of_equity is not None:
+        merged["risk_percent_of_equity"] = request.risk_percent_of_equity
+    if request.management_recipe is not None:
+        merged["management_recipe"] = request.management_recipe
+    if request.qualification_level is not None:
+        merged["qualification_level"] = request.qualification_level
+    if request.exclusive_writer_qualified is not None:
+        merged["exclusive_writer_qualified"] = request.exclusive_writer_qualified
+    if request.allow_short is not None:
+        merged["allow_short"] = request.allow_short
+    if request.currency is not None:
+        merged["currency"] = request.currency
+    if request.max_gross_leverage is not None:
+        merged["max_gross_leverage"] = request.max_gross_leverage
+    if request.daily_loss_limit_percent is not None:
+        merged["daily_loss_limit_percent"] = request.daily_loss_limit_percent
+    if request.min_equity_threshold is not None:
+        merged["min_equity_threshold"] = request.min_equity_threshold
+    if request.sizing_mode is not None:
+        merged["sizing_mode"] = request.sizing_mode
+    if request.risk_fraction is not None:
+        merged["risk_fraction"] = request.risk_fraction
+    if request.max_gross_leverage is not None:
+        merged["max_gross_leverage"] = request.max_gross_leverage
+
+    # Apply exposure guards: broker change or managed_lifecycle change
+    if merged["broker"] != stored["broker"] and _account_has_exposure(account_id):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"account '{account_id}' has an open position/lifecycle tracked against broker "
+                f"'{stored['broker']}' -- refusing to change its broker to '{merged['broker']}' and strand it"
+            ),
+        )
+
+    if merged["managed_lifecycle"] != stored["managed_lifecycle"] and _account_has_exposure(account_id):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"account '{account_id}' has exposure (open position/lifecycle) -- "
+                f"refusing to change managed_lifecycle while exposed"
+            ),
+        )
+
+    # Persist merged values
+    store.upsert_config_account(
+        account_id=merged["account_id"],
+        broker=merged["broker"],
+        multiplier=merged["multiplier"],
+        fixed_quantity=merged["fixed_quantity"],
+        symbol_map=merged["symbol_map"],
+        enabled=merged["enabled"],
+        managed_lifecycle=merged["managed_lifecycle"],
+        max_notional_exposure=merged["max_notional_exposure"],
+        risk_percent_of_equity=merged["risk_percent_of_equity"],
+        management_recipe=merged["management_recipe"],
+        qualification_level=merged["qualification_level"],
+        exclusive_writer_qualified=merged["exclusive_writer_qualified"],
+        allow_short=merged.get("allow_short"),
+        currency=merged.get("currency"),
+        max_gross_leverage=merged.get("max_gross_leverage"),
+        daily_loss_limit_percent=merged.get("daily_loss_limit_percent"),
+        min_equity_threshold=merged.get("min_equity_threshold"),
+        sizing_mode=merged.get("sizing_mode"),
+        risk_fraction=merged.get("risk_fraction"),
+    )
+    _reload_routing_config()
+    return {"account_id": account_id, "status": "patched"}
+
+
 def _account_has_exposure(account_id: str) -> bool:
     if any(p["account_id"] == account_id for p in store.list_open_positions()):
         return True
     return any(lifecycle.key[0] == account_id for lifecycle in lifecycle_manager.list_open_lifecycles())
 
 
+def _check_rule_deletion_exposure(rule_id: int) -> list[dict]:
+    """F-07: Check if deleting a rule would strand any open positions that
+    rely on it for closing. Returns a list of affected positions (each a dict
+    with account_id, symbol, and source). Empty list means safe to delete."""
+    # Get the rule being deleted
+    rules = store.list_config_routing_rules()
+    rule_dict = next((r for r in rules if r["id"] == rule_id), None)
+
+    if rule_dict is None:
+        return []
+
+    rule_to_delete = RoutingRule(
+        source=rule_dict["source"],
+        destinations=rule_dict["destinations"],
+        symbol_filter=rule_dict["symbol_filter"],
+    )
+
+    # Build a config without this rule to test
+    pending_rules: list[RoutingRule] = []
+    for r in rules:
+        if r["id"] != rule_id:
+            pending_rules.append(
+                RoutingRule(
+                    source=r["source"],
+                    destinations=r["destinations"],
+                    symbol_filter=r["symbol_filter"],
+                )
+            )
+    pending_config = RoutingConfig(rules=pending_rules, accounts=routing_config.accounts)
+
+    # Check each open position: if it would lose its exit path, it's stranded
+    stranded = []
+    origin_by_key: dict[tuple[str, str], dict] = {}
+    for fill in store.list_filled_orders_with_signal_chronological():
+        origin_by_key[(fill["account_id"], fill["symbol"])] = fill
+
+    for pos in store.list_open_positions():
+        origin = origin_by_key.get((pos["account_id"], pos["symbol"]))
+        if origin is None or origin["source"] != rule_to_delete.source:
+            continue  # Not routed by this rule
+
+        # Check if this position would still have an exit path after deletion
+        now_close = any(
+            a.account_id == pos["account_id"]
+            for a in routing_config.destinations_for(
+                rule_to_delete.source, pos["symbol"], include_disabled=True
+            )
+        )
+        pending_close = any(
+            a.account_id == pos["account_id"]
+            for a in pending_config.destinations_for(
+                rule_to_delete.source, pos["symbol"], include_disabled=True
+            )
+        )
+
+        if now_close and not pending_close:
+            # This position would be stranded
+            stranded.append({
+                "account_id": pos["account_id"],
+                "symbol": pos["symbol"],
+                "source": origin["source"],
+            })
+
+    return stranded
+
+
+def _check_rule_modification_exposure(
+    rule_id: int, new_source: str, new_destinations: list[str], new_symbol_filter: list[str] | None
+) -> list[dict]:
+    """F-07: Check if modifying a rule would strand any open positions that
+    rely on it for closing. Returns list of affected positions. Empty means safe."""
+    # Get the original rule
+    rules = store.list_config_routing_rules()
+    orig_rule_dict = next((r for r in rules if r["id"] == rule_id), None)
+    if orig_rule_dict is None:
+        return []
+    
+    orig_source = orig_rule_dict["source"]
+
+    # Build config with modified rule
+    pending_rules: list[RoutingRule] = []
+    for r in rules:
+        if r["id"] == rule_id:
+            pending_rules.append(
+                RoutingRule(source=new_source, destinations=new_destinations, symbol_filter=new_symbol_filter)
+            )
+        else:
+            pending_rules.append(
+                RoutingRule(
+                    source=r["source"],
+                    destinations=r["destinations"],
+                    symbol_filter=r["symbol_filter"],
+                )
+            )
+    pending_config = RoutingConfig(rules=pending_rules, accounts=routing_config.accounts)
+
+    # Check each open position routed by this rule's source
+    stranded = []
+    origin_by_key: dict[tuple[str, str], dict] = {}
+    for fill in store.list_filled_orders_with_signal_chronological():
+        origin_by_key[(fill["account_id"], fill["symbol"])] = fill
+
+    for pos in store.list_open_positions():
+        origin = origin_by_key.get((pos["account_id"], pos["symbol"]))
+        if origin is None:
+            continue  # Not routed by this rule's source
+        if origin["source"] != orig_source:
+            continue  # Not routed by this rule's source
+
+        # Check exit path before/after
+        now_close = any(
+            a.account_id == pos["account_id"]
+            for a in routing_config.destinations_for(
+                orig_source, pos["symbol"], include_disabled=True
+            )
+        )
+        pending_close = any(
+            a.account_id == pos["account_id"]
+            for a in pending_config.destinations_for(
+                orig_source, pos["symbol"], include_disabled=True
+            )
+        )
+
+        if now_close and not pending_close:
+            stranded.append({
+                "account_id": pos["account_id"],
+                "symbol": pos["symbol"],
+                "source": origin["source"],
+            })
+
+    return stranded
+
+
 class RoutingRuleRequest(BaseModel):
     source: str
     destinations: list[str]
     symbol_filter: list[str] | None = None
+    #: ALLOC-01: "single" selects ONE account from `destinations`
+    #: (priority order); "replicate" is explicit multi-account fan-out.
+    delivery_mode: Literal["single", "replicate"] = "single"
 
 
 @app.get("/routing-rules")
@@ -2525,23 +3147,170 @@ async def list_routing_rules(_owner: dict = Depends(require_owner_read)) -> dict
 
 @app.post("/routing-rules")
 async def create_routing_rule(request: RoutingRuleRequest, _owner: dict = Depends(require_owner)) -> dict:
-    rule_id = store.insert_config_routing_rule(request.source, request.destinations, request.symbol_filter)
+    rule_id = store.insert_config_routing_rule(
+        request.source, request.destinations, request.symbol_filter, request.delivery_mode
+    )
     _reload_routing_config()
     return {"id": rule_id, "status": "created"}
 
 
 @app.put("/routing-rules/{rule_id}")
-async def update_routing_rule(rule_id: int, request: RoutingRuleRequest, _owner: dict = Depends(require_owner)) -> dict:
-    store.update_config_routing_rule(rule_id, request.source, request.destinations, request.symbol_filter)
+async def update_routing_rule(
+    rule_id: int,
+    request: RoutingRuleRequest,
+    force: bool = False,
+    _owner: dict = Depends(require_owner),
+) -> dict:
+    """F-07: Modify a routing rule, checking for exposure before allowing
+    the change. Returns 409 Conflict if the modification would strand positions
+    that rely on this rule for closing, unless ?force=true is passed."""
+    # Check if modification would strand positions
+    stranded = _check_rule_modification_exposure(
+        rule_id, request.source, request.destinations, request.symbol_filter
+    )
+
+    if stranded and not force:
+        # Log the stranding as a warning; WP-34 will record this as an alert
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.warning(
+            "F-07: Rule modification would strand %d positions; set ?force=true to proceed. Stranded: %s",
+            len(stranded),
+            stranded,
+        )  # TODO: WP-34 - record an alert
+        raise HTTPException(
+            status_code=409,
+            detail=f"Modification would strand {len(stranded)} position(s) from exiting. Pass ?force=true to override.",
+        )
+
+    store.update_config_routing_rule(
+        rule_id, request.source, request.destinations, request.symbol_filter, request.delivery_mode
+    )
     _reload_routing_config()
     return {"id": rule_id, "status": "updated"}
 
 
 @app.delete("/routing-rules/{rule_id}")
-async def delete_routing_rule(rule_id: int, _owner: dict = Depends(require_owner)) -> dict:
+async def delete_routing_rule(
+    rule_id: int,
+    force: bool = False,
+    _owner: dict = Depends(require_owner),
+) -> dict:
+    """F-07: Delete a routing rule, checking for exposure before allowing deletion.
+    Returns 409 Conflict if deletion would strand positions that rely on this rule
+    for closing, unless ?force=true is passed."""
+    # Check if deletion would strand positions
+    stranded = _check_rule_deletion_exposure(rule_id)
+
+    if stranded and not force:
+        # Log the stranding as a warning; WP-34 will record this as an alert
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.warning(
+            "F-07: Rule deletion would strand %d positions; set ?force=true to proceed. Stranded: %s",
+            len(stranded),
+            stranded,
+        )  # TODO: WP-34 - record an alert
+        raise HTTPException(
+            status_code=409,
+            detail=f"Deletion would strand {len(stranded)} position(s) from exiting. Pass ?force=true to override.",
+        )
+
     store.delete_config_routing_rule(rule_id)
     _reload_routing_config()
     return {"id": rule_id, "status": "deleted"}
+
+
+class StrategyBudgetRequest(BaseModel):
+    #: ALLOC-03: global notional ceiling for this strategy across ALL
+    #: accounts (None = explicitly unset). Must be positive when set.
+    max_notional: float | None = None
+
+
+@app.get("/strategy-budgets")
+async def list_strategy_budgets(_owner: dict = Depends(require_owner_read)) -> dict:
+    budgets = store.list_strategy_budgets()
+    for budget in budgets:
+        budget["reserved_notional"] = store.sum_unresolved_strategy_reservations(budget["strategy_key"])
+    return {"strategy_budgets": budgets}
+
+
+@app.put("/strategy-budgets/{strategy_key}")
+async def put_strategy_budget(
+    strategy_key: str, request: StrategyBudgetRequest, _owner: dict = Depends(require_owner)
+) -> dict:
+    if request.max_notional is not None and not (request.max_notional > 0):
+        raise HTTPException(status_code=422, detail="max_notional must be a positive number or null")
+    store.set_strategy_budget(strategy_key, request.max_notional)
+    return {"strategy_key": strategy_key, "max_notional": request.max_notional, "status": "saved"}
+
+
+@app.delete("/strategy-budgets/{strategy_key}")
+async def delete_strategy_budget(strategy_key: str, _owner: dict = Depends(require_owner)) -> dict:
+    store.delete_strategy_budget(strategy_key)
+    return {"strategy_key": strategy_key, "status": "deleted"}
+
+
+@app.get("/allocation-intents")
+async def list_allocation_intents(
+    state: str | None = None, limit: int = 100, _owner: dict = Depends(require_owner_read)
+) -> dict:
+    """ALLOC-01 audit view: every logical allocation decision (which
+    account was selected, or why the trade was skipped)."""
+    return {"allocation_intents": store.list_allocation_intents(state=state, limit=max(1, min(limit, 500)))}
+
+
+def _command_ledger_entry_to_dict(entry: CommandLedgerEntry) -> dict:
+    return {
+        "idempotency_key": entry.idempotency_key,
+        "intent_id": entry.intent_id,
+        "command_type": entry.command_type.value,
+        "account_id": entry.account_id,
+        "environment": entry.environment,
+        "uncertainty_state": entry.uncertainty_state.value,
+        "remote_identifiers": entry.remote_identifiers,
+        "terminal_evidence": entry.terminal_evidence,
+        "created_at": entry.created_at.isoformat(),
+        "resolved_at": entry.resolved_at.isoformat() if entry.resolved_at else None,
+    }
+
+
+@app.get("/command-ledger/unresolved")
+async def list_unresolved_command_ledger(
+    account_id: str | None = None, _owner: dict = Depends(require_owner_read)
+) -> dict:
+    """Every financial command whose outcome at the venue is not known
+    (pending submission, submitted but unconfirmed, or ambiguous). An
+    ambiguous ENTRY keeps its capital reservation until resolved here."""
+    entries = store.list_unresolved_command_ledger_entries(account_id=account_id)
+    return {"unresolved": [_command_ledger_entry_to_dict(e) for e in entries]}
+
+
+class ResolveUnknownSubmissionRequest(BaseModel):
+    idempotency_key: str
+    #: Only "not_placed" releases a reservation: the operator has confirmed
+    #: with the venue that no order or fill exists. A fill that did happen
+    #: must be recorded through reconciliation, never asserted here.
+    outcome: Literal["not_placed"]
+    evidence: str = Field(min_length=3, max_length=2000)
+
+
+@app.post("/command-ledger/resolve")
+async def resolve_unknown_submission_endpoint(
+    request: ResolveUnknownSubmissionRequest, _owner: dict = Depends(require_owner)
+) -> dict:
+    resolved = engine.resolve_unknown_submission(
+        request.idempotency_key, outcome=request.outcome, evidence=request.evidence
+    )
+    if not resolved:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"command '{request.idempotency_key}' is not an unresolved ambiguous ENTRY "
+                "(unknown key, already resolved, or not an entry command)"
+            ),
+        )
+    return {"idempotency_key": request.idempotency_key, "status": "resolved", "outcome": request.outcome}
 
 
 class RoutingSimulateRequest(BaseModel):
@@ -2552,6 +3321,72 @@ class RoutingSimulateRequest(BaseModel):
     analyst: str | None = None
     quantity: float | None = None
     price: float | None = None
+    intent: str | None = None  #: WP-43: optional intent (buy/sell/short/close/reduce) for per-account resolution
+
+
+def resolve_account_intent(
+    intent_str: str | None,
+    account_symbol: str,
+    symbol: str,
+    account: Any,  # DestinationAccount
+    has_long_position: bool,
+) -> str:
+    """WP-43: Resolve the intent that a given account would execute for this signal.
+
+    Pure function that determines, for a given account and a given intent/side,
+    what actual intent the engine would resolve to. Used by the TR-11 simulator
+    to show per-account intent resolution.
+
+    Rules (from WP-09/WP-43):
+    - "buy" intent → "entry_long"
+    - "close" intent → "exit"
+    - "reduce" intent → "reduce"
+    - "short" intent → "entry_short" if account.allow_short else "rejected: allow_short=false"
+    - "sell" intent (implicit, ambiguous):
+      * If account holds same-symbol long → "exit"
+      * Else if account.allow_short → "entry_short"
+      * Else → "rejected: sell with no long position and allow_short=false"
+
+    Args:
+        intent_str: Optional intent string from request ("buy", "sell", "short", "close", "reduce", or None)
+        account_symbol: The symbol after account symbol_map resolution
+        symbol: The original symbol from the signal
+        account: DestinationAccount
+        has_long_position: Whether account currently holds a same-symbol long position
+
+    Returns:
+        Resolved intent string: "entry_long", "entry_short", "exit", "reduce", or "rejected: <reason>"
+    """
+    if not intent_str:
+        # No intent specified; assume "buy" intent from side
+        return "entry_long"
+
+    intent_lower = intent_str.strip().lower()
+
+    # Handle each intent value
+    if intent_lower == "buy":
+        return "entry_long"
+    elif intent_lower == "close":
+        return "exit"
+    elif intent_lower == "reduce":
+        return "reduce"
+    elif intent_lower == "short":
+        # Explicit short entry intent
+        if account.allow_short:
+            return "entry_short"
+        else:
+            return "rejected: allow_short=false"
+    elif intent_lower == "sell":
+        # Implicit sell — ambiguous, needs position-based resolution
+        if has_long_position:
+            return "exit"
+        elif account.allow_short:
+            return "entry_short"
+        else:
+            return "rejected: sell with no long position and allow_short=false"
+    else:
+        # Unknown intent value
+        return f"rejected: unknown intent '{intent_str}'"
 
 
 @app.post("/routing-rules/simulate")
@@ -2614,15 +3449,25 @@ async def simulate_routing_rules(request: RoutingSimulateRequest, _owner: dict =
     # came entirely from `evaluate` above, never recomputed here.
     rule_rows = store.list_config_routing_rules()
     rules_out = []
-    for idx, entry in enumerate(trace):
+    # WP-07: trace entries are now in evaluation order (precedence), not DB insertion order.
+    # Match rules by their content to find the correct rule_id.
+    for entry in trace:
         rule = entry["rule"]
-        rule_id = rule_rows[idx]["id"] if idx < len(rule_rows) else None
+        rule_id = None
+        for rule_row in rule_rows:
+            if (rule_row["source"] == rule.source and
+                rule_row["destinations"] == rule.destinations and
+                rule_row["symbol_filter"] == rule.symbol_filter):
+                rule_id = rule_row["id"]
+                break
         row: dict[str, Any] = {
             "id": rule_id,
             "source": rule.source,
             "destinations": rule.destinations,
             "symbol_filter": rule.symbol_filter,
+            "delivery_mode": rule.delivery_mode,
             "matched": entry["matched"],
+            "precedence": entry["precedence"],  # WP-07: 0-based evaluation order
         }
         if entry["matched"]:
             row["admitted_accounts"] = entry["admitted"]
@@ -2642,6 +3487,16 @@ async def simulate_routing_rules(request: RoutingSimulateRequest, _owner: dict =
         price=request.price,
     )
 
+    # ALLOC-01: an ENTRY selects ONE account from the `single`-mode pool
+    # (first eligible, in priority order -- exactly what the real engine
+    # does); `replicate` accounts each receive their own copy. A CLOSE keeps
+    # account-scoped behavior (no selection).
+    single_pool_ids: list[str] = []
+    if side != Side.CLOSE:
+        single_pool_ids = [a.account_id for a in routing_config.pool_for(request.source, request.symbol).single]
+    selected_single: str | None = None
+    eligible_pool: list[str] = []
+
     accounts_out = []
     final_destinations: list[str] = []
     for account in destinations:
@@ -2651,6 +3506,14 @@ async def simulate_routing_rules(request: RoutingSimulateRequest, _owner: dict =
         broker = brokers.get(account.broker)
         broker_registered = broker is not None
         asset_class_ok = broker is not None and broker.can_trade_asset_class(request.asset_class)
+
+        # WP-43: Resolve the intent this account would execute for this signal
+        account_symbol = symbol_for_account(synthetic_signal, account)
+        position = store.get_position(account.account_id, account_symbol)
+        has_long_position = position > 0
+        resolved_intent = resolve_account_intent(
+            request.intent, account_symbol, request.symbol, account, has_long_position
+        )
 
         capital_check: dict[str, Any]
         capital_admitted = True
@@ -2673,6 +3536,7 @@ async def simulate_routing_rules(request: RoutingSimulateRequest, _owner: dict =
             account.max_notional_exposure is None
             and account.risk_percent_of_equity is None
             and engine.max_owner_notional_exposure is None
+            and store.get_strategy_budget(request.source) is None
         ):
             capital_check = {
                 "status": "skipped",
@@ -2692,7 +3556,7 @@ async def simulate_routing_rules(request: RoutingSimulateRequest, _owner: dict =
                 # shared CapitalAllocator -- release it immediately so this
                 # dry run leaves the real in-memory ledger exactly as it
                 # found it (see this endpoint's own docstring).
-                engine.capital_allocator.release(account.account_id, notional)
+                engine.capital_allocator.release(account.account_id, notional, signal_id=synthetic_signal.id)
             capital_admitted = admitted
             capital_check = {
                 "status": "would_admit" if admitted else "would_reject",
@@ -2703,7 +3567,20 @@ async def simulate_routing_rules(request: RoutingSimulateRequest, _owner: dict =
                 "reason": None if admitted else rejection.message if rejection else None,
             }
 
-        would_receive = entry_allowed and broker_registered and asset_class_ok and capital_admitted
+        eligible = entry_allowed and broker_registered and asset_class_ok and capital_admitted
+        would_receive = eligible
+        allocation_status = "replicated" if eligible else "not_eligible"
+        if account.account_id in single_pool_ids:
+            if eligible:
+                eligible_pool.append(account.account_id)
+                if selected_single is None:
+                    selected_single = account.account_id
+                    allocation_status = "selected"
+                else:
+                    would_receive = False
+                    allocation_status = "eligible_not_selected"
+        elif side == Side.CLOSE:
+            allocation_status = "account_scoped_close" if eligible else "not_eligible"
         if would_receive:
             final_destinations.append(account.account_id)
 
@@ -2724,7 +3601,13 @@ async def simulate_routing_rules(request: RoutingSimulateRequest, _owner: dict =
                 ),
             },
             "capital_reservation": capital_check,
+            "allocation": {"status": allocation_status},
             "would_receive_this_signal": would_receive,
+            "intent_resolution": {  # WP-43: per-account intent resolution
+                "resolved_intent": resolved_intent,
+                "allow_short": account.allow_short,
+                "has_long_position": has_long_position,
+            },
         })
 
     return {
@@ -2746,6 +3629,14 @@ async def simulate_routing_rules(request: RoutingSimulateRequest, _owner: dict =
                 "webhook route's own Idempotency-Key/event-id response cache) both key off a real prior "
                 "delivery this hypothetical signal has no counterpart to -- there is nothing real to "
                 "evaluate for a dry run, so this is honestly not_tracked rather than guessed."
+            ),
+        },
+        "allocation": {
+            "selected_account_id": selected_single,
+            "eligible_single_pool": eligible_pool,
+            "note": (
+                "single-mode destinations are alternatives for ONE trade: the first eligible account in "
+                "priority order is selected; replicate-mode destinations each receive a copy."
             ),
         },
         "final_destinations": final_destinations,
@@ -2853,6 +3744,29 @@ class ProviderRequest(BaseModel):
 
 @app.post("/providers/{provider_id}")
 async def create_or_update_provider(provider_id: str, request: ProviderRequest, _owner: dict = Depends(require_owner)) -> dict:
+    """Create or update a provider. The provider's `managed_lifecycle`
+    override can affect the effective exit path for all accounts this
+    provider signals to.
+
+    D-07/F-01: refuse to change `managed_lifecycle` on a provider if any
+    account that routes from this provider has real exposure, since that
+    changes the effective exit path and could orphan a protective stop or
+    strand a position."""
+    existing = next(
+        (p for p in store.list_config_providers() if p["provider_id"] == provider_id),
+        None,
+    )
+    if existing is not None and existing.get("managed_lifecycle") != request.managed_lifecycle:
+        # Check if any account routed from this provider has exposure
+        # (we can't filter to specific accounts without knowing routing, so check all)
+        if any(_account_has_exposure(a["account_id"]) for a in store.list_config_accounts()):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"one or more accounts have open positions/lifecycles and route from provider '{provider_id}' -- "
+                    f"refusing to change managed_lifecycle (the exit path is determined by lifecycle existence, not the flag)"
+                ),
+            )
     store.upsert_config_provider(
         provider_id,
         request.display_name,
@@ -2867,6 +3781,27 @@ async def create_or_update_provider(provider_id: str, request: ProviderRequest, 
 
 @app.delete("/providers/{provider_id}")
 async def delete_provider(provider_id: str, _owner: dict = Depends(require_owner)) -> dict:
+    """Delete a provider. A provider deletion that removes a
+    `managed_lifecycle` override from accounts with exposure is refused.
+
+    D-07/F-01: deleting a provider with a `managed_lifecycle` override
+    changes the effective exit path for all routed accounts, potentially
+    orphaning protective stops or stranding positions."""
+    provider = next(
+        (p for p in store.list_config_providers() if p["provider_id"] == provider_id),
+        None,
+    )
+    if provider is not None and provider.get("managed_lifecycle") is not None:
+        # Deletion removes the override, so check if this would affect any exposed accounts
+        if any(_account_has_exposure(a["account_id"]) for a in store.list_config_accounts()):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"one or more accounts have open positions/lifecycles and the provider '{provider_id}' "
+                    f"has a managed_lifecycle override -- refusing to delete it (deletion would change the "
+                    f"effective exit path and potentially orphan protective stops or strand positions)"
+                ),
+            )
     store.delete_config_provider(provider_id)
     _reload_provider_registry()
     return {"provider_id": provider_id, "status": "deleted"}
@@ -2886,6 +3821,25 @@ class AnalystRequest(BaseModel):
 
 @app.post("/providers/{provider_id}/analysts/{analyst_id}")
 async def create_or_update_analyst(provider_id: str, analyst_id: str, request: AnalystRequest, _owner: dict = Depends(require_owner)) -> dict:
+    """Create or update an analyst override for a provider. The analyst's
+    `managed_lifecycle` override can affect the effective exit path.
+
+    D-07/F-01: refuse to change `managed_lifecycle` on an analyst if any
+    account that routes from this provider/analyst has real exposure."""
+    existing = next(
+        (a for a in store.list_config_analysts(provider_id) if a["analyst_id"] == analyst_id),
+        None,
+    )
+    if existing is not None and existing.get("managed_lifecycle") != request.managed_lifecycle:
+        # Check if any account routed from this provider has exposure
+        if any(_account_has_exposure(a["account_id"]) for a in store.list_config_accounts()):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"one or more accounts have open positions/lifecycles and route from provider '{provider_id}' -- "
+                    f"refusing to change analyst '{analyst_id}' managed_lifecycle"
+                ),
+            )
     store.upsert_config_analyst(
         provider_id,
         analyst_id,
@@ -2901,6 +3855,25 @@ async def create_or_update_analyst(provider_id: str, analyst_id: str, request: A
 
 @app.delete("/providers/{provider_id}/analysts/{analyst_id}")
 async def delete_analyst(provider_id: str, analyst_id: str, _owner: dict = Depends(require_owner)) -> dict:
+    """Delete an analyst override. A deletion that removes a
+    `managed_lifecycle` override from accounts with exposure is refused.
+
+    D-07/F-01: deleting an analyst with a managed_lifecycle override
+    changes the effective exit path for all routed accounts."""
+    analyst = next(
+        (a for a in store.list_config_analysts(provider_id) if a["analyst_id"] == analyst_id),
+        None,
+    )
+    if analyst is not None and analyst.get("managed_lifecycle") is not None:
+        # Deletion removes the override, so check if this would affect any exposed accounts
+        if any(_account_has_exposure(a["account_id"]) for a in store.list_config_accounts()):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"one or more accounts have open positions/lifecycles and the analyst '{analyst_id}' "
+                    f"has a managed_lifecycle override -- refusing to delete it"
+                ),
+            )
     store.delete_config_analyst(provider_id, analyst_id)
     _reload_provider_registry()
     return {"provider_id": provider_id, "analyst_id": analyst_id, "status": "deleted"}
@@ -3803,6 +4776,78 @@ async def get_signal_lifecycle_route(signal_id: str, _owner: dict = Depends(requ
     if lifecycle is None:
         raise HTTPException(status_code=404, detail=f"no signal recorded with id={signal_id!r}")
     return lifecycle
+
+
+# --- WC-21: Console decision traces and reservation/intent health ---
+
+@app.get("/signals/{signal_id}/decision")
+async def get_signal_decision_route(signal_id: str, _owner: dict = Depends(require_owner_read)) -> dict:
+    """Decision trace detail for a signal: candidates considered, exclusion reasons,
+    selected account, reservation/intent state, and protection state.
+
+    Returns:
+        Dict with signal_id, traces (list of decision_traces rows), selected_physical_account_id,
+        reservation (budget_reservations row or None), intent (order_intents row or None),
+        outbox (outbox row or None), protection (protection state dict).
+
+    404 when signal does not exist.
+    """
+    signal = store.get_signal(signal_id)
+    if signal is None:
+        raise HTTPException(status_code=404, detail=f"no signal recorded with id={signal_id!r}")
+
+    traces = store.list_decision_traces(signal_id)
+    selected_account = next((t["physical_account_id"] for t in traces if t["selected"]), None)
+
+    reservation = None
+    reservations = store.list_budget_reservations(opportunity_id=signal_id, limit=1)
+    if reservations:
+        reservation = reservations[0]
+
+    intent = None
+    intents = store.list_order_intents(opportunity_id=signal_id, limit=1)
+    if intents:
+        intent = intents[0]
+
+    outbox_item = None
+    if intent:
+        outbox_items = store.list_outbox_items(limit=1000)
+        outbox_item = next((o for o in outbox_items if o["intent_id"] == intent["intent_id"]), None)
+
+    lifecycle = store.get_signal_lifecycle(signal_id)
+    protection = {"state": "not_tracked"}
+    if lifecycle and "protection" in lifecycle:
+        protection = lifecycle["protection"]
+
+    return {
+        "signal_id": signal_id,
+        "traces": traces,
+        "selected_physical_account_id": selected_account,
+        "reservation": reservation,
+        "intent": intent,
+        "outbox": outbox_item,
+        "protection": protection,
+    }
+
+
+@app.get("/operations/reservation-health")
+async def get_reservation_health_route(_owner: dict = Depends(require_owner_read)) -> dict:
+    """Aggregated health of budget reservations across all signals.
+
+    Returns:
+        Dict with counts_by_state, held_total_cents, stale_unknown_held, oldest_held_age_seconds.
+    """
+    return store.reservation_health()
+
+
+@app.get("/operations/intent-health")
+async def get_intent_health_route(_owner: dict = Depends(require_owner_read)) -> dict:
+    """Aggregated health of order intents and outbox delivery.
+
+    Returns:
+        Dict with outbox_counts_by_state, dispatching_without_response, unknown, oldest_unresponded_age_seconds.
+    """
+    return store.intent_health()
 
 
 @app.get("/positions/{symbol}/provider-allocations")
@@ -5975,6 +7020,250 @@ async def get_fx_rate(
         return await fx_context.get_latest_rate(base, quote)
     except httpx.HTTPError as exc:
         raise HTTPException(status_code=502, detail=_sanitized_upstream_error("Frankfurter", exc)) from exc
+
+
+@app.get("/alerts")
+async def list_alerts(
+    unacknowledged: bool = False, account_id: str | None = None, _owner: dict = Depends(require_owner_read)
+) -> dict:
+    """List alerts, optionally filtered.
+
+    Query parameters:
+    - unacknowledged: if true, return only unacknowledged alerts
+    - account_id: if provided, filter by account
+
+    Returns:
+    {
+        "alerts": [
+            {
+                "id": "uuid",
+                "kind": "protection_deficit" | "loss_halt" | "unknown_submission" | "skipped_allocation" | "venue_adoption",
+                "account_id": "uuid or null",
+                "message": "...",
+                "payload": {...} or null,
+                "acknowledged_at": "2026-10-02T...",
+                "created_at": "2026-10-02T..."
+            }
+        ]
+    }
+    """
+    alerts = store.list_alerts(unacknowledged=unacknowledged, account_id=account_id, limit=200)
+    return {"alerts": alerts}
+
+
+@app.post("/alerts/{alert_id}/ack")
+async def acknowledge_alert(alert_id: str, _owner: dict = Depends(require_owner)) -> dict:
+    """Mark an alert as acknowledged.
+
+    Args:
+        alert_id: Alert UUID
+
+    Returns:
+    {
+        "acknowledged": true if the alert was found and updated, false otherwise,
+        "id": "alert_id"
+    }
+    """
+    acknowledged = store.acknowledge_alert(alert_id)
+    return {"acknowledged": acknowledged, "id": alert_id}
+
+
+# WC-09: Margin regime endpoints
+@app.get("/physical-accounts/{physical_account_id}/margin-regime")
+async def get_margin_regime(
+    physical_account_id: str, _owner: dict = Depends(require_owner_read)
+) -> dict:
+    """Get the margin regime for a physical account (WC-09).
+
+    Spec §9: Per-account regime (legacy_pdt_verified | new_intraday_verified |
+    unknown) with broker evidence and verification date. Unknown regime blocks
+    affected new exposure (I17).
+
+    Args:
+        physical_account_id: Physical account identifier.
+
+    Returns:
+    {
+        "physical_account_id": "...",
+        "regime": "legacy_pdt_verified" | "new_intraday_verified" | "unknown",
+        "evidence": "...",  # Broker evidence/description
+        "verified_at": "2026-10-02T...",  # UTC timestamp
+    }
+
+    404 if account not found or no regime record exists.
+    """
+    regime_record = store.get_margin_regime(physical_account_id)
+    if regime_record is None:
+        raise HTTPException(status_code=404, detail=f"No margin regime found for account {physical_account_id}")
+    return {
+        "physical_account_id": regime_record["physical_account_id"],
+        "regime": regime_record["regime"],
+        "evidence": regime_record["evidence"],
+        "verified_at": regime_record["verified_at"].isoformat() if isinstance(regime_record["verified_at"], datetime) else regime_record["verified_at"],
+    }
+
+
+@app.put("/physical-accounts/{physical_account_id}/margin-regime")
+async def set_margin_regime(
+    physical_account_id: str,
+    body: dict = Body(...),
+    _owner: dict = Depends(require_owner),
+) -> dict:
+    """Set or update the margin regime for a physical account (WC-09, owner only).
+
+    Spec §9: Owner declares regime with evidence (≥3 chars). Unknown regime blocks
+    affected new exposure (I17). FINRA replacement intraday-margin standards
+    effective 2026-06-04, phase-in through 2027-10-20 per account/evidence.
+
+    Args:
+        physical_account_id: Physical account identifier.
+        body: {
+            "regime": "legacy_pdt_verified" | "new_intraday_verified" | "unknown",
+            "evidence": "Broker evidence/description (≥3 chars)"
+        }
+
+    Returns:
+    {
+        "physical_account_id": "...",
+        "regime": "...",
+        "evidence": "...",
+        "verified_at": "2026-10-02T...",  # UTC timestamp
+    }
+
+    400 if regime invalid or evidence < 3 chars.
+    404 if account not found.
+    """
+    regime = body.get("regime")
+    evidence = body.get("evidence", "").strip()
+
+    # Validate regime
+    from app.workflow.margin import is_valid_regime, MarginRegime
+    if not regime or not is_valid_regime(regime):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid regime; must be one of: {', '.join(r.value for r in MarginRegime)}"
+        )
+
+    # Validate evidence (≥3 chars required)
+    if len(evidence) < 3:
+        raise HTTPException(status_code=400, detail="Evidence must be at least 3 characters")
+
+    # Update the regime
+    from app.workflow.margin import current_utc
+    updated = store.set_margin_regime(
+        physical_account_id=physical_account_id,
+        regime=regime,
+        evidence=evidence,
+        verified_at=current_utc(),
+    )
+    if updated is None:
+        raise HTTPException(status_code=404, detail=f"Account {physical_account_id} not found")
+
+    return {
+        "physical_account_id": updated["physical_account_id"],
+        "regime": updated["regime"],
+        "evidence": updated["evidence"],
+        "verified_at": updated["verified_at"].isoformat() if isinstance(updated["verified_at"], datetime) else updated["verified_at"],
+    }
+
+
+# WC-32: Risk halts (trading entry blocking by scope)
+@app.get("/risk-halts")
+async def list_risk_halts(_owner: dict = Depends(require_owner_read)) -> dict:
+    """List all active trading halts (owner-only).
+
+    Returns:
+    {
+        "halts": [
+            {
+                "halt_id": "...",
+                "account_id": "physical_account_id or scope:scope_id for portfolio/owner",
+                "scope": "account" | "portfolio" | "owner",
+                "scope_id": "...",
+                "reason": "...",
+                "source": "...",
+                "created_at": "2026-10-02T...",
+            }
+        ]
+    }
+    """
+    halts = store.list_active_trading_halts()
+    return {
+        "halts": [
+            {
+                "halt_id": halt["halt_id"],
+                "account_id": halt["scope_id"] if halt["scope"] == "account" else f"{halt['scope']}:{halt['scope_id']}",
+                "scope": halt["scope"],
+                "scope_id": halt["scope_id"],
+                "reason": halt["reason"],
+                "source": halt["source"],
+                "created_at": halt["created_at"],
+            }
+            for halt in halts
+        ]
+    }
+
+
+@app.post("/risk-halts")
+async def set_risk_halt(
+    body: dict,
+    _owner: dict = Depends(require_owner),
+) -> dict:
+    """Set a trading halt (owner-only, owner-sourced).
+
+    Body:
+    {
+        "scope": "account" | "portfolio" | "owner",
+        "scope_id": "...",
+        "reason": "..."
+    }
+
+    Returns the halt details with halt_id.
+    """
+    scope = body.get("scope")
+    scope_id = body.get("scope_id")
+    reason = body.get("reason")
+
+    if not scope or scope not in ("account", "portfolio", "owner"):
+        raise HTTPException(status_code=400, detail="scope must be 'account', 'portfolio', or 'owner'")
+    if not scope_id:
+        raise HTTPException(status_code=400, detail="scope_id is required")
+    if not reason:
+        raise HTTPException(status_code=400, detail="reason is required")
+
+    halt_id = store.set_trading_halt(scope=scope, scope_id=scope_id, reason=reason, source="owner")
+    halt = store.active_halt_for(scope, scope_id)
+
+    return {
+        "halt_id": halt_id,
+        "account_id": scope_id if scope == "account" else f"{scope}:{scope_id}",
+        "scope": scope,
+        "scope_id": scope_id,
+        "reason": halt["reason"] if halt else reason,
+        "source": "owner",
+        "created_at": halt["created_at"] if halt else datetime.now(timezone.utc).isoformat(),
+    }
+
+
+@app.post("/risk-halts/{account_id}/clear")
+async def clear_risk_halt(
+    account_id: str,
+    _owner: dict = Depends(require_owner),
+) -> dict:
+    """Clear a trading halt for an account (owner-only).
+
+    Returns:
+    {
+        "cleared": true if halt was found and cleared, false otherwise,
+        "account_id": "..."
+    }
+
+    404 if no halt exists for this account.
+    """
+    cleared = store.clear_trading_halt("account", account_id, cleared_by="owner")
+    if not cleared:
+        raise HTTPException(status_code=404, detail=f"No active halt found for account {account_id}")
+    return {"cleared": True, "account_id": account_id}
 
 
 def _orders_response(signal_id: str, results) -> dict:

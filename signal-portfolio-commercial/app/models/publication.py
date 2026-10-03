@@ -63,6 +63,11 @@ class PublicationAction(str, enum.Enum):
     STRATEGY_PAUSE = "STRATEGY_PAUSE"
 
 
+class PublicationSide(str, enum.Enum):
+    BUY = "BUY"
+    SELL = "SELL"
+
+
 class QuantityBasis(str, enum.Enum):
     UNITS = "UNITS"
     CONTRACTS = "CONTRACTS"
@@ -107,6 +112,7 @@ class PublicationIntent(Base):
     episode_id: Mapped[str] = mapped_column(String, nullable=False)
     revision: Mapped[int] = mapped_column(Integer, nullable=False)
     action: Mapped[PublicationAction] = mapped_column(Enum(PublicationAction, native_enum=False), nullable=False)
+    side: Mapped[PublicationSide] = mapped_column(Enum(PublicationSide, native_enum=False), nullable=False)
     channel: Mapped[str] = mapped_column(String, nullable=False)
     external_strategy_id: Mapped[str] = mapped_column(String, nullable=False)
     instrument_id: Mapped[str] = mapped_column(String, nullable=False)

@@ -111,7 +111,7 @@ async def test_audits_exact_case_startup_must_reconcile_native_stop_execution(tm
     # Simulate a full restart: a brand new manager, seeded only from the
     # store (which still reflects the pre-stop-fill state).
     fresh_manager = PositionLifecycleManager(brokers={"paper": broker}, store=store)
-    fresh_manager.restore_from_store()
+    await fresh_manager.restore_from_store()
     assert fresh_manager.get_lifecycle("acct1", "AAPL").confirmed_owned_quantity == 30
 
     reconciler = OrderReconciler(store, {"paper": broker}, lifecycle_manager=fresh_manager)

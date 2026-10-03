@@ -1,19 +1,83 @@
 # Current progress snapshot
 
-As of `HEAD` after Track 72, 73, and 74: comprehensive mutation-testing regression
-tests for lifecycle/financial, feature/capability, and economics/metrics/equity modules
-on `claude/signal-copier-readiness-sm44tr` (2026-10-02). Track 72 (57 tests) covers
-lifecycle management, close arbitration, and financial command logic. Track 73
-(72 tests) covers qualification, event export, shadow mode, escalation, and
-execution quality. Track 74 (49 tests) covers extended account economics, Prometheus
-metrics, and equity history snapshots — completing the mutation-testing regression
-suite across all 29 modules in pyproject.toml's `only_mutate` list. This is a snapshot,
-not a roadmap — update it when the state it describes actually changes. This file was
-previously stale for an extended period (it referenced an old branch,
-`claude/signal-copier-redesign`, and alembic head `0015`, long after both had moved on),
-and was stale again after that (alembic head `0033`/2057 passed, and three items below
-listed as not-yet-landed that had in fact landed as Track 25/27) — if you find it stale
-again, fix it rather than working around it.
+**As of 2026-10-03 on branch `wp-40b` after WP-01 through WP-45 and WC-01 through WC-12 (remediation plan), with wave-2 documentation refresh:** The whole-solution gap analysis (166 findings) has been remediated across 45 signal-copier work packages and 12 workflow-contract packages. All are implemented and isolated-tested on the paper broker and fresh SQLite.
+
+## Wave-2 landings (WC-30 through WC-35)
+
+**WC-30: Hierarchical budget persistence** — `budget_reservations` and
+`budget_limits` tables implement multi-level resource tracking (owner,
+account, portfolio, sleeve, provider, analyst, underlying, cluster).
+`HierarchicalBudget.check_and_reserve` atomically validates all levels
+before admitting any entry. `app/db.py` methods: `create_hierarchical_reservation`,
+`get_reservation`, `update_reservation_state`, `get_active_reservation_for_opportunity`,
+`set_owner_limit`.
+
+**WC-31: Order intents and outbox pattern** — `order_intents` and `outbox`
+tables implement transactional, crash-recoverable delivery. Every signal
+intent produces a durable order intent (mapping signal intent to workflow
+intent) plus an outbox row in the same sqlite3 transaction. Worker polls
+outbox, claims items, dispatches them, records responses. `app/db.py` methods:
+`insert_order_intent_and_outbox`, `claim_next_outbox_item`, `record_outbox_response`,
+`recover_outbox_on_restart`.
+
+**WC-32: Real admission inputs** — `trading_halts` table and `/risk-halts`
+REST routes (GET list, POST clear). `_derive_admission_inputs` in `app/engine.py`
+now resolves halts, regimes, uncertainty, budget. `SignalCopierEngine` checks
+halts before any admission gate and blocks entries when active.
+
+**WC-33/33b: Engine wiring** — `_check_and_reserve_resources` (plain and
+managed entry paths). `_opportunity_id_for` computes canonical signal/account
+pair: signal id for single-selection, `<signal_id>:<account_id>` for replicate.
+ALLOC-07: same-account redelivery resumes existing reservation. Dry-run honesty:
+`OrderStatus.PENDING` never persisted for dry_run orders; message: "dry_run:
+planned, not dispatched".
+
+**WC-34: Deterministic selection ranking** — `app/workflow/selection.py`
+implements consistent, reproducible account selection when multiple accounts
+are eligible under a single routing rule.
+
+**WC-35: Exact integer risk sizing** — `app/workflow/risk.py` and `app/risk.py`
+`size_linear_long`, `buying_power` required. Integer-cent arithmetic; no
+silent rounding; fail-closed on missing inputs.
+
+**WC-21: Console** — `GET /signals/{id}/decision` endpoint shows full
+admission decision traces. `/operations/reservation-health` and
+`/operations/intent-health` show hierarchical resource state. Readiness
+`workflow` key. UI panels: tr05.js (decision panels), tr03.js (admission/
+reservation card), tr16.js, tr20.js. Global `fmtCents` helper in
+dashboard.html.
+
+**WC-22: Evidence tooling** — `@pytest.mark.scenario` and `--scenario-evidence=PATH`
+flag in `tests/scenario_evidence.py`. `docs/workflow-contract/build_traceability.py`
+`--executed` mode; nodeid test_paths "file::Class::fn" accepted (function must exist).
+`validate_evidence.py`, `make_release_evidence.py`.
+
+**WC-10: Contract adapter** — `tests/workflow_adapter.py`, `tests/test_wc10_contract_adapter.py`.
+Run with: `PYTHONPATH=. python docs/workflow-contract/run_contracts.py --adapter tests.workflow_adapter:run_case --isolated-non-live`.
+
+**WC-20: Identity collapse, A-14 cross-transport correlation** — exits excluded;
+priceless corroboration = HOLD. PaperBroker price rules: priceless orders fill
+at last simulated price, never 0.0. Equity == cash when flat.
+
+**Scenario coverage** — markers on real tests only; `docs/workflow-contract/traceability_map.yaml`
+statuses derived from executed evidence, never hand-set. Packages: SCN-A, SCN-B,
+SCN-B2, SCN-C, SCN-D.
+
+Major accomplishments (WP-40 — documentation and traceability):
+- **CHANGELOG.md**: Unreleased section with one entry per WP/WC finding ID and status
+- **README.md**: New sections on routing precedence (WP-07), intent interpretation (WP-08/09/13), sizing modes (WP-16), loss limits (WP-30/31/32), alerts (WP-34), operations center (WP-42), readiness checklist (WP-45), adapter capabilities table (WP-36/48/49)
+- **ADR-0013**: Explicit intent model replacing side ambiguity
+- **ADR-0014**: Sizing modes and venue quantization with contract multipliers
+- **ADR-0015**: Workflow contract pipeline (identity, budgets, admission, outbox)
+- **SOLUTION_GAP_ANALYSIS.md**: Added Section 9 with implementation status summary; every finding mapped to WP test or marked BLOCKED-external
+- **docs/testing/ALLOCATION_TRACEABILITY.yaml**: Maintained (already 150+ rows, all tests verified)
+- **docs/database/SCHEMA.md**: Added budget_reservations, budget_limits, order_intents, outbox, trading_halts
+- **docs/database/DATA_DICTIONARY.md**: Added field-level semantics for new tables
+- **docs/state/PROGRESS.md**: This file, updated
+
+Status: **Isolated-tested**. Every account/adapter is paper-broker-only; external qualification (live credentials, venue testing, entitlements) is blocked and listed as release dependency. Two findings (C-14, C-18) require live IBKR testing.
+
+Earlier history (Tracks 60–74): comprehensive mutation-testing regression tests for lifecycle/financial, feature/capability, and economics/metrics/equity modules. Track 72 (57 tests) covers lifecycle management, close arbitration, and financial command logic. Track 73 (72 tests) covers qualification, event export, shadow mode, escalation, and execution quality. Track 74 (49 tests) covers extended account economics, Prometheus metrics, and equity history snapshots — completing the mutation-testing regression suite across all 29 modules in `only_mutate`. This is a snapshot, not a roadmap — update it when the state it describes actually changes.
 
 ## What wave this is
 

@@ -79,6 +79,23 @@ def test_a_filled_result_missing_filled_quantity_produces_nothing():
     assert envelope is None
 
 
+def test_a_filled_result_with_a_fee_carries_it_through_to_the_payload():
+    """A broker that reports a commission/fee on a FILLED order (e.g.
+    PaperBroker) must have that fee exported as part of EXECUTION_APPLIED
+    -- the payload's fee field is now populated, not hard-coded to None."""
+    envelope = _build(fee=1.50)
+    assert envelope is not None
+    assert envelope.payload["fee"] == "1.5"
+
+
+def test_a_filled_result_with_no_fee_exports_none_for_fee():
+    """A broker that doesn't report fees (or a fill without one) must
+    export fee=None, not a fabricated zero."""
+    envelope = _build(fee=None)
+    assert envelope is not None
+    assert envelope.payload["fee"] is None
+
+
 def test_side_close_is_refused_outright():
     result = OrderResult(
         account_id="acct1", status=OrderStatus.FILLED, signal_id="sig-1",

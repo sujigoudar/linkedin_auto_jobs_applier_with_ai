@@ -23,7 +23,9 @@ Expected JSON body:
         ],
         "asset_class": "crypto",    # optional, defaults to crypto
         "analyst": "alice",         # optional -- who/what posted this, for app/providers.py overrides
-        "message_id": "alert-123"   # optional -- this alert's own native id, for dedup/replay detection
+        "message_id": "alert-123",  # optional -- this alert's own native id, for dedup/replay detection
+        "intent": "entry_long",     # optional -- entry_long | entry_short | sell | exit | reduce | stop_update | target_update | cancel | add
+        "reduce_fraction": 0.5      # optional -- fraction (0 < x <= 1) of position to reduce, for reduce intent
     }
 
 When both "take_profit" and "targets" are given, both are used as-is (no
@@ -38,7 +40,7 @@ import math
 from typing import Any
 
 from app.errors import SignalValidationError
-from app.models import AssetClass, ProfitTarget, Signal, SourceEvent, SourceEventKind, Side
+from app.models import AssetClass, Intent, ProfitTarget, Signal, SourceEvent, SourceEventKind, Side
 from app.sources.base import SourceAdapter
 
 __all__ = ["WebhookSource", "SignalValidationError"]
@@ -116,6 +118,20 @@ class WebhookSource(SourceAdapter):
         # `Signal.message_id`'s own docstring).
         message_id = payload.get("message_id") or payload.get("alert_id") or payload.get("id")
 
+        # Parse optional intent field
+        intent_raw = payload.get("intent")
+        intent = None
+        if intent_raw is not None:
+            try:
+                intent = Intent(str(intent_raw).lower())
+            except ValueError as exc:
+                raise SignalValidationError(f"invalid intent '{intent_raw}'") from exc
+
+        # Parse optional reduce_fraction field
+        reduce_fraction = _optional_positive_float(payload.get("reduce_fraction"), field="reduce_fraction")
+        if reduce_fraction is not None and reduce_fraction > 1.0:
+            raise SignalValidationError(f"reduce_fraction must be <= 1.0, got {reduce_fraction}")
+
         return Signal(
             source=source_override or self.name,
             symbol=str(symbol),
@@ -132,6 +148,8 @@ class WebhookSource(SourceAdapter):
             entry_order_type=payload.get("entry_order_type"),
             channel_id=source_override or self.name,
             message_id=str(message_id) if message_id is not None else None,
+            intent=intent,
+            reduce_fraction=reduce_fraction,
             parser_version=PARSER_VERSION,
             raw=payload,
             raw_source_event=payload,

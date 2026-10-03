@@ -37,9 +37,8 @@ def account():
 
 @pytest.fixture
 def limiter(mock_store, mock_broker_adapter):
-    """Initialize DailyLossLimiter with mocked store."""
-    limiter = DailyLossLimiter(mock_store)
-    mock_store._broker_adapters = {"test_broker": mock_broker_adapter}
+    """Initialize DailyLossLimiter with mocked store and broker adapters."""
+    limiter = DailyLossLimiter(mock_store, brokers={"test_broker": mock_broker_adapter})
     return limiter
 
 

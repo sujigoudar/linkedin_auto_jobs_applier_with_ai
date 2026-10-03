@@ -254,7 +254,7 @@ def test_balance_endpoint_returns_real_balance_when_broker_supports_it(client, m
         response = client.get("/accounts/acct1/balance")
     assert response.status_code == 200
     body = response.json()
-    assert body == {"account_id": "acct1", "cash": 100.0, "equity": 200.0, "buying_power": 50.0, "maintenance_margin": None}
+    assert body == {"account_id": "acct1", "cash": 100.0, "equity": 200.0, "buying_power": 50.0, "maintenance_margin": None, "currency": None}
 
 
 def test_balance_endpoint_reports_nulls_not_an_error_when_unsupported(client, monkeypatch):
@@ -268,7 +268,7 @@ def test_balance_endpoint_reports_nulls_not_an_error_when_unsupported(client, mo
         response = client.get("/accounts/acct1/balance")
     assert response.status_code == 200
     body = response.json()
-    assert body == {"account_id": "acct1", "cash": None, "equity": None, "buying_power": None, "maintenance_margin": None}
+    assert body == {"account_id": "acct1", "cash": None, "equity": None, "buying_power": None, "maintenance_margin": None, "currency": None}
 
 
 def test_brokers_endpoint_reports_balance_capability(client, monkeypatch):

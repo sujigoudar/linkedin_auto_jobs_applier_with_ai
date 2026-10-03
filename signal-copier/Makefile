@@ -21,7 +21,7 @@
 lint:
 	python -m ruff check .
 
-# C38 -- mypy, exact CI-scoped 31-file list (see
+# C38 -- mypy, exact CI-scoped file list (see
 # .github/workflows/signal-copier-ci.yml). This is what CI actually
 # enforces -- it is deliberately narrower than the whole app/ package.
 typecheck:
@@ -32,7 +32,15 @@ typecheck:
 	     app/brokers/paper.py app/brokers/ccxt_broker.py app/brokers/signalstack.py app/brokers/ninjatrader.py \
 	     app/config.py app/auth.py app/rate_limit.py app/context/sec_edgar.py app/context/fred.py app/context/fx.py \
 	     app/capital_allocator.py app/provider_value.py app/provider_scout.py \
-	     --follow-imports=silent
+	     app/provider_catalog.py app/connections.py \
+	     app/certification.py app/certification_evidence.py app/certification_scorecard.py app/shadow_mode.py \
+	     app/parser_tooling.py app/connection_catalog.py \
+	     app/sources/adapter_contract.py app/sources/url_safety.py app/sources/rss_source.py \
+	     app/export_events.py \
+	     app/workflow/__init__.py app/workflow/reasons.py app/workflow/money.py app/workflow/intents.py app/workflow/identity.py \
+	     app/workflow/admission.py app/workflow/selection.py \
+	     app/workflow/kelly.py app/workflow/sizing.py app/workflow/scaling.py \
+	     --follow-imports=silent --cache-dir=/dev/null
 
 # NOT run by CI. The full, non-scoped check across the whole app/
 # package -- TOKEN_COST_AUDIT.md finding #7 found 18 real errors here

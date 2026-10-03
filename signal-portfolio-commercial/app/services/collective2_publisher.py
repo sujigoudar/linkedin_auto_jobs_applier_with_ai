@@ -27,7 +27,7 @@ from __future__ import annotations
 import enum
 from decimal import Decimal, InvalidOperation
 
-from app.models.publication import PublicationAction, PublicationIntent, QuantityBasis
+from app.models.publication import PublicationAction, PublicationIntent, PublicationSide, QuantityBasis
 
 
 class Tif(enum.IntEnum):
@@ -128,7 +128,7 @@ def _build_quantity_order(intent: PublicationIntent, *, c2_symbol: str, tif: Tif
             f"quantity {intent.quantity!r} is not a whole number -- API4 OrderQuantity is an integer"
         )
 
-    side = Side.SELL if intent.action is PublicationAction.REDUCE else Side.BUY
+    side = Side.SELL if intent.side is PublicationSide.SELL else Side.BUY
 
     return {
         "StrategyId": intent.external_strategy_id,

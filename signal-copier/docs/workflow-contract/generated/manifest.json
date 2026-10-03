@@ -1,0 +1,139 @@
+{
+  "schema_version": "1.0",
+  "purpose": "GENERATED_FINITE_ACCEPTANCE_INPUTS_NOT_APPLICATION_TEST_RESULTS",
+  "total": 9228,
+  "suites": {
+    "admission": {
+      "count": 4608,
+      "file": "admission.jsonl",
+      "sha256": "df480a5ac716fbaf74ae32ccd43737c17c96322fed2df7959aadf977fae761b0",
+      "application_status": "NOT_RUN"
+    },
+    "linear_sizing": {
+      "count": 4500,
+      "file": "linear_sizing.jsonl",
+      "sha256": "431f9c04a06e3c07479edff6d5d40406688da43159ff3fb20c1a67852af2fad9",
+      "application_status": "NOT_RUN"
+    },
+    "race_sequences": {
+      "count": 120,
+      "file": "race_sequences.jsonl",
+      "sha256": "06b06382407ff1eec5a4218b45deb1c1fd76e9c61cb2a99072433ded42501d7e",
+      "application_status": "NOT_RUN"
+    }
+  },
+  "domains": {
+    "admission": {
+      "authorization": [
+        "authorized",
+        "unknown",
+        "disabled"
+      ],
+      "interpretation": [
+        "entry",
+        "conditional_unmet",
+        "ambiguous",
+        "observation"
+      ],
+      "routes": [
+        "zero",
+        "one",
+        "two",
+        "duplicate_bindings_one_account"
+      ],
+      "budget": [
+        "enough",
+        "zero",
+        "unknown",
+        "oversubscribed"
+      ],
+      "margin_regime": [
+        "legacy_verified",
+        "new_intraday_verified",
+        "unknown"
+      ],
+      "halt": [
+        "clear",
+        "account_halt",
+        "portfolio_halt",
+        "owner_halt"
+      ],
+      "uncertain_effect": [
+        false,
+        true
+      ]
+    },
+    "linear_sizing": {
+      "risk_budget_cents": [
+        0,
+        1,
+        99,
+        100,
+        1500
+      ],
+      "unit_risk_cents": [
+        1,
+        3,
+        25,
+        100,
+        105
+      ],
+      "cash_capacity_cents": [
+        0,
+        1,
+        4999,
+        10000,
+        600000
+      ],
+      "entry_price_cents": [
+        1,
+        99,
+        100,
+        4999,
+        5000,
+        10000
+      ],
+      "source_max_units": [
+        0,
+        1,
+        2,
+        10,
+        14,
+        100
+      ]
+    },
+    "race_sequences": {
+      "cancel_fill": [
+        "cancel_requested",
+        "partial_fill_observed",
+        "cancel_final_observed",
+        "duplicate_fill_observed"
+      ],
+      "submit_recovery": [
+        "dispatch_attempted",
+        "timeout_observed",
+        "broker_fill_observed",
+        "restart_reconcile"
+      ],
+      "stop_provider_exit": [
+        "stop_fill_observed",
+        "provider_exit_received",
+        "exit_ack_observed",
+        "position_reconciled"
+      ],
+      "add_exit": [
+        "add_trigger_received",
+        "add_fill_observed",
+        "provider_exit_received",
+        "stop_replace_observed"
+      ],
+      "competing_reservation": [
+        "candidate_A_ready",
+        "candidate_B_ready",
+        "reservation_A_attempt",
+        "reservation_B_attempt"
+      ]
+    }
+  },
+  "no_financial_actions": true
+}

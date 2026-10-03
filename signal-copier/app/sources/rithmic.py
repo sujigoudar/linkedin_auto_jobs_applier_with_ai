@@ -20,7 +20,7 @@ fill_price).
 """
 from __future__ import annotations
 
-from app.models import AssetClass, Signal, Side
+from app.models import AssetClass, Intent, Signal, Side
 from app.sources.base import SourceAdapter
 
 
@@ -70,6 +70,11 @@ class RithmicSource(SourceAdapter):
                 return
 
             side = Side.BUY if notification.transaction_type == TransactionType.BUY else Side.SELL
+            # A-07: Set intent to EXIT for SELL fills (exits closing a long position).
+            # Since Rithmic doesn't provide explicit position tracking, SELL fills are
+            # exits (the opposite of the usual Side.SELL entry interpretation).
+            intent = Intent.EXIT if notification.transaction_type == TransactionType.SELL else None
+
             # RISK-FC-02: `x or y or None` treats a genuinely-reported 0.0
             # the same as "not reported at all" and silently substitutes
             # something else (or None) for it. `signal.price` feeds
@@ -90,6 +95,7 @@ class RithmicSource(SourceAdapter):
                 asset_class=AssetClass.FUTURE,
                 quantity=float(notification.fill_size) if notification.fill_size is not None else None,
                 price=float(price) if price is not None else None,
+                intent=intent,
                 raw={"account_id": notification.account_id, "exchange": notification.exchange},
             )
             await self.on_signal(signal)

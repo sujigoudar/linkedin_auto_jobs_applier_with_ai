@@ -1721,3 +1721,39 @@ INT-010, `b330d3d`); control-plane audit trail on every command endpoint
 projection (S12 step 5, `e89464f`); re-verification of the rights
 registry and command authority against new integration boundaries
 (INT-021/031, `77a6fef`).
+
+## Unreleased
+
+### Changed (behavior)
+- **ALLOC-01: one intended trade now goes to ONE selected account.** A routing
+  rule's `destinations` are alternatives in priority order
+  (`delivery_mode: single`, the new default). Previously every listed
+  destination received its own order. Rules that must keep fan-out need
+  `delivery_mode: replicate`. See `docs/adr/0012-single-destination-allocation.md`.
+- **ALLOC-05: an ambiguous entry submission keeps its capital/strategy
+  reservation** until resolved, instead of releasing it immediately.
+
+### Fixed
+- A managed-lifecycle provider CLOSE was journaled with `side='close'`, which every
+  P&L/episode/capital-gate replay skipped: the account looked still-open, the
+  capital gate rejected new entries on a flat book, and provider scorecards lost
+  every CLOSE-exited trade. The row now carries the resolved exit side.
+- Strategy-level exposure (ALLOC-03) never decreased after a stop-out or a manual
+  close because those exits carry a synthetic source; fills are now attributed to
+  the entry signal's source via `family_id`.
+
+### Audit
+- `docs/audit/SOLUTION_GAP_ANALYSIS.md` — whole-solution gap analysis (166
+  findings, 27 P0) with raw per-domain evidence under `docs/audit/raw/`.
+
+### Added
+- `GET /command-ledger/unresolved` and `POST /command-ledger/resolve`: operator
+  visibility and resolution (`not_placed` with evidence) for ambiguous
+  submissions whose capital reservation is held.
+- `allocation_intents` table (alembic 0037): one durable decision per entry
+  signal; selection before submission, never rerouted after an attempt.
+- `strategy_budgets` and `GET/PUT/DELETE /strategy-budgets`: a global
+  per-strategy notional ceiling counted once across accounts, admitted in one
+  `BEGIN IMMEDIATE` transaction.
+- `GET /allocation-intents`; `delivery_mode` on `/routing-rules`; TR-11
+  simulator now reports the selected account.

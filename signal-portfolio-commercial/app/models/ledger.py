@@ -167,6 +167,14 @@ class LedgerEntry(Base):
     #: the time it was recorded.
     sleeve_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
 
+    #: The account at signal-copier that originated this fill (G-C-12: "all
+    #: copier accounts collapse into one position per instrument" -- fix by
+    #: carrying account_id from PrivateAccountIdentity). Meaningful only for
+    #: `book == Book.PLATFORM` entries (fills from the copier). NULL for every
+    #: other book. Included for future-proofing and to enable per-account
+    #: replays.
+    account_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+
     #: Points at the entry this one corrects -- NULL for an original entry.
     #: The original row is never updated or deleted; this is how a mistake
     #: is fixed instead.

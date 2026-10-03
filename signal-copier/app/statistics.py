@@ -88,6 +88,19 @@ ends). See this module's own load-bearing test
 replacing the running-peak walk with a first/last-only computation) and
 confirms the test that exists specifically to catch that regression
 fails.
+
+## E-12: Unpriced open symbols — honest insufficiency when mark-availability varies
+
+When an account holds open positions but has no live market price for
+one or more of them (`unpriced_open_symbols` non-empty on a snapshot),
+the `cumulative_pnl` in that snapshot folds a 0.0 for unrealized P&L on
+those symbols -- and a mark arriving or departing (a `PriceMonitor` tick
+starting/ending) then looks like a phantom P&L move in the time series,
+inflating volatility/drawdown. To surface this, `compute_rolling_stats`
+counts how many snapshots in the window had any unpriced-open-symbols
+entry (`unpriced_snapshot_count`), so a caller (or a dashboard) can
+decide whether to apply these statistics or report `None` when mark
+availability is spotty.
 """
 from __future__ import annotations
 
@@ -154,6 +167,13 @@ class RollingStats:
     #: max_drawdown to the trough that realized it -- "how long
     #: underwater", not a fixed/assumed duration.
     max_drawdown_duration_seconds: float | None
+    #: (E-12) How many snapshots in the window had any unpriced-open-
+    #: symbols (holdings without a live market mark). When nonzero, this
+    #: window contains phantom P&L moves from mark-availability changes,
+    #: and statistics may be unreliable. A caller (or dashboard) should
+    #: return None for all fields instead of reporting them when this is
+    #: nonzero.
+    unpriced_snapshot_count: int = 0
 
     def to_dict(self) -> dict:
         return {
@@ -168,13 +188,17 @@ class RollingStats:
             "sortino_equivalent": self.sortino_equivalent,
             "max_drawdown": self.max_drawdown,
             "max_drawdown_duration_seconds": self.max_drawdown_duration_seconds,
+            "unpriced_snapshot_count": self.unpriced_snapshot_count,
             "note": "All figures are absolute cumulative_pnl-delta statistics, not percentage "
             "returns -- this account has no configured starting-balance/capital baseline to "
             "divide by (see app/equity_history.py and app/statistics.py's own module "
             "docstrings). sharpe_equivalent/sortino_equivalent use an implicit risk-free rate "
             "of 0 (this codebase stores no risk-free-rate figure), so neither is a textbook "
             "Sharpe/Sortino ratio. Any field is null when the account's real snapshot history "
-            "is too short for that statistic to be meaningful, never a fabricated placeholder.",
+            "is too short for that statistic to be meaningful, never a fabricated placeholder. "
+            "When unpriced_snapshot_count > 0 (E-12), the window contains holdings without live "
+            "market marks, so mark-availability changes masquerade as P&L moves and statistics may "
+            "be unreliable.",
         }
 
 
@@ -245,6 +269,12 @@ def compute_rolling_stats(account_id: str, snapshots: list[dict], *, window: int
     drawdown = compute_max_drawdown(windowed)
     max_drawdown, max_drawdown_duration_seconds = drawdown if drawdown is not None else (None, None)
 
+    # E-12: Count how many snapshots have unpriced-open-symbols
+    unpriced_snapshot_count = sum(
+        1 for snap in windowed
+        if snap.get("unpriced_open_symbols") and len(snap.get("unpriced_open_symbols", [])) > 0
+    )
+
     return RollingStats(
         account_id=account_id,
         window=window,
@@ -257,6 +287,7 @@ def compute_rolling_stats(account_id: str, snapshots: list[dict], *, window: int
         sortino_equivalent=sortino_equivalent,
         max_drawdown=max_drawdown,
         max_drawdown_duration_seconds=max_drawdown_duration_seconds,
+        unpriced_snapshot_count=unpriced_snapshot_count,
     )
 
 
@@ -270,6 +301,12 @@ class PairCorrelation:
     #: (matched by captured_at) -- `None` (never a fabricated 0/NaN) when
     #: `sample_count < MIN_CORRELATION_SAMPLES`.
     correlation: float | None
+    #: (E-12) Count of overlapping snapshots where account_a had unpriced
+    #: open symbols -- correlation may be unreliable when nonzero.
+    unpriced_count_a: int = 0
+    #: (E-12) Count of overlapping snapshots where account_b had unpriced
+    #: open symbols -- correlation may be unreliable when nonzero.
+    unpriced_count_b: int = 0
 
     def to_dict(self) -> dict:
         return {
@@ -277,11 +314,16 @@ class PairCorrelation:
             "account_b": self.account_b,
             "sample_count": self.sample_count,
             "correlation": self.correlation,
+            "unpriced_count_a": self.unpriced_count_a,
+            "unpriced_count_b": self.unpriced_count_b,
             "note": f"Pearson correlation of the two accounts' real cumulative_pnl series over "
             f"their overlapping snapshots (matched by captured_at) -- used as a proxy for "
             f"strategy correlation since this codebase has no separate per-provider/per-analyst "
             f"equity attribution. Omitted (null) entirely, never a fabricated 0 or NaN-as-zero, "
-            f"when fewer than {MIN_CORRELATION_SAMPLES} real overlapping snapshots exist.",
+            f"when fewer than {MIN_CORRELATION_SAMPLES} real overlapping snapshots exist. "
+            f"When unpriced_count_a or unpriced_count_b is nonzero (E-12), those accounts held "
+            f"unpriced positions at some overlapping moments, so mark-availability changes in "
+            f"the series may inflate/deflate correlation values.",
         }
 
 
@@ -297,14 +339,26 @@ def compute_pairwise_correlation(
     independently-ticking snapshot series without inventing an
     interpolated point). `None` when fewer than `MIN_CORRELATION_SAMPLES`
     real overlapping points exist."""
-    by_time_b = {row["captured_at"]: float(row["cumulative_pnl"]) for row in snapshots_b}
+    by_time_b = {
+        row["captured_at"]: (float(row["cumulative_pnl"]), row) for row in snapshots_b
+    }
     paired_a: list[float] = []
     paired_b: list[float] = []
-    for row in snapshots_a:
-        ts = row["captured_at"]
-        if ts in by_time_b:
-            paired_a.append(float(row["cumulative_pnl"]))
-            paired_b.append(by_time_b[ts])
+    unpriced_count_a = 0
+    unpriced_count_b = 0
+
+    for row_a in snapshots_a:
+        ts = row_a["captured_at"]
+        match = by_time_b.get(ts)
+        if match is not None:
+            pnl_b, row_b = match
+            paired_a.append(float(row_a["cumulative_pnl"]))
+            paired_b.append(pnl_b)
+            # E-12: Track unpriced symbols at overlapping moments
+            if row_a.get("unpriced_open_symbols") and len(row_a.get("unpriced_open_symbols", [])) > 0:
+                unpriced_count_a += 1
+            if row_b.get("unpriced_open_symbols") and len(row_b.get("unpriced_open_symbols", [])) > 0:
+                unpriced_count_b += 1
 
     sample_count = len(paired_a)
     correlation: float | None = None
@@ -323,4 +377,6 @@ def compute_pairwise_correlation(
         account_b=account_b,
         sample_count=sample_count,
         correlation=correlation,
+        unpriced_count_a=unpriced_count_a,
+        unpriced_count_b=unpriced_count_b,
     )

@@ -258,7 +258,7 @@ async def test_excursion_state_survives_a_restart_before_close(account, broker, 
 
     # Simulate a restart: a fresh manager over the same store.
     resumed = PositionLifecycleManager(brokers={"paper": broker}, store=store)
-    resumed.restore_from_store()
+    await resumed.restore_from_store()
 
     lifecycle = resumed.get_lifecycle("acct1", "ORCL")
     assert lifecycle is not None

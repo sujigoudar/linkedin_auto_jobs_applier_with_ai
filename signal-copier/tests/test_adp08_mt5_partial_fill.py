@@ -64,12 +64,32 @@ async def test_partial_fill_reports_filled_not_pending():
 
 
 @pytest.mark.asyncio
-async def test_genuine_rejection_is_still_rejected():
-    """A real reject retcode (anything besides DONE/DONE_PARTIAL) must
-    still be reported as REJECTED -- the fix must not swallow real
-    rejections along with genuine partial fills."""
+async def test_requote_is_definite_rejection_not_ambiguous():
+    """REQUOTE (10004): MT5 reports the price moved and the order was NOT
+    executed. Execution is certain (nothing happened), so WP-21 classifies it
+    as a definite REJECTED, not an ambiguous ERROR. Only retcodes where
+    execution is genuinely unknown (TIMEOUT 10012, CONNECTION 10031) are
+    ambiguous -- see test_wp21_rejection_vs_ambiguity.py."""
     broker = _stub_broker(
         {"retcode": 10004, "order": 0, "price": 0, "volume": 0, "comment": "REQUOTE"}
+    )
+
+    result = await broker.place_order(
+        Signal("s", "EURUSD", Side.BUY), DestinationAccount("a", "mt4_mt5"), 1, "EURUSD"
+    )
+
+    assert result.status == OrderStatus.REJECTED
+
+
+@pytest.mark.asyncio
+async def test_genuine_rejection_is_still_rejected():
+    """Definite rejections (not ambiguous retcodes) must be reported as
+    REJECTED -- the fix must not swallow real rejections along with
+    genuine partial fills. Use a retcode that's not in the ambiguous set."""
+    # Using a hypothetical definite rejection (any code not in the ambiguous set)
+    # For this test, we use 10015 (hypothetical definite rejection)
+    broker = _stub_broker(
+        {"retcode": 10015, "order": 0, "price": 0, "volume": 0, "comment": "REJECTED"}
     )
 
     result = await broker.place_order(

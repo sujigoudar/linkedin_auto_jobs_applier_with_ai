@@ -26,6 +26,7 @@ class _FakeExchange:
         self.fetch_positions_raises = None
         self.fetch_ticker_result = None
         self.fetch_ticker_raises = None
+        self.markets = {}  # For C-16 market type detection
 
     async def create_order(self, **kwargs):
         self.create_order_calls.append(kwargs)
@@ -45,6 +46,10 @@ class _FakeExchange:
         if getattr(self, "fetch_ticker_raises", None):
             raise self.fetch_ticker_raises
         return self.fetch_ticker_result
+
+    async def fetch_order(self, order_id, symbol=None):
+        """Return a confirmed canceled status for testing C-09."""
+        return {"id": order_id, "status": "canceled"}
 
 
 @pytest.mark.asyncio
@@ -123,11 +128,24 @@ async def test_get_broker_position_returns_negative_for_short(broker, account):
 
 @pytest.mark.asyncio
 async def test_get_broker_position_returns_zero_when_flat(broker, account):
+    """C-16: For derivatives (not spot), return 0.0 when no position found."""
     fake = _FakeExchange()
     fake.fetch_positions_result = []
+    fake.markets = {"BTC/USDT": {"type": "swap"}}  # derivative market
     broker._exchanges["acct1"] = fake
 
     assert await broker.get_broker_position(account, "BTC/USDT") == 0.0
+
+
+@pytest.mark.asyncio
+async def test_get_broker_position_returns_none_for_spot_when_flat(broker, account):
+    """C-16: For spot markets, return None (unknown) instead of 0.0 when no position."""
+    fake = _FakeExchange()
+    fake.fetch_positions_result = []
+    fake.markets = {"BTC/USDT": {"type": "spot"}}  # spot market
+    broker._exchanges["acct1"] = fake
+
+    assert await broker.get_broker_position(account, "BTC/USDT") is None
 
 
 @pytest.mark.asyncio

@@ -125,7 +125,7 @@ async def test_managed_full_fill_survives_a_restart_without_duplicating(store):
     # Simulate a process restart: fresh manager + reconciler, seeded only
     # from persisted state.
     new_lifecycle_manager = PositionLifecycleManager(brokers={"paper": broker}, store=store)
-    new_lifecycle_manager.restore_from_store()
+    await new_lifecycle_manager.restore_from_store()
     new_reconciler = OrderReconciler(store, {"paper": broker}, lifecycle_manager=new_lifecycle_manager)
 
     restored = new_lifecycle_manager.get_lifecycle("acct1", "AAPL")

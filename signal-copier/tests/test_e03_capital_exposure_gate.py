@@ -305,15 +305,16 @@ async def test_reservation_releases_once_reconciliation_confirms_the_pending_ord
 
 
 @pytest.mark.asyncio
-async def test_pending_with_no_broker_order_id_still_releases_immediately_a_narrower_remaining_gap(tmp_path):
-    """A PENDING result with no broker_order_id at all (the same ambiguous
-    situation as EXE-01/EXE-01b's raised-or-returned ERROR) has nothing
-    app/reconciliation.py could ever poll to release it later -- deferring
-    release here would risk a reservation that's never released, which
-    capital_allocator.py's docstring calls out as worse than the timing
-    gap it would close. So this specific, narrower case still releases
-    immediately, same as before the fix -- documented here, not silently
-    left to be "discovered" as a surprise regression."""
+async def test_pending_with_no_broker_order_id_holds_reservation_until_resolved(tmp_path):
+    """ALLOC-05 (supersedes the earlier "still releases immediately, a
+    narrower remaining gap" behavior this test used to document).
+
+    A PENDING result with no broker_order_id is the same ambiguous
+    situation as a raised or returned-ERROR submission: the order may have
+    been accepted at the venue and nothing can be polled. Releasing the
+    reservation would let the same capacity be spent twice, so it is held as
+    an unresolved obligation until independent evidence settles it
+    (`SignalCopierEngine.resolve_unknown_submission`)."""
     store = SignalStore(tmp_path / "test.db")
     broker = PaperBroker()
 
@@ -325,13 +326,18 @@ async def test_pending_with_no_broker_order_id_still_releases_immediately_a_narr
     engine = _engine(store, account, broker)
 
     first = Signal(source=SOURCE, symbol="AAPL", side=Side.BUY, quantity=7.0, price=100.0)  # notional 700
-    second = Signal(source=SOURCE, symbol="MSFT", side=Side.BUY, quantity=7.0, price=100.0)  # notional 700
+    second = Signal(source=SOURCE, symbol="MSFT", side=Side.BUY, quantity=7.0, price=100.0)  # would be 1400 > 1000
 
     first_results = await engine.handle_signal(first)
-    second_results = await engine.handle_signal(second)
-
     assert first_results[0].status == OrderStatus.PENDING
-    assert second_results[0].status == OrderStatus.PENDING
+    assert engine.capital_allocator.pending_reservation("acct1") == 700.0
+
+    second_results = await engine.handle_signal(second)
+    assert second_results[0].status == OrderStatus.REJECTED  # the held 700 still counts
+
+    key = store.list_unresolved_command_ledger_entries()[0].idempotency_key
+    assert engine.resolve_unknown_submission(key, outcome="not_placed", evidence="broker shows no order")
+    assert engine.capital_allocator.pending_reservation("acct1") == 0.0
 
 
 # --- Unresolved exposure: audit's second named bug ---
@@ -491,18 +497,41 @@ async def test_risk_basis_rejects_when_no_stop_loss_on_signal(tmp_path):
 
 @pytest.mark.asyncio
 async def test_risk_basis_rejects_when_broker_cannot_report_equity(tmp_path):
-    """PaperBroker's real get_account_balance always reports equity=None --
+    """When a broker reports balance but no equity figure (equity=None),
     a genuine 'broker reachable but this figure unavailable' case, not a
     stub. Must fail closed, not admit with an unverified risk figure.
     managed_lifecycle=True here purely so a real stop_loss is accepted at
     all (a plain account with a non-bracket-capable broker refuses any
     stop_loss outright, unrelated to this gate -- see EXE-08)."""
+    from app.brokers.base import BrokerAdapter
+
+    class NoEquityBroker(BrokerAdapter):
+        """Mock broker that reports balance but no equity."""
+        @property
+        def has_balance_capability(self) -> bool:
+            return True
+
+        async def place_order(self, account, signal, quantity):
+            return None
+
+        async def place_protective_stop(self, account, symbol, quantity, stop_price, exit_side):
+            return None
+
+        async def get_account_balance(self, account):
+            # Reports cash/buying_power but no equity
+            return AccountBalance(account_id=account.account_id, cash=100_000.0, buying_power=100_000.0, equity=None)
+
     store = SignalStore(tmp_path / "test.db")
-    broker = PaperBroker()
+    broker = NoEquityBroker()
     account = DestinationAccount(
-        account_id="acct1", broker="paper", managed_lifecycle=True, risk_percent_of_equity=0.02
+        account_id="acct1", broker="no_equity", managed_lifecycle=True, risk_percent_of_equity=0.02
     )
-    engine = _engine(store, account, broker)
+    engine = SignalCopierEngine(
+        routing=RoutingConfig(rules=[RoutingRule(source=SOURCE, destinations=["acct1"])], accounts={"acct1": account}),
+        brokers={"no_equity": broker},
+        store=store,
+        lifecycle_manager=PositionLifecycleManager(brokers={"no_equity": broker}, store=store)
+    )
 
     signal = Signal(source=SOURCE, symbol=SYMBOL, side=Side.BUY, quantity=10.0, price=100.0, stop_loss=90.0)
     results = await engine.handle_signal(signal)

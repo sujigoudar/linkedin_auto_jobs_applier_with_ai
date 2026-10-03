@@ -452,7 +452,7 @@ def test_ledgered_cancel_order_with_an_unconfirmed_cancel_lands_the_ledger_row_i
         async def place_order(self, signal, account, quantity, symbol):
             raise NotImplementedError
 
-        async def cancel_order(self, account, broker_order_id):
+        async def cancel_order(self, account, broker_order_id, symbol=None):
             return False  # "isn't supported or confirmed"
 
     broker = _UnconfirmedCancelBroker()
@@ -485,7 +485,7 @@ def test_ledgered_cancel_order_with_a_confirmed_cancel_lands_the_ledger_row_in_c
         async def place_order(self, signal, account, quantity, symbol):
             raise NotImplementedError
 
-        async def cancel_order(self, account, broker_order_id):
+        async def cancel_order(self, account, broker_order_id, symbol=None):
             return True
 
     broker = _ConfirmedCancelBroker()

@@ -59,6 +59,7 @@ silently placing the entry without its exit.
 from __future__ import annotations
 
 import os
+from typing import Any
 
 from app.models import AssetClass, DestinationAccount, OrderResult, OrderStatus, Side, Signal
 from app.brokers.base import BrokerAdapter
@@ -127,6 +128,10 @@ class CCXTBroker(BrokerAdapter):
         self._exchanges[account.account_id] = exchange
         return exchange
 
+    def venue_environment(self, account: DestinationAccount) -> str:
+        """Return the CCXT venue environment: 'sandbox' or 'live' based on the sandbox flag."""
+        return "sandbox" if self.sandbox else "live"
+
     @staticmethod
     def _exchange_declares_attached_bracket_support(exchange) -> bool:
         """ADP-02: `stopLossPrice`/`takeProfitPrice` are ccxt's UNIFIED
@@ -156,7 +161,9 @@ class CCXTBroker(BrokerAdapter):
                 message="'close' side reached the broker directly without engine-level resolution (see SignalCopierEngine._resolve_close); this broker only accepts buy/sell",
             )
 
-        params = {}
+        params: dict[str, Any] = {}
+        if signal.client_order_id:
+            params["clientOrderId"] = signal.client_order_id
         if signal.stop_loss or signal.take_profit:
             if not self._exchange_declares_attached_bracket_support(exchange):
                 return OrderResult(
@@ -183,12 +190,24 @@ class CCXTBroker(BrokerAdapter):
                 params=params,
             )
         except Exception as exc:  # noqa: BLE001 - surface any ccxt/network error as a failed order
-            return OrderResult(
-                account_id=account.account_id,
-                status=OrderStatus.ERROR,
-                signal_id=signal.id,
-                message=str(exc),
-            )
+            # Definite rejections (validation failures, insufficient funds) are ccxt's
+            # subclasses of InvalidOrder and InsufficientFunds. Ambiguous errors
+            # (network, rate limits, timeouts) are other exceptions.
+            exc_type_name = type(exc).__name__
+            if exc_type_name in ("InvalidOrder", "InsufficientFunds", "BadRequest", "AuthenticationError"):
+                return OrderResult(
+                    account_id=account.account_id,
+                    status=OrderStatus.REJECTED,
+                    signal_id=signal.id,
+                    message=f"ccxt order rejected ({exc_type_name}): {exc}",
+                )
+            else:
+                return OrderResult(
+                    account_id=account.account_id,
+                    status=OrderStatus.ERROR,
+                    signal_id=signal.id,
+                    message=f"ccxt order request failed ({exc_type_name}): {exc}",
+                )
 
         # A "market" order type is not a guarantee of a synchronous fill --
         # ccxt's unified order carries its own status ('open'/'closed'/
@@ -250,9 +269,117 @@ class CCXTBroker(BrokerAdapter):
             message="ccxt stop resting",
         )
 
-    async def cancel_order(self, account: DestinationAccount, broker_order_id: str) -> bool:
+    async def get_order_status(
+        self, account: DestinationAccount, broker_order_id: str
+    ) -> OrderResult | None:
+        """C-15: Poll ccxt for real order status using fetch_order.
+
+        Returns the current order state (filled, rejected, pending) with real
+        filled quantity, or None if still pending and nothing new to report.
+        """
         exchange = self._exchange_for(account)
         symbol = self._order_symbols.get(broker_order_id)
+
+        try:
+            if symbol is not None:
+                order = await exchange.fetch_order(broker_order_id, symbol)
+            else:
+                # Fallback if symbol not known — some exchanges support this
+                order = await exchange.fetch_order(broker_order_id)
+        except Exception:  # noqa: BLE001 - fetch failed; can't determine status
+            return None
+
+        # Map ccxt status to OrderStatus
+        ccxt_status = order.get("status")
+        filled = order.get("filled")
+        amount = order.get("amount")
+
+        if ccxt_status in ("canceled", "expired", "rejected"):
+            new_status = OrderStatus.REJECTED
+        elif ccxt_status == "closed" or (filled is not None and amount is not None and filled >= amount):
+            new_status = OrderStatus.FILLED
+        elif ccxt_status == "open":
+            # Still open, unfilled or partially filled — stay pending
+            if filled and filled > 0:
+                # Real partial fill; report it so reconciler can credit the position
+                return OrderResult(
+                    account_id=account.account_id,
+                    status=OrderStatus.PENDING,
+                    signal_id="",
+                    broker_order_id=broker_order_id,
+                    filled_quantity=filled,
+                    filled_price=order.get("average") or order.get("price"),
+                    message=f"ccxt order partially filled: {filled}",
+                )
+            else:
+                # No fill yet — nothing new to report
+                return None
+        else:
+            # Status unknown or not reported by this exchange
+            return None
+
+        # Terminal status reached — report it
+        return OrderResult(
+            account_id=account.account_id,
+            status=new_status,
+            signal_id="",
+            broker_order_id=broker_order_id,
+            filled_quantity=filled if filled and filled > 0 else None,
+            filled_price=order.get("average") or order.get("price"),
+            message=f"ccxt order status={ccxt_status!r}",
+        )
+
+    async def find_order_by_client_id(self, account: DestinationAccount, client_order_id: str) -> str | None:
+        """Look up an order by its client-assigned id.
+
+        Returns the broker_order_id if found, or None if not found or lookup fails.
+        Not all exchanges support client order id lookup; this returns None for
+        exchanges that don't support it.
+        """
+        exchange = self._exchange_for(account)
+        try:
+            # Some exchanges support fetch_order_by_client_id directly
+            if hasattr(exchange, 'fetch_order_by_client_id'):
+                order = await exchange.fetch_order_by_client_id(client_order_id)
+                return str(order.get("id"))
+            else:
+                # Fallback: return None for exchanges without fetch_order_by_client_id
+                # Searching through open orders would require the symbol, which we don't have
+                return None
+        except Exception:  # noqa: BLE001 - network error or not supported
+            return None
+
+    def normalize_quantity(self, account: DestinationAccount, symbol: str, quantity: float) -> float | None:
+        """Normalize quantity to market's precision/limits, or return None if unknown."""
+        import math
+        try:
+            exchange = self._exchange_for(account)
+            if not exchange.markets or symbol not in exchange.markets:
+                return None
+            market = exchange.markets[symbol]
+            precision = market.get("precision", {}) or {}
+            amount_precision = precision.get("amount")
+            if amount_precision is None:
+                return None
+            step = 10 ** (-amount_precision)
+            normalized = math.floor(quantity / step) * step
+            return max(0.0, normalized)
+        except Exception:
+            return None
+
+    async def cancel_order(
+        self, account: DestinationAccount, broker_order_id: str, symbol: str | None = None
+    ) -> bool:
+        """C-09: Cancel an order and verify via fetch_order.
+
+        Returns True only if the order status is confirmed as 'canceled' after
+        the cancel request. Treat the cancel ack as "requested," not "done."
+        """
+        exchange = self._exchange_for(account)
+        # Prefer the passed symbol parameter (from lifecycle manager) over the cached one
+        # to ensure we use the most current symbol information
+        if symbol is None:
+            symbol = self._order_symbols.get(broker_order_id)
         try:
             if symbol is not None:
                 await exchange.cancel_order(broker_order_id, symbol)
@@ -260,9 +387,28 @@ class CCXTBroker(BrokerAdapter):
                 await exchange.cancel_order(broker_order_id)
         except Exception:  # noqa: BLE001 - already filled/gone, or genuinely unsupported — either way, not a confirmed cancel
             return False
-        return True
+
+        # C-09: Don't trust the cancel ack alone; re-fetch the order to confirm
+        # it reached the 'canceled' status (not just pending cancellation).
+        # If fetch_order isn't available, can't confirm — fail closed.
+        if not hasattr(exchange, 'fetch_order'):
+            return False
+        try:
+            if symbol is not None:
+                order = await exchange.fetch_order(broker_order_id, symbol)
+            else:
+                order = await exchange.fetch_order(broker_order_id)
+            return order.get("status") == "canceled"
+        except Exception:  # noqa: BLE001 - fetch failed; can't confirm
+            return False
 
     async def get_broker_position(self, account: DestinationAccount, symbol: str) -> float | None:
+        """C-16: Query broker position, failing closed on spot markets.
+
+        For spot markets (where fetch_positions isn't applicable), return None
+        instead of 0.0 — None signals "unable to determine," not "definitely flat."
+        For derivatives (swap/future), return the actual position quantity.
+        """
         exchange = self._exchange_for(account)
         try:
             positions = await exchange.fetch_positions([symbol])
@@ -276,7 +422,23 @@ class CCXTBroker(BrokerAdapter):
             if contracts is None:
                 continue
             return -contracts if position.get("side") == "short" else contracts
-        return 0.0  # no open position found for this symbol
+
+        # C-16: No position found for this symbol. Check if this is a spot market
+        # (where fetch_positions doesn't apply). Spot holdings are not "positions"
+        # in ccxt's derivatives sense, so empty result doesn't mean flat — it means
+        # the concept doesn't apply. Return None, not 0.0.
+        try:
+            markets = getattr(exchange, 'markets', None)
+            if markets and symbol in markets:
+                market = markets[symbol]
+                market_type = market.get("type")
+                # Only return 0.0 for derivative types where "no position" = flat
+                if market_type in ("swap", "future"):
+                    return 0.0
+        except Exception:  # noqa: BLE001 - can't determine market type; play it safe
+            pass
+        # For spot or unknown types, return None (unknown, not flat)
+        return None
 
     async def get_last_price(self, account: DestinationAccount, symbol: str) -> float | None:
         exchange = self._exchange_for(account)

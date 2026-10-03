@@ -98,7 +98,7 @@ def test_verify_handshake_echoes_challenge_for_the_correct_token(client, monkeyp
 
 def test_ingress_fails_closed_with_no_app_secret_configured(client):
     with client:
-        response = _signed_post(client, _text_message_payload(from_number="15550001111", body="AAPL buy"))
+        response = _signed_post(client, _text_message_payload(from_number="15550001111", body="BUY AAPL"))
     assert response.status_code == 503
     assert "WHATSAPP_APP_SECRET" in response.json()["detail"]
 
@@ -107,7 +107,7 @@ def test_ingress_fails_closed_with_no_authorized_senders_configured(client, monk
     monkeypatch.setattr(app_config, "WHATSAPP_APP_SECRET", APP_SECRET)
     monkeypatch.setattr(app_config, "WHATSAPP_ALLOWED_FROM_NUMBERS", [])
     with client:
-        response = _signed_post(client, _text_message_payload(from_number="15550001111", body="AAPL buy"))
+        response = _signed_post(client, _text_message_payload(from_number="15550001111", body="BUY AAPL"))
     assert response.status_code == 503
     assert "WHATSAPP_ALLOWED_FROM_NUMBERS" in response.json()["detail"]
 
@@ -117,7 +117,7 @@ def test_ingress_rejects_an_invalid_signature(client, monkeypatch):
     monkeypatch.setattr(app_config, "WHATSAPP_ALLOWED_FROM_NUMBERS", ["15550001111"])
     with client:
         response = _signed_post(
-            client, _text_message_payload(from_number="15550001111", body="AAPL buy"), secret="wrong-secret"
+            client, _text_message_payload(from_number="15550001111", body="BUY AAPL"), secret="wrong-secret"
         )
     assert response.status_code == 401
 
@@ -136,7 +136,7 @@ def test_a_genuine_but_unauthorized_sender_is_skipped_not_rejected(client, monke
             # deleted, since an unparseable body is skipped for an
             # unrelated reason either way.
             client,
-            _text_message_payload(from_number="15550001111", body="AAPL buy 5"),  # not the allow-listed number
+            _text_message_payload(from_number="15550001111", body="BUY AAPL 5"),  # not the allow-listed number
         )
     assert response.status_code == 200
     assert response.json()["processed"] == 0
@@ -147,7 +147,7 @@ def test_ingress_accepts_an_authorized_sender(client, monkeypatch):
     monkeypatch.setattr(app_config, "WHATSAPP_ALLOWED_FROM_NUMBERS", ["15550001111"])
     with client:
         response = _signed_post(
-            client, _text_message_payload(from_number="15550001111", body="AAPL buy 5")
+            client, _text_message_payload(from_number="15550001111", body="BUY AAPL 5")
         )
     assert response.status_code == 200
     assert response.json()["processed"] == 1
@@ -182,7 +182,7 @@ def test_a_status_only_delivery_with_no_messages_is_a_no_op(client, monkeypatch)
 def test_a_redelivered_message_is_not_processed_twice(client, monkeypatch):
     monkeypatch.setattr(app_config, "WHATSAPP_APP_SECRET", APP_SECRET)
     monkeypatch.setattr(app_config, "WHATSAPP_ALLOWED_FROM_NUMBERS", ["15550001111"])
-    payload = _text_message_payload(from_number="15550001111", body="AAPL buy 5", message_id="wamid.DUP1")
+    payload = _text_message_payload(from_number="15550001111", body="BUY AAPL 5", message_id="wamid.DUP1")
     with client:
         first = _signed_post(client, payload)
         second = _signed_post(client, payload)  # Meta redelivering the exact same message id

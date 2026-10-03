@@ -41,7 +41,7 @@ from app.capital_allocator import CapitalAllocator
 from app.db import SignalStore
 from app.export_events import build_execution_applied_envelope
 from app.lifecycle.manager import PositionLifecycleManager
-from app.models import AssetClass, DestinationAccount, OrderResult, OrderStatus, Side
+from app.models import AssetClass, CommandType, DestinationAccount, OrderResult, OrderStatus, Side, UncertaintyState
 
 logger = logging.getLogger(__name__)
 
@@ -158,6 +158,10 @@ class OrderReconciler:
                 )
                 continue
 
+            # WP-27: E-07 ensure executed_at is set for export events
+            if result is not None and result.status == OrderStatus.FILLED and result.executed_at is None:
+                result.executed_at = datetime.now(timezone.utc)
+
             if result is None or result.status == OrderStatus.PENDING:
                 # Still open on the broker's side. A PENDING result here can
                 # carry partial-fill progress (see AlpacaBroker/IBKRBroker's
@@ -225,9 +229,15 @@ class OrderReconciler:
                     self._export_lifecycle_resolved_fill(order, account, export_side, lifecycle.plan.asset_class, result)
             corrected += 1
 
+        # D-01: Poll bracket child leg orders (stop/take-profit exits)
+        corrected += await self._reconcile_pending_child_orders()
         corrected += await self._reconcile_pending_exits()
         corrected += await self._reconcile_pending_entries()
+        corrected += await self._reconcile_unknown_submissions()
         if self.lifecycle_manager is not None:
+            # WP-23 D-14: resolve old lost entries (pending with no order id,
+            # broker_owned == 0, age > LOST_ENTRY_GRACE_SECONDS)
+            corrected += await self._resolve_lost_entries()
             # PRO-04: retry protection for any owned-but-unprotected
             # lifecycle every pass, independent of whether a new fill
             # increment ever arrives to trigger it otherwise.
@@ -246,6 +256,167 @@ class OrderReconciler:
             # for its own current position can.
             corrected += await self._reconcile_broker_positions()
         return corrected
+
+    async def _reconcile_pending_child_orders(self) -> int:
+        """D-01: Poll bracket child leg orders (stop/take_profit) for
+        plain accounts. When a child order fills, apply the exit to
+        positions and potentially cancel the sibling if still open."""
+        corrected = 0
+        for child_order in self.store.list_pending_child_orders():
+
+            broker = self.brokers.get(child_order["broker"])
+            if broker is None:
+                continue
+
+            account = DestinationAccount(
+                account_id=child_order["account_id"], broker=child_order["broker"]
+            )
+            try:
+                result = await broker.get_order_status(account, child_order["broker_order_id"])
+            except Exception:  # noqa: BLE001 - one broker's failure must not block the rest
+                logger.exception(
+                    "get_order_status failed for child order account=%s order=%s",
+                    child_order["account_id"],
+                    child_order["id"],
+                )
+                continue
+
+            if result is None or result.status == OrderStatus.PENDING:
+                # Still open on the broker's side
+                continue
+
+            # Child order reached a terminal status -- update the row
+            # and handle fills by applying to positions
+            self.store.update_order_status(child_order["id"], result)
+
+            if result.status == OrderStatus.FILLED:
+                # Apply the child exit fill to positions
+                # Child orders are exits (opposite side of the entry)
+                # Get the quantity from the child order's requested_quantity
+                filled_quantity = result.filled_quantity or child_order["requested_quantity"]
+
+                # Determine the exit side (opposite of the entry side)
+                entry_side = Side(child_order["entry_side"])
+                exit_side = Side.SELL if entry_side == Side.BUY else Side.BUY
+
+                # Record the fill to correct positions
+                self.store.record_fill(
+                    child_order["account_id"],
+                    child_order["symbol"],
+                    exit_side,
+                    filled_quantity,
+                )
+
+                # Find and potentially cancel the sibling child order
+                # (e.g., if stop filled, cancel the take-profit)
+                sibling_purpose = (
+                    "target_exit" if child_order["purpose"] == "stop_exit" else "stop_exit"
+                )
+                with self.store._connect() as conn:
+                    sibling_orders = conn.execute(
+                        """SELECT id, broker_order_id FROM orders
+                           WHERE family_id = ? AND purpose = ? AND status = 'pending'""",
+                        (child_order["family_id"], sibling_purpose),
+                    ).fetchall()
+
+                for sibling in sibling_orders:
+                    try:
+                        cancel_success = await broker.cancel_order(account, sibling[1])
+                        if cancel_success:
+                            # Update the sibling status to rejected
+                            cancel_result = OrderResult(
+                                account_id=child_order["account_id"],
+                                status=OrderStatus.REJECTED,
+                                signal_id="",
+                                broker_order_id=sibling[1],
+                                message="cancelled because sibling child order filled",
+                            )
+                            self.store.update_order_status(sibling[0], cancel_result)
+                    except Exception:  # noqa: BLE001 - one broker's failure must not block the rest
+                        logger.exception(
+                            "cancel_order failed for sibling order account=%s order=%s",
+                            child_order["account_id"],
+                            sibling[1],
+                        )
+
+            corrected += 1
+
+        return corrected
+    async def _resolve_lost_entries(self) -> int:
+        """WP-23 D-14: resolve pending entries that have no order ID, no broker
+        ownership, and have exceeded the grace period (LOST_ENTRY_GRACE_SECONDS).
+        These are lost-response entries that never reached the venue and should
+        be auto-resolved to allow the account/symbol to be used again."""
+        from app import config
+
+        assert self.lifecycle_manager is not None  # only caller checks this
+        resolved = 0
+
+        for account_id, symbol, broker_name, pending in self.lifecycle_manager.list_pending_entries():
+            # Only handle entries with no broker_order_id (lost-response case)
+            if pending.broker_order_id is not None:
+                continue
+
+            # Check if this entry has been pending for longer than the grace period
+            lifecycle = self.lifecycle_manager.get_lifecycle(account_id, symbol)
+            if lifecycle is None or lifecycle.pending_entry is None:
+                continue
+
+            # Try to get the entry order's created_at time from the orders table
+            # to determine if it has exceeded the grace period
+            broker = self.brokers.get(broker_name)
+            if broker is None:
+                continue
+
+            account = DestinationAccount(account_id=account_id, broker=broker_name)
+
+            # Check broker position: only resolve if broker_owned == 0
+            try:
+                broker_owned = await broker.get_broker_position(account, symbol)
+            except Exception:
+                logger.exception(
+                    "get_broker_position failed checking lost entry for account=%s symbol=%s",
+                    account_id,
+                    symbol,
+                )
+                continue
+
+            if broker_owned is not None and broker_owned != 0:
+                continue  # Entry may still be filling, don't resolve yet
+
+            # Get the entry order from the orders table to check its age
+            # Look for the most recent entry order for this account/symbol
+            entry_orders = self.store.list_orders_for_signal(lifecycle.plan.entry_signal_id)
+            if not entry_orders:
+                # No order row found; can't determine age reliably
+                continue
+
+            entry_order = entry_orders[0]  # Most recent
+            try:
+                created_at = datetime.fromisoformat(entry_order["created_at"])
+                age_seconds = (datetime.now(timezone.utc) - created_at.replace(tzinfo=timezone.utc)).total_seconds()
+
+                if age_seconds > config.LOST_ENTRY_GRACE_SECONDS:
+                    logger.warning(
+                        "resolving lost entry for account=%s symbol=%s (age=%.0f s, grace=%.0f s)",
+                        account_id,
+                        symbol,
+                        age_seconds,
+                        config.LOST_ENTRY_GRACE_SECONDS,
+                    )
+                    await self.lifecycle_manager.resolve_pending_entry(
+                        account, symbol, 0.0, remainder_cancelled=True
+                    )
+                    resolved += 1
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "error checking age of lost entry for account=%s symbol=%s",
+                    account_id,
+                    symbol,
+                )
+                continue
+
+        return resolved
 
     async def _reconcile_broker_positions(self) -> int:
         assert self.lifecycle_manager is not None  # only caller (reconcile_once) checks this first
@@ -278,6 +449,22 @@ class OrderReconciler:
             if broker_owned is None:
                 continue  # genuinely unknown -- never treated as confirming zero
 
+            # WP-03: convert broker readback to lifecycle's own orientation.
+            # Broker returns signed quantity (negative for short); lifecycle
+            # always tracks positive owned quantity. For SELL positions
+            # (shorts), invert the sign to match.
+            broker_owned_abs = -broker_owned if lifecycle.plan.side == Side.SELL else broker_owned
+            if broker_owned_abs < 0:
+                # Venue holds the OPPOSITE side of what the plan expects
+                logger.warning(
+                    "broker position readback for account=%s symbol=%s returned opposite side (venue: %s, plan: %s)",
+                    lifecycle.plan.account_id,
+                    lifecycle.plan.symbol,
+                    broker_owned,
+                    "short" if broker_owned < 0 else "long",
+                )
+                continue
+
             if exit_has_no_order_id_to_poll:
                 # Exit-side counterpart of the entry branch below: a
                 # request_exit whose place_order response was lost has no
@@ -290,7 +477,7 @@ class OrderReconciler:
                 pending = lifecycle.pending_exit
                 assert pending is not None  # exit_has_no_order_id_to_poll guarantees this
                 filled = min(
-                    max(0.0, lifecycle.confirmed_owned_quantity - broker_owned), pending.requested_quantity
+                    max(0.0, lifecycle.confirmed_owned_quantity - broker_owned_abs), pending.requested_quantity
                 )
                 await self.lifecycle_manager.resolve_pending_exit(
                     account, lifecycle.plan.symbol, filled, remainder_cancelled=True
@@ -309,17 +496,70 @@ class OrderReconciler:
                 lifecycle.pending_entry is not None
                 and lifecycle.pending_entry.broker_order_id is None
                 and not lifecycle.pending_entry.remainder_resolved
-                and broker_owned > 0
+                and broker_owned_abs > 0
             ):
                 await self.lifecycle_manager.resolve_pending_entry(
-                    account, lifecycle.plan.symbol, broker_owned, remainder_cancelled=True
+                    account, lifecycle.plan.symbol, broker_owned_abs, remainder_cancelled=True
                 )
                 corrected += 1
                 continue
 
-            deficit = lifecycle.confirmed_owned_quantity - broker_owned
+            deficit = lifecycle.confirmed_owned_quantity - broker_owned_abs
+
+            # WP-23 D-16: handle venue > tracked adoption
+            if deficit < -1e-9:
+                # The venue owns MORE than we're tracking: adopt the difference
+                # as owned and re-protect (log + TODO WP-34 alert)
+                adopted_quantity = broker_owned_abs - lifecycle.confirmed_owned_quantity
+                logger.warning(
+                    "adopting additional quantity from venue for account=%s symbol=%s: "
+                    "venue owns %.6f but tracked %.6f, adopting difference %.6f",
+                    lifecycle.plan.account_id,
+                    lifecycle.plan.symbol,
+                    broker_owned_abs,
+                    lifecycle.confirmed_owned_quantity,
+                    adopted_quantity,
+                )
+                # TODO: WP-34 alert for venue > tracked adoption
+                await self.lifecycle_manager.adopt_venue_ownership(
+                    account, lifecycle.plan.symbol, broker_owned_abs
+                )
+                corrected += 1
+                continue
+
             if deficit <= 1e-9:
                 continue  # matches (or the venue reports MORE than tracked -- a different, unmodeled anomaly)
+
+            # WP-19: Poll the stop before attributing a deficit to a stop fill.
+            # If the stop has a broker_order_id, check its real status first.
+            if lifecycle.stop.broker_order_id is not None:
+                try:
+                    stop_status = await broker.get_order_status(account, lifecycle.stop.broker_order_id)
+                except Exception:
+                    logger.exception(
+                        "get_order_status failed for stop order account=%s symbol=%s broker_order_id=%s",
+                        account.account_id,
+                        lifecycle.plan.symbol,
+                        lifecycle.stop.broker_order_id,
+                    )
+                    stop_status = None
+
+                # If the stop is FILLED, route the venue's filled quantity through on_stop_filled
+                if stop_status is not None and stop_status.status == OrderStatus.FILLED:
+                    filled_qty = stop_status.filled_quantity if stop_status.filled_quantity is not None else lifecycle.stop.protected_quantity
+                    await self.lifecycle_manager.on_stop_filled(
+                        account,
+                        lifecycle.plan.symbol,
+                        filled_quantity=filled_qty,
+                        filled_price=stop_status.filled_price,
+                    )
+                    corrected += 1
+                    continue
+
+                # Stop is not filled but there's a deficit: resize/cancel the stop first
+                await self.lifecycle_manager.resize_stop_to_owned(account, lifecycle.plan.symbol, broker_owned_abs)
+
+            # Apply the correction (if no stop to resize, or after resizing/cancelling)
             await self.lifecycle_manager.on_stop_filled(account, lifecycle.plan.symbol, filled_quantity=deficit)
             corrected += 1
         return corrected
@@ -419,8 +659,87 @@ class OrderReconciler:
             if not is_terminal and filled <= pending.confirmed_filled_quantity:
                 continue  # a repeated observation of the same progress -- nothing new to act on
 
-            await self.lifecycle_manager.resolve_pending_exit(account, symbol, filled, remainder_cancelled=is_terminal)
+            await self.lifecycle_manager.resolve_pending_exit(
+                account, symbol, filled, remainder_cancelled=is_terminal, filled_price=result.filled_price
+            )
             resolved += 1
+
+        return resolved
+
+    async def _reconcile_unknown_submissions(self) -> int:
+        """Resolve UNKNOWN_AMBIGUOUS command ledger entries by attempting to
+        look up the submitted order at its broker using the client_order_id
+        (the command ledger's idempotency key).
+
+        Returns how many entries were resolved (either confirmed as placed or
+        rejected as not placed).
+        """
+        resolved = 0
+        for ledger_entry in self.store.list_unresolved_command_ledger_entries():
+            # Only process ENTRY commands in UNKNOWN_AMBIGUOUS state
+            if (
+                ledger_entry.command_type != CommandType.ENTRY
+                or ledger_entry.uncertainty_state != UncertaintyState.UNKNOWN_AMBIGUOUS
+            ):
+                continue
+
+            # The idempotency key is the client_order_id we assigned before submission
+            client_order_id = ledger_entry.idempotency_key
+            account_id = ledger_entry.account_id
+            terminal_evidence = ledger_entry.terminal_evidence or {}
+
+            # Try each broker that has client_id lookup capability
+            order_found = False
+            for broker_name, broker in self.brokers.items():
+                if not broker.has_client_id_lookup_capability:
+                    continue
+
+                account = DestinationAccount(account_id=account_id, broker=broker_name)
+                try:
+                    broker_order_id = await broker.find_order_by_client_id(account, client_order_id)
+                    if broker_order_id is not None:
+                        # Order found at this broker -- mark as confirmed
+                        self.store.mark_command_ledger_outcome(
+                            client_order_id,
+                            uncertainty_state=UncertaintyState.CONFIRMED,
+                            terminal_evidence={
+                                **terminal_evidence,
+                                "resolution": "found_at_broker",
+                                "broker": broker_name,
+                            },
+                            remote_identifiers={"broker_order_id": broker_order_id},
+                        )
+                        order_found = True
+                        resolved += 1
+                        break
+                except Exception:  # noqa: BLE001 - one broker's lookup failure must not block the rest
+                    logger.exception(
+                        "find_order_by_client_id failed for account=%s client_order_id=%s",
+                        account_id,
+                        client_order_id,
+                    )
+                    continue
+
+            if not order_found:
+                # Order not found at any broker -- mark as rejected and release capital
+                self.store.mark_command_ledger_outcome(
+                    client_order_id,
+                    uncertainty_state=UncertaintyState.REJECTED_CONFIRMED,
+                    terminal_evidence={
+                        **terminal_evidence,
+                        "resolution": "not_placed",
+                    },
+                )
+                # Release the capital reservation since the order was not placed
+                if self.capital_allocator is not None:
+                    reserved_notional = terminal_evidence.get("reserved_notional", 0.0)
+                    if reserved_notional > 0:
+                        self.capital_allocator.release(
+                            account_id,
+                            reserved_notional,
+                            signal_id=terminal_evidence.get("signal_id"),
+                        )
+                resolved += 1
 
         return resolved
 
@@ -479,7 +798,20 @@ class OrderReconciler:
             signed_delta = delta if side == Side.BUY else -delta
             confirmed_cumulative_fill = actual_quantity
         elif new_status == OrderStatus.FILLED:
-            actual_quantity = confirmed_quantity if confirmed_quantity is not None else optimistic_quantity
+            # WP-04: adapter reported FILLED but omitted filled_quantity.
+            # Fall back to requested_quantity (mirroring app/engine.py:1285),
+            # then to optimistic_quantity if requested_quantity is also None.
+            if confirmed_quantity is not None:
+                actual_quantity = confirmed_quantity
+            elif order.get("requested_quantity") is not None:
+                actual_quantity = order["requested_quantity"]
+                logger.warning(
+                    "adapter reported FILLED without filled_quantity for order=%s; using requested_quantity=%s",
+                    order["id"],
+                    actual_quantity,
+                )
+            else:
+                actual_quantity = optimistic_quantity
             delta = actual_quantity - optimistic_quantity
             signed_delta = delta if side == Side.BUY else -delta
             confirmed_cumulative_fill = actual_quantity
@@ -586,4 +918,4 @@ class OrderReconciler:
         allowed to release it."""
         reserved_notional = order.get("reserved_notional")
         if self.capital_allocator is not None and reserved_notional:
-            self.capital_allocator.release(order["account_id"], reserved_notional)
+            self.capital_allocator.release(order["account_id"], reserved_notional, signal_id=order.get("signal_id"))

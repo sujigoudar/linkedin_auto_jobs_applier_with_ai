@@ -27,6 +27,13 @@ def client(tmp_path, monkeypatch):
     # app actually land in the same store the CRUD endpoints (and this
     # fixture's assertions) read from.
     monkeypatch.setattr(main_module.engine, "store", store)
+    # Also reset the capital allocator's store and pending reservations
+    monkeypatch.setattr(main_module.engine.capital_allocator, "store", store)
+    main_module.engine.capital_allocator._pending.clear()
+    main_module.engine.capital_allocator._locks.clear()
+    # Also reset the daily_loss_limiter's store and brokers (it's recreated with the engine)
+    monkeypatch.setattr(main_module.engine.daily_loss_limiter, "store", store)
+    monkeypatch.setattr(main_module.engine.daily_loss_limiter, "brokers", main_module.engine.brokers)
     # start every test from a clean slate regardless of what earlier tests
     # (or a real config/*.yaml seed) left in the shared module-level objects
     main_module.routing_config.accounts.clear()
@@ -155,6 +162,7 @@ def test_deleting_a_routing_rule_stops_routing_to_it(client):
     assert response.json()["orders"] == []
 
 
+@pytest.mark.scenario("ING-004")
 def test_provider_override_created_via_api_applies_to_the_next_signal(client):
     with client:
         client.post("/accounts", json={"account_id": "acct1", "broker": "paper", "multiplier": 1.0})
@@ -174,6 +182,7 @@ def test_provider_override_created_via_api_applies_to_the_next_signal(client):
     assert positions[0]["net_quantity"] == 25.0
 
 
+@pytest.mark.scenario("ING-005")
 def test_analyst_override_created_via_api_wins_over_provider(client):
     with client:
         client.post("/accounts", json={"account_id": "acct1", "broker": "paper"})

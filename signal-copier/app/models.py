@@ -19,6 +19,30 @@ class Side(str, enum.Enum):
     CLOSE = "close"
 
 
+class Intent(str, enum.Enum):
+    """Signal intent — why a side was chosen, and what execution behavior is expected.
+
+    ENTRY_LONG: Open a long position
+    ENTRY_SHORT: Open a short position (sell to open)
+    SELL: Exit a long position
+    EXIT: Close all existing positions (intent-agnostic)
+    REDUCE: Reduce position size by a fraction (reduce_fraction applies)
+    STOP_UPDATE: Update a protective stop on existing position
+    TARGET_UPDATE: Update or add a profit target
+    CANCEL: Cancel a pending order or reduce an open position
+    ADD: Add to an existing position
+    """
+    ENTRY_LONG = "entry_long"
+    ENTRY_SHORT = "entry_short"
+    SELL = "sell"
+    EXIT = "exit"
+    REDUCE = "reduce"
+    STOP_UPDATE = "stop_update"
+    TARGET_UPDATE = "target_update"
+    CANCEL = "cancel"
+    ADD = "add"
+
+
 class AssetClass(str, enum.Enum):
     CRYPTO = "crypto"
     FOREX = "forex"
@@ -186,10 +210,33 @@ class Signal:
     #: A confidence/strategy tag, set ONLY when the source actually
     #: supplied or qualified one -- never fabricated.
     confidence: Optional[str] = None
+    #: Signal intent — why this side was chosen and what execution behavior
+    #: is expected. `None` means intent will be derived from `side` in __post_init__.
+    intent: Optional[Intent] = None
+    #: Fraction (0 < x <= 1) of current position to reduce when intent is REDUCE.
+    #: E.g., 0.5 for half, 0.25 for trim 25%. `None` for non-reduce intents.
+    reduce_fraction: Optional[float] = None
     option: Optional["OptionContractSpec"] = None
     future: Optional["FutureContractSpec"] = None
     fx: Optional["FxContractSpec"] = None
     crypto_derivative: Optional["CryptoDerivativeSpec"] = None
+    #: Client-assigned order id for broker-side deduplication. Set by the
+    #: engine before submitting to a broker to enable idempotent order
+    #: submission. None when not yet set (before submission).
+    client_order_id: Optional[str] = None
+
+    # -- D-12: Trailing stops and time exits reachable from signals ------
+
+    #: D-12: Trailing stop amount (absolute price delta, e.g. 2.5 means trail
+    #: 2.5 points below the high). Mutually exclusive with trail_percent.
+    #: `None` means no trailing stop configured on this signal.
+    trail_amount: Optional[float] = None
+    #: D-12: Trailing stop percentage (e.g. 0.02 means trail 2% below the high).
+    #: Mutually exclusive with trail_amount. `None` means no trailing stop.
+    trail_percent: Optional[float] = None
+    #: D-12: Time-based exit time (when to automatically close this position).
+    #: `None` means no time-based exit configured on this signal.
+    time_exit_at: Optional[datetime] = None
 
     # -- Provider message identity / revision / provenance --------------
 
@@ -271,6 +318,16 @@ class Signal:
             self.asset_class = AssetClass(self.asset_class.lower())
         if isinstance(self.entry_order_type, str):
             self.entry_order_type = EntryOrderType(self.entry_order_type.lower())
+        if isinstance(self.intent, str):
+            self.intent = Intent(self.intent.lower())
+        # Derive intent from side if not explicitly set
+        if self.intent is None:
+            if self.side == Side.BUY:
+                self.intent = Intent.ENTRY_LONG
+            elif self.side == Side.SELL:
+                self.intent = Intent.SELL
+            elif self.side == Side.CLOSE:
+                self.intent = Intent.EXIT
 
 
 class SourceEventKind(str, enum.Enum):
@@ -354,6 +411,13 @@ class OrderResult:
     filled_quantity: Optional[float] = None
     filled_price: Optional[float] = None
     message: str = ""
+    # E-07: `executed_at` is the broker's fill timestamp when the adapter
+    # reports one; otherwise the instant this result was built (the public
+    # contract every exporter and journal reader relies on -- never None).
+    # A reconciliation update keeps a stored fill time rather than
+    # overwriting it with the poll time (see db.py's
+    # `_update_order_status_locked`, which records the poll instant in
+    # `orders.confirmed_at` instead).
     executed_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     #: Broker commission/fee for this order, in account currency.
     #: None when this broker doesn't report fees or this order wasn't filled.
@@ -365,6 +429,18 @@ class OrderResult:
     #: actual fill value (* quantity). Positive = slippage against the trade.
     #: None when this broker doesn't report slippage data.
     slippage: Optional[float] = None
+    #: E-11: Currency in which filled_price is quoted for this order
+    #: (ISO 4217 code, e.g., 'USD', 'JPY', 'EUR', 'BTC'). NULL when the
+    #: adapter doesn't report it or this order wasn't filled. Never guessed
+    #: from symbol syntax — must come from the broker or adapter's own
+    #: instrumentation data. See app/models.py's DestinationAccount.currency
+    #: for the account's base currency (distinct from each order's individual
+    #: price currency).
+    price_currency: Optional[str] = None
+    #: D-01: Bracket child leg order IDs, keyed by type ('stop', 'take_profit').
+    #: Populated by adapters that support native bracket orders. Used to track
+    #: and poll child legs for plain accounts.
+    child_order_ids: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -396,6 +472,12 @@ class AccountBalance:
     #: Margin currently held against open positions, if this is a margin
     #: account and the broker reports it.
     maintenance_margin: Optional[float] = None
+    #: E-11: Base currency for this account (ISO 4217 code, e.g., 'USD',
+    #: 'EUR', 'JPY'). The currency in which cash, equity, buying_power,
+    #: and maintenance_margin are expressed. NULL when the broker doesn't
+    #: report it. See DestinationAccount.currency for the operator's
+    #: configuration of the same fact.
+    currency: Optional[str] = None
 
     def to_dict(self) -> dict:
         return {
@@ -404,6 +486,7 @@ class AccountBalance:
             "equity": self.equity,
             "buying_power": self.buying_power,
             "maintenance_margin": self.maintenance_margin,
+            "currency": self.currency,
         }
 
 
@@ -616,6 +699,13 @@ class CommandLedgerEntry:
     remote_identifiers: dict[str, Any] = field(default_factory=dict)
     terminal_evidence: dict[str, Any] = field(default_factory=dict)
     resolved_at: Optional[datetime] = None
+    #: Not persisted. True only on the entry returned by the
+    #: `open_command_ledger_entry` call that INSERTED this row; False when
+    #: that call found an existing row for the same idempotency key. Lets a
+    #: caller tell "I am the first attempt" from "an earlier attempt (maybe a
+    #: crashed or concurrent one) already wrote its intent" even while the
+    #: row is still `PENDING_SUBMISSION`.
+    newly_opened: bool = False
 
     @property
     def is_resolved(self) -> bool:
@@ -707,6 +797,46 @@ class DestinationAccount:
     #: are rejected if account equity would fall below this level. `None`
     #: (the default) disables this check. See app/daily_loss_limiter.py.
     min_equity_threshold: Optional[float] = None
+    #: E-11/B-10: Base currency for this account (ISO 4217 code, e.g.,
+    #: 'USD', 'EUR', 'JPY'). Used for multi-currency support: the currency
+    #: in which cash, equity, and P&L are expressed. `None` means not
+    #: declared; operators must explicitly configure this when trading
+    #: multiple currencies on the same account. See OrderResult.price_currency
+    #: for each individual order's price currency (distinct from the account
+    #: base currency).
+    currency: Optional[str] = None
+    #: B-11: an opt-in maximum gross leverage ceiling for this account
+    #: (e.g., 1.0 = no leverage, 1.25 = 25% leverage allowed, 2.0 = 200%
+    #: leverage allowed). When set, the sum of confirmed, pending, and new
+    #: notional exposure is refused if it would exceed
+    #: max_gross_leverage × (equity − maintenance_margin). `None` (the
+    #: default) means no leverage limit is enforced. See app/capital_allocator.py.
+    max_gross_leverage: Optional[float] = None
+    #: B-14: Whether this account is allowed to open short positions. When
+    #: False (the default for equity/cash accounts), a SELL entry on a flat
+    #: account is rejected, and a SELL entry on an existing long is treated
+    #: as a close/reduce-only against the tracked long position. When True,
+    #: a SELL entry behaves as a new short-side entry (the legacy behavior).
+    allow_short: bool = False
+    #: WP-38 (G-C-13): the EvidenceClass value (e.g., "INTERNAL_PAPER",
+    #: "OBSERVED_OWNER_LIVE") to export for this account's events.
+    #: `None` (the default) means use the global config.RELAY_EVIDENCE_CLASS.
+    evidence_class: Optional[str] = None
+    #: WP-38 (G-C-24): monotonic counter for paper broker order IDs,
+    #: persisted per account to remain unique across restarts.
+    #: Only used when broker='paper'; None/unused for other brokers.
+    paper_order_id_sequence: Optional[int] = None
+    #: WP-16 (B-01): Position sizing mode for this account.
+    #: - "multiplier" (default): uses fixed_quantity if set, else signal.quantity * multiplier
+    #: - "fixed": uses fixed_quantity only, rejects if not set
+    #: - "risk_fraction": dynamic sizing based on risk fraction and stop loss
+    sizing_mode: str = "multiplier"
+    #: WP-16 (B-01): Risk fraction for dynamic risk-fraction sizing.
+    #: When sizing_mode="risk_fraction", quantity = floor(equity * risk_fraction / (|price - stop_loss| * multiplier)).
+    #: `None` (the default) means risk_fraction sizing is not available for this account.
+    #: B-01: for sizing_mode="risk_fraction", the fraction of account equity
+    #: to risk per trade (e.g., 0.01 for 1%). None means this mode is not in use.
+    risk_fraction: Optional[float] = None
 
     def __post_init__(self) -> None:
         if self.management_recipe is None:

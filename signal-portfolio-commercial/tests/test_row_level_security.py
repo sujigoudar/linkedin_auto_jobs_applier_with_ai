@@ -18,6 +18,7 @@ from app.models.publication import (
     Environment,
     PublicationAction,
     PublicationIntent,
+    PublicationSide,
     QuantityBasis,
 )
 from app.models.sleeve import Sleeve
@@ -215,6 +216,7 @@ def _seed_two_tenants_with_publication_data(db_session):
                 episode_id="ep-1",
                 revision=1,
                 action=PublicationAction.OPEN,
+                side=PublicationSide.BUY,
                 channel="collective2",
                 external_strategy_id=f"strategy-{suffix}",
                 instrument_id="AAPL",

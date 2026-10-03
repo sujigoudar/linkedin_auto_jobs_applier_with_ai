@@ -41,6 +41,8 @@ def broker():
 
 @pytest.mark.asyncio
 async def test_plain_order_has_no_bracket(broker, monkeypatch):
+    # C-18: Set the required IBKR account code
+    monkeypatch.setenv("IBKR_ACCT1_ACCOUNT", "DU12345")
     fake_ib = _FakeIB()
     monkeypatch.setattr(broker, "_connected_ib", lambda: _async_return(fake_ib))
 
@@ -56,9 +58,12 @@ async def test_plain_order_has_no_bracket(broker, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_plain_order_carries_the_exact_destination_account(broker, monkeypatch):
-    """ADP-05: a blank Order.account routes to whatever account is
+    """ADP-05 / C-18: a blank Order.account routes to whatever account is
     "current" on this gateway login -- a multi-account/FA gateway must
-    submit against the specific account this call names, not a default."""
+    submit against the specific account this call names, not a default.
+    C-18: Now uses explicit IBKR_ACCOUNT environment variable."""
+    # C-18: Set the explicit IBKR account code
+    monkeypatch.setenv("IBKR_DU_EXACT_ACCOUNT", "DU123456")
     fake_ib = _FakeIB()
     monkeypatch.setattr(broker, "_connected_ib", lambda: _async_return(fake_ib))
 
@@ -67,11 +72,15 @@ async def test_plain_order_carries_the_exact_destination_account(broker, monkeyp
         Signal(source="test", symbol="AAPL", side=Side.BUY), account, quantity=10.0, symbol="AAPL"
     )
 
-    assert fake_ib.placed[0].account == "DU_EXACT"
+    # C-18: Should use the explicit broker account code, not the local id
+    assert fake_ib.placed[0].account == "DU123456"
+    assert fake_ib.placed[0].account != "DU_EXACT"
 
 
 @pytest.mark.asyncio
 async def test_bracket_orders_all_carry_the_exact_destination_account(broker, monkeypatch):
+    # C-18: Set the explicit IBKR account code
+    monkeypatch.setenv("IBKR_DU_EXACT_ACCOUNT", "DU123456")
     fake_ib = _FakeIB()
     monkeypatch.setattr(broker, "_connected_ib", lambda: _async_return(fake_ib))
 
@@ -83,12 +92,15 @@ async def test_bracket_orders_all_carry_the_exact_destination_account(broker, mo
         symbol="AAPL",
     )
 
+    # C-18: All orders should use the explicit IBKR account code
     assert len(fake_ib.placed) == 3
-    assert all(order.account == "DU_EXACT" for order in fake_ib.placed)
+    assert all(order.account == "DU123456" for order in fake_ib.placed)
 
 
 @pytest.mark.asyncio
 async def test_both_sl_and_tp_builds_three_order_bracket(broker, monkeypatch):
+    # C-18: Set the required IBKR account code
+    monkeypatch.setenv("IBKR_ACCT1_ACCOUNT", "DU12345")
     fake_ib = _FakeIB()
     monkeypatch.setattr(broker, "_connected_ib", lambda: _async_return(fake_ib))
 
@@ -122,6 +134,8 @@ async def test_both_sl_and_tp_builds_three_order_bracket(broker, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_only_stop_loss_builds_two_order_bracket(broker, monkeypatch):
+    # C-18: Set the required IBKR account code
+    monkeypatch.setenv("IBKR_ACCT1_ACCOUNT", "DU12345")
     fake_ib = _FakeIB()
     monkeypatch.setattr(broker, "_connected_ib", lambda: _async_return(fake_ib))
 

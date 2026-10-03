@@ -52,10 +52,10 @@ async def test_plain_entry_records_entry_purpose_with_its_own_signal_as_family(s
 
 
 @pytest.mark.asyncio
-async def test_plain_close_records_close_purpose_with_no_known_family(store):
-    """A plain account has no tracked lifecycle linking a close back to
-    whichever entry fill(s) produced the position -- family_id must stay
-    honestly None, never guessed."""
+async def test_plain_close_records_close_purpose_with_entry_signal_family(store):
+    """WP-26: Plain closes now get a family_id from FIFO (the entry signal).
+    This links closes back to their opening signals even on plain (non-managed)
+    accounts, enabling strategy exposure tracking."""
     broker = PaperBroker()
     engine, account, _ = _plain_engine(store, broker)
 
@@ -66,7 +66,7 @@ async def test_plain_close_records_close_purpose_with_no_known_family(store):
 
     rows = store.list_recent_orders(account_id="acct1")
     close_row = next(r for r in rows if r["purpose"] == "close")
-    assert close_row["family_id"] is None
+    assert close_row["family_id"] == entry.id
 
 
 @pytest.mark.asyncio
@@ -83,7 +83,8 @@ async def test_plain_rejected_close_with_no_open_position_still_records_close_pu
 
 
 @pytest.mark.asyncio
-async def test_manual_flatten_plain_account_records_close_purpose(store):
+async def test_manual_flatten_plain_account_records_close_purpose_with_entry_family(store):
+    """WP-26: Manual flattens on plain accounts now record the entry's family_id."""
     broker = PaperBroker()
     engine, account, _ = _plain_engine(store, broker)
     entry = Signal(source="tradingview", symbol="AAPL", side=Side.BUY, quantity=10.0)
@@ -93,7 +94,7 @@ async def test_manual_flatten_plain_account_records_close_purpose(store):
 
     rows = store.list_recent_orders(account_id="acct1")
     assert rows[0]["purpose"] == "close"
-    assert rows[0]["family_id"] is None
+    assert rows[0]["family_id"] == entry.id
 
 
 # --- Managed-lifecycle account: real family linkage across entry -> close ---
@@ -317,8 +318,11 @@ async def test_paper_broker_reports_starting_cash_before_any_fill():
     assert balance is not None
     assert balance.cash == PaperBroker.STARTING_CASH
     assert balance.buying_power == PaperBroker.STARTING_CASH
-    assert balance.equity is None  # no live mark tracked -- honestly unknown, not fabricated as == cash
-    assert balance.maintenance_margin is None  # no margin concept modeled
+    # With no open position the simulator's equity IS its cash: a computed
+    # figure, not a mark. Equity only becomes None once an open position has
+    # no known price (see PaperBroker.get_account_balance).
+    assert balance.equity == PaperBroker.STARTING_CASH
+    assert balance.maintenance_margin == 0.0  # no shorts -> no maintenance requirement
 
 
 @pytest.mark.asyncio

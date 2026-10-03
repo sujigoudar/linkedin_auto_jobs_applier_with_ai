@@ -1,22 +1,33 @@
 """Daily loss limit enforcement with circuit breaker.
 
 Prevents trading when daily losses exceed configured ceiling for an account.
-Implements fail-closed: rejects new entries if daily loss limit breached.
+Implements fail-closed: rejects new entries if data cannot be verified.
+
+The daily_pnl table exists but is not yet populated (as of this release); therefore,
+the daily loss limiter fails closed when daily_loss_limit_percent is configured but
+the daily P&L data is unavailable. This prevents silent trading when risk controls
+cannot be verified.
+
+Min equity threshold checks use broker.get_account_balance() to fetch current equity.
 """
 from __future__ import annotations
 
 from datetime import date
-from typing import Optional
+from typing import Any, Optional
 
-from app.db import SignalStore
 from app.models import DestinationAccount
 
 
 class DailyLossLimiter:
-    """Enforces daily loss limits per account with circuit breaker logic."""
+    """Enforces daily loss limits per account with circuit breaker logic.
 
-    def __init__(self, store: SignalStore):
+    Daily loss limits fail closed when P&L data is unavailable.
+    Min equity threshold checks use broker adapters to fetch real account equity.
+    """
+
+    def __init__(self, store: Any, brokers: dict[str, Any] | None = None):
         self.store = store
+        self.brokers = brokers or {}
 
     async def check_daily_loss_limit(
         self, account: DestinationAccount, daily_loss_limit_percent: Optional[float]
@@ -28,25 +39,37 @@ class DailyLossLimiter:
             daily_loss_limit_percent: Maximum acceptable daily loss as percentage of equity (e.g., 5 for 5%)
 
         Returns:
-            None if within limit, error message (rejection reason) if limit exceeded
+            None if within limit, error message (rejection reason) if limit exceeded or data unavailable
         """
         if daily_loss_limit_percent is None or daily_loss_limit_percent <= 0:
             return None  # Daily loss limit not configured
 
         # Get today's P&L from account economics
         today = date.today()
-        daily_pnl = self.store.get_daily_pnl(account.account_id, today)
+        get_daily_pnl = getattr(self.store, "get_daily_pnl", None)
+        if get_daily_pnl is None:
+            # A limit IS configured but this build has no daily-P&L source
+            # (SignalStore.get_daily_pnl does not exist). Reject (fail
+            # closed) rather than raise out of signal handling or silently
+            # skip a configured circuit breaker.
+            return "Daily loss limit check failed: no daily P&L source is implemented in this build (failing closed)"
+        daily_pnl = get_daily_pnl(account.account_id, today)
 
         if daily_pnl is None:
             # No data yet for today
             return None
 
         # Get account balance to compute percentage
-        if account.broker not in self.store._broker_adapters:
+        # Look up broker in self.brokers first, then fall back to self.store._broker_adapters
+        broker = None
+        if account.broker in self.brokers:
+            broker = self.brokers[account.broker]
+        elif hasattr(self.store, "_broker_adapters") and account.broker in self.store._broker_adapters:
+            broker = self.store._broker_adapters[account.broker]  # type: ignore[attr-defined]
+
+        if broker is None:
             # No broker available, fail closed
             return "Daily loss limit check failed: no broker adapter available"
-
-        broker = self.store._broker_adapters[account.broker]
         try:
             balance = await broker.get_account_balance(account)
             if balance is None or balance.equity is None:
@@ -74,7 +97,7 @@ class DailyLossLimiter:
             daily_loss_limit_percent: Maximum acceptable daily loss as percentage of equity
 
         Returns:
-            True if trading is halted (daily loss limit exceeded)
+            True if trading is halted (daily loss limit exceeded or cannot be verified)
         """
         return await self.check_daily_loss_limit(account, daily_loss_limit_percent) is not None
 
@@ -99,11 +122,16 @@ class DailyLossLimiter:
             return None  # Min equity threshold not configured
 
         # Get current account balance to check equity
-        if account.broker not in self.store._broker_adapters:
+        # Look up broker in self.brokers first, then fall back to self.store._broker_adapters
+        broker = None
+        if account.broker in self.brokers:
+            broker = self.brokers[account.broker]
+        elif hasattr(self.store, "_broker_adapters") and account.broker in self.store._broker_adapters:
+            broker = self.store._broker_adapters[account.broker]  # type: ignore[attr-defined]
+
+        if broker is None:
             # No broker available, fail closed
             return "Min equity check failed: no broker adapter available"
-
-        broker = self.store._broker_adapters[account.broker]
         try:
             balance = await broker.get_account_balance(account)
             if balance is None or balance.equity is None:

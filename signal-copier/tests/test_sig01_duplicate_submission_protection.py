@@ -214,7 +214,7 @@ def test_twilio_redelivery_of_the_same_message_sid_does_not_resubmit(sms_client,
     main_module.routing_config.rules.append(RoutingRule(source="sms_twilio", destinations=["acct1"]))
 
     with sms_client:
-        payload = {"Body": "AAPL buy 5", "From": "+15550001111", "MessageSid": "SM123456"}
+        payload = {"Body": "BUY AAPL 5", "From": "+15550001111", "MessageSid": "SM123456"}
         headers = {"X-Twilio-Signature": "irrelevant-mocked-valid"}
 
         first = sms_client.post("/sms/twilio", data=payload, headers=headers)
@@ -226,7 +226,7 @@ def test_twilio_redelivery_of_the_same_message_sid_does_not_resubmit(sms_client,
 
         third = sms_client.post(
             "/sms/twilio",
-            data={"Body": "AAPL buy 5", "From": "+15550001111", "MessageSid": "SM999999"},
+            data={"Body": "BUY AAPL 5", "From": "+15550001111", "MessageSid": "SM999999"},
             headers=headers,
         )
         assert third.status_code == 200

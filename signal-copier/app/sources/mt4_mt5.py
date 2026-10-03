@@ -26,7 +26,7 @@ import asyncio
 import functools
 import logging
 
-from app.models import AssetClass, Signal, Side
+from app.models import AssetClass, Intent, Signal, Side
 from app.sources.base import SourceAdapter
 
 logger = logging.getLogger(__name__)
@@ -108,8 +108,11 @@ class MetaApiSource(SourceAdapter):
             entry_type = deal.get("entryType", "")
             if entry_type in ("DEAL_ENTRY_OUT", "DEAL_ENTRY_OUT_BY"):
                 side = Side.CLOSE
+                # A-07: Mark full exits with Intent.EXIT
+                intent = Intent.EXIT
             else:
                 side = Side.BUY if deal_type == "DEAL_TYPE_BUY" else Side.SELL
+                intent = None  # Will default to ENTRY_LONG or ENTRY_SHORT
 
             signal = Signal(
                 source=self.name,
@@ -118,6 +121,7 @@ class MetaApiSource(SourceAdapter):
                 asset_class=self.asset_class,
                 quantity=deal.get("volume"),
                 price=deal.get("price"),
+                intent=intent,
                 raw=deal,
             )
             # SIG-05: `asyncio.create_task` alone is fire-and-forget -- an

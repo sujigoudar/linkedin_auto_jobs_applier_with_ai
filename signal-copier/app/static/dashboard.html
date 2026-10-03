@@ -215,6 +215,39 @@
   .tr-not-tracked, .tr-not-exposed, .tr-basis-note { color: var(--muted); font-style: italic; font-size: 0.76rem; }
   .tr-controls-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
   .tr-controls-unsupported { margin-top: 10px; }
+
+  /* TR-20: Operations center */
+  .tr20-alert-row, .tr20-halt-row, .tr20-command-row, .tr20-intent-row, .tr20-budget-row {
+    display: flex; justify-content: space-between; align-items: center;
+    gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--border);
+  }
+  .tr20-alert-row:last-child, .tr20-halt-row:last-child, .tr20-command-row:last-child,
+  .tr20-intent-row:last-child, .tr20-budget-row:last-child { border-bottom: none; }
+
+  .tr20-alert-info, .tr20-halt-info, .tr20-command-info { flex: 1; font-size: 0.82rem; }
+  .tr20-alert-kind, .tr20-halt-account, .tr20-command-type { font-weight: 600; color: var(--accent); font-size: 0.85rem; }
+  .tr20-alert-account, .tr20-command-account { color: var(--muted); font-size: 0.78rem; }
+  .tr20-alert-message, .tr20-halt-reason, .tr20-command-key { color: var(--text); font-size: 0.82rem; margin: 2px 0; }
+  .tr20-alert-time, .tr20-halt-time, .tr20-command-time, .tr20-intent-time { color: var(--muted); font-size: 0.75rem; }
+
+  .tr20-alert-ack, .tr20-halt-clear, .tr20-command-resolve {
+    padding: 4px 10px; font-size: 0.78rem; background: var(--accent); color: var(--bg); border: none;
+    border-radius: 4px; cursor: pointer; white-space: nowrap; flex-shrink: 0;
+  }
+  .tr20-alert-ack:hover, .tr20-halt-clear:hover, .tr20-command-resolve:hover { opacity: 0.9; }
+
+  .tr20-subsection-title { font-size: 0.88rem; font-weight: 600; margin: 12px 0 6px; color: var(--text); }
+  .tr20-intent-state { font-weight: 600; font-size: 0.82rem; color: var(--accent); }
+  .tr20-intent-account { color: var(--muted); font-size: 0.78rem; }
+  .tr20-budget-key { font-weight: 600; color: var(--accent); font-size: 0.82rem; }
+  .tr20-budget-usage { color: var(--muted); font-size: 0.78rem; }
+
+  /* Badge for the operations center nav link */
+  #tr20-badge {
+    display: inline-block; background: var(--bad); color: var(--bg); border-radius: 999px;
+    padding: 1px 6px; font-size: 0.7rem; font-weight: 600; margin-left: 4px;
+  }
+  #tr20-badge.hidden { display: none; }
 </style>
 <link rel="stylesheet" href="/static/vendor/tabulator.min.css">
 </head>
@@ -284,6 +317,7 @@
     <!-- Research -->
     <a href="#/trade/backtests" data-group="research">Historical signal backtests</a>
     <!-- Operations -->
+    <a href="#/trade/operations" data-group="operations">Operations center</a>
     <a href="#/trade/routing" data-group="operations">Routing and allocation rules</a>
     <a href="#/trade/system" data-group="operations">Private settings, site role and recovery</a>
     <a href="#/trade/mobile-devices" data-group="operations">Mobile devices</a>
@@ -565,6 +599,17 @@ function boolPill(value, trueLabel = "yes", falseLabel = "no") {
 function fmtNum(n) {
   if (n === null || n === undefined) return "—";
   return Number(n).toLocaleString(undefined, { maximumFractionDigits: 6 });
+}
+
+// WC-21: integer-cents money fields (budget_reservations.needed_*_cents)
+// rendered as a currency amount with exactly two decimals. null/undefined
+// is shown as "—" (not tracked), never as 0.00 -- same honesty rule as
+// fmtNum above.
+function fmtCents(cents) {
+  if (cents === null || cents === undefined) return "—";
+  const n = Number(cents);
+  if (!Number.isFinite(n)) return "—";
+  return (n / 100).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
 function table(headers, rows, emptyMessage) {
@@ -1356,6 +1401,7 @@ const NAV_GROUP_PREFIXES = [
   ["/trade/incidents", "risk"],
   ["/trade/performance", "performance"],
   ["/trade/backtests", "research"],
+  ["/trade/operations", "operations"],
   ["/trade/routing", "operations"],
   ["/trade/system", "operations"],
   ["/trade", "overview"],
@@ -1452,5 +1498,6 @@ checkSession();
 <script src="/static/views/tr17.js"></script>
 <script src="/static/views/tr18.js"></script>
 <script src="/static/views/tr19.js"></script>
+<script src="/static/views/tr20.js"></script>
 </body>
 </html>

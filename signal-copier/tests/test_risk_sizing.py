@@ -19,8 +19,10 @@ real survivors this file now kills:
 """
 from __future__ import annotations
 
+import pytest
+
 from app.models import DestinationAccount, Side, Signal
-from app.risk import size_for_account, symbol_for_account
+from app.risk import UnsizedEntryError, size_for_account, symbol_for_account
 
 
 def _signal(**overrides) -> Signal:
@@ -43,19 +45,22 @@ def test_fixed_quantity_wins_outright_regardless_of_signal_quantity():
     assert size_for_account(signal, account) == 3.0
 
 
-def test_default_quantity_when_signal_has_no_quantity_is_exactly_one():
-    # Kills the `else 1.0` -> `else 2.0` mutant: with no fixed_quantity and
-    # no signal.quantity, the base quantity must be exactly 1.0, not 2.0 or
-    # any other guessed default.
+def test_unsized_entry_raises_when_signal_has_no_quantity():
+    # WP-01: with no fixed_quantity and no signal.quantity, size_for_account
+    # must raise UnsizedEntryError, never default to 1.0.
     account = _account(multiplier=1.0)
     signal = _signal(quantity=None)
-    assert size_for_account(signal, account) == 1.0
+    with pytest.raises(UnsizedEntryError, match="no quantity"):
+        size_for_account(signal, account)
 
 
-def test_default_quantity_scales_by_multiplier_when_signal_has_no_quantity():
+def test_unsized_entry_raises_even_with_multiplier():
+    # WP-01: with no fixed_quantity and no signal.quantity, size_for_account
+    # raises UnsizedEntryError regardless of the multiplier value.
     account = _account(multiplier=4.0)
     signal = _signal(quantity=None)
-    assert size_for_account(signal, account) == 4.0  # 1.0 default * 4.0, not 2.0 * 4.0
+    with pytest.raises(UnsizedEntryError):
+        size_for_account(signal, account)
 
 
 def test_signal_quantity_is_scaled_by_multiplier():

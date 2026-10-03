@@ -357,6 +357,7 @@ def _apply_projection(session: Session, inbox_event: InboxEvent, envelope: Event
             source_authority=f"signal-copier-relay:{envelope.producer_id}",
             evidence_class=envelope.evidence_class,
             originating_analyst_id=payload.originating_analyst_id,
+            account_id=payload.account.account_id,
         )
         inbox_event.ledger_entry_id = entry.entry_id
         inbox_event.execution_correlation_key = _execution_correlation_key(
@@ -726,17 +727,17 @@ def _apply_projection(session: Session, inbox_event: InboxEvent, envelope: Event
             )
             inbox_event.applied_at = datetime.now(timezone.utc)
     else:
-        # Every other EventType has no implemented payload yet (see
+        # G-C-26: Every other EventType has no implemented payload yet (see
         # signal_platform_contracts's own IMPLEMENTED_EVENT_TYPES) -- the
-        # row is stored (received) honestly, but stays un-applied rather
-        # than fabricating a projection for a payload shape this build
-        # doesn't understand yet. Note this means such an event can
-        # never advance `_next_expected_sequence` either -- an
-        # unimplemented event type permanently parks every later
-        # sequence on its own stream until a future build adds real
-        # support for it, which is the honest consequence of "keep
-        # separate received/applied cursors", not a bug.
+        # row is stored (received) honestly. For non-economic unknown kinds,
+        # advance the cursor (set applied_at) so they don't permanently stall
+        # the stream, while recording the parked_reason for tracking. A future
+        # build can then add real support without rebroadcast.
+        # TODO: create an Incident for operators when unknown non-economic
+        # event types are encountered, once automated incident creation
+        # infrastructure exists (currently no monitoring pipeline).
         inbox_event.parked_reason = f"{PARKED_REASON_UNIMPLEMENTED_EVENT_TYPE}:{envelope.event_type.value}"
+        inbox_event.applied_at = datetime.now(timezone.utc)
 
 
 def _apply_and_cascade(

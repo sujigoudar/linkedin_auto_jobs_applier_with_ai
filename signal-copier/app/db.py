@@ -9,6 +9,7 @@ import json
 import sqlite3
 import uuid
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterator
@@ -245,6 +246,11 @@ CREATE TABLE IF NOT EXISTS orders (
     fee DECIMAL(18, 8),
     fee_currency TEXT,
     slippage DECIMAL(18, 8),
+    -- E-11/B-10: the currency in which filled_price is quoted for this order.
+    -- ISO 4217 code (e.g., 'USD', 'JPY' for USDJPY, 'BTC' for BTC/USD pairs, etc.).
+    -- NULL means this row predates the column or the price currency was not tracked.
+    -- Never fabricated/guessed from symbol syntax; must come from broker or adapter.
+    price_currency TEXT,
     FOREIGN KEY (signal_id) REFERENCES signals (id)
 );
 
@@ -316,7 +322,32 @@ CREATE TABLE IF NOT EXISTS config_accounts (
     exclusive_writer_qualified INTEGER NOT NULL DEFAULT 0,
     -- E04 (bounded): daily loss limit circuit breaker for risk control
     daily_loss_limit_percent DECIMAL(5, 2),
-    min_equity_threshold DECIMAL(18, 8)
+    min_equity_threshold DECIMAL(18, 8),
+    -- E-11/B-10: account base currency for multi-currency support.
+    -- ISO 4217 code (e.g., 'USD', 'EUR', 'JPY'). NULL means not declared;
+    -- assume USD for backward compatibility only when reading existing
+    -- configurations. Never fabricated/defaulted server-side for new accounts.
+    currency TEXT,
+    -- B-11: maximum gross leverage ceiling (e.g., 1.0 = no leverage,
+    -- 1.25 = 25% leverage allowed). When set, exposure is refused if it
+    -- would exceed max_gross_leverage × (equity − maintenance_margin).
+    max_gross_leverage DECIMAL(5, 2),
+    -- B-14: whether this account is allowed to open short positions
+    allow_short INTEGER NOT NULL DEFAULT 0,
+    -- WP-38 (G-C-13): the EvidenceClass value (e.g., "INTERNAL_PAPER",
+    -- "OBSERVED_OWNER_LIVE") to export for this account's events.
+    -- NULL means use the global config.RELAY_EVIDENCE_CLASS as fallback.
+    evidence_class TEXT,
+    -- WP-38 (G-C-24): monotonic counter for paper broker order IDs,
+    -- persisted per account to remain unique across restarts.
+    -- Only used when broker='paper'; NULL/unused for other brokers.
+    paper_order_id_sequence INTEGER,
+    -- B-01: sizing strategy for this account. One of "multiplier" (default),
+    -- "fixed", or "risk_fraction".
+    sizing_mode TEXT NOT NULL DEFAULT 'multiplier',
+    -- B-01: for sizing_mode="risk_fraction", the fraction of account equity
+    -- to risk per trade (e.g., 0.01 for 1%). NULL means not in use.
+    risk_fraction REAL
 );
 
 CREATE TABLE IF NOT EXISTS config_routing_rules (
@@ -716,6 +747,43 @@ CREATE INDEX IF NOT EXISTS idx_saved_views_screen ON saved_views (screen);
 -- so a reservation and its originating command share one identifier
 -- end-to-end -- this table's `signal_id` column is a good anchor for
 -- that reconciliation (both should already agree on the same signal).
+-- ALLOC-03: a GLOBAL notional ceiling for one strategy (keyed by signal
+-- `source`, the same key Track 18's ownership derivation uses). Counted
+-- ONCE across every account the strategy can use -- adding accounts never
+-- multiplies it. NULL max_notional = no ceiling configured (unset blocks
+-- nothing; it is an opt-in gate like max_notional_exposure).
+CREATE TABLE IF NOT EXISTS strategy_budgets (
+    strategy_key TEXT PRIMARY KEY,
+    max_notional REAL,
+    updated_at TEXT NOT NULL
+);
+
+-- ALLOC-01: one durable logical allocation decision per trade opportunity,
+-- created BEFORE any account-specific execution. `intent_id` is derived
+-- from (strategy_key, signal_id) -- NOT from an account -- so N eligible
+-- accounts can never each own an independent copy of the same
+-- opportunity. States: claimed (pool recorded, no account chosen) ->
+-- selected (one account bound, pre-submission) -> committed (a
+-- submission was attempted; ANY outcome, incl. unknown, is final for
+-- destination purposes -- never rerouted) | skipped (explained
+-- non-execution, no exposure created). See docs/design/PORTFOLIO_ALLOCATION.md.
+CREATE TABLE IF NOT EXISTS allocation_intents (
+    intent_id TEXT PRIMARY KEY,
+    signal_id TEXT NOT NULL UNIQUE,
+    strategy_key TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    side TEXT NOT NULL,
+    candidates TEXT NOT NULL,
+    selected_account_id TEXT,
+    state TEXT NOT NULL,
+    reason TEXT,
+    trace TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_allocation_intents_state ON allocation_intents (state);
+
 CREATE TABLE IF NOT EXISTS capital_reservations (
     id TEXT PRIMARY KEY,
     account_id TEXT NOT NULL,
@@ -758,15 +826,16 @@ CREATE TABLE IF NOT EXISTS route_qualifications (
     route_key TEXT NOT NULL,
     asset_class TEXT NOT NULL,
     product_type TEXT NOT NULL,
+    environment TEXT NOT NULL DEFAULT "unknown",
     state TEXT NOT NULL,
     recorded_at TEXT NOT NULL,
     recorded_by TEXT NOT NULL,
     notes TEXT,
-    UNIQUE(adapter_type, route_key, asset_class, product_type, state)
+    UNIQUE(adapter_type, route_key, asset_class, product_type, environment, state)
 );
 
 CREATE INDEX IF NOT EXISTS idx_route_qualifications_route
-    ON route_qualifications (adapter_type, route_key, asset_class, product_type);
+    ON route_qualifications (adapter_type, route_key, asset_class, product_type, environment);
 
 -- P0-2 (external release audit, "one durable command ledger"): the
 -- pre-effect durable ledger for EVERY real financial command this service
@@ -1817,6 +1886,239 @@ CREATE TABLE IF NOT EXISTS margin_call_alerts (
 );
 CREATE INDEX IF NOT EXISTS ix_daily_pnl_account_id ON daily_pnl(account_id);
 CREATE INDEX IF NOT EXISTS ix_margin_call_alerts_account_id ON margin_call_alerts(account_id);
+-- F-08: heartbeat table for disk write capability and health checks
+CREATE TABLE IF NOT EXISTS health_heartbeat (
+    id INTEGER PRIMARY KEY,
+    last_write TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL
+);
+CREATE TABLE IF NOT EXISTS alerts (
+    id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL,
+    account_id TEXT,
+    message TEXT NOT NULL,
+    payload TEXT,
+    acknowledged_at TIMESTAMP,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_alerts_account_id ON alerts(account_id);
+CREATE INDEX IF NOT EXISTS ix_alerts_unacknowledged ON alerts(acknowledged_at) WHERE acknowledged_at IS NULL;
+-- WC-02: Canonical identities -- physical accounts, bindings, and capabilities
+-- Physical accounts: immutable, deduplicated broker accounts (one per real account)
+CREATE TABLE IF NOT EXISTS physical_accounts (
+    physical_account_id TEXT PRIMARY KEY,
+    broker TEXT NOT NULL,
+    broker_account_id TEXT,  -- NULL = declared-only (WC-09 evidence_tier 'declared'); never fabricated
+    environment TEXT NOT NULL,  -- 'paper', 'live', 'sandbox', 'unknown'
+    base_currency TEXT NOT NULL,  -- ISO 4217 code
+    margin_type TEXT NOT NULL DEFAULT 'unknown',  -- 'cash', 'margin', 'retirement', 'unknown'
+    restriction_state TEXT NOT NULL DEFAULT 'unknown',  -- 'none', 'pdt_restricted', 'closing_only', 'unknown'
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    UNIQUE(broker, broker_account_id, environment)
+);
+CREATE INDEX IF NOT EXISTS ix_physical_accounts_broker ON physical_accounts(broker);
+-- Account bindings: credentials/integrations reaching physical accounts
+CREATE TABLE IF NOT EXISTS account_bindings (
+    binding_id TEXT PRIMARY KEY,
+    physical_account_id TEXT NOT NULL,
+    config_account_id TEXT NOT NULL,
+    version INTEGER NOT NULL DEFAULT 1,
+    revoked INTEGER NOT NULL DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    FOREIGN KEY (physical_account_id) REFERENCES physical_accounts(physical_account_id),
+    FOREIGN KEY (config_account_id) REFERENCES config_accounts(account_id)
+);
+CREATE INDEX IF NOT EXISTS ix_account_bindings_physical_account_id ON account_bindings(physical_account_id);
+CREATE INDEX IF NOT EXISTS ix_account_bindings_config_account_id ON account_bindings(config_account_id);
+-- Capability profiles: exact instrument/operation support with evidence tier
+CREATE TABLE IF NOT EXISTS capability_profiles (
+    capability_id TEXT PRIMARY KEY,
+    physical_account_id TEXT NOT NULL,
+    instrument_family TEXT NOT NULL,  -- 'stock', 'option', 'future', 'fx', 'crypto', etc.
+    session TEXT NOT NULL,  -- 'regular', 'pre', 'after', etc.
+    operation TEXT NOT NULL,  -- 'entry_long', 'entry_short', 'exit', 'stop', 'target', etc.
+    order_recipe TEXT NOT NULL,  -- 'limit', 'market', 'stop_limit', 'algo', etc.
+    evidence_tier TEXT NOT NULL,  -- 'unknown', 'declared', 'simulator', 'paper', 'live'
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    FOREIGN KEY (physical_account_id) REFERENCES physical_accounts(physical_account_id),
+    UNIQUE(physical_account_id, instrument_family, session, operation)
+);
+CREATE INDEX IF NOT EXISTS ix_capability_profiles_physical_account_id ON capability_profiles(physical_account_id);
+CREATE INDEX IF NOT EXISTS ix_capability_profiles_evidence_tier ON capability_profiles(evidence_tier);
+-- WC-03: Hierarchical budget tables
+CREATE TABLE IF NOT EXISTS portfolios (
+    portfolio_id TEXT PRIMARY KEY,
+    owner TEXT NOT NULL,
+    name TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_portfolios_owner ON portfolios(owner);
+-- Portfolio backing: dedicated equity assigned to a portfolio
+CREATE TABLE IF NOT EXISTS portfolio_backings (
+    backing_id TEXT PRIMARY KEY,
+    portfolio_id TEXT NOT NULL,
+    physical_account_id TEXT NOT NULL,
+    dedicated_equity_cents INTEGER NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    FOREIGN KEY(portfolio_id) REFERENCES portfolios(portfolio_id),
+    UNIQUE(portfolio_id, physical_account_id)
+);
+CREATE INDEX IF NOT EXISTS idx_portfolio_backings_portfolio ON portfolio_backings(portfolio_id);
+CREATE INDEX IF NOT EXISTS idx_portfolio_backings_account ON portfolio_backings(physical_account_id);
+-- Strategy sleeves: capital subdivisions within a portfolio
+CREATE TABLE IF NOT EXISTS strategy_sleeves (
+    sleeve_id TEXT PRIMARY KEY,
+    portfolio_id TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    analyst TEXT,
+    name TEXT,
+    max_notional_cents INTEGER,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    FOREIGN KEY(portfolio_id) REFERENCES portfolios(portfolio_id)
+);
+CREATE INDEX IF NOT EXISTS idx_strategy_sleeves_portfolio ON strategy_sleeves(portfolio_id);
+CREATE INDEX IF NOT EXISTS idx_strategy_sleeves_provider ON strategy_sleeves(provider);
+-- Budget reservations: per-opportunity state machine (WC-03, spec §6.2)
+CREATE TABLE IF NOT EXISTS budget_reservations (
+    reservation_id TEXT PRIMARY KEY,
+    opportunity_id TEXT NOT NULL UNIQUE,
+    owner TEXT NOT NULL,
+    physical_account_id TEXT NOT NULL,
+    portfolio_id TEXT,
+    sleeve_id TEXT,
+    provider TEXT NOT NULL,
+    analyst TEXT,
+    underlying TEXT NOT NULL,
+    cluster_id TEXT,
+    needed_cash_cents INTEGER NOT NULL,
+    needed_margin_cents INTEGER NOT NULL,
+    needed_notional_cents INTEGER NOT NULL,
+    needed_planned_risk_cents INTEGER NOT NULL,
+    needed_stress_risk_cents INTEGER,
+    state TEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    evidence TEXT,
+    FOREIGN KEY(portfolio_id) REFERENCES portfolios(portfolio_id),
+    FOREIGN KEY(sleeve_id) REFERENCES strategy_sleeves(sleeve_id)
+);
+CREATE INDEX IF NOT EXISTS idx_budget_reservations_owner ON budget_reservations(owner);
+CREATE INDEX IF NOT EXISTS idx_budget_reservations_account ON budget_reservations(physical_account_id);
+CREATE INDEX IF NOT EXISTS idx_budget_reservations_state ON budget_reservations(state);
+CREATE INDEX IF NOT EXISTS idx_budget_reservations_opportunity ON budget_reservations(opportunity_id);
+-- Owner-level limits on aggregate exposure
+CREATE TABLE IF NOT EXISTS owner_limits (
+    limit_id TEXT PRIMARY KEY,
+    owner TEXT NOT NULL UNIQUE,
+    max_notional_cents INTEGER,
+    max_planned_risk_cents INTEGER,
+    max_stress_risk_cents INTEGER,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_owner_limits_owner ON owner_limits(owner);
+-- WC-30: Budget limits for levels (account, analyst, underlying, cluster)
+CREATE TABLE IF NOT EXISTS budget_limits (
+    limit_id TEXT PRIMARY KEY,
+    level TEXT NOT NULL,
+    key TEXT NOT NULL,
+    max_cents INTEGER NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    UNIQUE(level, key)
+);
+CREATE INDEX IF NOT EXISTS idx_budget_limits_level_key ON budget_limits(level, key);
+CREATE TABLE IF NOT EXISTS decision_traces (
+    id TEXT PRIMARY KEY,
+    signal_id TEXT NOT NULL,
+    physical_account_id TEXT NOT NULL,
+    candidate_rank INTEGER NOT NULL,
+    feasible INTEGER NOT NULL,
+    reason TEXT NOT NULL,
+    selected INTEGER NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_decision_traces_signal_id ON decision_traces(signal_id);
+CREATE INDEX IF NOT EXISTS ix_decision_traces_account_id ON decision_traces(physical_account_id);
+-- WC-09: margin regime tracking (physical_accounts is defined once above, WC-02)
+-- WC-09: Per-account margin regime (legacy_pdt_verified | new_intraday_verified | unknown)
+-- Unknown regime blocks affected new exposure (spec I17, §9, §22 S02/S03).
+-- FINRA replacement intraday-margin standards effective 2026-06-04, phase-in through 2027-10-20.
+CREATE TABLE IF NOT EXISTS margin_regimes (
+    physical_account_id TEXT PRIMARY KEY,
+    regime TEXT NOT NULL,
+    evidence TEXT NOT NULL,
+    verified_at TIMESTAMP NOT NULL,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    FOREIGN KEY (physical_account_id) REFERENCES physical_accounts(physical_account_id)
+);
+CREATE INDEX IF NOT EXISTS ix_margin_regimes_regime ON margin_regimes(regime);
+-- WC-06: Durable intents and outbox for crash recovery
+CREATE TABLE IF NOT EXISTS order_intents (
+    intent_id TEXT PRIMARY KEY,
+    opportunity_id TEXT NOT NULL UNIQUE,
+    physical_account_id TEXT NOT NULL,
+    binding_id TEXT NOT NULL,
+    client_correlation_id TEXT NOT NULL,
+    policy_hash TEXT NOT NULL,
+    quantity INTEGER NOT NULL,
+    price_constraints TEXT,
+    protection_recipe TEXT,
+    reservation_id TEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL
+);
+-- WC-31: Unique index to enforce one intent per opportunity_id
+CREATE UNIQUE INDEX IF NOT EXISTS ux_order_intents_opportunity ON order_intents(opportunity_id);
+CREATE INDEX IF NOT EXISTS ix_order_intents_account ON order_intents(physical_account_id);
+CREATE INDEX IF NOT EXISTS ix_order_intents_binding ON order_intents(binding_id);
+CREATE INDEX IF NOT EXISTS ix_order_intents_reservation ON order_intents(reservation_id);
+CREATE TABLE IF NOT EXISTS outbox (
+    item_id TEXT PRIMARY KEY,
+    intent_id TEXT NOT NULL,
+    state TEXT NOT NULL DEFAULT 'outboxed',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    claimed_at TIMESTAMP,
+    claimed_by TEXT,
+    response TEXT,
+    response_recorded_at TIMESTAMP,
+    FOREIGN KEY(intent_id) REFERENCES order_intents(intent_id)
+);
+CREATE INDEX IF NOT EXISTS ix_outbox_state_created ON outbox(state, created_at);
+CREATE INDEX IF NOT EXISTS ix_outbox_intent ON outbox(intent_id);
+-- WC-08: Runner state tracking for pyramiding and staged entries
+CREATE TABLE IF NOT EXISTS runner_state (
+    id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    lifecycle_id TEXT NOT NULL,
+    owned_quantity INTEGER NOT NULL,
+    entry_price_cents INTEGER NOT NULL,
+    high_water_cents INTEGER NOT NULL,
+    giveback_cents INTEGER NOT NULL,
+    protective_floor_cents INTEGER NOT NULL DEFAULT 0,
+    original_risk_cents INTEGER NOT NULL DEFAULT 0,
+    deadline_utc TIMESTAMP,
+    created_at_utc TIMESTAMP NOT NULL,
+    updated_at_utc TIMESTAMP NOT NULL,
+    FOREIGN KEY (account_id) REFERENCES config_accounts(account_id),
+    UNIQUE (account_id, symbol, lifecycle_id)
+);
+CREATE INDEX IF NOT EXISTS ix_runner_state_account_id ON runner_state(account_id);
+CREATE INDEX IF NOT EXISTS ix_runner_state_symbol ON runner_state(symbol);
+CREATE INDEX IF NOT EXISTS ix_runner_state_lifecycle_id ON runner_state(lifecycle_id);
+
+CREATE TABLE IF NOT EXISTS trading_halts (
+    halt_id TEXT PRIMARY KEY,
+    scope TEXT NOT NULL CHECK(scope IN ('account','portfolio','owner')),
+    scope_id TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    source TEXT NOT NULL,
+    created_at TIMESTAMP NOT NULL,
+    cleared_at TIMESTAMP NULL,
+    cleared_by TEXT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_trading_halts_active ON trading_halts(scope, scope_id, cleared_at);
 """
 
 
@@ -1827,6 +2129,8 @@ CREATE INDEX IF NOT EXISTS ix_margin_call_alerts_account_id ON margin_call_alert
 #: for columns before SQLite 3.35, and this stays compatible with older
 #: builds rather than assuming a version).
 _COLUMN_MIGRATIONS = [
+    ("capital_reservations", "strategy_key", "TEXT"),
+    ("config_routing_rules", "delivery_mode", "TEXT NOT NULL DEFAULT 'single'"),
     ("signals", "stop_loss", "REAL"),
     ("signals", "take_profit", "REAL"),
     ("signals", "analyst", "TEXT"),
@@ -1960,6 +2264,69 @@ _COLUMN_MIGRATIONS = [
     ("orders", "fee", "DECIMAL(18, 8)"),
     ("orders", "fee_currency", "TEXT"),
     ("orders", "slippage", "DECIMAL(18, 8)"),
+    # E-11/B-10: multi-currency support -- account base currency and
+    # per-order price currency. See app/models.py's DestinationAccount and
+    # OrderResult docstrings for full semantics. NULL for pre-existing
+    # rows; new rows should populate these honestly (never fabricated from
+    # symbol syntax). config_accounts.currency: ISO 4217 code for this
+    # account's base currency (e.g., 'USD', 'EUR'). orders.price_currency:
+    # ISO 4217 code for the currency in which filled_price is quoted on
+    # this specific order.
+    ("config_accounts", "currency", "TEXT"),
+    ("orders", "price_currency", "TEXT"),
+    # E04 (bounded): daily loss limit and minimum equity threshold for risk control
+    # F-04 fix: these were in SCHEMA but not in _COLUMN_MIGRATIONS, causing
+    # fresh DBs to have them but upgraded DBs (bootstrapped pre-0036) to lack them.
+    ("config_accounts", "daily_loss_limit_percent", "DECIMAL(5, 2)"),
+    ("config_accounts", "min_equity_threshold", "DECIMAL(18, 8)"),
+    # B-11: maximum gross leverage ceiling
+    ("config_accounts", "max_gross_leverage", "DECIMAL(5, 2)"),
+    # WP-08 (A-01): signal intent derivation -- see Intent enum and
+    # Signal.intent's own docstring for why intent is distinct from side.
+    ("signals", "intent", "TEXT"),
+    # WP-08 (A-01): reduce-fraction for partial position reductions.
+    ("signals", "reduce_fraction", "REAL"),
+    # WP-08 (B-14): per-account short-selling permission gate -- see
+    # DestinationAccount.allow_short's own docstring.
+    ("config_accounts", "allow_short", "INTEGER NOT NULL DEFAULT 0"),
+    # E-07 (WP-27): real fill timestamp tracking -- see E-07's own
+    # docstring in docs/audit/raw/E_FINDINGS.md. executed_at is now the
+    # broker's actual fill timestamp (populated by adapters from broker
+    # response, or defaulting to NULL). confirmed_at tracks when the fill
+    # was confirmed by reconciliation polling, distinct from the actual
+    # execution time. Both TEXT (ISO 8601), NULL when not yet confirmed.
+    ("orders", "confirmed_at", "TEXT"),
+    # WP-11 (A-02/A-11): track the original message id for edit chains --
+    # when a signal is an edit/revision, this points to the original
+    # message's message_id. NULL for originals and non-revision-aware
+    # signals. Used to find all orders produced by the original signal
+    # when deciding how to amend vs reject/accept an edit.
+    ("signals", "original_message_id", "TEXT"),
+    # WP-33 (qualification keyed by venue environment): a route is release-
+    # approved only for the environment it was qualified in. Include the
+    # resolved environment (base URL/env/sandbox flag) in the route tuple.
+    ("route_qualifications", "environment", "TEXT NOT NULL DEFAULT 'unknown'"),
+    # WP-30 (B-08/F-02): Daily loss limit and minimum equity threshold for
+    # account-level circuit breakers. See app/daily_loss_limiter.py and
+    # app/models.py's DestinationAccount for the full circuit breaker design.
+    ("config_accounts", "daily_loss_limit_percent", "DECIMAL(5, 2)"),
+    ("config_accounts", "min_equity_threshold", "DECIMAL(18, 8)"),
+    # WP-16 (B-01): risk-fraction sizing mode -- see DestinationAccount's
+    # sizing_mode and risk_fraction docstrings.
+    ("config_accounts", "sizing_mode", "TEXT NOT NULL DEFAULT 'multiplier'"),
+    ("config_accounts", "risk_fraction", "REAL"),
+    # WP-15b: contract multiplier for notional calculations (option/future/forex)
+    # NULL for rows saved before this column existed; new rows populate it from
+    # contract_multiplier(signal). Capital allocator queries use COALESCE(..., 1.0)
+    # so pre-existing rows (multiplier=1.0 equivalent) work correctly.
+    ("orders", "contract_multiplier", "REAL"),
+    # D-12: Trailing stops and time exits reachable from signals --
+    # see Signal.trail_amount/trail_percent/time_exit_at in app/models.py.
+    # Mutually exclusive: trail_amount XOR trail_percent. time_exit_at is
+    # independent. All NULL means no trailing/time exit configured.
+    ("signals", "trail_amount", "REAL"),
+    ("signals", "trail_percent", "REAL"),
+    ("signals", "time_exit_at", "TEXT"),
 ]
 
 
@@ -1972,6 +2339,34 @@ _SOURCE_OBSERVATION_KINDS = ("created", "edited", "deleted", "retrieved")
 #: app/sources/rss_source.py's module docstring for how this gates
 #: whether an observation may ever become a real `Signal`.
 _SOURCE_OBSERVATION_PURPOSES = ("research", "backfill", "signal_candidate")
+
+
+@dataclass(frozen=True)
+class BudgetReservationRow:
+    """WC-30: Immutable budget reservation record with durable state.
+
+    Attributes correspond to budget_reservations table columns and provide
+    attribute access for transition logic.
+    """
+    reservation_id: str
+    opportunity_id: str
+    owner: str
+    physical_account_id: str
+    portfolio_id: str | None
+    sleeve_id: str | None
+    provider: str
+    analyst: str | None
+    underlying: str
+    cluster_id: str | None
+    needed_cash_cents: int
+    needed_margin_cents: int
+    needed_notional_cents: int
+    needed_planned_risk_cents: int
+    needed_stress_risk_cents: int | None
+    state: str
+    created_at: str
+    updated_at: str
+    evidence: str | None
 
 
 class SignalStore:
@@ -2013,18 +2408,30 @@ class SignalStore:
         would try to CREATE a table that's already there); this is purely
         so `alembic history`/`alembic upgrade head` are meaningful for
         every real database from here on, for whatever the NEXT schema
-        change adds as a proper revision. Never re-stamps a database
-        that's already stamped (or that a real `alembic upgrade` has
-        already brought under version control) -- see this method's own
-        `alembic_version` check.
+        change adds as a proper revision.
+
+        F-04 fix: Re-stamp to head whenever version_num != alembic_code_head()
+        to handle schema drift from deployed/upgraded DBs where bootstrap
+        applied more migrations than the database is currently stamped at.
         """
         with self._connect() as conn:
             already_tracked = conn.execute(
                 "SELECT name FROM sqlite_master WHERE type='table' AND name='alembic_version'"
             ).fetchone()
-        if already_tracked:
+
+        if not already_tracked:
+            # Fresh database: stamp to head
+            command.stamp(_alembic_config(self.db_path), "head")
             return
-        command.stamp(_alembic_config(self.db_path), "head")
+
+        # Database already has alembic_version table: check if it matches code head
+        current_version = self.schema_version()
+        code_head = alembic_code_head()
+
+        if current_version != code_head:
+            # F-04: drift detected; re-stamp to current code head since bootstrap
+            # already applied all the migrations
+            command.stamp(_alembic_config(self.db_path), "head")
 
     def schema_version(self) -> str | None:
         """TR-16 (E01 bounded, deployment-reproducibility slice): the
@@ -2036,6 +2443,20 @@ class SignalStore:
         with self._connect() as conn:
             row = conn.execute("SELECT version_num FROM alembic_version").fetchone()
         return row[0] if row else None
+
+    def database_write_ok(self) -> bool:
+        """F-08: Test write capability using a cheap heartbeat probe.
+        Returns True if we can write to the database, False if the disk
+        is full, read-only, or otherwise unable to accept writes."""
+        try:
+            with self._connect() as conn:
+                # INSERT OR REPLACE into the heartbeat row with current timestamp
+                conn.execute(
+                    "INSERT OR REPLACE INTO health_heartbeat (id, last_write) VALUES (1, CURRENT_TIMESTAMP)"
+                )
+            return True
+        except Exception:  # noqa: BLE001 - health check must not raise
+            return False
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
@@ -2082,14 +2503,54 @@ class SignalStore:
             from app.signal_correlation import fingerprint_key
 
             correlation_fingerprint = fingerprint_key(signal)
+
+        # WP-44: serialize contract specs into raw["contract_spec"] for
+        # persistence (these specs are runtime-only fields on Signal but need
+        # to be recoverable for UI interpretation, so serialize them into raw).
+        # Serialize contract specs into raw["contract_spec"] for persistence
+        # WP-44: serialize contract specs into raw["contract_spec"] for
+        # persistence (these specs are runtime-only fields on Signal but need
+        # to be recoverable for UI interpretation, so serialize them into raw).
+        raw_data = signal.raw.copy()
+        contract_spec = {}
+        if signal.option is not None:
+            contract_spec["option"] = {
+                "underlying": signal.option.underlying,
+                "strike": signal.option.strike,
+                "right": signal.option.right,
+                "expiry": signal.option.expiry,
+                "multiplier": signal.option.multiplier,
+            }
+        if signal.future is not None:
+            contract_spec["future"] = {
+                "root": signal.future.root,
+                "expiry": signal.future.expiry,
+                "multiplier": signal.future.multiplier,
+                "venue": signal.future.venue,
+            }
+        if signal.fx is not None:
+            contract_spec["fx"] = {
+                "base_currency": signal.fx.base_currency,
+                "quote_currency": signal.fx.quote_currency,
+                "unit": signal.fx.unit,
+            }
+        if signal.crypto_derivative is not None:
+            contract_spec["crypto_derivative"] = {
+                "instrument_kind": signal.crypto_derivative.instrument_kind,
+                "margin_currency": signal.crypto_derivative.margin_currency,
+                "settlement_currency": signal.crypto_derivative.settlement_currency,
+            }
+        if contract_spec:
+            raw_data["contract_spec"] = contract_spec
+
         with self._connect() as conn:
             conn.execute(
                 """INSERT OR REPLACE INTO signals
                    (id, source, symbol, side, asset_class, quantity, price, stop_loss, take_profit,
                     analyst, received_at, raw, import_batch, channel_id, message_id, revision_id,
-                    correlation_fingerprint, source_created_at, source_modified_at, first_observed_at,
-                    parsed_at, decision_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    original_message_id, correlation_fingerprint, source_created_at, source_modified_at, first_observed_at,
+                    parsed_at, decision_at, intent, reduce_fraction)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     signal.id,
                     signal.source,
@@ -2102,17 +2563,20 @@ class SignalStore:
                     signal.take_profit,
                     signal.analyst,
                     signal.received_at.isoformat(),
-                    json.dumps(signal.raw),
+                    json.dumps(raw_data),
                     signal.import_batch,
                     signal.channel_id,
                     signal.message_id,
                     signal.revision_id,
+                    signal.original_message_id,
                     correlation_fingerprint,
                     signal.source_created_at.isoformat() if signal.source_created_at else None,
                     signal.source_modified_at.isoformat() if signal.source_modified_at else None,
                     signal.first_observed_at.isoformat() if signal.first_observed_at else None,
                     signal.parsed_at.isoformat() if signal.parsed_at else None,
                     signal.decision_at.isoformat() if signal.decision_at else None,
+                    signal.intent.value if signal.intent is not None else None,
+                    signal.reduce_fraction,
                 ),
             )
 
@@ -2150,6 +2614,29 @@ class SignalStore:
                 (channel_id, message_id, revision_id, revision_id),
             ).fetchone()
         return row[0] if row else None
+
+    def find_signals_by_original_message_id(
+        self, *, channel_id: str | None, original_message_id: str | None
+    ) -> list[str]:
+        """WP-11 (A-02): find all signal ids from the original message in
+        an edit chain. When a signal arrives with original_message_id set
+        (i.e., it's an edit/revision), this returns the signal id(s) produced
+        by the original message (where original_message_id is NULL and
+        message_id equals this signal's original_message_id).
+
+        Returns a list of signal ids, or empty list if no original signal
+        is found. Used by app/engine.py to detect existing orders before
+        deciding whether to place new ones or amend existing positions."""
+        if channel_id is None or original_message_id is None:
+            return []
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT id FROM signals WHERE channel_id = ? AND message_id = ?
+                   AND original_message_id IS NULL
+                   ORDER BY received_at ASC""",
+                (channel_id, original_message_id),
+            ).fetchall()
+        return [row[0] for row in rows]
 
     # -- Track 12: cross-transport signal correlation (app/signal_correlation.py) --
 
@@ -2400,8 +2887,8 @@ class SignalStore:
             row = conn.execute(
                 """SELECT id, source, symbol, side, asset_class, quantity, price, stop_loss, take_profit,
                           analyst, received_at, import_batch, channel_id, message_id, revision_id,
-                          correlation_fingerprint, source_created_at, source_modified_at, first_observed_at,
-                          parsed_at, decision_at
+                          original_message_id, correlation_fingerprint, source_created_at, source_modified_at, first_observed_at,
+                          parsed_at, decision_at, intent, reduce_fraction
                    FROM signals WHERE id = ?""",
                 (signal_id,),
             ).fetchone()
@@ -2423,12 +2910,15 @@ class SignalStore:
             "channel_id": row[12],
             "message_id": row[13],
             "revision_id": row[14],
-            "correlation_fingerprint": row[15],
-            "source_created_at": row[16],
-            "source_modified_at": row[17],
-            "first_observed_at": row[18],
-            "parsed_at": row[19],
-            "decision_at": row[20],
+            "original_message_id": row[15],
+            "correlation_fingerprint": row[16],
+            "source_created_at": row[17],
+            "source_modified_at": row[18],
+            "first_observed_at": row[19],
+            "parsed_at": row[20],
+            "decision_at": row[21],
+            "intent": row[22],
+            "reduce_fraction": row[23],
         }
 
     def get_signal_lifecycle(self, signal_id: str) -> dict | None:
@@ -2698,6 +3188,7 @@ class SignalStore:
         protection_confirmed_at: datetime | None = None,
         purpose: str | None = None,
         family_id: str | None = None,
+        contract_multiplier: float | None = None,
     ) -> int:
         """Persist an order result and return its row id.
 
@@ -2793,8 +3284,18 @@ class SignalStore:
         adapter. These are None when the broker doesn't report them -- never
         fabricated. Fee tracking feeds into daily_pnl aggregation for
         account economics and performance analytics.
+
+        `contract_multiplier` (WP-15b): the contract multiplier from
+        contract_multiplier(signal) used for this order. Capital allocator
+        queries use COALESCE(contract_multiplier, 1.0) to compute correct
+        notional. NULL for pre-existing rows (no multiplier != multiplier 1.0
+        -- both treated equivalently by COALESCE).
         """
         stored_filled_quantity = applied_quantity if applied_quantity is not None else result.filled_quantity
+        # E-07: For PENDING orders without a broker-reported fill time, use the current time
+        # as a placeholder (which will be preserved by _update_order_status_locked). Adapters
+        # should set executed_at to the broker's actual fill time for FILLED orders.
+        stored_executed_at = (result.executed_at or datetime.now(timezone.utc)).isoformat()
         with self._connect() as conn:
             cursor = conn.execute(
                 """INSERT INTO orders
@@ -2802,8 +3303,8 @@ class SignalStore:
                     broker_order_id, filled_quantity, filled_price, message, executed_at, reserved_notional,
                     submitted_at, protection_confirmed_at, purpose, family_id,
                     confirmed_cumulative_fill, applied_execution_delta, outstanding_possible_fill,
-                    reserved_quantity, acknowledged_quantity, fee, fee_currency, slippage)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    reserved_quantity, acknowledged_quantity, fee, fee_currency, slippage, contract_multiplier)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     result.account_id,
                     broker,
@@ -2816,7 +3317,7 @@ class SignalStore:
                     stored_filled_quantity,
                     result.filled_price,
                     result.message,
-                    result.executed_at.isoformat(),
+                    stored_executed_at,
                     reserved_notional,
                     submitted_at.isoformat() if submitted_at else None,
                     protection_confirmed_at.isoformat() if protection_confirmed_at else None,
@@ -2830,6 +3331,7 @@ class SignalStore:
                     result.fee,
                     result.fee_currency,
                     result.slippage,
+                    contract_multiplier,
                 ),
             )
             if export_envelope is not None:
@@ -2838,6 +3340,53 @@ class SignalStore:
             # INSERT -- never true for this one; asserted so this stays true
             # if the schema or query ever changes, rather than silently
             # returning None where every caller expects a real id.
+            assert cursor.lastrowid is not None
+            return cursor.lastrowid
+
+    def save_child_order_result(
+        self,
+        account_id: str,
+        broker: str,
+        symbol: str,
+        quantity: float,
+        broker_order_id: str,
+        purpose: str,  # 'stop_exit' or 'target_exit'
+        family_id: str,  # the parent entry's signal id
+    ) -> int:
+        """D-01: Persist a bracket child leg order row.
+
+        Child orders (stop and take-profit legs from native bracket entries)
+        are tracked in the same `orders` table but with a distinct purpose
+        ('stop_exit' or 'target_exit') and the parent entry's signal_id as
+        their family_id. This allows the reconciliation pass to poll them
+        alongside regular orders and detect when they fill. Signal_id is set
+        to family_id for foreign key constraint compliance while purpose
+        distinguishes child orders from regular ones.
+        """
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """INSERT INTO orders
+                   (account_id, broker, symbol, side, requested_quantity, signal_id, status,
+                    broker_order_id, filled_quantity, filled_price, message, executed_at,
+                    purpose, family_id)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    account_id,
+                    broker,
+                    symbol,
+                    None,  # side: child orders don't track a side
+                    quantity,
+                    family_id,  # signal_id: set to family_id for FK constraint compliance
+                    "pending",  # status: always PENDING for a newly created child order
+                    broker_order_id,
+                    None,  # filled_quantity: not known yet
+                    None,  # filled_price: not known yet
+                    f"bracket {purpose} leg",
+                    datetime.now(timezone.utc).isoformat(),
+                    purpose,
+                    family_id,
+                ),
+            )
             assert cursor.lastrowid is not None
             return cursor.lastrowid
 
@@ -3094,7 +3643,12 @@ class SignalStore:
         return (row[0], row[1])
 
     def create_capital_reservation(
-        self, reservation_id: str, account_id: str, notional: float, signal_id: str | None = None
+        self,
+        reservation_id: str,
+        account_id: str,
+        notional: float,
+        signal_id: str | None = None,
+        strategy_key: str | None = None,
     ) -> None:
         """P0-4: durably record a app/capital_allocator.py provisional
         reservation the INSTANT it's admitted -- called from inside
@@ -3106,12 +3660,15 @@ class SignalStore:
         reading the table, never required for correctness."""
         with self._connect() as conn:
             conn.execute(
-                "INSERT INTO capital_reservations (id, account_id, notional, signal_id, created_at, resolved_at) "
-                "VALUES (?, ?, ?, ?, ?, NULL)",
-                (reservation_id, account_id, notional, signal_id, datetime.now(timezone.utc).isoformat()),
+                "INSERT INTO capital_reservations "
+                "(id, account_id, notional, signal_id, created_at, resolved_at, strategy_key) "
+                "VALUES (?, ?, ?, ?, ?, NULL, ?)",
+                (reservation_id, account_id, notional, signal_id, datetime.now(timezone.utc).isoformat(), strategy_key),
             )
 
-    def resolve_one_capital_reservation(self, account_id: str, reservation_id: str | None, notional: float) -> None:
+    def resolve_one_capital_reservation(
+        self, account_id: str, reservation_id: str | None, notional: float, signal_id: str | None = None
+    ) -> None:
         """Mark one durable reservation resolved -- called everywhere
         `CapitalAllocator.release` already is, so a row here goes
         unresolved for exactly as long as `_pending`'s own in-memory
@@ -3136,17 +3693,117 @@ class SignalStore:
                     (datetime.now(timezone.utc).isoformat(), reservation_id),
                 )
                 return
-            row = conn.execute(
-                "SELECT id FROM capital_reservations WHERE account_id = ? AND notional = ? AND resolved_at IS NULL "
-                "LIMIT 1",
-                (account_id, notional),
-            ).fetchone()
+            row = None
+            if signal_id is not None:
+                # ALLOC-03: an exact (account, signal, notional) match first,
+                # so a strategy-tagged reservation is never resolved by
+                # another strategy's identically-sized one on that account.
+                row = conn.execute(
+                    "SELECT id FROM capital_reservations WHERE account_id = ? AND notional = ? AND signal_id = ? "
+                    "AND resolved_at IS NULL LIMIT 1",
+                    (account_id, notional, signal_id),
+                ).fetchone()
+            if row is None:
+                row = conn.execute(
+                    "SELECT id FROM capital_reservations WHERE account_id = ? AND notional = ? "
+                    "AND resolved_at IS NULL LIMIT 1",
+                    (account_id, notional),
+                ).fetchone()
             if row is None:
                 return
             conn.execute(
                 "UPDATE capital_reservations SET resolved_at = ? WHERE id = ?",
                 (datetime.now(timezone.utc).isoformat(), row[0]),
             )
+
+    # ------------------------------------------------------------------
+    # ALLOC-03: strategy budgets + joint, cross-process-safe admission
+    # ------------------------------------------------------------------
+    def set_strategy_budget(self, strategy_key: str, max_notional: float | None) -> None:
+        if max_notional is not None and not (max_notional > 0):
+            raise ValueError("max_notional must be a positive number or None")
+        with self._immediate() as conn:
+            conn.execute(
+                "INSERT INTO strategy_budgets (strategy_key, max_notional, updated_at) VALUES (?, ?, ?) "
+                "ON CONFLICT(strategy_key) DO UPDATE SET max_notional = excluded.max_notional, "
+                "updated_at = excluded.updated_at",
+                (strategy_key, max_notional, datetime.now(timezone.utc).isoformat()),
+            )
+
+    def get_strategy_budget(self, strategy_key: str) -> dict | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT strategy_key, max_notional, updated_at FROM strategy_budgets WHERE strategy_key = ?",
+                (strategy_key,),
+            ).fetchone()
+        return None if row is None else {"strategy_key": row[0], "max_notional": row[1], "updated_at": row[2]}
+
+    def list_strategy_budgets(self) -> list[dict]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT strategy_key, max_notional, updated_at FROM strategy_budgets ORDER BY strategy_key"
+            ).fetchall()
+        return [{"strategy_key": r[0], "max_notional": r[1], "updated_at": r[2]} for r in rows]
+
+    def delete_strategy_budget(self, strategy_key: str) -> None:
+        with self._immediate() as conn:
+            conn.execute("DELETE FROM strategy_budgets WHERE strategy_key = ?", (strategy_key,))
+
+    def sum_unresolved_strategy_reservations(self, strategy_key: str) -> float:
+        """Outstanding reserved notional for one strategy ACROSS every
+        account and every process sharing this database file."""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT COALESCE(SUM(notional), 0) FROM capital_reservations "
+                "WHERE strategy_key = ? AND resolved_at IS NULL",
+                (strategy_key,),
+            ).fetchone()
+        return float(row[0])
+
+    def reserve_strategy_checked(
+        self,
+        reservation_id: str,
+        account_id: str,
+        notional: float,
+        *,
+        signal_id: str | None,
+        strategy_key: str,
+        ceiling: float,
+        confirmed_notional,
+    ) -> tuple[bool, float, float]:
+        """Atomically (one BEGIN IMMEDIATE transaction) check
+        `confirmed + outstanding reservations + notional <= ceiling` for
+        the strategy and, only if it fits, insert the reservation.
+        `confirmed_notional` is a zero-arg callable evaluated AFTER the
+        write lock is held, so no other process can commit a fill or a
+        reservation between the read and the insert. No broker or network
+        call may happen inside it. Returns (admitted, confirmed, pending).
+        """
+        with self._immediate() as conn:
+            confirmed = float(confirmed_notional())
+            pending = float(
+                conn.execute(
+                    "SELECT COALESCE(SUM(notional), 0) FROM capital_reservations "
+                    "WHERE strategy_key = ? AND resolved_at IS NULL",
+                    (strategy_key,),
+                ).fetchone()[0]
+            )
+            if confirmed + pending + notional > ceiling:
+                return False, confirmed, pending
+            conn.execute(
+                "INSERT INTO capital_reservations "
+                "(id, account_id, notional, signal_id, created_at, resolved_at, strategy_key) "
+                "VALUES (?, ?, ?, ?, ?, NULL, ?)",
+                (
+                    reservation_id,
+                    account_id,
+                    notional,
+                    signal_id,
+                    datetime.now(timezone.utc).isoformat(),
+                    strategy_key,
+                ),
+            )
+        return True, confirmed, pending
 
     def sum_unresolved_capital_reservations(self) -> dict[str, float]:
         """Every account's real, currently-outstanding durable reservation
@@ -3175,14 +3832,19 @@ class SignalStore:
         can build one too: `signal_id`/`asset_class`/`analyst` are exactly
         what `build_execution_applied_envelope` needs beyond what this
         table already carries. `orders.signal_id` is `NOT NULL REFERENCES
-        signals(id)`, so this JOIN never drops a row."""
+        signals(id)`, so this JOIN never drops a row.
+
+        D-01: Excludes bracket child leg orders (purpose='stop_exit' or
+        'target_exit') -- those are handled separately via
+        `list_pending_child_orders()` and `_reconcile_pending_child_orders()`."""
         with self._connect() as conn:
             rows = conn.execute(
                 """SELECT o.id, o.account_id, o.broker, o.symbol, o.side, o.requested_quantity,
                           o.filled_quantity, o.broker_order_id, o.reserved_notional,
                           o.signal_id, s.asset_class, s.analyst
                    FROM orders o JOIN signals s ON o.signal_id = s.id
-                   WHERE o.status = 'pending' AND o.broker_order_id IS NOT NULL"""
+                   WHERE o.status = 'pending' AND o.broker_order_id IS NOT NULL
+                         AND (o.purpose IS NULL OR o.purpose NOT IN ('stop_exit', 'target_exit'))"""
             ).fetchall()
         return [
             {
@@ -3198,6 +3860,38 @@ class SignalStore:
                 "signal_id": r[9],
                 "asset_class": r[10],
                 "analyst": r[11],
+            }
+            for r in rows
+        ]
+
+    def list_pending_child_orders(self) -> list[dict]:
+        """Pending child bracket orders (purpose='stop_exit' or 'target_exit').
+
+        Unlike list_pending_orders, child orders are linked to signals via
+        family_id. Returns child orders with status='pending' and a
+        broker_order_id to poll, including the entry side so the reconciler
+        can determine the correct exit side."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT o.id, o.account_id, o.broker, o.symbol, o.requested_quantity,
+                          o.filled_quantity, o.broker_order_id, o.purpose, o.family_id,
+                          s.side
+                   FROM orders o JOIN signals s ON o.family_id = s.id
+                   WHERE o.status = 'pending' AND o.broker_order_id IS NOT NULL
+                         AND o.purpose IN ('stop_exit', 'target_exit')"""
+            ).fetchall()
+        return [
+            {
+                "id": r[0],
+                "account_id": r[1],
+                "broker": r[2],
+                "symbol": r[3],
+                "requested_quantity": r[4],
+                "filled_quantity": r[5],
+                "broker_order_id": r[6],
+                "purpose": r[7],
+                "family_id": r[8],
+                "entry_side": r[9],
             }
             for r in rows
         ]
@@ -3240,14 +3934,44 @@ class SignalStore:
         defaulting to `None`: an ordinary status/price/message update (the
         original, pre-AUD-01 shape of this method) must never silently
         blank out a quantity column a previous, more-informative call
-        already set."""
-        columns = ["status = ?", "filled_quantity = ?", "filled_price = ?", "message = ?", "executed_at = ?"]
+        already set.
+
+        E-07 (WP-27): executed_at is now preserved from the broker's actual
+        fill timestamp. When transitioning from PENDING to FILLED, use the
+        result's executed_at (broker's actual timestamp) if provided and the
+        current value is just a placeholder (current time). Otherwise, preserve
+        the existing value. confirmed_at tracks the poll time when the fill is
+        reconciled."""
+        # E-07: Fetch current executed_at and status to preserve broker's original timestamp
+        current_row = conn.execute(
+            "SELECT executed_at, status FROM orders WHERE id = ?", (order_row_id,)
+        ).fetchone()
+        current_executed_at = current_row[0] if current_row else None
+        current_status = current_row[1] if current_row else None
+
+        # Determine what executed_at should be: when transitioning PENDING->FILLED with
+        # a broker-reported fill time, use that time. Otherwise preserve the current value.
+        new_executed_at: str | None
+        if (current_status == "pending" and
+            result.status.value == "filled" and
+            result.executed_at is not None):
+            # Transitioning to FILLED with broker's actual timestamp
+            new_executed_at = result.executed_at.isoformat()
+        else:
+            # Preserve existing value (could be NULL, or a previously-set broker time)
+            new_executed_at = current_executed_at  # type: ignore[assignment]
+
+        # confirmed_at is the current reconciliation poll time (when broker confirmed the fill)
+        confirmed_at = datetime.now(timezone.utc).isoformat()
+
+        columns = ["status = ?", "filled_quantity = ?", "filled_price = ?", "message = ?", "executed_at = ?", "confirmed_at = ?"]
         params: list[object] = [
             result.status.value,
             result.filled_quantity,
             result.filled_price,
             result.message,
-            result.executed_at.isoformat(),
+            new_executed_at,
+            confirmed_at,
         ]
         for column_name, value in (
             ("confirmed_cumulative_fill", confirmed_cumulative_fill),
@@ -3380,6 +4104,25 @@ class SignalStore:
             outstanding[symbol] = outstanding.get(symbol, 0.0) + signed
         return outstanding
 
+    def get_latest_contract_multiplier(self, account_id: str, symbol: str) -> float:
+        """WP-15b: Get the contract multiplier from the most recent filled order
+        for this account+symbol combination. Returns 1.0 if no filled orders exist
+        or if contract_multiplier is NULL (pre-migration rows or orders without a
+        contract spec).
+
+        Used by capital_allocator to scale notional calculations for options,
+        futures, and FX contracts."""
+        with self._connect() as conn:
+            result = conn.execute(
+                """SELECT COALESCE(contract_multiplier, 1.0)
+                   FROM orders
+                   WHERE account_id = ? AND symbol = ? AND (status = 'filled' OR filled_quantity > 0)
+                   ORDER BY executed_at DESC, id DESC
+                   LIMIT 1""",
+                (account_id, symbol),
+            ).fetchone()
+        return result[0] if result else 1.0
+
     def record_fill(
         self, account_id: str, symbol: str, side: Side, quantity: float, *, lifecycle_state: dict | None = None
     ) -> float:
@@ -3449,7 +4192,7 @@ class SignalStore:
         with self._connect() as conn:
             rows = conn.execute(
                 """SELECT id, source, symbol, side, asset_class, quantity, price, received_at, analyst,
-                          stop_loss, take_profit, raw, import_batch
+                          stop_loss, take_profit, raw, import_batch, intent, reduce_fraction
                    FROM signals ORDER BY received_at DESC LIMIT ?""",
                 (limit,),
             ).fetchall()
@@ -3489,6 +4232,18 @@ class SignalStore:
                 # POST /sources/{source}/import-signals -- see
                 # Signal.import_batch's docstring in app/models.py.
                 "import_batch": r[12],
+                # WP-44: signal interpretation fields for UI display.
+                # `intent` is the derived/explicit trading intent from the signal.
+                # `reduce_fraction` (0 < x ≤ 1) is the fraction of position to reduce
+                # when intent is REDUCE. Contract specs are in raw["contract_spec"]
+                # if present (see save_signal). asset_class_inferred is a boolean
+                # in raw["asset_class_inferred"] indicating whether the asset class
+                # was inferred from symbol shape rather than source-declared.
+                # WP-44 (TR-04/TR-03): Signal intent for plain-language interpretation
+                # and reduce_fraction for REDUCE intents. Contract specs are serialized
+                # into raw["contract_spec"] at save time for UI interpretation.
+                "intent": r[13],
+                "reduce_fraction": r[14],
             }
             for r in rows
         ]
@@ -3841,7 +4596,7 @@ class SignalStore:
             except sqlite3.IntegrityError:
                 pass  # idempotency_key already exists -- fall through to read it back below.
             else:
-                return self._command_ledger_row_to_entry(
+                opened = self._command_ledger_row_to_entry(
                     (
                         row_id,
                         resolved_intent_id,
@@ -3858,6 +4613,8 @@ class SignalStore:
                         None,
                     )
                 )
+                opened.newly_opened = True
+                return opened
             existing_row = conn.execute(
                 """SELECT id, intent_id, idempotency_key, command_type, account_id, environment,
                           expected_revision, request_fingerprint, created_at, remote_identifiers,
@@ -4146,7 +4903,9 @@ class SignalStore:
             rows = conn.execute(
                 """SELECT account_id, broker, multiplier, fixed_quantity, symbol_map, enabled,
                           managed_lifecycle, max_notional_exposure, risk_percent_of_equity,
-                          management_recipe, qualification_level, exclusive_writer_qualified
+                          management_recipe, qualification_level, exclusive_writer_qualified,
+                          daily_loss_limit_percent, min_equity_threshold, currency, max_gross_leverage,
+                          allow_short, sizing_mode, risk_fraction
                    FROM config_accounts ORDER BY account_id"""
             ).fetchall()
         return [
@@ -4169,6 +4928,13 @@ class SignalStore:
                 "management_recipe": r[9] or ("full_managed_lifecycle" if r[6] else "plain_unmanaged"),
                 "qualification_level": r[10],
                 "exclusive_writer_qualified": bool(r[11]),
+                "daily_loss_limit_percent": r[12],
+                "min_equity_threshold": r[13],
+                "currency": r[14],
+                "max_gross_leverage": r[15],
+                "allow_short": bool(r[16]),
+                "sizing_mode": r[17] or "multiplier",
+                "risk_fraction": r[18],
             }
             for r in rows
         ]
@@ -4187,14 +4953,22 @@ class SignalStore:
         management_recipe: str | None = None,
         qualification_level: str | None = None,
         exclusive_writer_qualified: bool = False,
+        daily_loss_limit_percent: float | None = None,
+        min_equity_threshold: float | None = None,
+        currency: str | None = None,
+        max_gross_leverage: float | None = None,
+        allow_short: bool | None = None,
+        sizing_mode: str | None = None,
+        risk_fraction: float | None = None,
     ) -> None:
         with self._connect() as conn:
             conn.execute(
                 """INSERT INTO config_accounts
                    (account_id, broker, multiplier, fixed_quantity, symbol_map, enabled, managed_lifecycle,
                     max_notional_exposure, risk_percent_of_equity, management_recipe, qualification_level,
-                    exclusive_writer_qualified)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    exclusive_writer_qualified, daily_loss_limit_percent, min_equity_threshold, currency,
+                    max_gross_leverage, allow_short, sizing_mode, risk_fraction)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT (account_id) DO UPDATE SET
                      broker = excluded.broker, multiplier = excluded.multiplier,
                      fixed_quantity = excluded.fixed_quantity, symbol_map = excluded.symbol_map,
@@ -4203,7 +4977,14 @@ class SignalStore:
                      risk_percent_of_equity = excluded.risk_percent_of_equity,
                      management_recipe = excluded.management_recipe,
                      qualification_level = excluded.qualification_level,
-                     exclusive_writer_qualified = excluded.exclusive_writer_qualified""",
+                     exclusive_writer_qualified = excluded.exclusive_writer_qualified,
+                     daily_loss_limit_percent = excluded.daily_loss_limit_percent,
+                     min_equity_threshold = excluded.min_equity_threshold,
+                     currency = excluded.currency,
+                     max_gross_leverage = excluded.max_gross_leverage,
+                     allow_short = excluded.allow_short,
+                     sizing_mode = excluded.sizing_mode,
+                     risk_fraction = excluded.risk_fraction""",
                 (
                     account_id,
                     broker,
@@ -4222,7 +5003,24 @@ class SignalStore:
                     management_recipe or ("full_managed_lifecycle" if managed_lifecycle else "plain_unmanaged"),
                     qualification_level,
                     int(exclusive_writer_qualified),
+                    daily_loss_limit_percent,
+                    min_equity_threshold,
+                    currency,
+                    max_gross_leverage,
+                    int(bool(allow_short)),
+                    sizing_mode or "multiplier",
+                    risk_fraction,
                 ),
+            )
+
+    def update_account_paper_order_id_sequence(self, account_id: str, sequence: int) -> None:
+        """WP-38 (G-C-24): update the persistent paper order ID sequence for an
+        account without changing other account fields. Called after a paper
+        broker fill to persist the updated sequence."""
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE config_accounts SET paper_order_id_sequence = ? WHERE account_id = ?",
+                (sequence, account_id),
             )
 
     def delete_config_account(self, account_id: str) -> None:
@@ -4246,7 +5044,7 @@ class SignalStore:
     def list_config_routing_rules(self) -> list[dict]:
         with self._connect() as conn:
             rows = conn.execute(
-                "SELECT id, source, destinations, symbol_filter FROM config_routing_rules ORDER BY id"
+                "SELECT id, source, destinations, symbol_filter, delivery_mode FROM config_routing_rules ORDER BY id"
             ).fetchall()
         return [
             {
@@ -4254,33 +5052,209 @@ class SignalStore:
                 "source": r[1],
                 "destinations": json.loads(r[2]),
                 "symbol_filter": json.loads(r[3]) if r[3] else None,
+                "delivery_mode": r[4] or "single",
             }
             for r in rows
         ]
 
     def insert_config_routing_rule(
-        self, source: str, destinations: list[str], symbol_filter: list[str] | None = None
+        self,
+        source: str,
+        destinations: list[str],
+        symbol_filter: list[str] | None = None,
+        delivery_mode: str = "single",
     ) -> int:
         with self._connect() as conn:
             cursor = conn.execute(
-                "INSERT INTO config_routing_rules (source, destinations, symbol_filter) VALUES (?, ?, ?)",
-                (source, json.dumps(destinations), json.dumps(symbol_filter) if symbol_filter else None),
+                "INSERT INTO config_routing_rules (source, destinations, symbol_filter, delivery_mode) VALUES (?, ?, ?, ?)",
+                (source, json.dumps(destinations), json.dumps(symbol_filter) if symbol_filter else None, delivery_mode),
             )
             assert cursor.lastrowid is not None  # see save_order_result's identical comment
             return cursor.lastrowid
 
     def update_config_routing_rule(
-        self, rule_id: int, source: str, destinations: list[str], symbol_filter: list[str] | None = None
+        self,
+        rule_id: int,
+        source: str,
+        destinations: list[str],
+        symbol_filter: list[str] | None = None,
+        delivery_mode: str = "single",
     ) -> None:
         with self._connect() as conn:
             conn.execute(
-                "UPDATE config_routing_rules SET source = ?, destinations = ?, symbol_filter = ? WHERE id = ?",
-                (source, json.dumps(destinations), json.dumps(symbol_filter) if symbol_filter else None, rule_id),
+                "UPDATE config_routing_rules SET source = ?, destinations = ?, symbol_filter = ?, delivery_mode = ? "
+                "WHERE id = ?",
+                (
+                    source,
+                    json.dumps(destinations),
+                    json.dumps(symbol_filter) if symbol_filter else None,
+                    delivery_mode,
+                    rule_id,
+                ),
             )
 
     def delete_config_routing_rule(self, rule_id: int) -> None:
         with self._connect() as conn:
             conn.execute("DELETE FROM config_routing_rules WHERE id = ?", (rule_id,))
+
+    # ------------------------------------------------------------------
+    # ALLOC-01: allocation intents (one logical decision per opportunity)
+    # ------------------------------------------------------------------
+    @contextmanager
+    def _immediate(self, *, attempts: int = 8, backoff: float = 0.05) -> Iterator[sqlite3.Connection]:
+        """Short write transaction opened with BEGIN IMMEDIATE (SQLite
+        allows one writer; a second concurrent writer gets SQLITE_BUSY).
+        Contention is retried with bounded backoff; callers must keep the
+        body short and must never make a broker/network call inside it."""
+        import time
+
+        conn = sqlite3.connect(self.db_path, timeout=3.0)  # v8 engineering default sqlite_busy_timeout_ms=3000
+        conn.execute("PRAGMA foreign_keys = ON")
+        try:
+            for attempt in range(attempts):
+                try:
+                    conn.execute("BEGIN IMMEDIATE")
+                    break
+                except sqlite3.OperationalError as exc:
+                    if "locked" not in str(exc) and "busy" not in str(exc):
+                        raise
+                    if attempt == attempts - 1:
+                        raise
+                    time.sleep(backoff * (2**attempt))
+            try:
+                yield conn
+            except BaseException:
+                conn.rollback()
+                raise
+            else:
+                conn.commit()
+        finally:
+            conn.close()
+
+    @staticmethod
+    def _intent_row(row: sqlite3.Row | tuple | None) -> dict | None:
+        if row is None:
+            return None
+        return {
+            "intent_id": row[0],
+            "signal_id": row[1],
+            "strategy_key": row[2],
+            "symbol": row[3],
+            "side": row[4],
+            "candidates": json.loads(row[5]),
+            "selected_account_id": row[6],
+            "state": row[7],
+            "reason": row[8],
+            "trace": json.loads(row[9]) if row[9] else None,
+            "created_at": row[10],
+            "updated_at": row[11],
+        }
+
+    _INTENT_COLS = (
+        "intent_id, signal_id, strategy_key, symbol, side, candidates, selected_account_id, state, reason, "
+        "trace, created_at, updated_at"
+    )
+
+    def get_allocation_intent(self, signal_id: str) -> dict | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                f"SELECT {self._INTENT_COLS} FROM allocation_intents WHERE signal_id = ?", (signal_id,)
+            ).fetchone()
+        return self._intent_row(row)
+
+    def claim_allocation_intent(
+        self, signal_id: str, *, strategy_key: str, symbol: str, side: str, candidates: list[str]
+    ) -> dict:
+        """Idempotent across threads and processes: the first claimant
+        creates the row (state 'claimed'); every later claimant for the
+        same signal gets that same row back, including whatever account
+        it is already bound to."""
+        import hashlib
+
+        intent_id = hashlib.sha256(f"{strategy_key}|{signal_id}".encode()).hexdigest()[:32]
+        now = datetime.now(timezone.utc).isoformat()
+        with self._immediate() as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO allocation_intents "
+                "(intent_id, signal_id, strategy_key, symbol, side, candidates, state, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, 'claimed', ?, ?)",
+                (intent_id, signal_id, strategy_key, symbol, side, json.dumps(candidates), now, now),
+            )
+            row = conn.execute(
+                f"SELECT {self._INTENT_COLS} FROM allocation_intents WHERE signal_id = ?", (signal_id,)
+            ).fetchone()
+        intent = self._intent_row(row)
+        assert intent is not None
+        return intent
+
+    def bind_allocation_intent(self, signal_id: str, account_id: str) -> bool:
+        """Atomically bind the intent to ONE account. True when this call
+        bound it or it was already bound to the same account; False when
+        a different account already won or the intent is terminal
+        (skipped). Never rebinds."""
+        now = datetime.now(timezone.utc).isoformat()
+        with self._immediate() as conn:
+            row = conn.execute(
+                "SELECT selected_account_id, state FROM allocation_intents WHERE signal_id = ?", (signal_id,)
+            ).fetchone()
+            if row is None:
+                return False
+            selected, state = row
+            if selected is not None:
+                return selected == account_id and state in ("selected", "committed")
+            if state != "claimed":
+                return False
+            conn.execute(
+                "UPDATE allocation_intents SET selected_account_id = ?, state = 'selected', updated_at = ? "
+                "WHERE signal_id = ?",
+                (account_id, now, signal_id),
+            )
+        return True
+
+    def release_allocation_binding(self, signal_id: str, account_id: str) -> bool:
+        """Undo a binding ONLY when no submission was attempted (state
+        'selected'): used when the chosen account is rejected before it
+        ever reaches a broker. A committed intent is never released."""
+        now = datetime.now(timezone.utc).isoformat()
+        with self._immediate() as conn:
+            cur = conn.execute(
+                "UPDATE allocation_intents SET selected_account_id = NULL, state = 'claimed', updated_at = ? "
+                "WHERE signal_id = ? AND selected_account_id = ? AND state = 'selected'",
+                (now, signal_id, account_id),
+            )
+        return cur.rowcount > 0
+
+    def commit_allocation_intent(self, signal_id: str, account_id: str, *, reason: str | None = None) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        with self._immediate() as conn:
+            conn.execute(
+                "UPDATE allocation_intents SET state = 'committed', reason = COALESCE(?, reason), updated_at = ? "
+                "WHERE signal_id = ? AND selected_account_id = ? AND state IN ('selected', 'committed')",
+                (reason, now, signal_id, account_id),
+            )
+
+    def skip_allocation_intent(self, signal_id: str, *, reason: str, trace: list[dict] | None = None) -> None:
+        """Explained non-execution. Only a not-yet-bound intent can be
+        skipped; an intent already bound/committed keeps its account."""
+        now = datetime.now(timezone.utc).isoformat()
+        with self._immediate() as conn:
+            conn.execute(
+                "UPDATE allocation_intents SET state = 'skipped', reason = ?, trace = ?, updated_at = ? "
+                "WHERE signal_id = ? AND state = 'claimed'",
+                (reason, json.dumps(trace) if trace is not None else None, now, signal_id),
+            )
+
+    def list_allocation_intents(self, *, state: str | None = None, limit: int = 200) -> list[dict]:
+        query = f"SELECT {self._INTENT_COLS} FROM allocation_intents"
+        params: list[Any] = []
+        if state is not None:
+            query += " WHERE state = ?"
+            params.append(state)
+        query += " ORDER BY created_at DESC LIMIT ?"
+        params.append(limit)
+        with self._connect() as conn:
+            rows = conn.execute(query, params).fetchall()
+        return [i for i in (self._intent_row(r) for r in rows) if i is not None]
 
     def list_config_providers(self) -> list[dict]:
         with self._connect() as conn:
@@ -4540,7 +5514,7 @@ class SignalStore:
     # --- Global (cross-account) fill replay for provider attribution (app/provider_value.py) ---
 
     def list_filled_orders_with_signal_chronological(self) -> list[dict]:
-        """Every FILLED order across every account, oldest first, joined
+        """Every order with an actual fill (status='filled' or filled_quantity > 0) across every account, oldest first, joined
         with its originating signal's source/analyst/asset_class -- the
         provider-attribution equivalent of `list_filled_orders_chronological`
         (which is scoped to one account and doesn't need signal identity at
@@ -4558,7 +5532,7 @@ class SignalStore:
                           s.source, s.analyst, s.asset_class, o.purpose, o.family_id, o.signal_id
                    FROM orders o
                    JOIN signals s ON s.id = o.signal_id
-                   WHERE o.status = 'filled'
+                   WHERE o.status = 'filled' OR o.filled_quantity > 0
                    ORDER BY o.executed_at ASC, o.id ASC"""
             ).fetchall()
         return [
@@ -4780,14 +5754,14 @@ class SignalStore:
     # --- Live qualification (app/qualification.py) ---------------------
 
     def _achieved_qualification_states(
-        self, conn: sqlite3.Connection, *, adapter_type: str, route_key: str, asset_class: str, product_type: str
+        self, conn: sqlite3.Connection, *, adapter_type: str, route_key: str, asset_class: str, product_type: str, environment: str = "unknown"
     ) -> "set":
         from app.qualification import QualificationState
 
         rows = conn.execute(
             "SELECT DISTINCT state FROM route_qualifications "
-            "WHERE adapter_type = ? AND route_key = ? AND asset_class = ? AND product_type = ?",
-            (adapter_type, route_key, asset_class, product_type),
+            "WHERE adapter_type = ? AND route_key = ? AND asset_class = ? AND product_type = ? AND environment = ?",
+            (adapter_type, route_key, asset_class, product_type, environment),
         ).fetchall()
         achieved = set()
         for (state_value,) in rows:
@@ -4809,6 +5783,7 @@ class SignalStore:
         recorded_by: str,
         notes: str | None = None,
         recorded_at: datetime | None = None,
+        environment: str = "unknown",
     ) -> dict:
         """Record ONE state achieved for ONE exact route. Fails closed --
         raises `app.qualification.QualificationError` (never silently
@@ -4860,7 +5835,7 @@ class SignalStore:
         row, via the schema's UNIQUE constraint) -- it never re-runs the
         prerequisite check against itself.
         """
-        from app.qualification import QualificationError, parse_state, missing_prerequisites, requires_feedback
+        from app.qualification import QualificationState, QualificationError, parse_state, missing_prerequisites, requires_feedback
 
         parsed_state = parse_state(state)
         if not adapter_type or not route_key or not asset_class or not product_type:
@@ -4894,36 +5869,38 @@ class SignalStore:
                 )
 
             achieved = self._achieved_qualification_states(
-                conn, adapter_type=adapter_type, route_key=route_key, asset_class=asset_class, product_type=product_type
+                conn, adapter_type=adapter_type, route_key=route_key, asset_class=asset_class, product_type=product_type, environment=environment
             )
-            if parsed_state not in achieved:
-                missing = missing_prerequisites(parsed_state, achieved)
-                if missing:
-                    raise QualificationError(
-                        f"cannot record '{parsed_state.value}' for route "
-                        f"({adapter_type}/{route_key}/{asset_class}/{product_type}): "
-                        f"missing prerequisite state(s) {[m.value for m in missing]} -- "
-                        "the qualification ladder must be achieved in order"
-                    )
-                if requires_feedback(parsed_state) and not supports_feedback:
-                    raise QualificationError(
-                        f"cannot record '{parsed_state.value}' for route "
-                        f"({adapter_type}/{route_key}/{asset_class}/{product_type}): "
-                        f"adapter '{adapter_type}' has no real order-status, position-readback, or "
-                        "balance-readback implementation (has_account_order_position_feedback is False) -- "
-                        "there is no genuine feedback channel to verify this state with, so it structurally "
-                        "cannot be claimed for any route on this adapter, regardless of operator intent"
-                    )
+            # REVOKED is a terminal state outside the normal ladder, so skip prerequisite checks
+            if parsed_state != QualificationState.REVOKED:
+                if parsed_state not in achieved:
+                    missing = missing_prerequisites(parsed_state, achieved)
+                    if missing:
+                        raise QualificationError(
+                            f"cannot record '{parsed_state.value}' for route "
+                            f"({adapter_type}/{route_key}/{asset_class}/{product_type}): "
+                            f"missing prerequisite state(s) {[m.value for m in missing]} -- "
+                            "the qualification ladder must be achieved in order"
+                        )
+                    if requires_feedback(parsed_state) and not supports_feedback:
+                        raise QualificationError(
+                            f"cannot record '{parsed_state.value}' for route "
+                            f"({adapter_type}/{route_key}/{asset_class}/{product_type}): "
+                            f"adapter '{adapter_type}' has no real order-status, position-readback, or "
+                            "balance-readback implementation (has_account_order_position_feedback is False) -- "
+                            "there is no genuine feedback channel to verify this state with, so it structurally "
+                            "cannot be claimed for any route on this adapter, regardless of operator intent"
+                        )
 
             conn.execute(
                 """
                 INSERT INTO route_qualifications
-                    (adapter_type, route_key, asset_class, product_type, state, recorded_at, recorded_by, notes)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(adapter_type, route_key, asset_class, product_type, state)
+                    (adapter_type, route_key, asset_class, product_type, state, recorded_at, recorded_by, notes, environment)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(adapter_type, route_key, asset_class, product_type, environment, state)
                 DO UPDATE SET recorded_at = excluded.recorded_at, recorded_by = excluded.recorded_by, notes = excluded.notes
                 """,
-                (adapter_type, route_key, asset_class, product_type, parsed_state.value, when, recorded_by, notes),
+                (adapter_type, route_key, asset_class, product_type, parsed_state.value, when, recorded_by, notes, environment),
             )
 
         return {
@@ -4935,6 +5912,7 @@ class SignalStore:
             "recorded_at": when,
             "recorded_by": recorded_by,
             "notes": notes,
+            "environment": environment,
         }
 
     def list_route_qualifications(
@@ -4998,29 +5976,37 @@ class SignalStore:
         return result
 
     def is_route_release_approved(
-        self, *, adapter_type: str, route_key: str, asset_class: str, product_type: str
+        self, *, adapter_type: str, route_key: str, asset_class: str, product_type: str, environment: str = "unknown"
     ) -> bool:
         """Live-routing gate read (app/engine.py's `_check_route_qualified`):
         has `QualificationState.RELEASE_APPROVED` -- the deliberate human
         sign-off, never auto-set (see app/qualification.py's own
         docstring) -- actually been recorded for this EXACT
-        (adapter_type, route_key, asset_class, product_type) tuple.
+        (adapter_type, route_key, asset_class, product_type, environment) tuple.
+
+        A route is only release-approved for the environment it was qualified in;
+        if the environment changes, the route must be re-qualified. Also checks
+        that the route has not been revoked (a terminal state that prevents
+        the route from ever being used again).
 
         Reuses `_achieved_qualification_states` (the same read the write
         path's own prerequisite check uses), so this can never disagree
         with what `record_route_qualification`/`list_route_qualifications`
         report as achieved for the same route. Returns `False` for a route
-        with zero recorded qualification events at all, and `False` for a
-        route that has SOME recorded states but not `release_approved`
-        itself -- there is no partial credit here; the ladder's own
-        ordering already guarantees `release_approved` recorded means
-        every rung below it was too."""
+        with zero recorded qualification events at all, `False` for a route
+        that has been revoked, and `False` for a route that has SOME recorded
+        states but not `release_approved` itself -- there is no partial credit
+        here; the ladder's own ordering already guarantees `release_approved`
+        recorded means every rung below it was too."""
         from app.qualification import QualificationState
 
         with self._connect() as conn:
             achieved = self._achieved_qualification_states(
-                conn, adapter_type=adapter_type, route_key=route_key, asset_class=asset_class, product_type=product_type
+                conn, adapter_type=adapter_type, route_key=route_key, asset_class=asset_class, product_type=product_type, environment=environment
             )
+        # A route is blocked if it has been revoked (terminal state) or if it hasn't been approved
+        if QualificationState.REVOKED in achieved:
+            return False
         return QualificationState.RELEASE_APPROVED in achieved
 
     # -- Track 8: the UNIFIED collector registry (app/unified_collectors.py) --
@@ -8559,17 +9545,41 @@ class SignalStore:
             for r in rows
         ]
 
-    def list_filled_orders_chronological(self, account_id: str) -> list[dict]:
-        """Every FILLED order for this account, oldest first -- the replay
+    def list_accounts_with_fills_for_source(self, source: str) -> list[str]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT DISTINCT o.account_id FROM orders o JOIN signals s ON o.signal_id = s.id "
+                "LEFT JOIN signals fs ON fs.id = o.family_id "
+                "WHERE (o.status = 'filled' OR o.filled_quantity > 0) AND COALESCE(fs.source, s.source) = ?",
+                (source,),
+            ).fetchall()
+        return [r[0] for r in rows]
+
+    def list_filled_orders_chronological(self, account_id: str, source: str | None = None) -> list[dict]:
+        """Every order with an actual fill (status='filled' or filled_quantity > 0)
+        for this account, oldest first -- the replay
         order app/economics.py needs to reconstruct realized P&L via
         average-cost lot accounting. Unlike `list_recent_orders`, this has
         no LIMIT: a P&L computation that silently dropped older fills would
         misstate cost basis and realized gains, not just show fewer rows."""
-        query = """SELECT id, account_id, broker, symbol, side, requested_quantity, signal_id,
-                          status, broker_order_id, filled_quantity, filled_price, message, executed_at
-                   FROM orders WHERE account_id = ? AND status = 'filled' ORDER BY executed_at ASC, id ASC"""
+        query = """SELECT o.id, o.account_id, o.broker, o.symbol, o.side, o.requested_quantity, o.signal_id,
+                          o.status, o.broker_order_id, o.filled_quantity, o.filled_price, o.message, o.executed_at
+                   FROM orders o {join} WHERE o.account_id = ? AND (o.status = 'filled' OR o.filled_quantity > 0) {extra}
+                   ORDER BY o.executed_at ASC, o.id ASC"""
+        params: list[Any] = [account_id]
+        if source is None:
+            query = query.format(join="", extra="")
+        else:
+            # A lifecycle- or operator-initiated exit carries a synthetic
+            # source ("lifecycle_manager", "manual_exit"); its economic owner
+            # is the entry signal named by `family_id`.
+            query = query.format(
+                join="JOIN signals s ON o.signal_id = s.id LEFT JOIN signals fs ON fs.id = o.family_id",
+                extra="AND COALESCE(fs.source, s.source) = ?",
+            )
+            params.append(source)
         with self._connect() as conn:
-            rows = conn.execute(query, (account_id,)).fetchall()
+            rows = conn.execute(query, params).fetchall()
         return [
             {
                 "id": r[0],
@@ -8590,7 +9600,7 @@ class SignalStore:
         ]
 
     def list_filled_orders_with_signal_timing(self, account_id: str) -> list[dict]:
-        """Every FILLED order for this account joined to its originating
+        """Every order with an actual fill (status='filled' or filled_quantity > 0) for this account joined to its originating
         signal's `received_at`, plus this order's own PU-A2 stage
         timestamps (`submitted_at`/`protection_confirmed_at`) --
         app/execution_quality.py's source for both the original
@@ -8599,10 +9609,16 @@ class SignalStore:
         may be `None` for a given row (a rejection before submission, a
         non-managed_lifecycle account, or a managed entry whose stop was
         never confirmed) -- that module's own docstring says exactly which
-        stages this schema does and doesn't separately track."""
+        stages this schema does and doesn't separately track.
+
+        E-08 (WP-27): excludes synthetic lifecycle signals (stop_exit,
+        target_exit, time_exit) from latency calculations so that managed
+        exit latency doesn't dilute provider-signal latency metrics."""
         query = """SELECT o.symbol, o.executed_at, s.received_at, o.submitted_at, o.protection_confirmed_at
                    FROM orders o JOIN signals s ON o.signal_id = s.id
-                   WHERE o.account_id = ? AND o.status = 'filled'
+                   WHERE o.account_id = ? AND (o.status = 'filled' OR o.filled_quantity > 0)
+                   AND (o.purpose IS NULL OR o.purpose NOT IN ('stop_exit', 'target_exit', 'time_exit'))
+                   AND s.source != 'lifecycle_manager'
                    ORDER BY o.executed_at ASC"""
         with self._connect() as conn:
             rows = conn.execute(query, (account_id,)).fetchall()
@@ -8628,7 +9644,7 @@ class SignalStore:
         than compared against a fabricated reference."""
         query = """SELECT o.symbol, o.side, o.filled_quantity, o.filled_price, o.executed_at, s.price
                    FROM orders o JOIN signals s ON o.signal_id = s.id
-                   WHERE o.account_id = ? AND o.status = 'filled'
+                   WHERE o.account_id = ? AND (o.status = 'filled' OR o.filled_quantity > 0)
                    ORDER BY o.executed_at ASC, o.id ASC"""
         with self._connect() as conn:
             rows = conn.execute(query, (account_id,)).fetchall()
@@ -8643,6 +9659,28 @@ class SignalStore:
             }
             for r in rows
         ]
+
+    def get_oldest_entry_signal_id(self, account_id: str, symbol: str, closing_side: str) -> str | None:
+        """WP-26/E-06: Find the oldest FILLED entry signal for a plain account close.
+
+        For a close order, find the oldest FILLED entry order (opposite side from the
+        close) so we can match them via FIFO for episode grouping. The closing_side
+        parameter is the side of the close order (e.g., 'sell' to close a long).
+
+        Returns the signal_id of the oldest entry, or None if no entry found."""
+        # Determine the entry side (opposite of closing side)
+        entry_side = "buy" if closing_side == "sell" else "sell"
+
+        query = """SELECT o.signal_id
+                   FROM orders o
+                   WHERE o.account_id = ? AND o.symbol = ? AND o.side = ? AND o.status = 'filled'
+                   ORDER BY o.executed_at ASC, o.id ASC
+                   LIMIT 1"""
+
+        with self._connect() as conn:
+            row = conn.execute(query, (account_id, symbol, entry_side)).fetchone()
+
+        return row[0] if row else None
 
     def list_recent_orders(self, limit: int = 50, account_id: str | None = None) -> list[dict]:
         query = """SELECT id, account_id, broker, symbol, side, requested_quantity, signal_id,
@@ -8814,3 +9852,1586 @@ class SignalStore:
                    WHERE id = ?""",
                 (datetime.now(timezone.utc).isoformat(), alert_id),
             )
+
+    def persist_alert(
+        self,
+        kind: str,
+        account_id: str | None,
+        message: str,
+        payload: dict[str, Any] | None = None,
+    ) -> str:
+        """Record an alert to the alerts table.
+
+        Args:
+            kind: Alert type (e.g., "protection_deficit", "loss_halt")
+            account_id: Account UUID, or None for system-level alerts
+            message: Human-readable description
+            payload: Structured data (dict), stored as JSON
+
+        Returns:
+            Alert ID (UUID string)
+        """
+        import uuid
+
+        alert_id = str(uuid.uuid4())
+        payload_json = json.dumps(payload) if payload else None
+        now = datetime.now(timezone.utc).isoformat()
+
+        with self._connect() as conn:
+            conn.execute(
+                """INSERT INTO alerts
+                   (id, kind, account_id, message, payload, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (alert_id, kind, account_id, message, payload_json, now),
+            )
+        return alert_id
+
+    def list_alerts(
+        self, *, unacknowledged: bool = False, account_id: str | None = None, limit: int = 100
+    ) -> list[dict]:
+        """List alerts, optionally filtered.
+
+        Args:
+            unacknowledged: If True, only return alerts where acknowledged_at IS NULL
+            account_id: If provided, filter by account
+            limit: Maximum rows to return
+
+        Returns:
+            List of alert dicts with id, kind, account_id, message, payload (parsed),
+            acknowledged_at, created_at
+        """
+        query = "SELECT id, kind, account_id, message, payload, acknowledged_at, created_at FROM alerts WHERE 1=1"
+        params: list[Any] = []
+
+        if unacknowledged:
+            query += " AND acknowledged_at IS NULL"
+        if account_id is not None:
+            query += " AND account_id = ?"
+            params.append(account_id)
+
+        query += " ORDER BY created_at DESC LIMIT ?"
+        params.append(limit)
+
+        with self._connect() as conn:
+            rows = conn.execute(query, params).fetchall()
+
+        return [
+            {
+                "id": r[0],
+                "kind": r[1],
+                "account_id": r[2],
+                "message": r[3],
+                "payload": json.loads(r[4]) if r[4] else None,
+                "acknowledged_at": r[5],
+                "created_at": r[6],
+            }
+            for r in rows
+        ]
+
+    def acknowledge_alert(self, alert_id: str) -> bool:
+        """Mark an alert as acknowledged.
+
+        Args:
+            alert_id: Alert UUID
+
+        Returns:
+            True if the alert was updated, False if not found
+        """
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            cur = conn.execute(
+                "UPDATE alerts SET acknowledged_at = ? WHERE id = ? AND acknowledged_at IS NULL",
+                (now, alert_id),
+            )
+        return cur.rowcount > 0
+
+    def get_margin_regime(self, physical_account_id: str) -> dict | None:
+        """Get the margin regime for a physical account (WC-09).
+
+        Spec §9: Store per-account regime (legacy_pdt_verified | new_intraday_verified |
+        unknown) with evidence and verification date. Unknown blocks new exposure (I17).
+
+        Args:
+            physical_account_id: Physical account identifier.
+
+        Returns:
+            Dict with keys physical_account_id, regime, evidence, verified_at,
+            or None if not found.
+        """
+        with self._connect() as conn:
+            row = conn.execute(
+                """SELECT physical_account_id, regime, evidence, verified_at
+                   FROM margin_regimes WHERE physical_account_id = ?""",
+                (physical_account_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "physical_account_id": row[0],
+            "regime": row[1],
+            "evidence": row[2],
+            "verified_at": row[3],
+        }
+
+    def set_margin_regime(
+        self,
+        physical_account_id: str,
+        regime: str,
+        evidence: str,
+        verified_at: datetime,
+    ) -> dict | None:
+        """Set or update margin regime for a physical account (WC-09, owner only).
+
+        Spec §9: Owner declares regime with evidence (≥3 chars). Validation
+        (regime enum, evidence length) is done by caller. Unknown regime blocks
+        affected new exposure (I17).
+
+        Args:
+            physical_account_id: Physical account identifier.
+            regime: One of legacy_pdt_verified, new_intraday_verified, unknown.
+            evidence: Broker evidence or description (≥3 chars).
+            verified_at: Timestamp when regime was verified (UTC).
+
+        Returns:
+            Updated record dict on success, None if physical_account_id not found.
+        """
+        # Ensure the physical account exists
+        with self._connect() as conn:
+            exists = conn.execute(
+                "SELECT 1 FROM physical_accounts WHERE physical_account_id = ?",
+                (physical_account_id,),
+            ).fetchone()
+        if exists is None:
+            return None
+
+        # Insert or replace the regime record
+        verified_at_iso = verified_at.isoformat() if isinstance(verified_at, datetime) else verified_at
+        with self._connect() as conn:
+            conn.execute(
+                """INSERT INTO margin_regimes (physical_account_id, regime, evidence, verified_at)
+                   VALUES (?, ?, ?, ?)
+                   ON CONFLICT(physical_account_id) DO UPDATE SET
+                     regime = ?, evidence = ?, verified_at = ?, updated_at = CURRENT_TIMESTAMP
+                """,
+                (physical_account_id, regime, evidence, verified_at_iso, regime, evidence, verified_at_iso),
+            )
+
+        return self.get_margin_regime(physical_account_id)
+
+    def get_binding_for_config_account(self, config_account_id: str) -> dict | None:
+        """Get the binding and physical account for a config account (WC-20 step 1).
+
+        Spec I02: Multiple credentials or matching route rules do not duplicate
+        capital or execution. Multiple AccountBindings to the same broker account
+        are collapsed to one PhysicalAccount during queries.
+
+        Args:
+            config_account_id: DestinationAccount.account_id from config.
+
+        Returns:
+            Dict with binding_id, physical_account_id, config_account_id, version, revoked,
+            or None if not found.
+        """
+        with self._connect() as conn:
+            row = conn.execute(
+                """SELECT binding_id, physical_account_id, config_account_id, version, revoked
+                   FROM account_bindings
+                   WHERE config_account_id = ? AND revoked = 0
+                   ORDER BY version DESC LIMIT 1""",
+                (config_account_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "binding_id": row[0],
+            "physical_account_id": row[1],
+            "config_account_id": row[2],
+            "version": row[3],
+            "revoked": row[4],
+        }
+
+    def insert_decision_trace(
+        self,
+        signal_id: str,
+        physical_account_id: str,
+        candidate_rank: int,
+        feasible: bool,
+        reason: str,
+        selected: bool,
+    ) -> str:
+        """Persist a decision trace row for WC-20 candidate evaluation.
+
+        Spec §5.2: Persist every candidate's inclusion/exclusion reason per
+        candidate. Trace records: candidate_rank (lower better), feasible (0/1),
+        reason (inclusion/exclusion reason string), selected (0/1 for picked).
+
+        Args:
+            signal_id: Signal being processed.
+            physical_account_id: Physical account candidate.
+            candidate_rank: Ranking order (lower is better).
+            feasible: Whether this candidate can execute (True/False).
+            reason: Inclusion or exclusion reason (string from ADMISSION_BLOCKING_ORDER or sizing).
+            selected: Whether this candidate was selected (True/False).
+
+        Returns:
+            The inserted trace ID.
+        """
+        import uuid
+        trace_id = str(uuid.uuid4())
+        with self._connect() as conn:
+            conn.execute(
+                """INSERT INTO decision_traces
+                   (id, signal_id, physical_account_id, candidate_rank, feasible, reason, selected)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (trace_id, signal_id, physical_account_id, candidate_rank, int(feasible), reason, int(selected)),
+            )
+        return trace_id
+
+    # ============================================================================
+    # WC-30: Hierarchical budget persistence (budget reservations, limits, etc.)
+    # ============================================================================
+
+    def is_opportunity_claimed(self, opportunity_id: str) -> bool:
+        """WC-30: Check if an opportunity is already claimed (reserved).
+
+        Returns True iff a budget_reservations row exists for it with state
+        not in ("RELEASED",).
+
+        Args:
+            opportunity_id: Unique signal/order identifier to check.
+
+        Returns:
+            True if opportunity is claimed and not released, False otherwise.
+        """
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM budget_reservations WHERE opportunity_id = ? AND state != 'RELEASED' LIMIT 1",
+                (opportunity_id,),
+            ).fetchone()
+        return row is not None
+
+    def get_active_reservation_for_opportunity(self, opportunity_id: str) -> BudgetReservationRow | None:
+        """WC-30/ALLOC-07: the one non-RELEASED reservation claiming this exact
+        opportunity id, or None. Exact match only (never the replicate-scoped
+        "<signal_id>:<account>" rows of a sibling), so a crashed-then-redelivered
+        signal can be resumed on the account that already holds its reservation
+        and refused on any other."""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT reservation_id FROM budget_reservations WHERE opportunity_id = ? AND state != 'RELEASED' "
+                "ORDER BY created_at ASC LIMIT 1",
+                (opportunity_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return self.get_reservation(row[0])
+
+    def create_hierarchical_reservation(
+        self,
+        *,
+        opportunity_id: str,
+        scope,  # BudgetScope from app.workflow.budget
+        need,  # ResourceVector from app.workflow.budget
+        state: str,  # ReservationState string
+    ) -> str:
+        """WC-30: Insert ONE budget reservation inside BEGIN IMMEDIATE txn.
+
+        Implements atomicity: two concurrent callers racing on the same
+        opportunity_id will get exactly one success; the loser's IntegrityError
+        is caught by caller (HierarchicalBudget.check_and_reserve) and mapped to
+        Reason.DUPLICATE.
+
+        Args:
+            opportunity_id: Unique signal/order identifier (must be unique across DB).
+            scope: BudgetScope with owner, account, portfolio, sleeve, provider, etc.
+            need: ResourceVector with cash, margin, notional, risk, etc.
+            state: Initial reservation state (usually ReservationState.HELD).
+
+        Returns:
+            Reservation ID (uuid4 hex).
+
+        Raises:
+            sqlite3.IntegrityError: If opportunity_id already exists (caught by caller).
+        """
+        reservation_id = str(uuid.uuid4().hex)
+        now = datetime.now(timezone.utc).isoformat()
+
+        # Evidence: JSON list starting with ResourceVector as first entry
+        evidence_dict = {
+            "cash": need.cash,
+            "buying_power": need.buying_power,
+            "initial_margin": need.initial_margin,
+            "maintenance": need.maintenance,
+            "notional": need.notional,
+            "planned_risk": need.planned_risk,
+            "stress_risk": need.stress_risk,
+            "close_quantity": need.close_quantity,
+            "slots": need.slots,
+        }
+        evidence_json = json.dumps([evidence_dict])
+
+        with self._immediate() as conn:
+            # This will raise sqlite3.IntegrityError if opportunity_id already exists
+            conn.execute(
+                """INSERT INTO budget_reservations
+                   (reservation_id, opportunity_id, owner, physical_account_id, portfolio_id,
+                    sleeve_id, provider, analyst, underlying, cluster_id,
+                    needed_cash_cents, needed_margin_cents, needed_notional_cents,
+                    needed_planned_risk_cents, needed_stress_risk_cents, state, created_at, updated_at, evidence)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    reservation_id, opportunity_id, scope.owner, scope.physical_account_id,
+                    scope.portfolio_id, scope.sleeve_id, scope.provider, scope.analyst,
+                    scope.underlying, scope.cluster,
+                    need.cash, need.initial_margin, need.notional,
+                    need.planned_risk, need.stress_risk, state, now, now, evidence_json,
+                ),
+            )
+        return reservation_id
+
+    def get_reservation(self, reservation_id: str) -> BudgetReservationRow:
+        """WC-30: Retrieve a budget reservation by ID.
+
+        Returns a frozen dataclass with attribute access for state transitions.
+
+        Args:
+            reservation_id: Reservation to fetch.
+
+        Returns:
+            BudgetReservationRow with all fields.
+
+        Raises:
+            KeyError: If reservation not found.
+        """
+        with self._connect() as conn:
+            row = conn.execute(
+                """SELECT reservation_id, opportunity_id, owner, physical_account_id,
+                          portfolio_id, sleeve_id, provider, analyst, underlying, cluster_id,
+                          needed_cash_cents, needed_margin_cents, needed_notional_cents,
+                          needed_planned_risk_cents, needed_stress_risk_cents, state,
+                          created_at, updated_at, evidence
+                   FROM budget_reservations WHERE reservation_id = ?""",
+                (reservation_id,),
+            ).fetchone()
+
+        if row is None:
+            raise KeyError(f"Reservation {reservation_id} not found")
+
+        return BudgetReservationRow(
+            reservation_id=row[0],
+            opportunity_id=row[1],
+            owner=row[2],
+            physical_account_id=row[3],
+            portfolio_id=row[4],
+            sleeve_id=row[5],
+            provider=row[6],
+            analyst=row[7],
+            underlying=row[8],
+            cluster_id=row[9],
+            needed_cash_cents=row[10],
+            needed_margin_cents=row[11],
+            needed_notional_cents=row[12],
+            needed_planned_risk_cents=row[13],
+            needed_stress_risk_cents=row[14],
+            state=row[15],
+            created_at=row[16],
+            updated_at=row[17],
+            evidence=row[18],
+        )
+
+    def update_reservation_state(
+        self, reservation_id: str, new_state: str, *, evidence: dict
+    ) -> None:
+        """WC-30: Update reservation state and append evidence atomically.
+
+        Args:
+            reservation_id: Reservation to update.
+            new_state: Target state (from ReservationState enum).
+            evidence: Context dict for the transition (appended to JSON list).
+
+        Raises:
+            KeyError: If reservation not found.
+        """
+        now = datetime.now(timezone.utc).isoformat()
+
+        with self._connect() as conn:
+            # Fetch current evidence list
+            row = conn.execute(
+                "SELECT evidence FROM budget_reservations WHERE reservation_id = ?",
+                (reservation_id,),
+            ).fetchone()
+
+            if row is None:
+                raise KeyError(f"Reservation {reservation_id} not found")
+
+            # Append evidence to existing list
+            existing_evidence = json.loads(row[0]) if row[0] else []
+            if not isinstance(existing_evidence, list):
+                existing_evidence = [existing_evidence]
+            existing_evidence.append(evidence)
+            new_evidence_json = json.dumps(existing_evidence)
+
+            # Update state and evidence
+            conn.execute(
+                "UPDATE budget_reservations SET state = ?, updated_at = ?, evidence = ? WHERE reservation_id = ?",
+                (new_state, now, new_evidence_json, reservation_id),
+            )
+
+    def get_level_remaining(self, level: str, level_scope: dict) -> int:
+        """WC-30: Query remaining budget at a hierarchical level (in cents).
+
+        Semantics (fail closed): remaining = configured limit at that level −
+        sum over budget_reservations rows at that level in states other than
+        RELEASED of (needed_cash_cents + needed_margin_cents).
+
+        Configured limits per level:
+        - "owner": owner_limits.max_notional_cents; NULL → UNLIMITED_CENTS
+        - "account": budget_limits row; absent → UNLIMITED_CENTS
+        - "portfolio": sum of portfolio_backings.dedicated_equity_cents; no rows → 0
+        - "sleeve": strategy_sleeves.max_notional_cents; NULL → UNLIMITED_CENTS
+        - "provider": strategy_budgets (legacy, converted to cents); absent → UNLIMITED_CENTS
+        - "analyst": budget_limits row; absent → UNLIMITED_CENTS
+        - "underlying": budget_limits row; absent → UNLIMITED_CENTS
+        - "cluster": budget_limits row; absent → UNLIMITED_CENTS
+
+        Args:
+            level: Level name (owner, account, portfolio, sleeve, provider, analyst, underlying, cluster).
+            level_scope: Dict with relevant keys for that level.
+
+        Returns:
+            Available cents at that level (or UNLIMITED_CENTS if no limit configured).
+        """
+        from app.workflow.budget import UNLIMITED_CENTS
+
+        with self._connect() as conn:
+            if level == "owner":
+                owner = level_scope["owner"]
+                row = conn.execute(
+                    "SELECT max_notional_cents FROM owner_limits WHERE owner = ?",
+                    (owner,),
+                ).fetchone()
+                limit_cents = row[0] if row and row[0] is not None else UNLIMITED_CENTS
+
+                # Sum usage (cash + margin) in non-RELEASED state
+                usage_row = conn.execute(
+                    """SELECT COALESCE(SUM(needed_cash_cents + needed_margin_cents), 0)
+                       FROM budget_reservations WHERE owner = ? AND state != 'RELEASED'""",
+                    (owner,),
+                ).fetchone()
+                usage_cents = usage_row[0] if usage_row else 0
+
+                return max(0, limit_cents - usage_cents)
+
+            elif level == "account":
+                physical_account_id = level_scope["physical_account_id"]
+                row = conn.execute(
+                    "SELECT max_cents FROM budget_limits WHERE level = 'account' AND key = ?",
+                    (physical_account_id,),
+                ).fetchone()
+                limit_cents = row[0] if row else UNLIMITED_CENTS
+
+                usage_row = conn.execute(
+                    """SELECT COALESCE(SUM(needed_cash_cents + needed_margin_cents), 0)
+                       FROM budget_reservations WHERE physical_account_id = ? AND state != 'RELEASED'""",
+                    (physical_account_id,),
+                ).fetchone()
+                usage_cents = usage_row[0] if usage_row else 0
+
+                return max(0, limit_cents - usage_cents)
+
+            elif level == "portfolio":
+                portfolio_id = level_scope["portfolio_id"]
+                # Sum dedicated equity from backings
+                backing_row = conn.execute(
+                    "SELECT COALESCE(SUM(dedicated_equity_cents), 0) FROM portfolio_backings WHERE portfolio_id = ?",
+                    (portfolio_id,),
+                ).fetchone()
+                limit_cents = backing_row[0] if backing_row else 0
+
+                usage_row = conn.execute(
+                    """SELECT COALESCE(SUM(needed_cash_cents + needed_margin_cents), 0)
+                       FROM budget_reservations WHERE portfolio_id = ? AND state != 'RELEASED'""",
+                    (portfolio_id,),
+                ).fetchone()
+                usage_cents = usage_row[0] if usage_row else 0
+
+                return max(0, limit_cents - usage_cents)
+
+            elif level == "sleeve":
+                sleeve_id = level_scope["sleeve_id"]
+                row = conn.execute(
+                    "SELECT max_notional_cents FROM strategy_sleeves WHERE sleeve_id = ?",
+                    (sleeve_id,),
+                ).fetchone()
+                limit_cents = row[0] if row and row[0] is not None else UNLIMITED_CENTS
+
+                usage_row = conn.execute(
+                    """SELECT COALESCE(SUM(needed_cash_cents + needed_margin_cents), 0)
+                       FROM budget_reservations WHERE sleeve_id = ? AND state != 'RELEASED'""",
+                    (sleeve_id,),
+                ).fetchone()
+                usage_cents = usage_row[0] if usage_row else 0
+
+                return max(0, limit_cents - usage_cents)
+
+            elif level == "provider":
+                # Reuse strategy_budgets (legacy, WC-03 pattern)
+                owner = level_scope["owner"]
+                provider = level_scope["provider"]
+                row = conn.execute(
+                    "SELECT max_notional FROM strategy_budgets WHERE strategy_key = ?",
+                    (provider,),
+                ).fetchone()
+                if row and row[0] is not None:
+                    # Convert dollars to cents using to_cents_floor
+                    from app.workflow.money import to_cents_floor
+                    from decimal import Decimal
+                    limit_cents = to_cents_floor(Decimal(str(row[0])))
+                else:
+                    limit_cents = UNLIMITED_CENTS
+
+                usage_row = conn.execute(
+                    """SELECT COALESCE(SUM(needed_cash_cents + needed_margin_cents), 0)
+                       FROM budget_reservations WHERE provider = ? AND state != 'RELEASED'""",
+                    (provider,),
+                ).fetchone()
+                usage_cents = usage_row[0] if usage_row else 0
+
+                return max(0, limit_cents - usage_cents)
+
+            elif level in ("analyst", "underlying", "cluster"):
+                key_value = level_scope.get(level)
+                if key_value is None:
+                    return UNLIMITED_CENTS
+
+                row = conn.execute(
+                    "SELECT max_cents FROM budget_limits WHERE level = ? AND key = ?",
+                    (level, key_value),
+                ).fetchone()
+                limit_cents = row[0] if row else UNLIMITED_CENTS
+
+                # Build WHERE clause for the level
+                if level == "analyst":
+                    where_clause = "analyst = ? AND state != 'RELEASED'"
+                    params = (key_value,)
+                elif level == "underlying":
+                    where_clause = "underlying = ? AND state != 'RELEASED'"
+                    params = (key_value,)
+                else:  # cluster
+                    where_clause = "cluster_id = ? AND state != 'RELEASED'"
+                    params = (key_value,)
+
+                usage_row = conn.execute(
+                    f"SELECT COALESCE(SUM(needed_cash_cents + needed_margin_cents), 0) FROM budget_reservations WHERE {where_clause}",
+                    params,
+                ).fetchone()
+                usage_cents = usage_row[0] if usage_row else 0
+
+                return max(0, limit_cents - usage_cents)
+
+            else:
+                # Unknown level
+                return UNLIMITED_CENTS
+
+    def set_budget_limit(self, level: str, key: str, max_cents: int) -> None:
+        """WC-30: Set or update a budget limit for a level/key pair.
+
+        Args:
+            level: Budget level (account, analyst, underlying, cluster).
+            key: Level-specific key (physical_account_id, analyst, underlying, cluster_id).
+            max_cents: Maximum budget in cents.
+        """
+        limit_id = f"{level}_{key}_{uuid.uuid4().hex[:8]}"
+        now = datetime.now(timezone.utc).isoformat()
+
+        with self._connect() as conn:
+            conn.execute(
+                """INSERT INTO budget_limits (limit_id, level, key, max_cents, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(level, key) DO UPDATE SET max_cents = ?, updated_at = ?""",
+                (limit_id, level, key, max_cents, now, now, max_cents, now),
+            )
+
+    def get_budget_limit(self, level: str, key: str) -> int | None:
+        """WC-30: Query a budget limit, or None if not configured.
+
+        Args:
+            level: Budget level.
+            key: Level-specific key.
+
+        Returns:
+            Maximum cents, or None if no limit configured.
+        """
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT max_cents FROM budget_limits WHERE level = ? AND key = ?",
+                (level, key),
+            ).fetchone()
+        return row[0] if row else None
+
+    def list_budget_limits(self) -> list[dict]:
+        """WC-30: List all budget limits.
+
+        Returns:
+            List of dicts with keys: limit_id, level, key, max_cents, created_at, updated_at.
+        """
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT limit_id, level, key, max_cents, created_at, updated_at FROM budget_limits"
+            ).fetchall()
+
+        return [
+            {
+                "limit_id": row[0],
+                "level": row[1],
+                "key": row[2],
+                "max_cents": row[3],
+                "created_at": row[4],
+                "updated_at": row[5],
+            }
+            for row in rows
+        ]
+
+    def delete_budget_limit(self, level: str, key: str) -> None:
+        """WC-30: Delete a budget limit.
+
+        Args:
+            level: Budget level.
+            key: Level-specific key.
+        """
+        with self._connect() as conn:
+            conn.execute(
+                "DELETE FROM budget_limits WHERE level = ? AND key = ?",
+                (level, key),
+            )
+
+    def set_owner_limit(
+        self, owner: str, *, max_notional_cents: int | None = None,
+        max_planned_risk_cents: int | None = None,
+        max_stress_risk_cents: int | None = None,
+    ) -> None:
+        """WC-30: Set or update owner-level limits.
+
+        Args:
+            owner: Owner identifier.
+            max_notional_cents: Maximum notional exposure in cents.
+            max_planned_risk_cents: Maximum planned risk in cents.
+            max_stress_risk_cents: Maximum stress risk in cents.
+        """
+        limit_id = f"owner_{owner}_{uuid.uuid4().hex[:8]}"
+        now = datetime.now(timezone.utc).isoformat()
+
+        with self._connect() as conn:
+            conn.execute(
+                """INSERT INTO owner_limits (limit_id, owner, max_notional_cents, max_planned_risk_cents, max_stress_risk_cents, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(owner) DO UPDATE SET max_notional_cents = ?, max_planned_risk_cents = ?, max_stress_risk_cents = ?, updated_at = ?""",
+                (limit_id, owner, max_notional_cents, max_planned_risk_cents, max_stress_risk_cents, now, now,
+                 max_notional_cents, max_planned_risk_cents, max_stress_risk_cents, now),
+            )
+
+    def get_owner_limit(self, owner: str) -> dict | None:
+        """WC-30: Query owner limits.
+
+        Args:
+            owner: Owner identifier.
+
+        Returns:
+            Dict with keys: limit_id, owner, max_notional_cents, max_planned_risk_cents, max_stress_risk_cents, created_at, updated_at,
+            or None if no limit configured.
+        """
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT limit_id, owner, max_notional_cents, max_planned_risk_cents, max_stress_risk_cents, created_at, updated_at FROM owner_limits WHERE owner = ?",
+                (owner,),
+            ).fetchone()
+
+        if row is None:
+            return None
+
+        return {
+            "limit_id": row[0],
+            "owner": row[1],
+            "max_notional_cents": row[2],
+            "max_planned_risk_cents": row[3],
+            "max_stress_risk_cents": row[4],
+            "created_at": row[5],
+            "updated_at": row[6],
+        }
+
+    def create_portfolio(self, portfolio_id: str, owner: str, name: str | None = None) -> None:
+        """WC-30: Create a portfolio.
+
+        Args:
+            portfolio_id: Portfolio identifier.
+            owner: Owner identifier.
+            name: Optional portfolio name.
+        """
+        now = datetime.now(timezone.utc).isoformat()
+
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO portfolios (portfolio_id, owner, name, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                (portfolio_id, owner, name, now, now),
+            )
+
+    def add_portfolio_backing(
+        self, portfolio_id: str, physical_account_id: str, dedicated_equity_cents: int
+    ) -> None:
+        """WC-30: Add (or update) portfolio backing from an account.
+
+        Args:
+            portfolio_id: Portfolio to back.
+            physical_account_id: Account providing the backing.
+            dedicated_equity_cents: Dedicated equity in cents.
+        """
+        backing_id = f"backing_{portfolio_id}_{physical_account_id}_{uuid.uuid4().hex[:8]}"
+        now = datetime.now(timezone.utc).isoformat()
+
+        with self._connect() as conn:
+            conn.execute(
+                """INSERT INTO portfolio_backings (backing_id, portfolio_id, physical_account_id, dedicated_equity_cents, created_at)
+                   VALUES (?, ?, ?, ?, ?)
+                   ON CONFLICT(portfolio_id, physical_account_id) DO UPDATE SET dedicated_equity_cents = ?""",
+                (backing_id, portfolio_id, physical_account_id, dedicated_equity_cents, now, dedicated_equity_cents),
+            )
+
+    def create_strategy_sleeve(
+        self, sleeve_id: str, portfolio_id: str, provider: str, analyst: str | None = None,
+        name: str | None = None, max_notional_cents: int | None = None,
+    ) -> None:
+        """WC-30: Create a strategy sleeve within a portfolio.
+
+        Args:
+            sleeve_id: Sleeve identifier.
+            portfolio_id: Parent portfolio.
+            provider: Signal provider.
+            analyst: Strategy/analyst identifier.
+            name: Optional sleeve name.
+            max_notional_cents: Optional max notional exposure in cents.
+        """
+        now = datetime.now(timezone.utc).isoformat()
+
+        with self._connect() as conn:
+            conn.execute(
+                """INSERT INTO strategy_sleeves (sleeve_id, portfolio_id, provider, analyst, name, max_notional_cents, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (sleeve_id, portfolio_id, provider, analyst, name, max_notional_cents, now, now),
+            )
+
+
+    # --- WC-21: Console decision traces and reservation/intent health (READ-ONLY) ---
+
+    def list_decision_traces(self, signal_id: str) -> list[dict]:
+        """Every candidate evaluation for a given signal's routing decision.
+
+        Spec §5.2: decision_traces rows persist every candidate's rank,
+        feasibility, exclusion reason, and selection outcome. This read
+        returns them in rank order, with exactly one `selected=1` row when
+        a decision was made.
+
+        Args:
+            signal_id: The signal id to read traces for.
+
+        Returns:
+            List of dicts: {id, signal_id, physical_account_id, candidate_rank,
+            feasible, reason, selected, created_at}, in candidate_rank order.
+            Empty list if no traces were recorded for this signal.
+        """
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT id, signal_id, physical_account_id, candidate_rank, feasible, reason, selected, created_at
+                   FROM decision_traces
+                   WHERE signal_id = ?
+                   ORDER BY candidate_rank ASC""",
+                (signal_id,),
+            ).fetchall()
+        return [
+            {
+                "id": row[0],
+                "signal_id": row[1],
+                "physical_account_id": row[2],
+                "candidate_rank": row[3],
+                "feasible": bool(row[4]),
+                "reason": row[5],
+                "selected": bool(row[6]),
+                "created_at": row[7],
+            }
+            for row in rows
+        ]
+
+    def list_budget_reservations(self, *, opportunity_id: str | None = None, state: str | None = None, limit: int = 200) -> list[dict]:
+        """Budget reservations for capital allocation tracking.
+
+        Spec WC-03 §6.2 state machine: every signal that reached capital
+        admission has a budget_reservations row tracking its needed cash,
+        margin, notional and planned risk across the position's lifecycle.
+
+        Args:
+            opportunity_id: Filter by a specific opportunity (signal) id. Optional.
+            state: Filter by reservation state (e.g., 'HELD', 'RELEASED'). Optional.
+            limit: Maximum rows to return (default 200).
+
+        Returns:
+            List of dicts with reservation_id, opportunity_id, owner, physical_account_id,
+            needed_cash_cents, needed_margin_cents, needed_notional_cents,
+            needed_planned_risk_cents, state, created_at, updated_at.
+            Empty list if no matching reservations exist.
+        """
+        query = "SELECT reservation_id, opportunity_id, owner, physical_account_id, needed_cash_cents, needed_margin_cents, needed_notional_cents, needed_planned_risk_cents, state, created_at, updated_at FROM budget_reservations WHERE 1=1"
+        params: list = []
+
+        if opportunity_id is not None:
+            # A signal's own id, or a replicate-scoped "<signal_id>:<account>"
+            # (see SignalCopierEngine._opportunity_id_for).
+            query += " AND (opportunity_id = ? OR substr(opportunity_id, 1, length(?) + 1) = ? || ':')"
+            params.extend([opportunity_id, opportunity_id, opportunity_id])
+        if state is not None:
+            query += " AND state = ?"
+            params.append(state)
+
+        query += f" ORDER BY created_at DESC LIMIT {limit}"
+
+        with self._connect() as conn:
+            rows = conn.execute(query, params).fetchall()
+
+        return [
+            {
+                "reservation_id": row[0],
+                "opportunity_id": row[1],
+                "owner": row[2],
+                "physical_account_id": row[3],
+                "needed_cash_cents": row[4],
+                "needed_margin_cents": row[5],
+                "needed_notional_cents": row[6],
+                "needed_planned_risk_cents": row[7],
+                "state": row[8],
+                "created_at": row[9],
+                "updated_at": row[10],
+            }
+            for row in rows
+        ]
+
+    def list_order_intents(self, *, opportunity_id: str | None = None, limit: int = 200) -> list[dict]:
+        """Order intents for crash recovery and execution tracking (WC-06).
+
+        Spec WC-06: every signal routed to execution has a durable order_intents
+        row recording the intent before it's submitted to the broker, with
+        binding_id and reservation_id links for recovery.
+
+        Args:
+            opportunity_id: Filter by a specific opportunity (signal) id. Optional.
+            limit: Maximum rows to return (default 200).
+
+        Returns:
+            List of dicts with intent_id, opportunity_id, physical_account_id,
+            binding_id, quantity, state (if available), created_at.
+            Empty list if no intents exist.
+        """
+        query = "SELECT intent_id, opportunity_id, physical_account_id, binding_id, quantity, created_at FROM order_intents WHERE 1=1"
+        params: list = []
+
+        if opportunity_id is not None:
+            # A signal's own id, or a replicate-scoped "<signal_id>:<account>"
+            # (see SignalCopierEngine._opportunity_id_for).
+            query += " AND (opportunity_id = ? OR substr(opportunity_id, 1, length(?) + 1) = ? || ':')"
+            params.extend([opportunity_id, opportunity_id, opportunity_id])
+
+        query += f" ORDER BY created_at DESC LIMIT {limit}"
+
+        with self._connect() as conn:
+            rows = conn.execute(query, params).fetchall()
+
+        return [
+            {
+                "intent_id": row[0],
+                "opportunity_id": row[1],
+                "physical_account_id": row[2],
+                "binding_id": row[3],
+                "quantity": row[4],
+                "created_at": row[5],
+            }
+            for row in rows
+        ]
+
+    def list_outbox_items(self, *, state: str | None = None, limit: int = 200) -> list[dict]:
+        """Transactional outbox items (S4.2/S6 spec) for durable event export.
+
+        Spec S4.2/S6: every order_intent that reaches submission-to-broker is
+        queued in the outbox for transactional event export. This read shows
+        in-flight and settled items, with response timestamps for delivery proof.
+
+        Args:
+            state: Filter by state (e.g., 'outboxed', 'exported'). Optional.
+            limit: Maximum rows to return (default 200).
+
+        Returns:
+            List of dicts with item_id, intent_id, state, created_at, claimed_at,
+            claimed_by, response, response_recorded_at.
+            Empty list if no outbox items exist.
+        """
+        query = "SELECT item_id, intent_id, state, created_at, claimed_at, claimed_by, response, response_recorded_at FROM outbox WHERE 1=1"
+        params: list = []
+
+        if state is not None:
+            query += " AND state = ?"
+            params.append(state)
+
+        query += f" ORDER BY created_at DESC LIMIT {limit}"
+
+        with self._connect() as conn:
+            rows = conn.execute(query, params).fetchall()
+
+        return [
+            {
+                "item_id": row[0],
+                "intent_id": row[1],
+                "state": row[2],
+                "created_at": row[3],
+                "claimed_at": row[4],
+                "claimed_by": row[5],
+                "response": row[6],
+                "response_recorded_at": row[7],
+            }
+            for row in rows
+        ]
+
+    def reservation_health(self) -> dict:
+        """Aggregated health of budget reservations across all active signals.
+
+        Returns:
+            Dict with:
+            - counts_by_state: dict of state -> count pairs
+            - held_total_cents: sum of (needed_cash + needed_margin) for HELD/UNKNOWN_HELD reservations
+            - stale_unknown_held: count of UNKNOWN_HELD reservations older than 15 minutes
+            - oldest_held_age_seconds: age in seconds of the oldest HELD/UNKNOWN_HELD reservation, or None
+        """
+        now = datetime.now(timezone.utc)
+        fifteen_min_ago = now - timedelta(minutes=15)
+
+        with self._connect() as conn:
+            # Get counts by state
+            state_rows = conn.execute(
+                """SELECT state, COUNT(*) as cnt
+                   FROM budget_reservations
+                   GROUP BY state"""
+            ).fetchall()
+            counts_by_state = {row[0]: row[1] for row in state_rows}
+
+            # Get held total (sum of cash+margin for HELD and UNKNOWN_HELD)
+            held_total = conn.execute(
+                """SELECT COALESCE(SUM(needed_cash_cents + needed_margin_cents), 0)
+                   FROM budget_reservations
+                   WHERE state IN ('HELD', 'UNKNOWN_HELD')"""
+            ).fetchone()
+            held_total_cents = held_total[0] if held_total else 0
+
+            # Get stale unknown held (older than 15 minutes)
+            stale_unknown = conn.execute(
+                """SELECT COUNT(*)
+                   FROM budget_reservations
+                   WHERE state = 'UNKNOWN_HELD'
+                   AND created_at < ?""",
+                (fifteen_min_ago.isoformat(),),
+            ).fetchone()
+            stale_unknown_held = stale_unknown[0] if stale_unknown else 0
+
+            # Get oldest held age
+            oldest_held = conn.execute(
+                """SELECT created_at
+                   FROM budget_reservations
+                   WHERE state IN ('HELD', 'UNKNOWN_HELD')
+                   ORDER BY created_at ASC LIMIT 1"""
+            ).fetchone()
+
+            oldest_held_age_seconds: int | None = None
+            if oldest_held:
+                created_at_str = oldest_held[0]
+                # Parse ISO format timestamp
+                if isinstance(created_at_str, str):
+                    created_at = datetime.fromisoformat(created_at_str.replace("Z", "+00:00"))
+                else:
+                    created_at = created_at_str
+                if created_at.tzinfo is None:
+                    created_at = created_at.replace(tzinfo=timezone.utc)
+                oldest_held_age_seconds = int((now - created_at).total_seconds())
+
+        return {
+            "counts_by_state": counts_by_state,
+            "held_total_cents": held_total_cents,
+            "stale_unknown_held": stale_unknown_held,
+            "oldest_held_age_seconds": oldest_held_age_seconds,
+        }
+
+    def intent_health(self) -> dict:
+        """Aggregated health of order intents and outbox delivery.
+
+        Returns:
+            Dict with:
+            - outbox_counts_by_state: dict of outbox state -> count pairs
+            - dispatching_without_response: count of outbox items with state='outboxed' (not yet responded)
+            - unknown: count of intents without a corresponding outbox item
+            - oldest_unresponded_age_seconds: age in seconds of the oldest outbox item without a response, or None
+        """
+        now = datetime.now(timezone.utc)
+
+        with self._connect() as conn:
+            # Get outbox counts by state
+            outbox_state_rows = conn.execute(
+                """SELECT state, COUNT(*) as cnt
+                   FROM outbox
+                   GROUP BY state"""
+            ).fetchall()
+            outbox_counts_by_state = {row[0]: row[1] for row in outbox_state_rows}
+
+            # Get count of outbox items without responses (state='outboxed' or no response_recorded_at)
+            dispatching = conn.execute(
+                """SELECT COUNT(*)
+                   FROM outbox
+                   WHERE state = 'outboxed' OR response_recorded_at IS NULL"""
+            ).fetchone()
+            dispatching_without_response = dispatching[0] if dispatching else 0
+
+            # Get count of intents without outbox items
+            unknown_count = conn.execute(
+                """SELECT COUNT(*)
+                   FROM order_intents
+                   WHERE intent_id NOT IN (SELECT intent_id FROM outbox)"""
+            ).fetchone()
+            unknown = unknown_count[0] if unknown_count else 0
+
+            # Get oldest outbox item without response
+            oldest_unresponded = conn.execute(
+                """SELECT created_at
+                   FROM outbox
+                   WHERE response_recorded_at IS NULL
+                   ORDER BY created_at ASC LIMIT 1"""
+            ).fetchone()
+
+            oldest_unresponded_age_seconds: int | None = None
+            if oldest_unresponded:
+                created_at_str = oldest_unresponded[0]
+                # Parse ISO format timestamp
+                if isinstance(created_at_str, str):
+                    created_at = datetime.fromisoformat(created_at_str.replace("Z", "+00:00"))
+                else:
+                    created_at = created_at_str
+                if created_at.tzinfo is None:
+                    created_at = created_at.replace(tzinfo=timezone.utc)
+                oldest_unresponded_age_seconds = int((now - created_at).total_seconds())
+
+        return {
+            "outbox_counts_by_state": outbox_counts_by_state,
+            "dispatching_without_response": dispatching_without_response,
+            "unknown": unknown,
+            "oldest_unresponded_age_seconds": oldest_unresponded_age_seconds,
+        }
+
+    # ---------- WC-31: Durable order intents and outbox on SignalStore ----------
+
+    def insert_order_intent_and_outbox(self, intent: Any) -> Any:
+        """Insert an order intent and outbox item in one atomic transaction.
+
+        Atomically inserts both the order_intents row and the outbox row in a
+        single BEGIN IMMEDIATE transaction, claiming the opportunity_id for
+        mutual exclusion.
+
+        Args:
+            intent: An OrderIntent dataclass with intent_id, opportunity_id,
+                physical_account_id, binding_id, client_correlation_id,
+                policy_hash, quantity, price_constraints, protection_recipe,
+                and reservation_id.
+
+        Returns:
+            An OutboxItem dataclass ready for dispatch.
+
+        Raises:
+            sqlite3.IntegrityError: If opportunity_id is already claimed.
+        """
+        import json
+        from datetime import datetime
+        from app.workflow.intents import OutboxItem
+
+        # Generate outbox item ID
+        import uuid
+        item_id = str(uuid.uuid4())
+        now_utc = datetime.utcnow().isoformat() + "Z"
+
+        with self._immediate() as conn:
+            # Insert order_intents row
+            conn.execute(
+                """INSERT INTO order_intents
+                   (intent_id, opportunity_id, physical_account_id, binding_id,
+                    client_correlation_id, policy_hash, quantity,
+                    price_constraints, protection_recipe, reservation_id, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    intent.intent_id,
+                    intent.opportunity_id,
+                    intent.physical_account_id,
+                    intent.binding_id,
+                    intent.client_correlation_id,
+                    intent.policy_hash,
+                    intent.quantity,
+                    json.dumps(intent.price_constraints) if intent.price_constraints is not None else None,
+                    json.dumps(intent.protection_recipe) if intent.protection_recipe is not None else None,
+                    intent.reservation_id,
+                    now_utc,
+                ),
+            )
+
+            # Insert outbox row
+            conn.execute(
+                """INSERT INTO outbox
+                   (item_id, intent_id, state, created_at, claimed_at, claimed_by, response, response_recorded_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    item_id,
+                    intent.intent_id,
+                    "outboxed",
+                    now_utc,
+                    None,
+                    None,
+                    None,
+                    None,
+                ),
+            )
+
+        # Return OutboxItem with fresh UTC timestamps
+        from datetime import datetime
+        from app.workflow.intents import IntentState
+        now_dt = datetime.fromisoformat(now_utc.replace("Z", "+00:00"))
+        return OutboxItem(
+            item_id=item_id,
+            intent_id=intent.intent_id,
+            state=IntentState.OUTBOXED,
+            created_at=now_dt,
+            claimed_at=None,
+            claimed_by=None,
+            response=None,
+            response_recorded_at=None,
+        )
+
+    def claim_next_outbox_item(self, worker_lease_id: str) -> Any:
+        """Claim the next unclaimed outbox item for dispatch.
+
+        In a short BEGIN IMMEDIATE transaction:
+        1. Find the oldest OUTBOXED item
+        2. Mark it DISPATCHING under the given lease
+        3. Return it (or None if queue is empty)
+
+        Args:
+            worker_lease_id: The current writer lease ID.
+
+        Returns:
+            An OutboxItem marked DISPATCHING, or None if queue is empty.
+        """
+        from datetime import datetime
+        from app.workflow.intents import OutboxItem
+
+        now_utc = datetime.utcnow().isoformat() + "Z"
+
+        with self._immediate() as conn:
+            # Select the oldest OUTBOXED item
+            row = conn.execute(
+                """SELECT item_id, intent_id, state, created_at, claimed_at, claimed_by, response, response_recorded_at
+                   FROM outbox
+                   WHERE state = 'outboxed'
+                   ORDER BY created_at ASC
+                   LIMIT 1"""
+            ).fetchone()
+
+            if row is None:
+                return None
+
+            item_id, intent_id, state, created_at_str, claimed_at_str, claimed_by_str, response_str, response_recorded_at_str = row
+
+            # Mark it DISPATCHING
+            conn.execute(
+                """UPDATE outbox
+                   SET state = ?, claimed_at = ?, claimed_by = ?
+                   WHERE item_id = ?""",
+                ("dispatching", now_utc, worker_lease_id, item_id),
+            )
+
+        # Parse timestamps and reconstruct OutboxItem
+        from app.workflow.intents import IntentState
+
+        def parse_timestamp(ts_str: str | None) -> datetime | None:
+            if ts_str is None:
+                return None
+            return datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+
+        created_at = parse_timestamp(created_at_str)
+        assert created_at is not None  # created_at is always set when item is created
+
+        return OutboxItem(
+            item_id=item_id,
+            intent_id=intent_id,
+            state=IntentState.DISPATCHING,
+            created_at=created_at,
+            claimed_at=parse_timestamp(now_utc),
+            claimed_by=worker_lease_id,
+            response=response_str,
+            response_recorded_at=parse_timestamp(response_recorded_at_str),
+        )
+
+    def record_outbox_response(
+        self, intent_id: str, response: dict[str, Any], *, state: str
+    ) -> None:
+        """Persist the broker response and transition the intent state.
+
+        Sets response JSON, response_recorded_at timestamp, and state
+        (one of 'submitted', 'unknown', 'rejected').
+
+        Args:
+            intent_id: The intent's ID.
+            response: The broker response dict or error details.
+            state: The new state ('submitted', 'unknown', or 'rejected').
+
+        Raises:
+            KeyError: If no outbox row for intent_id.
+        """
+        import json
+        from datetime import datetime
+
+        now_utc = datetime.utcnow().isoformat() + "Z"
+
+        with self._connect() as conn:
+            # Verify the outbox row exists
+            existing = conn.execute(
+                "SELECT item_id FROM outbox WHERE intent_id = ?",
+                (intent_id,),
+            ).fetchone()
+
+            if existing is None:
+                raise KeyError(f"No outbox row found for intent_id {intent_id}")
+
+            # Update the outbox row with response and state
+            conn.execute(
+                """UPDATE outbox
+                   SET response = ?, response_recorded_at = ?, state = ?
+                   WHERE intent_id = ?""",
+                (json.dumps(response), now_utc, state, intent_id),
+            )
+
+    def get_order_intent(self, intent_id: str) -> Any:
+        """Retrieve an order intent by intent_id.
+
+        Args:
+            intent_id: The intent's unique identifier.
+
+        Returns:
+            An OrderIntent dataclass, or None if not found.
+        """
+        import json
+        from app.workflow.intents import OrderIntent
+
+        with self._connect() as conn:
+            row = conn.execute(
+                """SELECT intent_id, opportunity_id, physical_account_id, binding_id,
+                          client_correlation_id, policy_hash, quantity,
+                          price_constraints, protection_recipe, reservation_id, created_at
+                   FROM order_intents
+                   WHERE intent_id = ?""",
+                (intent_id,),
+            ).fetchone()
+
+        if row is None:
+            return None
+
+        (
+            intent_id,
+            opportunity_id,
+            physical_account_id,
+            binding_id,
+            client_correlation_id,
+            policy_hash,
+            quantity,
+            price_constraints_json,
+            protection_recipe_json,
+            reservation_id,
+            created_at_str,
+        ) = row
+
+        return OrderIntent(
+            intent_id=intent_id,
+            opportunity_id=opportunity_id,
+            physical_account_id=physical_account_id,
+            binding_id=binding_id,
+            client_correlation_id=client_correlation_id,
+            policy_hash=policy_hash,
+            quantity=quantity,
+            price_constraints=json.loads(price_constraints_json) if price_constraints_json else None,
+            protection_recipe=json.loads(protection_recipe_json) if protection_recipe_json else None,
+            reservation_id=reservation_id,
+        )
+
+    def get_outbox_item_for_intent(self, intent_id: str) -> Any:
+        """Retrieve an outbox item by intent_id.
+
+        Args:
+            intent_id: The intent's identifier (foreign key).
+
+        Returns:
+            An OutboxItem dataclass, or None if not found.
+        """
+        from datetime import datetime
+        from app.workflow.intents import OutboxItem
+
+        with self._connect() as conn:
+            row = conn.execute(
+                """SELECT item_id, intent_id, state, created_at, claimed_at, claimed_by, response, response_recorded_at
+                   FROM outbox
+                   WHERE intent_id = ?""",
+                (intent_id,),
+            ).fetchone()
+
+        if row is None:
+            return None
+
+        item_id, intent_id, state_str, created_at_str, claimed_at_str, claimed_by_str, response_str, response_recorded_at_str = row
+
+        from app.workflow.intents import IntentState
+
+        def parse_timestamp(ts_str: str | None) -> datetime | None:
+            if ts_str is None:
+                return None
+            return datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+
+        created_at = parse_timestamp(created_at_str)
+        assert created_at is not None  # created_at is always set when item is created
+
+        return OutboxItem(
+            item_id=item_id,
+            intent_id=intent_id,
+            state=IntentState(state_str),
+            created_at=created_at,
+            claimed_at=parse_timestamp(claimed_at_str),
+            claimed_by=claimed_by_str,
+            response=response_str,
+            response_recorded_at=parse_timestamp(response_recorded_at_str),
+        )
+
+    def get_order_intent_for_opportunity(self, opportunity_id: str) -> Any:
+        """Retrieve an order intent by opportunity_id.
+
+        Args:
+            opportunity_id: The opportunity's unique identifier.
+
+        Returns:
+            An OrderIntent dataclass, or None if not found.
+        """
+        import json
+        from app.workflow.intents import OrderIntent
+
+        with self._connect() as conn:
+            row = conn.execute(
+                """SELECT intent_id, opportunity_id, physical_account_id, binding_id,
+                          client_correlation_id, policy_hash, quantity,
+                          price_constraints, protection_recipe, reservation_id, created_at
+                   FROM order_intents
+                   WHERE opportunity_id = ?""",
+                (opportunity_id,),
+            ).fetchone()
+
+        if row is None:
+            return None
+
+        (
+            intent_id,
+            opportunity_id,
+            physical_account_id,
+            binding_id,
+            client_correlation_id,
+            policy_hash,
+            quantity,
+            price_constraints_json,
+            protection_recipe_json,
+            reservation_id,
+            created_at_str,
+        ) = row
+
+        return OrderIntent(
+            intent_id=intent_id,
+            opportunity_id=opportunity_id,
+            physical_account_id=physical_account_id,
+            binding_id=binding_id,
+            client_correlation_id=client_correlation_id,
+            policy_hash=policy_hash,
+            quantity=quantity,
+            price_constraints=json.loads(price_constraints_json) if price_constraints_json else None,
+            protection_recipe=json.loads(protection_recipe_json) if protection_recipe_json else None,
+            reservation_id=reservation_id,
+        )
+
+    def recover_outbox_on_restart(self) -> dict[str, Any]:
+        """Recovery on restart: mark ambiguous claimed-but-unresponded items.
+
+        Per spec §6.3, a claimed-but-unresponded item is AMBIGUOUS (the broker
+        call may or may not have happened). Mark it state 'unknown' with response
+        {"reason":"restart_before_response"}.
+
+        Returns:
+            {"marked_unknown": [item_ids marked unknown], "outboxed_pending": [item_ids still outboxed]}
+        """
+        import json
+        from datetime import datetime
+
+        now_utc = datetime.utcnow().isoformat() + "Z"
+
+        marked_unknown = []
+        with self._immediate() as conn:
+            # Find claimed-but-unresponded items (state='dispatching' with response_recorded_at NULL)
+            rows = conn.execute(
+                """SELECT item_id, intent_id
+                   FROM outbox
+                   WHERE state = 'dispatching' AND response_recorded_at IS NULL"""
+            ).fetchall()
+
+            for item_id, _intent_id in rows:
+                # Mark as 'unknown' with restart reason
+                response_json = json.dumps({"reason": "restart_before_response"})
+                conn.execute(
+                    """UPDATE outbox
+                       SET state = ?, response = ?, response_recorded_at = ?
+                       WHERE item_id = ?""",
+                    ("unknown", response_json, now_utc, item_id),
+                )
+                marked_unknown.append(item_id)
+
+        # Get all still-outboxed items
+        outboxed_pending = []
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT item_id FROM outbox WHERE state = 'outboxed'"
+            ).fetchall()
+            outboxed_pending = [row[0] for row in rows]
+
+        return {
+            "marked_unknown": marked_unknown,
+            "outboxed_pending": outboxed_pending,
+        }
+
+    # ---------- End WC-31 ----------
+
+    # WC-32: Trading halts (risk control entry blocking)
+    # ===================================================
+
+    def set_trading_halt(self, scope: str, scope_id: str, reason: str, source: str) -> str:
+        """WC-32: Set a trading halt at account/portfolio/owner scope (idempotent).
+
+        If an active halt already exists for this scope/scope_id, return its existing id.
+        Otherwise create a new halt and return its id.
+
+        Args:
+            scope: One of "account", "portfolio", "owner".
+            scope_id: The target id (physical_account_id, portfolio_id, or "owner").
+            reason: Human-readable reason for the halt (e.g., "daily loss limit breached").
+            source: Who/what triggered the halt (e.g., "owner", "daily_loss_limiter", "system").
+
+        Returns:
+            halt_id (string UUID hex).
+        """
+        # Check for existing active halt
+        with self._connect() as conn:
+            row = conn.execute(
+                """SELECT halt_id FROM trading_halts
+                   WHERE scope = ? AND scope_id = ? AND cleared_at IS NULL
+                   LIMIT 1""",
+                (scope, scope_id),
+            ).fetchone()
+            if row is not None:
+                return row[0]
+
+        # Create new halt
+        halt_id = str(uuid.uuid4().hex)
+        now = datetime.now(timezone.utc).isoformat()
+
+        with self._connect() as conn:
+            conn.execute(
+                """INSERT INTO trading_halts
+                   (halt_id, scope, scope_id, reason, source, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (halt_id, scope, scope_id, reason, source, now),
+            )
+        return halt_id
+
+    def clear_trading_halt(self, scope: str, scope_id: str, cleared_by: str) -> bool:
+        """WC-32: Clear (deactivate) a trading halt.
+
+        Returns True if a halt was found and cleared, False if none existed.
+
+        Args:
+            scope: One of "account", "portfolio", "owner".
+            scope_id: The target id.
+            cleared_by: Who cleared the halt (e.g., "owner").
+
+        Returns:
+            True if halt was cleared, False if none found.
+        """
+        now = datetime.now(timezone.utc).isoformat()
+
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """UPDATE trading_halts
+                   SET cleared_at = ?, cleared_by = ?
+                   WHERE scope = ? AND scope_id = ? AND cleared_at IS NULL""",
+                (now, cleared_by, scope, scope_id),
+            )
+            return cursor.rowcount > 0
+
+    def list_active_trading_halts(self) -> list[dict]:
+        """WC-32: List all currently active (not cleared) trading halts.
+
+        Returns:
+            List of dicts with keys: halt_id, scope, scope_id, reason, source, created_at.
+        """
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT halt_id, scope, scope_id, reason, source, created_at
+                   FROM trading_halts
+                   WHERE cleared_at IS NULL
+                   ORDER BY created_at DESC"""
+            ).fetchall()
+
+        return [
+            {
+                "halt_id": row[0],
+                "scope": row[1],
+                "scope_id": row[2],
+                "reason": row[3],
+                "source": row[4],
+                "created_at": row[5],
+            }
+            for row in rows
+        ]
+
+    def active_halt_for(self, scope: str, scope_id: str) -> dict | None:
+        """WC-32: Check if there is an active halt for this scope/scope_id.
+
+        Returns:
+            Dict with halt details if found, None otherwise.
+        """
+        with self._connect() as conn:
+            row = conn.execute(
+                """SELECT halt_id, scope, scope_id, reason, source, created_at
+                   FROM trading_halts
+                   WHERE scope = ? AND scope_id = ? AND cleared_at IS NULL
+                   LIMIT 1""",
+                (scope, scope_id),
+            ).fetchone()
+
+        if row is None:
+            return None
+
+        return {
+            "halt_id": row[0],
+            "scope": row[1],
+            "scope_id": row[2],
+            "reason": row[3],
+            "source": row[4],
+            "created_at": row[5],
+        }
+
+    # ---------- End WC-32 ----------

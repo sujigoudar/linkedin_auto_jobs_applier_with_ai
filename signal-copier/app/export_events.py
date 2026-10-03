@@ -140,7 +140,7 @@ def build_execution_applied_envelope(
         side=side.value,
         filled_quantity=str(result.filled_quantity),
         filled_price=str(result.filled_price),
-        fee=None,
+        fee=None if result.fee is None else str(result.fee),
         broker=account.broker,
         broker_order_id=result.broker_order_id,
         originating_source_event_id=originating_source_event_id,

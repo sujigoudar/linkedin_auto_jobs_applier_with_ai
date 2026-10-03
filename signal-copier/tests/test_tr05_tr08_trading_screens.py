@@ -237,17 +237,61 @@ async def test_all_four_new_trading_screens_render_real_content(live_server):
 
             # TR-08: Broker account configuration -- a real, second account
             # saved through the same POST /accounts path, always inactive.
-            await page.goto(f"{base_url}#/trade/accounts/new")
+            await page.goto(f"{base_url}/#/trade/accounts/new")
             await page.wait_for_selector("#tr08-p06", timeout=5000)
             await wait_settled("#tr08-p06")
             assert "Broker account configuration" == await page.inner_text("#route-title")
             await page.fill("#tr08-account-label", "acct2")
+
+            # Capture console and page errors for debugging
+            console_msgs = []
+            def on_console(msg):
+                console_msgs.append(f"[{msg.type}] {msg.text}")
+                print(f"[CONSOLE {msg.type}] {msg.text}")
+            page.on("console", on_console)
+
+            # Capture responses
+            responses = []
+            async def on_response(response):
+                if "/accounts" in response.url:
+                    try:
+                        body = await response.text()
+                        responses.append({"url": response.url, "status": response.status, "body": body[:500]})
+                        print(f"[RESPONSE] {response.url} -> {response.status}")
+                        if response.status >= 400:
+                            print(f"  Body: {body[:500]}")
+                    except Exception as e:
+                        print(f"[RESPONSE ERROR] {e}")
+            page.on("response", on_response)
+
+            print("[DEBUG] Clicking save")
             await page.click("#tr08-save")
-            await page.wait_for_function(
-                "() => document.querySelector('#tr08-action-result') && "
-                "document.querySelector('#tr08-action-result').innerText.includes('Saved')",
-                timeout=8000,
-            )
+
+            # Wait a bit and check the result
+            import asyncio
+            await asyncio.sleep(1)
+            result = await page.query_selector("#tr08-action-result")
+            if result:
+                result_text = await result.inner_text()
+                print(f"[DEBUG] Action result text: '{result_text}'")
+
+            print(f"[DEBUG] Console messages: {console_msgs}")
+            print(f"[DEBUG] Responses: {responses}")
+
+            try:
+                await page.wait_for_function(
+                    "() => document.querySelector('#tr08-action-result') && "
+                    "document.querySelector('#tr08-action-result').innerText.includes('Saved')",
+                    timeout=8000,
+                )
+            except Exception as e:
+                print(f"[ERROR] Timeout: {e}")
+                # Check what's in action-result
+                elem = await page.query_selector("#tr08-action-result")
+                if elem:
+                    content = await elem.inner_text()
+                    print(f"[ERROR] Final action-result content: '{content}'")
+                raise
             accounts_response2 = client.get("/accounts")
             saved = next(a for a in accounts_response2.json()["accounts"] if a["account_id"] == "acct2")
             assert saved["enabled"] is False

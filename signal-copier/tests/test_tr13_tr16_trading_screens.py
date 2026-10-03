@@ -200,6 +200,9 @@ class _UnverifiableBalanceBroker:
     def has_balance_capability(self) -> bool:
         return True
 
+    def entries_admissible(self) -> bool:
+        return True
+
 
 def test_readiness_endpoint_requires_owner_session(monkeypatch, tmp_path):
     _store, client = _authed_client(monkeypatch, tmp_path)

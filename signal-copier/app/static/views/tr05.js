@@ -60,11 +60,100 @@
       <section class="tr-panel" id="tr05-p05"><h2>Routing preview</h2><div class="tr-panel-body"></div></section>
       <section class="tr-panel" id="tr05-p06"><h2>Execution links</h2><div class="tr-panel-body"></div></section>
       <section class="tr-panel" id="tr05-p07"><h2>Actions</h2><div class="tr-panel-body"></div></section>
+      <section class="tr-panel" id="tr05-p08"><h2>Decision trace</h2><div class="tr-panel-body"></div></section>
+      <section class="tr-panel" id="tr05-p09"><h2>Reservation</h2><div class="tr-panel-body"></div></section>
+      <section class="tr-panel" id="tr05-p10"><h2>Intent / outbox</h2><div class="tr-panel-body"></div></section>
+      <section class="tr-panel" id="tr05-p11"><h2>Protection</h2><div class="tr-panel-body"></div></section>
     `;
   }
 
+
+  // WC-21: decision trace, reservation, intent/outbox and protection panels,
+  // fed by GET /signals/{id}/decision (app/main.py). Rendered for every
+  // signal detail; each panel shows an honest empty state when the engine
+  // recorded no row (never a fabricated figure).
+  async function renderDecisionPanels(ctx, eventId) {
+    const dels = {
+      traces: ctx.container.querySelector("#tr05-p08 .tr-panel-body"),
+      reservation: ctx.container.querySelector("#tr05-p09 .tr-panel-body"),
+      intent: ctx.container.querySelector("#tr05-p10 .tr-panel-body"),
+      protection: ctx.container.querySelector("#tr05-p11 .tr-panel-body"),
+    };
+    if (!dels.traces) return;
+    {
+      const decisionRes = await ctx.fetchJSON(`/signals/${encodeURIComponent(eventId)}/decision`);
+      if (decisionRes.ok && decisionRes.data) {
+        const decision = decisionRes.data;
+
+        // Decision traces table
+        const traceRows = (decision.traces || []).map(t => [
+          t.candidate_rank.toString(),
+          escapeHtml(t.physical_account_id),
+          t.feasible ? "✓" : "✗",
+          escapeHtml(t.reason),
+          t.selected ? '<span class="badge" style="background:#4caf50;">selected</span>' : "—",
+        ]);
+        StateMatrix.render(dels.traces, {
+          state: "ready",
+          html: table(
+            ["Rank", "Account", "Feasible", "Reason", "Selected"],
+            traceRows,
+            "No candidates evaluated for this signal."
+          ),
+        });
+
+        // Reservation card
+        const reservationHtml = decision.reservation
+          ? `<div class="econ-stats">
+               <div><span class="muted">State</span><br><span class="mono">${escapeHtml(decision.reservation.state)}</span></div>
+               <div><span class="muted">Cash needed</span><br><span class="num">${fmtCents(decision.reservation.needed_cash_cents)}</span></div>
+               <div><span class="muted">Margin needed</span><br><span class="num">${fmtCents(decision.reservation.needed_margin_cents)}</span></div>
+               <div><span class="muted">Notional</span><br><span class="num">${fmtCents(decision.reservation.needed_notional_cents)}</span></div>
+               <div><span class="muted">Planned risk</span><br><span class="num">${fmtCents(decision.reservation.needed_planned_risk_cents)}</span></div>
+             </div>`
+          : '<p class="section-note">No reservation recorded for this signal.</p>';
+        StateMatrix.render(dels.reservation, {
+          state: "ready",
+          html: reservationHtml,
+        });
+
+        // Intent/outbox card
+        const intentHtml = decision.intent
+          ? `<div class="econ-stats">
+               <div><span class="muted">Intent ID</span><br><span class="mono" style="font-size:0.85em;">${escapeHtml(decision.intent.intent_id.substring(0, 8))}</span></div>
+               ${decision.outbox ? `<div><span class="muted">Outbox state</span><br><span class="mono">${escapeHtml(decision.outbox.state)}</span></div>
+               <div><span class="muted">Claimed by</span><br><span class="mono">${escapeHtml(decision.outbox.claimed_by || "(none)")}</span></div>
+               <div><span class="muted">Response at</span><br><span class="mono" style="font-size:0.85em;">${escapeHtml(decision.outbox.response_recorded_at || "(none)")}</span></div>` : ''}
+             </div>`
+          : '<p class="section-note">No intent recorded for this signal.</p>';
+        StateMatrix.render(dels.intent, {
+          state: "ready",
+          html: intentHtml,
+        });
+
+        // Protection card
+        const protectionHtml = decision.protection
+          ? `<div class="econ-stats">
+               <div><span class="muted">Protection state</span><br><span class="mono">${escapeHtml(decision.protection.state)}</span></div>
+               ${decision.protection.reason ? `<div><span class="muted">Reason</span><br><span>${escapeHtml(decision.protection.reason)}</span></div>` : ''}
+             </div>`
+          : '<p class="section-note">No protection tracked.</p>';
+        StateMatrix.render(dels.protection, {
+          state: "ready",
+          html: protectionHtml,
+        });
+
+      } else {
+        for (const el of Object.values(dels)) {
+          StateMatrix.render(el, { state: "error", errorMessage: "Could not load decision data (GET /signals/{id}/decision)." });
+        }
+      }
+    }
+  }
   async function load(ctx) {
-    const eventId = ctx.params.event_id;
+    // Handle both :event_id (evidence view) and :id (decision traces view)
+    const eventId = ctx.params.event_id || ctx.params.id;
+
     const els = {
       original: ctx.container.querySelector("#tr05-p01 .tr-panel-body"),
       parsed: ctx.container.querySelector("#tr05-p02 .tr-panel-body"),
@@ -74,6 +163,7 @@
       execution: ctx.container.querySelector("#tr05-p06 .tr-panel-body"),
       actions: ctx.container.querySelector("#tr05-p07 .tr-panel-body"),
     };
+    renderDecisionPanels(ctx, eventId).catch(() => {});
     for (const el of Object.values(els)) StateMatrix.render(el, { state: "loading" });
 
     const signalsRes = await ctx.fetchJSON("/signals?limit=500");
@@ -99,6 +189,7 @@
       }
       return;
     }
+
 
     // --- Original/revisions ---
     StateMatrix.render(els.original, {
@@ -355,7 +446,8 @@
     async render(ctx) {
       ctx.container.innerHTML = shell();
       await load(ctx);
-      ctx.registerPoll(`tr05:${ctx.params.event_id}`, 10000, () => load(ctx));
+      const signalId = ctx.params.event_id || ctx.params.id;
+      ctx.registerPoll(`tr05:${signalId}`, 10000, () => load(ctx));
     },
   };
   Router.register("/trade/signals/:event_id", "tr05");

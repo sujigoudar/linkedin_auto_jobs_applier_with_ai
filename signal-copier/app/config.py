@@ -431,6 +431,12 @@ class _Settings(BaseSettings):
     # the same reasoning documented once, not duplicated here.
     NOTIFICATION_BRIDGE_STALE_THRESHOLD_SECONDS: float = 300.0
 
+    # A-09: Chase guard — max age/deviation for provider prices before rejecting
+    # as stale. None means no check (always accept). Max age in seconds.
+    SIGNAL_MAX_PRICE_AGE_SECONDS: float | None = None
+    # Max price deviation as a percentage (0-100). None means no check.
+    SIGNAL_MAX_PRICE_DEVIATION_PCT: float | None = None
+
     # Track 12: cross-transport signal correlation (app/signal_correlation.py).
     # See that module's own DEFAULT_PRICE_TOLERANCE_PCT/
     # DEFAULT_TIMESTAMP_WINDOW_SECONDS docstrings for the same reasoning
@@ -457,6 +463,15 @@ class _Settings(BaseSettings):
     # real-world event, through different transports/collectors, arriving
     # within" is a reasonable prior here too, not independently derived.
     MANAGED_EXIT_DUPLICATE_WINDOW_SECONDS: float = 900.0
+
+    # WP-23: grace period for a lost-response managed entry (pending, no
+    # order id, broker_owned == 0) before it is auto-resolved. After this
+    # many seconds, such an entry is treated as never having reached the
+    # venue and resolved with 0 quantity filled and remainder cancelled.
+    # Default 5 minutes -- long enough to distinguish transient timeouts
+    # from actual lost entries, short enough to unblock the account in
+    # a reasonable time.
+    LOST_ENTRY_GRACE_SECONDS: int = 300
 
 
 _settings = _Settings()
@@ -557,10 +572,14 @@ EXPORT_OUTBOX_SIZE_CEILING_BYTES = _settings.EXPORT_OUTBOX_SIZE_CEILING_BYTES
 
 NOTIFICATION_BRIDGE_STALE_THRESHOLD_SECONDS = _settings.NOTIFICATION_BRIDGE_STALE_THRESHOLD_SECONDS
 
+SIGNAL_MAX_PRICE_AGE_SECONDS = _settings.SIGNAL_MAX_PRICE_AGE_SECONDS
+SIGNAL_MAX_PRICE_DEVIATION_PCT = _settings.SIGNAL_MAX_PRICE_DEVIATION_PCT
+
 SIGNAL_CORRELATION_PRICE_TOLERANCE_PCT = _settings.SIGNAL_CORRELATION_PRICE_TOLERANCE_PCT
 SIGNAL_CORRELATION_TIMESTAMP_WINDOW_SECONDS = _settings.SIGNAL_CORRELATION_TIMESTAMP_WINDOW_SECONDS
 SIGNAL_CORRELATION_ENABLED = _settings.SIGNAL_CORRELATION_ENABLED
 MANAGED_EXIT_DUPLICATE_WINDOW_SECONDS = _settings.MANAGED_EXIT_DUPLICATE_WINDOW_SECONDS
+LOST_ENTRY_GRACE_SECONDS = _settings.LOST_ENTRY_GRACE_SECONDS
 
 DEFAULT_DAILY_LOSS_LIMIT_PERCENT = _settings.DEFAULT_DAILY_LOSS_LIMIT_PERCENT
 DEFAULT_MIN_EQUITY_THRESHOLD = _settings.DEFAULT_MIN_EQUITY_THRESHOLD

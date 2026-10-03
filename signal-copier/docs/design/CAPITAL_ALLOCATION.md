@@ -112,9 +112,9 @@ identical to admitting an unbounded, unsized order. See ADR-0007.
 
 ## Reservation release timing
 
-- **REJECTED / ERROR / FILLED**: the reservation is released
-  immediately at the call site — nothing happened (REJECTED/ERROR), or
-  the fill is now immediately part of confirmed exposure the next
+- **REJECTED / FILLED**: the reservation is released
+  immediately at the call site — the broker definitely rejected it
+  (REJECTED), or the fill is now immediately part of confirmed exposure the next
   admission call will see (FILLED).
 - **PENDING with a real `broker_order_id`**: the reservation is
   **held**. Releasing it immediately, the same as the terminal cases,
@@ -126,13 +126,37 @@ identical to admitting an unbounded, unsized order. See ADR-0007.
   is guaranteed to eventually observe this exact order reach a
   terminal status and is the one place allowed to release the
   reservation then.
-- **PENDING with no `broker_order_id`**: still releases immediately —
-  the same ambiguous case as a raised exception or ERROR. Deferring
-  release for an order nothing is guaranteed to ever revisit would
-  risk a reservation that never releases (silently blocking all future
-  admissions for the account), judged worse than the narrower timing
-  gap this leaves open. This is a deliberately bounded slice, not a
-  complete closure of the PENDING-timing problem.
+- **Ambiguous submission** (the broker call raised or timed out, returned
+  ERROR, or returned PENDING with no `broker_order_id` to poll) —
+  **held** (ALLOC-05, superseding the earlier "releases immediately"
+  rule). The order may have been accepted at the venue, so it is an
+  unresolved obligation: the account and strategy reservations stay
+  until `SignalCopierEngine.resolve_unknown_submission(key,
+  outcome="not_placed", evidence=...)` records independent evidence that
+  nothing was placed. A submission that did reach the venue is not
+  released on an operator's word; its fill must be recorded through
+  reconciliation so confirmed exposure replaces the reservation.
+  Only entry commands are covered; the unresolved ledger row shows in
+  `list_unresolved_command_ledger_entries`.
+
+## Strategy ceiling and joint admission (ALLOC-03)
+
+`strategy_budgets` holds an opt-in global notional ceiling per strategy
+(keyed by signal `source`). It is counted **once across every account**
+the strategy can use, so adding accounts never multiplies it. After the
+account gates pass, `CapitalAllocator.reserve_with_strategy_ceiling`
+runs one `BEGIN IMMEDIATE` transaction that reads the strategy's
+confirmed notional (`confirmed_strategy_notional`, the same fill replay
+filtered to the strategy's own signals) plus its unresolved reservations
+(`capital_reservations.strategy_key`, all accounts, all processes) and
+inserts the reservation only if it fits. A missing price fails closed;
+unresolved symbols block the strategy. Releases match the reservation by
+signal id first so another strategy's identically sized reservation is
+never resolved by mistake.
+
+The account-level gate still serializes in-process with `asyncio` locks;
+only the strategy gate is atomic across processes. Cross-process safety
+for accounts rests on the single-writer lease (ADR-0002).
 
 ## Durability across a restart (P0-4)
 

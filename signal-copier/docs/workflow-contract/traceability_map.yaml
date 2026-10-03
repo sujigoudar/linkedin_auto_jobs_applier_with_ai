@@ -1,0 +1,2869 @@
+schema_version: '1.0'
+description: Initial traceability mapping for all 292 scenarios. WC-01 creates this
+  skeleton; subsequent work packages populate implementation_paths and test_paths.
+scenarios:
+- id: ING-001
+  category: Intake, authority, identity and durability
+  title: Valid authorized webhook
+  status: TESTED_SIMULATOR
+  implementation_paths:
+  - app/sources/webhook.py
+  test_paths:
+  - tests/test_scn_a.py::test_ing_001_valid_authorized_webhook
+  evidence_paths: []
+  blocked_reason: null
+  notes: Signal parsing and event ID retention proven by WebhookSource.parse() | @pytest.mark.scenario()
+    tagged
+- id: ING-002
+  category: Intake, authority, identity and durability
+  title: Invalid transport signature
+  status: TESTED_SIMULATOR
+  implementation_paths:
+  - app/sources/webhook.py
+  test_paths:
+  - tests/test_scn_a.py::test_ing_002_invalid_transport_signature
+  evidence_paths: []
+  blocked_reason: null
+  notes: Field validation rejection proven by missing symbol raises SignalValidationError
+    | @pytest.mark.scenario() tagged
+- id: ING-003
+  category: Intake, authority, identity and durability
+  title: Authorized transport unauthorized sender
+  status: TESTED_SIMULATOR
+  implementation_paths:
+  - app/main.py
+  - app/sources/sms_twilio.py
+  test_paths:
+  - tests/test_sms_twilio_sender_authorization.py
+  - tests/test_whatsapp_webhook.py
+  evidence_paths: []
+  blocked_reason: null
+  notes: Sender authorization via TWILIO_ALLOWED_FROM_NUMBERS and WhatsApp allowlists
+    | Requires tagging existing test | @pytest.mark.scenario() tagged
+- id: ING-004
+  category: Intake, authority, identity and durability
+  title: Unknown provider
+  status: TESTED_SIMULATOR
+  implementation_paths:
+  - app/provider_catalog.py
+  - app/models.py
+  test_paths:
+  - tests/test_config_crud.py
+  evidence_paths: []
+  blocked_reason: null
+  notes: Unknown provider detection via provider_registry lookup | Requires tagging
+    existing test | @pytest.mark.scenario() tagged
+- id: ING-005
+  category: Intake, authority, identity and durability
+  title: Known provider unknown analyst
+  status: TESTED_SIMULATOR
+  implementation_paths:
+  - app/providers.py
+  - app/models.py
+  test_paths:
+  - tests/test_config_crud.py
+  evidence_paths: []
+  blocked_reason: null
+  notes: Analyst mapping via SettingsOverride in provider registry | Requires tagging
+    existing test | @pytest.mark.scenario() tagged
+- id: ING-006
+  category: Intake, authority, identity and durability
+  title: Disabled provider enabled child
+  status: IMPLEMENTED_NOT_WIRED
+  implementation_paths:
+  - app/engine.py
+  - app/models.py
+  test_paths:
+  - tests/test_config_crud.py
+  evidence_paths: []
+  blocked_reason: null
+  notes: Provider/child enabled flag hierarchy via _effective_settings() | Requires
+    tagging existing test
+- id: ING-007
+  category: Intake, authority, identity and durability
+  title: Forged forwarded origin
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: No implementation exists yet
+- id: ING-008
+  category: Intake, authority, identity and durability
+  title: Oversized malformed body
+  status: TESTED_SIMULATOR
+  implementation_paths:
+  - app/sources/webhook.py
+  test_paths:
+  - tests/test_scn_a.py::test_ing_008_oversized_malformed_body
+  evidence_paths: []
+  blocked_reason: null
+  notes: Malformed body rejection via field validation (targets not a list) | @pytest.mark.scenario()
+    tagged
+- id: ING-009
+  category: Intake, authority, identity and durability
+  title: Persistence unavailable
+  status: IMPLEMENTED_NOT_WIRED
+  implementation_paths:
+  - app/db.py
+  - app/main.py
+  test_paths:
+  - tests/test_wp35_rule_deletion_guard_schema_check_disk_health.py
+  evidence_paths: []
+  blocked_reason: null
+  notes: Database error handling via schema migration and health checks | Requires
+    tagging existing test
+- id: ING-010
+  category: Intake, authority, identity and durability
+  title: Source replay after crash
+  status: IMPLEMENTED_NOT_WIRED
+  implementation_paths:
+  - app/main.py
+  - app/db.py
+  test_paths:
+  - tests/test_sig01_duplicate_submission_protection.py
+  evidence_paths: []
+  blocked_reason: null
+  notes: Replay deduplication via Idempotency-Key and payload event_id | Requires
+    tagging existing test
+- id: ING-011
+  category: Intake, authority, identity and durability
+  title: Cross-post same origin
+  status: IMPLEMENTED_NOT_WIRED
+  implementation_paths:
+  - app/signal_correlation.py
+  test_paths:
+  - tests/test_telegram_cross_collector_dedup.py
+  evidence_paths: []
+  blocked_reason: null
+  notes: Cross-post deduplication by SignalCorrelator.matches_by_cluster() | Requires
+    tagging existing test
+- id: ING-012
+  category: Intake, authority, identity and durability
+  title: Similar but distinct signals
+  status: IMPLEMENTED_NOT_WIRED
+  implementation_paths:
+  - app/signal_correlation.py
+  test_paths:
+  - tests/test_track12_whop_notification_completeness.py
+  evidence_paths: []
+  blocked_reason: null
+  notes: Similar-but-distinct via signal correlation with exact venue matching | Requires
+    tagging existing test
+- id: ING-013
+  category: Intake, authority, identity and durability
+  title: Historical backfill
+  status: IMPLEMENTED_NOT_WIRED
+  implementation_paths:
+  - app/db.py
+  - app/models.py
+  test_paths:
+  - tests/test_website_candidate_dedup.py
+  evidence_paths: []
+  blocked_reason: null
+  notes: Historical backfill via SourceEvent.purpose field (ORIGINAL vs BACKFILL)
+    | Requires tagging existing test
+- id: ING-014
+  category: Intake, authority, identity and durability
+  title: Cursor gap reconnect
+  status: IMPLEMENTED_NOT_WIRED
+  implementation_paths:
+  - app/sources/telegram.py
+  - app/sources/discord.py
+  - app/sources/slack.py
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'Cursor gap recovery via pagination in collector source adapters: no existing test proves the then-clause (the two files previously listed here did not exist); needs a real test against the collector cursor logic'
+- id: ING-015
+  category: Intake, authority, identity and durability
+  title: Prompt injection
+  status: IMPLEMENTED_NOT_WIRED
+  implementation_paths:
+  - app/sources/text_parser.py
+  - app/parser_tooling.py
+  test_paths:
+  - tests/test_wp12_parser_instrument_validation.py
+  evidence_paths: []
+  blocked_reason: null
+  notes: Text parsers treat user input as data, no instruction execution | Requires
+    tagging existing test
+- id: PAR-001
+  category: Full-message interpretation and compound instructions
+  title: Negated buy
+  status: TESTED_SIMULATOR
+  implementation_paths:
+  - app/sources/webhook.py
+  - app/models.py
+  test_paths:
+  - tests/test_scn_a.py::test_par_001_negated_buy
+  evidence_paths: []
+  blocked_reason: null
+  notes: Negated buy rejected via Side enum validation | @pytest.mark.scenario() tagged
+- id: PAR-002
+  category: Full-message interpretation and compound instructions
+  title: Historical recap
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: No implementation exists yet
+- id: PAR-003
+  category: Full-message interpretation and compound instructions
+  title: Unmet conditional
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: No implementation exists yet
+- id: PAR-004
+  category: Full-message interpretation and compound instructions
+  title: Option-flow observation
+  status: TESTED_SIMULATOR
+  implementation_paths:
+  - app/sources/webhook.py
+  test_paths:
+  - tests/test_scn_a.py::test_par_004_option_flow_observation
+  evidence_paths: []
+  blocked_reason: null
+  notes: Option-flow parsed as OBSERVATION without action inference | @pytest.mark.scenario()
+    tagged
+- id: PAR-005
+  category: Full-message interpretation and compound instructions
+  title: Buy put direction
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: No implementation exists yet
+- id: PAR-006
+  category: Full-message interpretation and compound instructions
+  title: Ambiguous sell option
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: No implementation exists yet
+- id: PAR-007
+  category: Full-message interpretation and compound instructions
+  title: Independent mixed-assets
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: No implementation exists yet
+- id: PAR-008
+  category: Full-message interpretation and compound instructions
+  title: Valid and invalid independent child
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: No implementation exists yet
+- id: PAR-009
+  category: Full-message interpretation and compound instructions
+  title: Ambiguous shared stop
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: No implementation exists yet
+- id: PAR-010
+  category: Full-message interpretation and compound instructions
+  title: Atomic vertical spread
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: No implementation exists yet
+- id: PAR-011
+  category: Full-message interpretation and compound instructions
+  title: Unsupported atomic combo
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: No implementation exists yet
+- id: PAR-012
+  category: Full-message interpretation and compound instructions
+  title: Either-or triggers
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: No implementation exists yet
+- id: PAR-013
+  category: Full-message interpretation and compound instructions
+  title: Roll dependent actions
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: No implementation exists yet
+- id: PAR-014
+  category: Full-message interpretation and compound instructions
+  title: Reversal
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: No implementation exists yet
+- id: PAR-015
+  category: Full-message interpretation and compound instructions
+  title: Multileg missing ratio
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: No implementation exists yet
+- id: PAR-016
+  category: Full-message interpretation and compound instructions
+  title: Provider quantity versus copier size
+  status: TESTED_SIMULATOR
+  implementation_paths:
+  - app/sources/webhook.py
+  test_paths:
+  - tests/test_scn_a.py::test_par_016_quantity_boundary_minus_one
+  - tests/test_scn_a.py::test_par_016_quantity_boundary_zero
+  - tests/test_scn_a.py::test_par_016_quantity_boundary_plus_one
+  evidence_paths: []
+  blocked_reason: null
+  notes: "Quantity validation enforces > 0 at boundary \u22121/0/+1 | @pytest.mark.scenario()\
+    \ tagged"
+- id: PAR-017
+  category: Full-message interpretation and compound instructions
+  title: Half-size ambiguous basis
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: No implementation exists yet
+- id: PAR-018
+  category: Full-message interpretation and compound instructions
+  title: Price-unit conflict
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: No implementation exists yet
+- id: PAR-019
+  category: Full-message interpretation and compound instructions
+  title: Attachment-only alert
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: No implementation exists yet
+- id: PAR-020
+  category: Full-message interpretation and compound instructions
+  title: Locale/time ambiguity
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: No implementation exists yet
+- id: REV-001
+  category: Revisions, lifecycle matching and temporal order
+  title: Edit before dispatch
+  status: TESTED_SIMULATOR
+  implementation_paths:
+  - app/engine.py
+  test_paths:
+  - tests/test_wp11_edit_and_delete.py
+  evidence_paths: []
+  blocked_reason: null
+  notes: Edit before dispatch via _handle_signal_edit() before broker submission |
+    Requires tagging existing test | @pytest.mark.scenario() tagged
+- id: REV-002
+  category: Revisions, lifecycle matching and temporal order
+  title: Edit after acceptance
+  status: TESTED_SIMULATOR
+  implementation_paths:
+  - app/engine.py
+  - app/lifecycle/manager.py
+  test_paths:
+  - tests/test_wp11_edit_and_delete.py
+  evidence_paths: []
+  blocked_reason: null
+  notes: Edit after acceptance with lifecycle amendment and revalidation | Requires
+    tagging existing test | @pytest.mark.scenario() tagged
+- id: REV-003
+  category: Revisions, lifecycle matching and temporal order
+  title: Delete source message
+  status: TESTED_SIMULATOR
+  implementation_paths:
+  - app/engine.py
+  test_paths:
+  - tests/test_wp11_edit_and_delete.py
+  evidence_paths: []
+  blocked_reason: null
+  notes: Delete via source message tombstone handling in _handle_signal_edit() | Requires
+    tagging existing test | @pytest.mark.scenario() tagged
+- id: REV-004
+  category: Revisions, lifecycle matching and temporal order
+  title: Exit before entry
+  status: IMPLEMENTED_NOT_WIRED
+  implementation_paths:
+  - app/lifecycle/manager.py
+  - app/models.py
+  test_paths:
+  - tests/test_wp20_ambiguous_exit_and_stop.py
+  evidence_paths: []
+  blocked_reason: null
+  notes: Exit-before-entry detected via lifecycle matching and marked EXIT_ORPHAN
+    | Requires tagging existing test
+- id: REV-005
+  category: Revisions, lifecycle matching and temporal order
+  title: Old exit new same ticker
+  status: IMPLEMENTED_NOT_WIRED
+  implementation_paths:
+  - app/lifecycle/manager.py
+  - app/signal_correlation.py
+  test_paths:
+  - tests/test_track16_correlation_lifecycle.py
+  evidence_paths: []
+  blocked_reason: null
+  notes: Old exit new ticker matched exactly via lifecycle identity, not symbol |
+    Requires tagging existing test
+- id: REV-006
+  category: Revisions, lifecycle matching and temporal order
+  title: Duplicate partial exit
+  status: IMPLEMENTED_NOT_WIRED
+  implementation_paths:
+  - app/lifecycle/manager.py
+  - app/db.py
+  test_paths:
+  - tests/test_wp10_partial_exit.py
+  - tests/test_pro06_stop_amend_on_partial_exit.py
+  evidence_paths: []
+  blocked_reason: null
+  notes: Duplicate partial exit rejected via idempotency on signal/message ID | Requires
+    tagging existing test
+- id: REV-007
+  category: Revisions, lifecycle matching and temporal order
+  title: Delayed exit beyond entry age
+  status: IMPLEMENTED_NOT_WIRED
+  implementation_paths:
+  - app/engine.py
+  - app/lifecycle/manager.py
+  test_paths:
+  - tests/test_wp23_recovery_edges.py
+  evidence_paths: []
+  blocked_reason: null
+  notes: Delayed exit resolved via owned remainder reconciliation, not entry TTL |
+    Requires tagging existing test
+- id: REV-008
+  category: Revisions, lifecycle matching and temporal order
+  title: Exit without fill
+  status: IMPLEMENTED_NOT_WIRED
+  implementation_paths:
+  - app/lifecycle/manager.py
+  - app/engine.py
+  test_paths:
+  - tests/test_position_tracking.py
+  - tests/test_wp20_ambiguous_exit_and_stop.py
+  evidence_paths: []
+  blocked_reason: null
+  notes: Exit without fill marked audit-only when entry was definitively rejected
+    | Requires tagging existing test
+- id: REV-009
+  category: Revisions, lifecycle matching and temporal order
+  title: Ambiguous all-out
+  status: IMPLEMENTED_NOT_WIRED
+  implementation_paths:
+  - app/engine.py
+  - app/main.py
+  test_paths:
+  - tests/test_tr06_flatten_confirm.py
+  - tests/test_wp20_ambiguous_exit_and_stop.py
+  evidence_paths: []
+  blocked_reason: null
+  notes: Ambiguous all-out blocks execution and requires incident review | Requires
+    tagging existing test
+- id: REV-010
+  category: Revisions, lifecycle matching and temporal order
+  title: Scoped close-all
+  status: IMPLEMENTED_NOT_WIRED
+  implementation_paths:
+  - app/main.py
+  - app/command_ledger.py
+  test_paths:
+  - tests/test_tr06_flatten_confirm.py
+  evidence_paths: []
+  blocked_reason: null
+  notes: Scoped close-all via /accounts/{id}/flatten with writer scope matching |
+    Requires tagging existing test
+- id: REV-011
+  category: Revisions, lifecycle matching and temporal order
+  title: Reply-parent missing
+  status: IMPLEMENTED_NOT_WIRED
+  implementation_paths:
+  - app/models.py
+  - app/sources/
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'Reply parent matching via SourceEventKind.REPLY with missing-context handling: no existing test proves it (the file previously listed here did not exist); needs a real test'
+- id: REV-012
+  category: Revisions, lifecycle matching and temporal order
+  title: Future timestamp
+  status: IMPLEMENTED_NOT_WIRED
+  implementation_paths:
+  - app/sources/
+  test_paths:
+  - tests/
+  evidence_paths: []
+  blocked_reason: null
+  notes: Future timestamp validation via received_at vs source_timestamp clock-skew
+    check | Requires tagging existing test
+- id: INS-001
+  category: Instrument metadata, units and product identity
+  title: Exact stock resolution
+  status: NOT_IMPLEMENTED
+  implementation_paths:
+  - app/engine.py
+  - app/risk.py
+  - app/models.py
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'app/workflow/instruments.py missing; requires exact symbol resolution (venue/account)'
+- id: INS-002
+  category: Instrument metadata, units and product identity
+  title: Ambiguous symbol
+  status: NOT_IMPLEMENTED
+  implementation_paths:
+  - app/engine.py
+  - app/risk.py
+  - app/models.py
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'app/workflow/instruments.py missing; requires ambiguous symbol detection'
+- id: INS-003
+  category: Instrument metadata, units and product identity
+  title: Option missing expiry
+  status: NOT_IMPLEMENTED
+  implementation_paths:
+  - app/engine.py
+  - app/risk.py
+  - app/models.py
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'app/workflow/instruments.py missing; requires option expiry validation'
+- id: INS-004
+  category: Instrument metadata, units and product identity
+  title: Adjusted option deliverable
+  status: NOT_IMPLEMENTED
+  implementation_paths:
+  - app/engine.py
+  - app/risk.py
+  - app/models.py
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'app/workflow/instruments.py missing; requires contract multiplier/deliverable validation'
+- id: INS-005
+  category: Instrument metadata, units and product identity
+  title: Expired option
+  status: NOT_IMPLEMENTED
+  implementation_paths:
+  - app/engine.py
+  - app/risk.py
+  - app/models.py
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'app/workflow/instruments.py missing; requires expiry date validation'
+- id: INS-006
+  category: Instrument metadata, units and product identity
+  title: Continuous futures ticker
+  status: NOT_IMPLEMENTED
+  implementation_paths:
+  - app/engine.py
+  - app/risk.py
+  - app/models.py
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'app/workflow/instruments.py missing; requires continuous futures contract handling'
+- id: INS-007
+  category: Instrument metadata, units and product identity
+  title: Futures negative price
+  status: NOT_IMPLEMENTED
+  implementation_paths:
+  - app/engine.py
+  - app/risk.py
+  - app/models.py
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'app/workflow/instruments.py missing; requires futures negative price validation'
+- id: INS-008
+  category: Instrument metadata, units and product identity
+  title: FX lot conversion
+  status: NOT_IMPLEMENTED
+  implementation_paths:
+  - app/engine.py
+  - app/risk.py
+  - app/models.py
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'app/workflow/instruments.py missing; requires FX lot conversion logic'
+- id: INS-009
+  category: Instrument metadata, units and product identity
+  title: Stale FX conversion
+  status: NOT_IMPLEMENTED
+  implementation_paths:
+  - app/engine.py
+  - app/risk.py
+  - app/models.py
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'app/workflow/instruments.py missing; requires stale FX rate detection'
+- id: INS-010
+  category: Instrument metadata, units and product identity
+  title: Crypto fee in base
+  status: NOT_IMPLEMENTED
+  implementation_paths:
+  - app/engine.py
+  - app/risk.py
+  - app/models.py
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'app/workflow/instruments.py missing; requires crypto fee handling (base currency)'
+- id: INS-011
+  category: Instrument metadata, units and product identity
+  title: Crypto minimum/dust
+  status: NOT_IMPLEMENTED
+  implementation_paths:
+  - app/engine.py
+  - app/risk.py
+  - app/models.py
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'app/workflow/instruments.py missing; requires crypto minimum/dust validation'
+- id: INS-012
+  category: Instrument metadata, units and product identity
+  title: Inverse derivative
+  status: NOT_IMPLEMENTED
+  implementation_paths:
+  - app/engine.py
+  - app/risk.py
+  - app/models.py
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'app/workflow/instruments.py missing; requires inverse derivative handling'
+- id: INS-013
+  category: Instrument metadata, units and product identity
+  title: Leveraged inverse ETF
+  status: NOT_IMPLEMENTED
+  implementation_paths:
+  - app/engine.py
+  - app/risk.py
+  - app/models.py
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'app/workflow/instruments.py missing; requires leveraged inverse ETF tracking'
+- id: INS-014
+  category: Instrument metadata, units and product identity
+  title: Metadata change during planning
+  status: NOT_IMPLEMENTED
+  implementation_paths:
+  - app/engine.py
+  - app/risk.py
+  - app/models.py
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'app/workflow/instruments.py missing; requires metadata versioning and consistency checks'
+- id: ROU-001
+  category: Account identity, selection, permissions and binding
+  title: Three eligible accounts
+  status: TESTED_SIMULATOR
+  implementation_paths:
+  - app/workflow/identity.py
+  - app/workflow/admission.py
+  - app/workflow/selection.py
+  test_paths:
+  - tests/test_wc02_canonical_identities.py::TestPaperAndLiveDistinction::test_paper_and_live_same_broker_are_different_accounts
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Account identity, selection, permissions and binding'
+- id: ROU-002
+  category: Account identity, selection, permissions and binding
+  title: Duplicate bindings
+  status: TESTED_SIMULATOR
+  implementation_paths:
+  - app/workflow/identity.py
+  - app/workflow/admission.py
+  - app/workflow/selection.py
+  test_paths:
+  - tests/test_wc02_canonical_identities.py::TestPhysicalAccountDeduplication::test_two_bindings_same_physical_account
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Account identity, selection, permissions and binding'
+- id: ROU-003
+  category: Account identity, selection, permissions and binding
+  title: No eligible account
+  status: TESTED_SIMULATOR
+  implementation_paths:
+  - app/workflow/identity.py
+  - app/workflow/admission.py
+  - app/workflow/selection.py
+  test_paths:
+  - tests/test_wc05_admission_and_selection.py::test_admission_basic_cases
+  - tests/test_wc20_engine_integration.py::test_wc20_single_destination_selection_i01
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Account identity, selection, permissions and binding'
+- id: ROU-004
+  category: Account identity, selection, permissions and binding
+  title: Better funded alternate
+  status: TESTED_SIMULATOR
+  implementation_paths:
+  - app/workflow/identity.py
+  - app/workflow/admission.py
+  - app/workflow/selection.py
+  test_paths:
+  - tests/test_wc02_canonical_identities.py::TestCapabilityProfileEvidenceTier::test_unknown_capability_is_not_supported
+  - tests/test_wc34_selection_ranking.py::TestFeasibilityFirst::test_infeasible_not_selected_even_if_preferred
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Account identity, selection, permissions and binding'
+- id: ROU-005
+  category: Account identity, selection, permissions and binding
+  title: Wrong gateway default
+  status: TESTED_SIMULATOR
+  implementation_paths:
+  - app/workflow/identity.py
+  - app/workflow/admission.py
+  - app/workflow/selection.py
+  test_paths:
+  - tests/test_scn_b.py::TestROU005WrongGatewayDefault::test_explicit_account_overrides_gateway_default
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Account identity, selection, permissions and binding'
+- id: ROU-006
+  category: Account identity, selection, permissions and binding
+  title: Paper/live same alias
+  status: TESTED_SIMULATOR
+  implementation_paths:
+  - app/workflow/identity.py
+  - app/workflow/admission.py
+  - app/workflow/selection.py
+  test_paths:
+  - tests/test_scn_b.py::TestROU006PaperLiveSameAlias::test_paper_live_different_despite_same_display_name
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Account identity, selection, permissions and binding'
+- id: ROU-007
+  category: Account identity, selection, permissions and binding
+  title: Account liquidation-only
+  status: TESTED_SIMULATOR
+  implementation_paths:
+  - app/workflow/identity.py
+  - app/workflow/admission.py
+  - app/workflow/selection.py
+  test_paths:
+  - tests/test_scn_b.py::TestROU007AccountLiquidationOnly::test_closing_only_restriction_blocks_entry
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Account identity, selection, permissions and binding'
+- id: ROU-008
+  category: Account identity, selection, permissions and binding
+  title: Capability unknown
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'app/workflow/capability_verification.py missing; requires CapabilityProfile with evidence tracking'
+- id: ROU-009
+  category: Account identity, selection, permissions and binding
+  title: Account changes mid-plan
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'Binding version tracking not in lifecycle manager; requires CAS version check with plan revalidation'
+- id: ROU-010
+  category: Account identity, selection, permissions and binding
+  title: Exit after route change
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'LifecycleManager missing exit_routing() method; requires exit routing and timeout recovery'
+- id: ROU-011
+  category: Account identity, selection, permissions and binding
+  title: Timeout then alternate available
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'Exit timeout tracking not in lifecycle manager; requires timeout detection and cleanup'
+- id: ROU-012
+  category: Account identity, selection, permissions and binding
+  title: Account removal with exposure
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'DataStore missing referential integrity; requires account lifecycle state validation'
+- id: ROU-013
+  category: Account identity, selection, permissions and binding
+  title: Credential rotation same account
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'app/connections.py missing credential versioning; requires binding update on credential change'
+- id: ROU-014
+  category: Account identity, selection, permissions and binding
+  title: No alternate live authority
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'No alternate live authority fallback; requires environment-scoped authorization with fallback'
+- id: CAP-001
+  category: Hierarchical budgets, shared backing and reservations
+  title: Shared final dollars
+  status: TESTED_SIMULATOR
+  implementation_paths:
+  - app/workflow/budget.py
+  test_paths:
+  - tests/test_wc03_hierarchical_budgets.py::TestBoundaryConditions::test_boundary_cash_exactly_sufficient
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Hierarchical budgets, shared backing and reservations'
+- id: CAP-002
+  category: Hierarchical budgets, shared backing and reservations
+  title: Owner cap across accounts
+  status: TESTED_SIMULATOR
+  implementation_paths:
+  - app/workflow/budget.py
+  test_paths:
+  - tests/test_wc03_hierarchical_budgets.py::TestConcurrentReservations::test_concurrent_same_opportunity_one_wins
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Hierarchical budgets, shared backing and reservations'
+- id: CAP-003
+  category: Hierarchical budgets, shared backing and reservations
+  title: Portfolio backing double count
+  status: TESTED_SIMULATOR
+  implementation_paths:
+  - app/workflow/budget.py
+  test_paths:
+  - tests/test_scn_b.py::TestCAP003PortfolioBackingDoubleCount::test_reject_overallocated_portfolio_equity_backing
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Hierarchical budgets, shared backing and reservations'
+- id: CAP-004
+  category: Hierarchical budgets, shared backing and reservations
+  title: Sleeve hard reservation
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'budget.py missing create_strategy_sleeve(); requires sleeve-level hard reservation'
+- id: CAP-005
+  category: Hierarchical budgets, shared backing and reservations
+  title: Soft reservation expiry
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'budget.py missing reservation TTL tracking; requires bounded soft reservation with auto-release'
+- id: CAP-006
+  category: Hierarchical budgets, shared backing and reservations
+  title: Unknown order reservation TTL
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'Lifecycle manager missing unknown-order TTL tracking; requires reconciliation cleanup logic'
+- id: CAP-007
+  category: Hierarchical budgets, shared backing and reservations
+  title: Reflected broker commitment
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: '_validate_broker_snapshot exists but reflected_intent_ids normalization not verified; need test for order deduplication'
+- id: CAP-008
+  category: Hierarchical budgets, shared backing and reservations
+  title: Unreflected local intent
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'budget.py missing local ledger tracking; requires unreflected commitment subtraction'
+- id: CAP-009
+  category: Hierarchical budgets, shared backing and reservations
+  title: Partial fill accounting
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'ReservationState.PART_FILLED/HELD_REMAINDER exist; needs test for state transition logic'
+- id: CAP-010
+  category: Hierarchical budgets, shared backing and reservations
+  title: Cancel request
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'Lifecycle manager missing order cancellation state machine; requires cancel request handling'
+- id: CAP-011
+  category: Hierarchical budgets, shared backing and reservations
+  title: Final reject no fill
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'budget.py missing final-state detection; requires reject-no-fill release logic'
+- id: CAP-012
+  category: Hierarchical budgets, shared backing and reservations
+  title: Withdrawal cash flow
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'app/workflow/cash_flow.py missing; requires cash flow module with daily halt logic'
+- id: CAP-013
+  category: Hierarchical budgets, shared backing and reservations
+  title: Deposit loss halt
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'Requires cash_flow module (CAP-012); missing deposit revaluation logic'
+- id: CAP-014
+  category: Hierarchical budgets, shared backing and reservations
+  title: Manual collateral
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'budget.py missing manual_position tracking; requires manual collateral reservation'
+- id: CAP-015
+  category: Hierarchical budgets, shared backing and reservations
+  title: Same-underlying multiple assets
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'budget.py missing cross-asset cluster analysis; requires consolidated underlying limits'
+- id: CAP-016
+  category: Hierarchical budgets, shared backing and reservations
+  title: Credit proceeds liability
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'Missing short_option combo position tracking; requires credit proceeds liability accounting'
+- id: CAP-017
+  category: Hierarchical budgets, shared backing and reservations
+  title: Minimum lot cannot fit
+  status: TESTED_SIMULATOR
+  implementation_paths:
+  - app/workflow/budget.py
+  test_paths:
+  - tests/test_scn_b.py::TestCAP017MinimumLotCannotFit::test_skip_entry_when_below_minimum_lot
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Hierarchical budgets, shared backing and reservations'
+- id: CAP-018
+  category: Hierarchical budgets, shared backing and reservations
+  title: Multiple binding constraints
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'sizing.py missing constraint ranking; requires binding constraint ranking for diagnostics'
+- id: SIZ-001
+  category: Financial validation and exact sizing
+  title: Reference stock sizing
+  status: TESTED_SIMULATOR
+  implementation_paths:
+  - app/workflow/sizing.py
+  test_paths:
+  - tests/test_wc04_sizing.py::TestSizeLinearLong::test_sizing_oracle_vectors
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Financial validation and exact sizing'
+- id: SIZ-002
+  category: Financial validation and exact sizing
+  title: Budget below first share
+  status: TESTED_SIMULATOR
+  implementation_paths:
+  - app/workflow/sizing.py
+  test_paths:
+  - tests/test_scn_b.py::TestSIZ002BudgetBelowFirstShare::test_risk_budget_below_one_share_yields_zero
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Financial validation and exact sizing'
+- id: SIZ-003
+  category: Financial validation and exact sizing
+  title: Invalid numeric quantity
+  status: TESTED_SIMULATOR
+  implementation_paths:
+  - app/workflow/sizing.py
+  test_paths:
+  - tests/test_wc04_sizing.py::TestSizeLinearLong::test_spec_75_worked_example
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Financial validation and exact sizing'
+- id: SIZ-004
+  category: Financial validation and exact sizing
+  title: Wrong-side long stop
+  status: TESTED_SIMULATOR
+  implementation_paths:
+  - app/workflow/sizing.py
+  test_paths:
+  - tests/test_scn_b.py::TestSIZ004WrongSideLongStop::test_reject_long_entry_with_stop_above_entry
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Financial validation and exact sizing'
+- id: SIZ-005
+  category: Financial validation and exact sizing
+  title: Missing versus invalid stop
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'sizing.py missing stop validation and fallback policy; requires stop validation logic'
+- id: SIZ-006
+  category: Financial validation and exact sizing
+  title: Stop tick rounding
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'app/risk.py missing normalize_quantity with tick rounding; requires tick-based normalization'
+- id: SIZ-007
+  category: Financial validation and exact sizing
+  title: Tight stop huge position
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'sizing.py missing per-candidate margin/liquidity checks; requires iterative validation'
+- id: SIZ-008
+  category: Financial validation and exact sizing
+  title: Option full debit
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'Partial implementation in sizing.py; specific missing component requires code review'
+- id: SIZ-009
+  category: Financial validation and exact sizing
+  title: Nonlinear margin tier
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'Broker adapter missing tiered margin lookup; requires nonlinear margin recomputation'
+- id: SIZ-010
+  category: Financial validation and exact sizing
+  title: Fee currency
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'Partial implementation in sizing.py; specific missing component requires code review'
+- id: SIZ-011
+  category: Financial validation and exact sizing
+  title: Negative cost input
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'sizing.py missing negative-cost validation; requires ValueError on negative cost'
+- id: SIZ-012
+  category: Financial validation and exact sizing
+  title: Zero-risk misleading break-even
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'Zero-risk docstring exists; stop-equals-entry preserved in calculations (partial implementation)'
+- id: SIZ-013
+  category: Financial validation and exact sizing
+  title: Cap decreases
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'sizing.py missing quantity monotonicity check; requires enforcement that cap never decreases'
+- id: SIZ-014
+  category: Financial validation and exact sizing
+  title: Worse partial fill
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'sizing/lifecycle missing worse-partial-fill cancellation; requires post-trade cancellation logic'
+- id: KEL-001
+  category: Kelly, profile evidence and adaptive allocation
+  title: Binary Kelly arithmetic
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths:
+  - tests/test_wc07_kelly.py::TestBinaryKellyArithmetic::test_kelly_binary_p55_b14_full_kelly
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Kelly, profile evidence and adaptive allocation'
+- id: KEL-002
+  category: Kelly, profile evidence and adaptive allocation
+  title: Fractional Kelly hard cap
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths:
+  - tests/test_wc07_kelly.py::TestHierarchicalMin::test_hierarchical_min_constraint_binds
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Kelly, profile evidence and adaptive allocation'
+- id: KEL-003
+  category: Kelly, profile evidence and adaptive allocation
+  title: Variable outcomes
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Kelly, profile evidence and adaptive allocation'
+- id: KEL-004
+  category: Kelly, profile evidence and adaptive allocation
+  title: Insolvent scenario
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Kelly, profile evidence and adaptive allocation'
+- id: KEL-005
+  category: Kelly, profile evidence and adaptive allocation
+  title: No history
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths:
+  - tests/test_wc07_kelly.py::TestEvidenceStates::test_no_history_empty_outcomes
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Kelly, profile evidence and adaptive allocation'
+- id: KEL-006
+  category: Kelly, profile evidence and adaptive allocation
+  title: Thin child profile
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Kelly, profile evidence and adaptive allocation'
+- id: KEL-007
+  category: Kelly, profile evidence and adaptive allocation
+  title: Negative after-cost edge
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Kelly, profile evidence and adaptive allocation'
+- id: KEL-008
+  category: Kelly, profile evidence and adaptive allocation
+  title: Parse confidence misuse
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Kelly, profile evidence and adaptive allocation'
+- id: KEL-009
+  category: Kelly, profile evidence and adaptive allocation
+  title: Several providers same thesis
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Kelly, profile evidence and adaptive allocation'
+- id: KEL-010
+  category: Kelly, profile evidence and adaptive allocation
+  title: Partial exits double count
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Kelly, profile evidence and adaptive allocation'
+- id: KEL-011
+  category: Kelly, profile evidence and adaptive allocation
+  title: New exit policy
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Kelly, profile evidence and adaptive allocation'
+- id: KEL-012
+  category: Kelly, profile evidence and adaptive allocation
+  title: Lookahead leakage
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Kelly, profile evidence and adaptive allocation'
+- id: KEL-013
+  category: Kelly, profile evidence and adaptive allocation
+  title: Winning streak
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Kelly, profile evidence and adaptive allocation'
+- id: KEL-014
+  category: Kelly, profile evidence and adaptive allocation
+  title: Losing streak
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Kelly, profile evidence and adaptive allocation'
+- id: KEL-015
+  category: Kelly, profile evidence and adaptive allocation
+  title: Holdout retuning
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Kelly, profile evidence and adaptive allocation'
+- id: KEL-016
+  category: Kelly, profile evidence and adaptive allocation
+  title: Portfolio horizon mismatch
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Kelly, profile evidence and adaptive allocation'
+- id: MAR-001
+  category: Margin, settlement and restriction regimes
+  title: Cash no borrowing
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Margin, settlement and restriction regimes'
+- id: MAR-002
+  category: Margin, settlement and restriction regimes
+  title: Margin account cash sufficient
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Margin, settlement and restriction regimes'
+- id: MAR-003
+  category: Margin, settlement and restriction regimes
+  title: Approved debit
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Margin, settlement and restriction regimes'
+- id: MAR-004
+  category: Margin, settlement and restriction regimes
+  title: Unknown maintenance
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Margin, settlement and restriction regimes'
+- id: MAR-005
+  category: Margin, settlement and restriction regimes
+  title: Intraday versus overnight
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Margin, settlement and restriction regimes'
+- id: MAR-006
+  category: Margin, settlement and restriction regimes
+  title: House margin increase
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Margin, settlement and restriction regimes'
+- id: MAR-007
+  category: Margin, settlement and restriction regimes
+  title: Legacy PDT account
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Margin, settlement and restriction regimes'
+- id: MAR-008
+  category: Margin, settlement and restriction regimes
+  title: New intraday account
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Margin, settlement and restriction regimes'
+- id: MAR-009
+  category: Margin, settlement and restriction regimes
+  title: Unknown regime
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Margin, settlement and restriction regimes'
+- id: MAR-010
+  category: Margin, settlement and restriction regimes
+  title: Unsettled cash
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Margin, settlement and restriction regimes'
+- id: MAR-011
+  category: Margin, settlement and restriction regimes
+  title: Derivative margin not risk
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Margin, settlement and restriction regimes'
+- id: MAR-012
+  category: Margin, settlement and restriction regimes
+  title: Manual portfolio liquidation risk
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Margin, settlement and restriction regimes'
+- id: MAR-013
+  category: Margin, settlement and restriction regimes
+  title: Funding destroys edge
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Margin, settlement and restriction regimes'
+- id: MAR-014
+  category: Margin, settlement and restriction regimes
+  title: Crypto collateral parity
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Margin, settlement and restriction regimes'
+- id: ENT-001
+  category: Entry conditions, pricing, sessions and deadlines
+  title: Explicit limit preserved
+  status: IMPLEMENTED_NOT_WIRED
+  implementation_paths:
+  - app/engine.py
+  - app/models.py
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'Explicit price limit preserved via Signal.entry_order_type validation: no existing test proves it (the file previously listed here did not exist); needs a real test'
+- id: ENT-002
+  category: Entry conditions, pricing, sessions and deadlines
+  title: Trigger versus limit
+  status: IMPLEMENTED_NOT_WIRED
+  implementation_paths:
+  - app/engine.py
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'Trigger not permitted to breach limit: no existing test proves it (the file previously listed here did not exist); needs a real test'
+- id: ENT-003
+  category: Entry conditions, pricing, sessions and deadlines
+  title: Stale quote
+  status: IMPLEMENTED_NOT_WIRED
+  implementation_paths:
+  - app/engine.py
+  test_paths:
+  - tests/test_wp47_parser_source_gaps.py
+  evidence_paths: []
+  blocked_reason: null
+  notes: Stale quote rejected via A-09 age gate before entry dispatch | Requires tagging
+    existing test
+- id: ENT-004
+  category: Entry conditions, pricing, sessions and deadlines
+  title: Wide spread
+  status: IMPLEMENTED_NOT_WIRED
+  implementation_paths:
+  - app/engine.py
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'Wide spread rejected via bid-ask spread validation: no existing test proves it (the file previously listed here did not exist); needs a real test'
+- id: ENT-005
+  category: Entry conditions, pricing, sessions and deadlines
+  title: Target already passed
+  status: IMPLEMENTED_NOT_WIRED
+  implementation_paths:
+  - app/engine.py
+  test_paths:
+  - tests/test_wp13_targets_and_updates.py
+  evidence_paths: []
+  blocked_reason: null
+  notes: Target already passed expired via _expire_stale_target() in engine | Requires
+    tagging existing test
+- id: ENT-006
+  category: Entry conditions, pricing, sessions and deadlines
+  title: Session closed
+  status: IMPLEMENTED_NOT_WIRED
+  implementation_paths:
+  - app/workflow/identity.py
+  - app/brokers/base.py
+  test_paths:
+  - tests/test_wc02_canonical_identities.py
+  evidence_paths: []
+  blocked_reason: null
+  notes: Session closed detected via CapabilityProfile.session field | Requires tagging
+    existing test
+- id: ENT-007
+  category: Entry conditions, pricing, sessions and deadlines
+  title: Early close
+  status: IMPLEMENTED_NOT_WIRED
+  implementation_paths:
+  - app/workflow/identity.py
+  test_paths:
+  - tests/test_wc02_canonical_identities.py
+  evidence_paths: []
+  blocked_reason: null
+  notes: Early close respected via exchange_calendar session boundaries | Requires
+    tagging existing test
+- id: ENT-008
+  category: Entry conditions, pricing, sessions and deadlines
+  title: TTL before cancel finality
+  status: IMPLEMENTED_NOT_WIRED
+  implementation_paths:
+  - app/lifecycle/manager.py
+  test_paths:
+  - tests/test_wp23_recovery_edges.py
+  evidence_paths: []
+  blocked_reason: null
+  notes: TTL before cancel finality tracked via _reconcile_pending_order() with Reason.EXPIRED
+    | Requires tagging existing test
+- id: ENT-009
+  category: Entry conditions, pricing, sessions and deadlines
+  title: Price moves after sizing
+  status: IMPLEMENTED_NOT_WIRED
+  implementation_paths:
+  - app/engine.py
+  test_paths:
+  - tests/test_wp47_parser_source_gaps.py
+  evidence_paths: []
+  blocked_reason: null
+  notes: Price moves detected via revalidation at submit time | Requires tagging existing
+    test
+- id: ENT-010
+  category: Entry conditions, pricing, sessions and deadlines
+  title: Partial fill remainder expires
+  status: IMPLEMENTED_NOT_WIRED
+  implementation_paths:
+  - app/lifecycle/manager.py
+  test_paths:
+  - tests/test_wp10_partial_exit.py
+  - tests/test_managed_entry_immediate_partial_fill.py
+  evidence_paths: []
+  blocked_reason: null
+  notes: Partial fill remainder tracked and expired separately via bracket updates
+    | Requires tagging existing test
+- id: ENT-011
+  category: Entry conditions, pricing, sessions and deadlines
+  title: No valid entry reference
+  status: TESTED_SIMULATOR
+  implementation_paths:
+  - app/sources/webhook.py
+  test_paths:
+  - tests/test_scn_a.py::test_ent_011_no_valid_entry_reference
+  evidence_paths: []
+  blocked_reason: null
+  notes: Required symbol/side validation with no substitution of arbitrary values
+    | @pytest.mark.scenario() tagged
+- id: ENT-012
+  category: Entry conditions, pricing, sessions and deadlines
+  title: Trigger repeated ticks
+  status: IMPLEMENTED_NOT_WIRED
+  implementation_paths:
+  - app/brokers/paper.py
+  test_paths:
+  - tests/test_wp19_stop_polling.py
+  evidence_paths: []
+  blocked_reason: null
+  notes: Trigger repeated ticks fires only once via PaperBroker.simulate_price() dedup
+    | Requires tagging existing test
+- id: ORD-001
+  category: Broker order states, effects, deduplication and corrections
+  title: Accepted acknowledgment
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'No test proves accepted-is-not-filled: PaperBroker fills immediately, so a real test needs a broker fixture that acknowledges with an order id without filling, then asserts the lifecycle keeps the commitment with no confirmed quantity and no protection'
+- id: ORD-002
+  category: Broker order states, effects, deduplication and corrections
+  title: HTTP success business rejection
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Broker order states, effects, deduplication and corrections'
+- id: ORD-003
+  category: Broker order states, effects, deduplication and corrections
+  title: Timeout possible acceptance
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Broker order states, effects, deduplication and corrections'
+- id: ORD-004
+  category: Broker order states, effects, deduplication and corrections
+  title: Known failure before send
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Broker order states, effects, deduplication and corrections'
+- id: ORD-005
+  category: Broker order states, effects, deduplication and corrections
+  title: Duplicate acknowledgment
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Broker order states, effects, deduplication and corrections'
+- id: ORD-006
+  category: Broker order states, effects, deduplication and corrections
+  title: Duplicate fill
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Broker order states, effects, deduplication and corrections'
+- id: ORD-007
+  category: Broker order states, effects, deduplication and corrections
+  title: Fill before acknowledgment
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Broker order states, effects, deduplication and corrections'
+- id: ORD-008
+  category: Broker order states, effects, deduplication and corrections
+  title: Fill after cancel request
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Broker order states, effects, deduplication and corrections'
+- id: ORD-009
+  category: Broker order states, effects, deduplication and corrections
+  title: Not-found eventual consistency
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Broker order states, effects, deduplication and corrections'
+- id: ORD-010
+  category: Broker order states, effects, deduplication and corrections
+  title: Pagination hides order
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Broker order states, effects, deduplication and corrections'
+- id: ORD-011
+  category: Broker order states, effects, deduplication and corrections
+  title: Unknown broker enum
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Broker order states, effects, deduplication and corrections'
+- id: ORD-012
+  category: Broker order states, effects, deduplication and corrections
+  title: Replacement family
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Broker order states, effects, deduplication and corrections'
+- id: ORD-013
+  category: Broker order states, effects, deduplication and corrections
+  title: Order correction bust
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Broker order states, effects, deduplication and corrections'
+- id: ORD-014
+  category: Broker order states, effects, deduplication and corrections
+  title: Duplicate client key different payload
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Broker order states, effects, deduplication and corrections'
+- id: ORD-015
+  category: Broker order states, effects, deduplication and corrections
+  title: Generic retry decorator
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Broker order states, effects, deduplication and corrections'
+- id: ORD-016
+  category: Broker order states, effects, deduplication and corrections
+  title: Done for session
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Broker order states, effects, deduplication and corrections'
+- id: PRO-001
+  category: Protection, partial fills and replacement safety
+  title: Partial fill before bracket activation
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Protection, partial fills and replacement safety'
+- id: PRO-002
+  category: Protection, partial fills and replacement safety
+  title: Stop confirmed
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Protection, partial fills and replacement safety'
+- id: PRO-003
+  category: Protection, partial fills and replacement safety
+  title: Stop rejected
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Protection, partial fills and replacement safety'
+- id: PRO-004
+  category: Protection, partial fills and replacement safety
+  title: Desired versus confirmed floor
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Protection, partial fills and replacement safety'
+- id: PRO-005
+  category: Protection, partial fills and replacement safety
+  title: Replace rejection
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Protection, partial fills and replacement safety'
+- id: PRO-006
+  category: Protection, partial fills and replacement safety
+  title: Crossed long floor
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Protection, partial fills and replacement safety'
+- id: PRO-007
+  category: Protection, partial fills and replacement safety
+  title: Unlinked full exits
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Protection, partial fills and replacement safety'
+- id: PRO-008
+  category: Protection, partial fills and replacement safety
+  title: Cancel-create gap
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Protection, partial fills and replacement safety'
+- id: PRO-009
+  category: Protection, partial fills and replacement safety
+  title: Partial exit resizes stop
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Protection, partial fills and replacement safety'
+- id: PRO-010
+  category: Protection, partial fills and replacement safety
+  title: Late incremental entry fill
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Protection, partial fills and replacement safety'
+- id: PRO-011
+  category: Protection, partial fills and replacement safety
+  title: Native trigger mismatch
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Protection, partial fills and replacement safety'
+- id: PRO-012
+  category: Protection, partial fills and replacement safety
+  title: GTC disappeared
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Protection, partial fills and replacement safety'
+- id: PRO-013
+  category: Protection, partial fills and replacement safety
+  title: Feed outage with native stop
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Protection, partial fills and replacement safety'
+- id: PRO-014
+  category: Protection, partial fills and replacement safety
+  title: Protection deadline exceeded
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Protection, partial fills and replacement safety'
+- id: PRO-015
+  category: Protection, partial fills and replacement safety
+  title: Short ceiling monotonicity
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Protection, partial fills and replacement safety'
+- id: EXT-001
+  category: Exits, targets and close-quantity arbitration
+  title: Provider full exit
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Exits, targets and close-quantity arbitration'
+- id: EXT-002
+  category: Exits, targets and close-quantity arbitration
+  title: Stop and exit simultaneous
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Exits, targets and close-quantity arbitration'
+- id: EXT-003
+  category: Exits, targets and close-quantity arbitration
+  title: Timer and owner close
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Exits, targets and close-quantity arbitration'
+- id: EXT-004
+  category: Exits, targets and close-quantity arbitration
+  title: Partial percentage denominator
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Exits, targets and close-quantity arbitration'
+- id: EXT-005
+  category: Exits, targets and close-quantity arbitration
+  title: Insufficient remaining for reduction
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Exits, targets and close-quantity arbitration'
+- id: EXT-006
+  category: Exits, targets and close-quantity arbitration
+  title: Fractional contract trim
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Exits, targets and close-quantity arbitration'
+- id: EXT-007
+  category: Exits, targets and close-quantity arbitration
+  title: Multiple target allocations
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Exits, targets and close-quantity arbitration'
+- id: EXT-008
+  category: Exits, targets and close-quantity arbitration
+  title: Exit rejected by broker
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Exits, targets and close-quantity arbitration'
+- id: EXT-009
+  category: Exits, targets and close-quantity arbitration
+  title: Exit during entry remainder
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Exits, targets and close-quantity arbitration'
+- id: EXT-010
+  category: Exits, targets and close-quantity arbitration
+  title: Closing hedge increases risk
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Exits, targets and close-quantity arbitration'
+- id: EXT-011
+  category: Exits, targets and close-quantity arbitration
+  title: Orphan exit unknown order
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Exits, targets and close-quantity arbitration'
+- id: EXT-012
+  category: Exits, targets and close-quantity arbitration
+  title: Pause new entries
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Exits, targets and close-quantity arbitration'
+- id: ADD-001
+  category: Staged entry and pyramiding into winners
+  title: Pyramiding not released
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Staged entry and pyramiding into winners'
+- id: ADD-002
+  category: Staged entry and pyramiding into winners
+  title: Valid profitable add
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths:
+  - tests/test_wc08_scaling.py::TestSpecExample13_3::test_example_13_3_admits_when_all_conditions_met
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Staged entry and pyramiding into winners'
+- id: ADD-003
+  category: Staged entry and pyramiding into winners
+  title: Averaging down disguised
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Staged entry and pyramiding into winners'
+- id: ADD-004
+  category: Staged entry and pyramiding into winners
+  title: Profitable stop negative risk
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Staged entry and pyramiding into winners'
+- id: ADD-005
+  category: Staged entry and pyramiding into winners
+  title: Synthetic add measures
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Staged entry and pyramiding into winners'
+- id: ADD-006
+  category: Staged entry and pyramiding into winners
+  title: Add cap across children
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Staged entry and pyramiding into winners'
+- id: ADD-007
+  category: Staged entry and pyramiding into winners
+  title: Desired stop frees budget
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Staged entry and pyramiding into winners'
+- id: ADD-008
+  category: Staged entry and pyramiding into winners
+  title: Add and exit same tick
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Staged entry and pyramiding into winners'
+- id: ADD-009
+  category: Staged entry and pyramiding into winners
+  title: Add partial fill protection
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Staged entry and pyramiding into winners'
+- id: ADD-010
+  category: Staged entry and pyramiding into winners
+  title: Add margin stress fail
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Staged entry and pyramiding into winners'
+- id: ADD-011
+  category: Staged entry and pyramiding into winners
+  title: Add near time cutoff
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Staged entry and pyramiding into winners'
+- id: ADD-012
+  category: Staged entry and pyramiding into winners
+  title: Staged entry allocation
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Staged entry and pyramiding into winners'
+- id: ADD-013
+  category: Staged entry and pyramiding into winners
+  title: Account compounding intraday
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Staged entry and pyramiding into winners'
+- id: RUN-001
+  category: Runners, trailing policies and time/expiry limits
+  title: Runner disabled
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Runners, trailing policies and time/expiry limits'
+- id: RUN-002
+  category: Runners, trailing policies and time/expiry limits
+  title: Target plus runner
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Runners, trailing policies and time/expiry limits'
+- id: RUN-003
+  category: Runners, trailing policies and time/expiry limits
+  title: No fixed target trend mode
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Runners, trailing policies and time/expiry limits'
+- id: RUN-004
+  category: Runners, trailing policies and time/expiry limits
+  title: Widening ATR
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Runners, trailing policies and time/expiry limits'
+- id: RUN-005
+  category: Runners, trailing policies and time/expiry limits
+  title: Runner overnight unauthorized
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Runners, trailing policies and time/expiry limits'
+- id: RUN-006
+  category: Runners, trailing policies and time/expiry limits
+  title: Runner option near expiry
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Runners, trailing policies and time/expiry limits'
+- id: RUN-007
+  category: Runners, trailing policies and time/expiry limits
+  title: Missing ATR input
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Runners, trailing policies and time/expiry limits'
+- id: RUN-008
+  category: Runners, trailing policies and time/expiry limits
+  title: Bad tick high-water
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Runners, trailing policies and time/expiry limits'
+- id: RUN-009
+  category: Runners, trailing policies and time/expiry limits
+  title: Restart high-water
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Runners, trailing policies and time/expiry limits'
+- id: RUN-010
+  category: Runners, trailing policies and time/expiry limits
+  title: Derived runner attribution
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Runners, trailing policies and time/expiry limits'
+- id: RUN-011
+  category: Runners, trailing policies and time/expiry limits
+  title: Tiny remainder economics
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Runners, trailing policies and time/expiry limits'
+- id: RUN-012
+  category: Runners, trailing policies and time/expiry limits
+  title: Giveback threshold
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Runners, trailing policies and time/expiry limits'
+- id: OWN-001
+  category: Overlapping ownership and manual intervention
+  title: Two analysts same direction
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Overlapping ownership and manual intervention'
+- id: OWN-002
+  category: Overlapping ownership and manual intervention
+  title: Same-symbol new entry overwrite
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Overlapping ownership and manual intervention'
+- id: OWN-003
+  category: Overlapping ownership and manual intervention
+  title: Opposing netted positions
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Overlapping ownership and manual intervention'
+- id: OWN-004
+  category: Overlapping ownership and manual intervention
+  title: Hedging-mode ticket close
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Overlapping ownership and manual intervention'
+- id: OWN-005
+  category: Overlapping ownership and manual intervention
+  title: Manual shares reserved
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Overlapping ownership and manual intervention'
+- id: OWN-006
+  category: Overlapping ownership and manual intervention
+  title: Manual sell consumes inventory
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Overlapping ownership and manual intervention'
+- id: OWN-007
+  category: Overlapping ownership and manual intervention
+  title: Manual stop cancel
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Overlapping ownership and manual intervention'
+- id: OWN-008
+  category: Overlapping ownership and manual intervention
+  title: Manual unknown new position
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Overlapping ownership and manual intervention'
+- id: OWN-009
+  category: Overlapping ownership and manual intervention
+  title: Tax lot distinction
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Overlapping ownership and manual intervention'
+- id: OWN-010
+  category: Overlapping ownership and manual intervention
+  title: Fractional split difference
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Overlapping ownership and manual intervention'
+- id: EVT-001
+  category: Corporate actions, derivatives and market exceptions
+  title: Gap through stop
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Corporate actions, derivatives and market exceptions'
+- id: EVT-002
+  category: Corporate actions, derivatives and market exceptions
+  title: Halted market exit
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Corporate actions, derivatives and market exceptions'
+- id: EVT-003
+  category: Corporate actions, derivatives and market exceptions
+  title: Stock split
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Corporate actions, derivatives and market exceptions'
+- id: EVT-004
+  category: Corporate actions, derivatives and market exceptions
+  title: Reverse split dust
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Corporate actions, derivatives and market exceptions'
+- id: EVT-005
+  category: Corporate actions, derivatives and market exceptions
+  title: Merger symbol successor
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Corporate actions, derivatives and market exceptions'
+- id: EVT-006
+  category: Corporate actions, derivatives and market exceptions
+  title: Early short-option assignment
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Corporate actions, derivatives and market exceptions'
+- id: EVT-007
+  category: Corporate actions, derivatives and market exceptions
+  title: Long option automatic exercise
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Corporate actions, derivatives and market exceptions'
+- id: EVT-008
+  category: Corporate actions, derivatives and market exceptions
+  title: Calendar spread broken state
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Corporate actions, derivatives and market exceptions'
+- id: EVT-009
+  category: Corporate actions, derivatives and market exceptions
+  title: Futures delivery deadline
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Corporate actions, derivatives and market exceptions'
+- id: EVT-010
+  category: Corporate actions, derivatives and market exceptions
+  title: Borrow recall
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Corporate actions, derivatives and market exceptions'
+- id: EVT-011
+  category: Corporate actions, derivatives and market exceptions
+  title: Derivative funding debit
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Corporate actions, derivatives and market exceptions'
+- id: EVT-012
+  category: Corporate actions, derivatives and market exceptions
+  title: Broker forced liquidation
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Corporate actions, derivatives and market exceptions'
+- id: OPS-001
+  category: Failure, restart, coordination and operational health
+  title: Crash after reserve before send
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths:
+  - tests/test_wc31_outbox_persistence.py::TestCrashScenarios::test_crash_scenario_a_before_claim_item_still_outboxed
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Failure, restart, coordination and operational health'
+- id: OPS-002
+  category: Failure, restart, coordination and operational health
+  title: Crash after possible send
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths:
+  - tests/test_wc31_outbox_persistence.py::TestCrashScenarios::test_crash_scenario_b_after_claim_before_dispatch_marked_unknown
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Failure, restart, coordination and operational health'
+- id: OPS-003
+  category: Failure, restart, coordination and operational health
+  title: Crash after fill before protection
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Failure, restart, coordination and operational health'
+- id: OPS-004
+  category: Failure, restart, coordination and operational health
+  title: Crash after exit fill
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Failure, restart, coordination and operational health'
+- id: OPS-005
+  category: Failure, restart, coordination and operational health
+  title: Dual workers
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths:
+  - tests/test_writer_lease_fencing.py::test_second_promotion_fences_out_the_first_guard_immediately
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Failure, restart, coordination and operational health'
+- id: OPS-006
+  category: Failure, restart, coordination and operational health
+  title: SQLite busy
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Failure, restart, coordination and operational health'
+- id: OPS-007
+  category: Failure, restart, coordination and operational health
+  title: Disk full
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Failure, restart, coordination and operational health'
+- id: OPS-008
+  category: Failure, restart, coordination and operational health
+  title: Partial broker snapshot
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Failure, restart, coordination and operational health'
+- id: OPS-009
+  category: Failure, restart, coordination and operational health
+  title: Feed outage
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Failure, restart, coordination and operational health'
+- id: OPS-010
+  category: Failure, restart, coordination and operational health
+  title: Email outage
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Failure, restart, coordination and operational health'
+- id: OPS-011
+  category: Failure, restart, coordination and operational health
+  title: Optional research failure
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Failure, restart, coordination and operational health'
+- id: OPS-012
+  category: Failure, restart, coordination and operational health
+  title: Rate-limit pressure
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Failure, restart, coordination and operational health'
+- id: OPS-013
+  category: Failure, restart, coordination and operational health
+  title: Expired credential
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Failure, restart, coordination and operational health'
+- id: OPS-014
+  category: Failure, restart, coordination and operational health
+  title: Restore older backup
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Failure, restart, coordination and operational health'
+- id: OPS-015
+  category: Failure, restart, coordination and operational health
+  title: Failed migration
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Failure, restart, coordination and operational health'
+- id: OPS-016
+  category: Failure, restart, coordination and operational health
+  title: UI unavailable
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Failure, restart, coordination and operational health'
+- id: OPS-017
+  category: Failure, restart, coordination and operational health
+  title: Lost source connection
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Failure, restart, coordination and operational health'
+- id: OPS-018
+  category: Failure, restart, coordination and operational health
+  title: Overdue deadline restart
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Failure, restart, coordination and operational health'
+- id: LOS-001
+  category: Loss controls, P&L and calendar integrity
+  title: Daily threshold exact
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Loss controls, P&L and calendar integrity'
+- id: LOS-002
+  category: Loss controls, P&L and calendar integrity
+  title: Weekly halt restart
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Loss controls, P&L and calendar integrity'
+- id: LOS-003
+  category: Loss controls, P&L and calendar integrity
+  title: Fees cross threshold
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Loss controls, P&L and calendar integrity'
+- id: LOS-004
+  category: Loss controls, P&L and calendar integrity
+  title: Wrong timezone midnight
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Loss controls, P&L and calendar integrity'
+- id: LOS-005
+  category: Loss controls, P&L and calendar integrity
+  title: Daylight saving
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Loss controls, P&L and calendar integrity'
+- id: LOS-006
+  category: Loss controls, P&L and calendar integrity
+  title: Profits not free risk
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Loss controls, P&L and calendar integrity'
+- id: LOS-007
+  category: Loss controls, P&L and calendar integrity
+  title: Currency P&L
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Loss controls, P&L and calendar integrity'
+- id: LOS-008
+  category: Loss controls, P&L and calendar integrity
+  title: Withdrawal not loss
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Loss controls, P&L and calendar integrity'
+- id: LOS-009
+  category: Loss controls, P&L and calendar integrity
+  title: Late fee correction
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Loss controls, P&L and calendar integrity'
+- id: UI-001
+  category: API, browser, evidence and policy configuration
+  title: Sizing drilldown
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: API, browser, evidence and policy configuration'
+- id: UI-002
+  category: API, browser, evidence and policy configuration
+  title: Unknown versus zero
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: API, browser, evidence and policy configuration'
+- id: UI-003
+  category: API, browser, evidence and policy configuration
+  title: Desired stop UI
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: API, browser, evidence and policy configuration'
+- id: UI-004
+  category: API, browser, evidence and policy configuration
+  title: Source XSS
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: API, browser, evidence and policy configuration'
+- id: UI-005
+  category: API, browser, evidence and policy configuration
+  title: CSV formula injection
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: API, browser, evidence and policy configuration'
+- id: UI-006
+  category: API, browser, evidence and policy configuration
+  title: API direct bypass
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: API, browser, evidence and policy configuration'
+- id: UI-007
+  category: API, browser, evidence and policy configuration
+  title: Stale config edit
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: API, browser, evidence and policy configuration'
+- id: UI-008
+  category: API, browser, evidence and policy configuration
+  title: Simulation toggle live
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: API, browser, evidence and policy configuration'
+- id: UI-009
+  category: API, browser, evidence and policy configuration
+  title: Policy publish versus activate
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: API, browser, evidence and policy configuration'
+- id: UI-010
+  category: API, browser, evidence and policy configuration
+  title: Source disable journey
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: API, browser, evidence and policy configuration'
+- id: UI-011
+  category: API, browser, evidence and policy configuration
+  title: Account drain journey
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: API, browser, evidence and policy configuration'
+- id: UI-012
+  category: API, browser, evidence and policy configuration
+  title: Mobile desktop parity
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: API, browser, evidence and policy configuration'
+- id: UI-013
+  category: API, browser, evidence and policy configuration
+  title: Evidence truthful status
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: API, browser, evidence and policy configuration'
+- id: UI-014
+  category: API, browser, evidence and policy configuration
+  title: Candidate route trace
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: API, browser, evidence and policy configuration'
+- id: TST-001
+  category: Verification integrity, mutations and release boundaries
+  title: Unbound contract harness
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths:
+  - tests/test_wc22_evidence_tooling.py::test_plugin_writes_executed_tests_json
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Verification integrity, mutations and release boundaries'
+- id: TST-002
+  category: Verification integrity, mutations and release boundaries
+  title: Missing actual result
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Verification integrity, mutations and release boundaries'
+- id: TST-003
+  category: Verification integrity, mutations and release boundaries
+  title: Dedup guard mutation
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Verification integrity, mutations and release boundaries'
+- id: TST-004
+  category: Verification integrity, mutations and release boundaries
+  title: Reservation guard mutation
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Verification integrity, mutations and release boundaries'
+- id: TST-005
+  category: Verification integrity, mutations and release boundaries
+  title: Close scope mutation
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Verification integrity, mutations and release boundaries'
+- id: TST-006
+  category: Verification integrity, mutations and release boundaries
+  title: Protection truth mutation
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Verification integrity, mutations and release boundaries'
+- id: TST-007
+  category: Verification integrity, mutations and release boundaries
+  title: Boundary mutation
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Verification integrity, mutations and release boundaries'
+- id: TST-008
+  category: Verification integrity, mutations and release boundaries
+  title: Partial history claim
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Verification integrity, mutations and release boundaries'
+- id: TST-009
+  category: Verification integrity, mutations and release boundaries
+  title: Paper-to-live auto-promotion
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Verification integrity, mutations and release boundaries'
+- id: TST-010
+  category: Verification integrity, mutations and release boundaries
+  title: Unsupported extension
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Verification integrity, mutations and release boundaries'
+- id: TST-011
+  category: Verification integrity, mutations and release boundaries
+  title: All named scenarios required
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Verification integrity, mutations and release boundaries'
+- id: TST-012
+  category: Verification integrity, mutations and release boundaries
+  title: Competing fault sequence
+  status: NOT_IMPLEMENTED
+  implementation_paths: []
+  test_paths: []
+  evidence_paths: []
+  blocked_reason: null
+  notes: 'WC-01 baseline: Verification integrity, mutations and release boundaries'

@@ -446,10 +446,10 @@ class TestMessageTypeClassification:
         assert msg_type == MessageType.ENTRY
 
     def test_classify_entry_sell_is_also_entry(self):
-        """Mutant: SELL is parsed but classified as ENTRY (not EXIT - only CLOSE is EXIT)."""
-        # SELL is a valid signal but side.SELL != side.CLOSE, so it's ENTRY
-        msg_type = classify_message_type("SELL 50 shares of AAPL at market")
-        assert msg_type == MessageType.ENTRY
+        """WP-08: bare SELL is ambiguous (could be short entry or reduction), classified as UNKNOWN."""
+        # SELL without "short" keyword is ambiguous and resolved only by engine with account context
+        msg_type = classify_message_type("SELL AAPL 50 shares at market")
+        assert msg_type == MessageType.UNKNOWN
 
     def test_classify_exit_close_message(self):
         """Mutant: exit keyword list removed or emptied (CLOSE variant)."""

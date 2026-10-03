@@ -62,12 +62,17 @@ def test_create_portfolio_selection_rejects_an_unknown_product(db_session):
         create_portfolio_selection(db_session, tenant_id="tenant-a", user_id="user-a", product_id="nonexistent")
 
 
-def test_create_portfolio_selection_rejects_a_cross_tenant_product(db_session):
+def test_create_portfolio_selection_allows_selecting_a_cross_tenant_published_product(db_session):
+    """G-C-10 fix: self-signup customers can select PUBLISHED products from any tenant."""
     _seed_membership(db_session, tenant_id="tenant-a", user_id="user-a")
     _seed_membership(db_session, tenant_id="tenant-b", user_id="user-b")
+    # Create a PUBLISHED product in tenant-b
     product = _published_product(db_session, tenant_id="tenant-b", slug="other-tenant-product")
-    with pytest.raises(InvalidPortfolioSelectionError, match="PRODUCT_NOT_PUBLISHED_OR_NOT_FOUND"):
-        create_portfolio_selection(db_session, tenant_id="tenant-a", user_id="user-a", product_id=product.product_id)
+    # Customer from tenant-a should be able to select the published product from tenant-b
+    selection = create_portfolio_selection(db_session, tenant_id="tenant-a", user_id="user-a", product_id=product.product_id)
+    assert selection.tenant_id == "tenant-a"
+    assert selection.product_id == product.product_id
+    assert selection.state.value == "active"
 
 
 def test_create_then_reload_persists_the_real_selection(db_session):

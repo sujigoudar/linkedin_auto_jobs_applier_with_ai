@@ -571,15 +571,8 @@
         if (!acct) return;
         if (!confirm(`Pause new entries on account "${accountId}"? This does not close or affect any existing position.`)) return;
         try {
-          await postJSON("/accounts", {
-            account_id: acct.account_id,
-            broker: acct.broker,
-            multiplier: acct.multiplier,
-            fixed_quantity: acct.fixed_quantity,
-            symbol_map: acct.symbol_map,
+          await patchJSON(`/accounts/${encodeURIComponent(accountId)}`, {
             enabled: false,
-            managed_lifecycle: acct.managed_lifecycle,
-            max_notional_exposure: acct.max_notional_exposure,
           });
         } catch (err) {
           alert(`Could not pause account: ${err.message}`);
