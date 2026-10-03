@@ -66,7 +66,7 @@ class SourceReceipt:
 
     # Parent/reply relationships (for multi-email corrections/retractions)
     in_reply_to: Optional[str] = None  # RFC 5322 In-Reply-To header
-    references: list[str] = None  # RFC 5322 References header
+    references: Optional[list[str]] = None  # RFC 5322 References header
 
 
 @dataclass
