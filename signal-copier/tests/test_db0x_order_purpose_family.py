@@ -318,8 +318,11 @@ async def test_paper_broker_reports_starting_cash_before_any_fill():
     assert balance is not None
     assert balance.cash == PaperBroker.STARTING_CASH
     assert balance.buying_power == PaperBroker.STARTING_CASH
-    assert balance.equity is None  # no live mark tracked -- honestly unknown, not fabricated as == cash
-    assert balance.maintenance_margin is None  # no margin concept modeled
+    # With no open position the simulator's equity IS its cash: a computed
+    # figure, not a mark. Equity only becomes None once an open position has
+    # no known price (see PaperBroker.get_account_balance).
+    assert balance.equity == PaperBroker.STARTING_CASH
+    assert balance.maintenance_margin == 0.0  # no shorts -> no maintenance requirement
 
 
 @pytest.mark.asyncio

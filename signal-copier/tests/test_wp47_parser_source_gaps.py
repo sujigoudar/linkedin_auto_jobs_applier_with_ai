@@ -342,19 +342,48 @@ class TestA14PricelessCorrelation:
     and don't merge priceless with priced signals.
     """
 
-    def test_priceless_signals_within_window_can_correlate(self, monkeypatch):
-        """Two priceless BUY signals for same symbol within window can be correlated."""
+    @pytest.mark.asyncio
+    async def test_priceless_corroboration_is_an_explicit_hold_not_a_replayed_fill(self, tmp_path, monkeypatch):
+        """A-14: two priceless BUY alerts for the same (source, symbol, side)
+        from two transports within the window are the same event. The second
+        must not be replayed as a fill (nothing was filled for it) and must not
+        place a second order: it is held, explicitly, with the correlation
+        recorded."""
         from app import config
+        from app.brokers.paper import PaperBroker
+        from app.db import SignalStore
+        from app.engine import SignalCopierEngine
+        from app.models import DestinationAccount, OrderStatus, Side, Signal
+        from app.routing import RoutingConfig, RoutingRule
 
-        # Priceless signals within the correlation window can be merged
-        signal1_time = datetime.now(timezone.utc)
-        signal2_time = signal1_time + timedelta(seconds=600)  # 10 minutes later
+        monkeypatch.setattr(config, "SIGNAL_CORRELATION_ENABLED", True)
+        store = SignalStore(tmp_path / "a14.db")
 
-        time_diff = (signal2_time - signal1_time).total_seconds()
-        window = config.SIGNAL_CORRELATION_TIMESTAMP_WINDOW_SECONDS
+        class CountingPaper(PaperBroker):
+            calls = 0
 
-        # Should be within window (900 seconds = 15 minutes)
-        assert time_diff < window
+            async def place_order(self, *a, **k):
+                CountingPaper.calls += 1
+                return await super().place_order(*a, **k)
+
+        broker = CountingPaper()
+        routing = RoutingConfig(
+            rules=[RoutingRule(source="tradingview", destinations=["acct1"])],
+            accounts={"acct1": DestinationAccount(account_id="acct1", broker="paper")},
+        )
+        engine = SignalCopierEngine(routing=routing, brokers={"paper": broker}, store=store)
+
+        first = Signal(source="tradingview", symbol="AAPL", side=Side.BUY, quantity=1.0,
+                       channel_id="chan-a", message_id="m-1")
+        second = Signal(source="tradingview", symbol="AAPL", side=Side.BUY, quantity=1.0,
+                        channel_id="chan-b", message_id="m-2")
+        r1 = await engine.handle_signal(first)
+        assert r1[0].status == OrderStatus.FILLED
+        r2 = await engine.handle_signal(second)
+        assert CountingPaper.calls == 1
+        assert r2[0].status == OrderStatus.REJECTED
+        assert "A-14 HOLD" in r2[0].message
+        assert second.id != first.id  # the second message keeps its own identity
 
     def test_priceless_signals_beyond_window_dont_correlate(self, monkeypatch):
         """Two priceless signals >15 minutes apart should NOT be correlated."""

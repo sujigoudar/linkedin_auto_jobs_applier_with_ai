@@ -111,14 +111,16 @@ class TestOptionContractMultiplier:
     @pytest.mark.asyncio
     async def test_option_risk_includes_contract_multiplier(self, tmp_path: Path):
         """Option risk-to-stop should multiply by contract multiplier."""
-        # Set up a $10k account with a risk gate: max 1% of equity = $100
-        account = _account(risk_percent_of_equity=0.01)  # 1% max risk
+        # PaperBroker reports equity == cash == $100,000 when flat (nothing is
+        # fabricated: cash is the simulator's own figure). A 0.1% risk gate
+        # therefore caps risk-to-stop at $100.
+        account = _account(risk_percent_of_equity=0.001)  # 0.1% max risk = $100
         broker = PaperBroker()
         store = SignalStore(tmp_path / "test2.db")
         engine = _engine(store, account, broker)
 
         # Signal: BUY 10 AAPL 200C @ $2.50 SL $1.50
-        # Real risk: (2.50 - 1.50) × 10 × 100 = $1,000 (10% of equity)
+        # Real risk: (2.50 - 1.50) × 10 × 100 = $1,000 (1% of equity, 10× the ceiling)
         signal = _signal(
             symbol="AAPL",
             side=Side.BUY,

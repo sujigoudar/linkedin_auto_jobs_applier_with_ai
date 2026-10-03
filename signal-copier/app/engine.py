@@ -731,7 +731,7 @@ class SignalCopierEngine:
             # 1. Check account halt
             account_halt = self.store.active_halt_for("account", physical_account_id)
             if account_halt:
-                excluded_reasons.append("HALTED")
+                excluded_reasons.append(f"HALTED:{account_halt.get('reason', 'account halt')}")
 
             # 2. Check portfolio halt (look up portfolio_id from portfolio_backings)
             if not account_halt:
@@ -750,13 +750,13 @@ class SignalCopierEngine:
                     portfolio_id = portfolio_row[0]
                     portfolio_halt = self.store.active_halt_for("portfolio", portfolio_id)
                     if portfolio_halt:
-                        excluded_reasons.append("HALTED")
+                        excluded_reasons.append(f"HALTED:{portfolio_halt.get('reason', 'portfolio halt')}")
 
             # 3. Check owner halt
             if not excluded_reasons:
                 owner_halt = self.store.active_halt_for("owner", "owner")
                 if owner_halt:
-                    excluded_reasons.append("HALTED")
+                    excluded_reasons.append(f"HALTED:{owner_halt.get('reason', 'owner halt')}")
 
             # 4. Check daily loss limit breach (sets a halt if breached)
             if not excluded_reasons:
@@ -766,7 +766,7 @@ class SignalCopierEngine:
                     if loss_check_error:
                         # Persist a halt for this account
                         self.store.set_trading_halt("account", physical_account_id, loss_check_error, source="daily_loss_limiter")
-                        excluded_reasons.append("HALTED")
+                        excluded_reasons.append(f"HALTED:{loss_check_error}")
 
             # Check margin regime
             if not excluded_reasons:
@@ -859,6 +859,12 @@ class SignalCopierEngine:
             else:
                 # Candidate is eligible
                 eligible_accounts.append(account.account_id)
+
+        # Keep the per-candidate detail for the operator-facing rejection
+        # message (the gate itself only sees the reason codes).
+        self._last_admission_exclusions = [
+            f"{account.account_id}: {reason_str}" for account, reason_str in excluded_candidates
+        ]
 
         # Determine overall values for the admission gate.
         # The gate blocks only if NO candidates remain (all excluded) with a given blocking reason.
@@ -1115,12 +1121,16 @@ class SignalCopierEngine:
                     )
                     # Traces already persisted from identity collapse step
                     # Reject all original candidates (not just filtered ones)
+                    exclusion_detail = "; ".join(getattr(self, "_last_admission_exclusions", []) or [])
+                    rejection_message = f"admission rejected: {blocking_reasons_str}"
+                    if exclusion_detail:
+                        rejection_message += f" -- {exclusion_detail}"
                     for account in original_candidates:
                         result = OrderResult(
                             account_id=account.account_id,
                             status=OrderStatus.REJECTED,
                             signal_id=signal.id,
-                            message=f"admission rejected: {blocking_reasons_str}",
+                            message=rejection_message,
                         )
                         self.store.save_order_result(result, purpose="entry", family_id=signal.id)
                         results.append(result)
@@ -2665,6 +2675,13 @@ class SignalCopierEngine:
         # ad hoc Signal objects built in-process).
         if signal.channel_id is None or signal.message_id is None:
             return None
+        # Exits are never fingerprint-correlated: a duplicate CLOSE is
+        # recognised position-aware by the lifecycle manager (TRK-27
+        # `check_duplicate_exit`) and by the plain "no open position" path,
+        # and a legitimate second exit after a re-entry within the window
+        # must never be suppressed by a fingerprint match.
+        if signal.side == Side.CLOSE or signal.intent in (Intent.EXIT, Intent.REDUCE, Intent.CANCEL):
+            return None
 
         from app.signal_correlation import (
             ConflictResolutionPolicy,
@@ -2739,6 +2756,34 @@ class SignalCopierEngine:
                 received_at=received_at,
                 match_type=outcome.value,
             )
+            if outcome is CorrelationOutcome.CORROBORATING and signal.price is None:
+                # A-14: two PRICELESS alerts with the same fingerprint inside
+                # the window are the same real-world event, but with no price
+                # to agree on this layer cannot vouch for a replay of the
+                # earlier order as this message's outcome. Explicit HOLD:
+                # record the correlation, submit nothing, and say so.
+                logger.info(
+                    "signal id=%s (channel=%s) is a priceless corroboration of signal id=%s (channel=%s) -- "
+                    "same (source, symbol, side) fingerprint within the window; held, no new order (A-14)",
+                    signal.id,
+                    signal.channel_id,
+                    candidate["id"],
+                    candidate["channel_id"],
+                )
+                signal.import_batch = f"cross_transport_priceless_corroboration:{candidate['id']}"
+                self.store.save_signal(signal)
+                return [
+                    OrderResult(
+                        account_id=self._CROSS_TRANSPORT_CONFLICT_ACCOUNT_ID,
+                        status=OrderStatus.REJECTED,
+                        signal_id=signal.id,
+                        message=(
+                            f"held: priceless signal corroborates already-recorded signal id={candidate['id']!r} "
+                            f"(channel_id={candidate['channel_id']!r}) -- same fingerprint within the correlation "
+                            "window and no price to verify; no new order submitted (A-14 HOLD)"
+                        ),
+                    )
+                ]
             if outcome is CorrelationOutcome.CORROBORATING:
                 logger.info(
                     "signal id=%s (channel=%s) corroborates already-recorded signal id=%s (channel=%s) -- "
