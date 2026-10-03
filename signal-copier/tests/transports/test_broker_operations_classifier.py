@@ -1,6 +1,4 @@
 """Tests for broker operations email classifier."""
-import pytest
-
 from app.transports.broker_operations_classifier import (
     BrokerOperationEvent,
     BrokerOperationsClassifier,
