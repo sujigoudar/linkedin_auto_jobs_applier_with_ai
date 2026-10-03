@@ -449,32 +449,26 @@ class OrderReconciler:
             if broker_owned is None:
                 continue  # genuinely unknown -- never treated as confirming zero
 
-            # WP-55 (D-03): broker_owned is signed (negative for short).
-            # confirmed_owned_quantity is also signed (negative for short).
-            # Keep both signed for consistent deficit calculation.
-            # Special case: broker_owned == 0 means position is closed, regardless of plan side.
-            # For non-zero positions, check that broker and plan agree on side:
-            # - For BUY (long), broker_owned should be positive
-            # - For SELL (short), broker_owned should be negative
-            broker_owned_signed = broker_owned
-            if broker_owned_signed == 0:
-                # Position is closed - treat as reconciling to zero
-                broker_owned_abs = 0
-            else:
-                # Non-zero position: verify side consistency
-                expected_sign_positive = lifecycle.plan.side == Side.BUY
-                broker_is_positive = broker_owned_signed > 0
-                if expected_sign_positive != broker_is_positive:
-                    # Venue holds the OPPOSITE side of what the plan expects
-                    logger.warning(
-                        "broker position readback for account=%s symbol=%s returned opposite side (venue: %s, plan: %s)",
-                        lifecycle.plan.account_id,
-                        lifecycle.plan.symbol,
-                        broker_owned,
-                        "short" if broker_owned < 0 else "long",
-                    )
-                    continue
-                broker_owned_abs = broker_owned_signed
+            # WP-03: Sign the broker readback by plan side. Managed short positions
+            # are destroyed by the position-readback pass if we don't flip the sign
+            # for SELL positions. The broker reports -10 for a short position, but
+            # confirmed_owned_quantity is always unsigned (10), so we need to flip
+            # the sign when comparing.
+            broker_owned_signed = -broker_owned if lifecycle.plan.side == Side.SELL else broker_owned
+
+            # Check for opposite side: after sign conversion, broker_owned_signed should
+            # be positive for non-zero positions (same sign as unsigned confirmed_owned_quantity)
+            if broker_owned_signed < 0:
+                logger.warning(
+                    "broker position readback for account=%s symbol=%s returned opposite side (venue: %s, plan: %s)",
+                    lifecycle.plan.account_id,
+                    lifecycle.plan.symbol,
+                    broker_owned,
+                    "short" if lifecycle.plan.side == Side.SELL else "long",
+                )
+                continue
+
+            broker_owned_abs = broker_owned_signed
 
             if exit_has_no_order_id_to_poll:
                 # Exit-side counterpart of the entry branch below: a
