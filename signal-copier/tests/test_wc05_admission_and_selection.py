@@ -133,6 +133,7 @@ def test_admission_vectors_all_4608_cases():
     ), f"{len(failed_cases)} of {passed + len(failed_cases)} admission vectors failed"
 
 
+@pytest.mark.scenario("ROU-003")
 def test_admission_basic_cases():
     """Smoke test of common admission scenarios."""
     # Case: no eligible accounts -> NO_ELIGIBLE_ROUTE

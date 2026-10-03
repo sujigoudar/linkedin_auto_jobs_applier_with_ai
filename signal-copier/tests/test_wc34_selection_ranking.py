@@ -28,6 +28,7 @@ from app.workflow.selection import select_account
 class TestFeasibilityFirst:
     """Infeasible candidates are excluded regardless of ranking inputs."""
 
+    @pytest.mark.scenario("ROU-004")
     def test_infeasible_not_selected_even_if_preferred(self):
         """Infeasible candidate with preference is not selected."""
         candidates = [

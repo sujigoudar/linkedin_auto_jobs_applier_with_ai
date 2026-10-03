@@ -429,148 +429,205 @@ scenarios:
   category: Instrument metadata, units and product identity
   title: Exact stock resolution
   status: NOT_IMPLEMENTED
-  implementation_paths: []
+  implementation_paths:
+  - app/engine.py
+  - app/risk.py
+  - app/models.py
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: Requires app/workflow/instruments.py module for instrument metadata, resolution,
-    and validation
+  notes: 'Requires app/workflow/instruments.py module: symbol resolution (exact/ambiguous),
+    contract validation (expiry/multiplier/deliverable), product-specific handling
+    (stocks/options/futures/FX/crypto), metadata versioning'
 - id: INS-002
   category: Instrument metadata, units and product identity
   title: Ambiguous symbol
   status: NOT_IMPLEMENTED
-  implementation_paths: []
+  implementation_paths:
+  - app/engine.py
+  - app/risk.py
+  - app/models.py
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: Requires app/workflow/instruments.py module for instrument metadata, resolution,
-    and validation
+  notes: 'Requires app/workflow/instruments.py module: symbol resolution (exact/ambiguous),
+    contract validation (expiry/multiplier/deliverable), product-specific handling
+    (stocks/options/futures/FX/crypto), metadata versioning'
 - id: INS-003
   category: Instrument metadata, units and product identity
   title: Option missing expiry
   status: NOT_IMPLEMENTED
-  implementation_paths: []
+  implementation_paths:
+  - app/engine.py
+  - app/risk.py
+  - app/models.py
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: Requires app/workflow/instruments.py module for instrument metadata, resolution,
-    and validation
+  notes: 'Requires app/workflow/instruments.py module: symbol resolution (exact/ambiguous),
+    contract validation (expiry/multiplier/deliverable), product-specific handling
+    (stocks/options/futures/FX/crypto), metadata versioning'
 - id: INS-004
   category: Instrument metadata, units and product identity
   title: Adjusted option deliverable
   status: NOT_IMPLEMENTED
-  implementation_paths: []
+  implementation_paths:
+  - app/engine.py
+  - app/risk.py
+  - app/models.py
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: Requires app/workflow/instruments.py module for instrument metadata, resolution,
-    and validation
+  notes: 'Requires app/workflow/instruments.py module: symbol resolution (exact/ambiguous),
+    contract validation (expiry/multiplier/deliverable), product-specific handling
+    (stocks/options/futures/FX/crypto), metadata versioning'
 - id: INS-005
   category: Instrument metadata, units and product identity
   title: Expired option
   status: NOT_IMPLEMENTED
-  implementation_paths: []
+  implementation_paths:
+  - app/engine.py
+  - app/risk.py
+  - app/models.py
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: Requires app/workflow/instruments.py module for instrument metadata, resolution,
-    and validation
+  notes: 'Requires app/workflow/instruments.py module: symbol resolution (exact/ambiguous),
+    contract validation (expiry/multiplier/deliverable), product-specific handling
+    (stocks/options/futures/FX/crypto), metadata versioning'
 - id: INS-006
   category: Instrument metadata, units and product identity
   title: Continuous futures ticker
   status: NOT_IMPLEMENTED
-  implementation_paths: []
+  implementation_paths:
+  - app/engine.py
+  - app/risk.py
+  - app/models.py
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: Requires app/workflow/instruments.py module for instrument metadata, resolution,
-    and validation
+  notes: 'Requires app/workflow/instruments.py module: symbol resolution (exact/ambiguous),
+    contract validation (expiry/multiplier/deliverable), product-specific handling
+    (stocks/options/futures/FX/crypto), metadata versioning'
 - id: INS-007
   category: Instrument metadata, units and product identity
   title: Futures negative price
   status: NOT_IMPLEMENTED
-  implementation_paths: []
+  implementation_paths:
+  - app/engine.py
+  - app/risk.py
+  - app/models.py
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: Requires app/workflow/instruments.py module for instrument metadata, resolution,
-    and validation
+  notes: 'Requires app/workflow/instruments.py module: symbol resolution (exact/ambiguous),
+    contract validation (expiry/multiplier/deliverable), product-specific handling
+    (stocks/options/futures/FX/crypto), metadata versioning'
 - id: INS-008
   category: Instrument metadata, units and product identity
   title: FX lot conversion
   status: NOT_IMPLEMENTED
-  implementation_paths: []
+  implementation_paths:
+  - app/engine.py
+  - app/risk.py
+  - app/models.py
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: Requires app/workflow/instruments.py module for instrument metadata, resolution,
-    and validation
+  notes: 'Requires app/workflow/instruments.py module: symbol resolution (exact/ambiguous),
+    contract validation (expiry/multiplier/deliverable), product-specific handling
+    (stocks/options/futures/FX/crypto), metadata versioning'
 - id: INS-009
   category: Instrument metadata, units and product identity
   title: Stale FX conversion
   status: NOT_IMPLEMENTED
-  implementation_paths: []
+  implementation_paths:
+  - app/engine.py
+  - app/risk.py
+  - app/models.py
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: Requires app/workflow/instruments.py module for instrument metadata, resolution,
-    and validation
+  notes: 'Requires app/workflow/instruments.py module: symbol resolution (exact/ambiguous),
+    contract validation (expiry/multiplier/deliverable), product-specific handling
+    (stocks/options/futures/FX/crypto), metadata versioning'
 - id: INS-010
   category: Instrument metadata, units and product identity
   title: Crypto fee in base
   status: NOT_IMPLEMENTED
-  implementation_paths: []
+  implementation_paths:
+  - app/engine.py
+  - app/risk.py
+  - app/models.py
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: Requires app/workflow/instruments.py module for instrument metadata, resolution,
-    and validation
+  notes: 'Requires app/workflow/instruments.py module: symbol resolution (exact/ambiguous),
+    contract validation (expiry/multiplier/deliverable), product-specific handling
+    (stocks/options/futures/FX/crypto), metadata versioning'
 - id: INS-011
   category: Instrument metadata, units and product identity
   title: Crypto minimum/dust
   status: NOT_IMPLEMENTED
-  implementation_paths: []
+  implementation_paths:
+  - app/engine.py
+  - app/risk.py
+  - app/models.py
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: Requires app/workflow/instruments.py module for instrument metadata, resolution,
-    and validation
+  notes: 'Requires app/workflow/instruments.py module: symbol resolution (exact/ambiguous),
+    contract validation (expiry/multiplier/deliverable), product-specific handling
+    (stocks/options/futures/FX/crypto), metadata versioning'
 - id: INS-012
   category: Instrument metadata, units and product identity
   title: Inverse derivative
   status: NOT_IMPLEMENTED
-  implementation_paths: []
+  implementation_paths:
+  - app/engine.py
+  - app/risk.py
+  - app/models.py
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: Requires app/workflow/instruments.py module for instrument metadata, resolution,
-    and validation
+  notes: 'Requires app/workflow/instruments.py module: symbol resolution (exact/ambiguous),
+    contract validation (expiry/multiplier/deliverable), product-specific handling
+    (stocks/options/futures/FX/crypto), metadata versioning'
 - id: INS-013
   category: Instrument metadata, units and product identity
   title: Leveraged inverse ETF
   status: NOT_IMPLEMENTED
-  implementation_paths: []
+  implementation_paths:
+  - app/engine.py
+  - app/risk.py
+  - app/models.py
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: Requires app/workflow/instruments.py module for instrument metadata, resolution,
-    and validation
+  notes: 'Requires app/workflow/instruments.py module: symbol resolution (exact/ambiguous),
+    contract validation (expiry/multiplier/deliverable), product-specific handling
+    (stocks/options/futures/FX/crypto), metadata versioning'
 - id: INS-014
   category: Instrument metadata, units and product identity
   title: Metadata change during planning
   status: NOT_IMPLEMENTED
-  implementation_paths: []
+  implementation_paths:
+  - app/engine.py
+  - app/risk.py
+  - app/models.py
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: Requires app/workflow/instruments.py module for instrument metadata, resolution,
-    and validation
+  notes: 'Requires app/workflow/instruments.py module: symbol resolution (exact/ambiguous),
+    contract validation (expiry/multiplier/deliverable), product-specific handling
+    (stocks/options/futures/FX/crypto), metadata versioning'
 - id: ROU-001
   category: Account identity, selection, permissions and binding
   title: Three eligible accounts
   status: TESTED_SIMULATOR
   implementation_paths:
   - app/workflow/identity.py
+  - app/workflow/admission.py
   - app/workflow/selection.py
   test_paths:
   - tests/test_wc02_canonical_identities.py::TestPaperAndLiveDistinction::test_paper_and_live_same_broker_are_different_accounts
@@ -583,6 +640,7 @@ scenarios:
   status: TESTED_SIMULATOR
   implementation_paths:
   - app/workflow/identity.py
+  - app/workflow/admission.py
   - app/workflow/selection.py
   test_paths:
   - tests/test_wc02_canonical_identities.py::TestPhysicalAccountDeduplication::test_two_bindings_same_physical_account
@@ -595,8 +653,10 @@ scenarios:
   status: TESTED_SIMULATOR
   implementation_paths:
   - app/workflow/identity.py
+  - app/workflow/admission.py
   - app/workflow/selection.py
   test_paths:
+  - tests/test_wc05_admission_and_selection.py::test_admission_basic_cases
   - tests/test_wc20_engine_integration.py::test_wc20_single_destination_selection_i01
   evidence_paths: []
   blocked_reason: null
@@ -607,9 +667,11 @@ scenarios:
   status: TESTED_SIMULATOR
   implementation_paths:
   - app/workflow/identity.py
+  - app/workflow/admission.py
   - app/workflow/selection.py
   test_paths:
   - tests/test_wc02_canonical_identities.py::TestCapabilityProfileEvidenceTier::test_unknown_capability_is_not_supported
+  - tests/test_wc34_selection_ranking.py::TestFeasibilityFirst::test_infeasible_not_selected_even_if_preferred
   evidence_paths: []
   blocked_reason: null
   notes: 'WC-01 baseline: Account identity, selection, permissions and binding'
@@ -619,6 +681,7 @@ scenarios:
   status: TESTED_SIMULATOR
   implementation_paths:
   - app/workflow/identity.py
+  - app/workflow/admission.py
   - app/workflow/selection.py
   test_paths:
   - tests/test_scn_b.py::TestROU005WrongGatewayDefault::test_explicit_account_overrides_gateway_default
@@ -631,6 +694,7 @@ scenarios:
   status: TESTED_SIMULATOR
   implementation_paths:
   - app/workflow/identity.py
+  - app/workflow/admission.py
   - app/workflow/selection.py
   test_paths:
   - tests/test_scn_b.py::TestROU006PaperLiveSameAlias::test_paper_live_different_despite_same_display_name
@@ -643,6 +707,7 @@ scenarios:
   status: TESTED_SIMULATOR
   implementation_paths:
   - app/workflow/identity.py
+  - app/workflow/admission.py
   - app/workflow/selection.py
   test_paths:
   - tests/test_scn_b.py::TestROU007AccountLiquidationOnly::test_closing_only_restriction_blocks_entry
@@ -657,7 +722,8 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: Partial implementation in identity.py and selection.py
+  notes: UNVERIFIED capability state; requires app/workflow/capability_verification.py
+    or evidence tracking in CapabilityProfile
 - id: ROU-009
   category: Account identity, selection, permissions and binding
   title: Account changes mid-plan
@@ -666,7 +732,8 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: Partial implementation in identity.py and selection.py
+  notes: CAS/version check invalidation; requires binding version tracking and plan
+    revalidation in lifecycle manager
 - id: ROU-010
   category: Account identity, selection, permissions and binding
   title: Exit after route change
@@ -675,7 +742,8 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: Partial implementation in identity.py and selection.py
+  notes: Exit routing and timeout recovery; requires LifecycleManager exit routing
+    logic
 - id: ROU-011
   category: Account identity, selection, permissions and binding
   title: Timeout then alternate available
@@ -684,7 +752,8 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: Partial implementation in identity.py and selection.py
+  notes: Exit routing and timeout recovery; requires LifecycleManager exit routing
+    logic
 - id: ROU-012
   category: Account identity, selection, permissions and binding
   title: Account removal with exposure
@@ -693,7 +762,8 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: Partial implementation in identity.py and selection.py
+  notes: Account removal guards; requires DataStore referential integrity checks and
+    account lifecycle state
 - id: ROU-013
   category: Account identity, selection, permissions and binding
   title: Credential rotation same account
@@ -702,7 +772,8 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: Partial implementation in identity.py and selection.py
+  notes: Credential rotation; requires app/connections.py credential versioning and
+    binding update logic
 - id: ROU-014
   category: Account identity, selection, permissions and binding
   title: No alternate live authority
@@ -711,7 +782,8 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: Partial implementation in identity.py and selection.py
+  notes: No alternate live authority fallback; requires environment-scoped authorization
+    checks
 - id: CAP-001
   category: Hierarchical budgets, shared backing and reservations
   title: Shared final dollars
@@ -753,7 +825,8 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: Partial implementation in budget.py
+  notes: Sleeve hard reservation; requires create_strategy_sleeve in budget.py with
+    reservation isolation
 - id: CAP-005
   category: Hierarchical budgets, shared backing and reservations
   title: Soft reservation expiry
@@ -762,7 +835,7 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: Partial implementation in budget.py
+  notes: Soft reservation expiry; requires reservation TTL and auto-release in budget.py
 - id: CAP-006
   category: Hierarchical budgets, shared backing and reservations
   title: Unknown order reservation TTL
@@ -771,7 +844,8 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: Partial implementation in budget.py
+  notes: Unknown order reservation TTL; requires order reconciliation and reservation
+    cleanup in lifecycle
 - id: CAP-007
   category: Hierarchical budgets, shared backing and reservations
   title: Reflected broker commitment
@@ -780,7 +854,8 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: Partial implementation in budget.py
+  notes: Reflected broker commitment; requires _validate_broker_snapshot with reflected_intent_ids
+    normalization
 - id: CAP-008
   category: Hierarchical budgets, shared backing and reservations
   title: Unreflected local intent
@@ -789,7 +864,7 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: Partial implementation in budget.py
+  notes: Unreflected local intent; requires local ledger tracking in budget.py
 - id: CAP-009
   category: Hierarchical budgets, shared backing and reservations
   title: Partial fill accounting
@@ -798,7 +873,8 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: Partial implementation in budget.py
+  notes: "Partial fill accounting; requires PART_FILLED \u2192 HELD_REMAINDER state\
+    \ transition logic in budget.py"
 - id: CAP-010
   category: Hierarchical budgets, shared backing and reservations
   title: Cancel request
@@ -807,7 +883,7 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: Partial implementation in budget.py
+  notes: Cancel request handling; requires order cancellation state machine in lifecycle
 - id: CAP-011
   category: Hierarchical budgets, shared backing and reservations
   title: Final reject no fill
@@ -816,7 +892,8 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: Partial implementation in budget.py
+  notes: Final reject no fill release; requires reconciliation logic in budget.py
+    with final state detection
 - id: CAP-012
   category: Hierarchical budgets, shared backing and reservations
   title: Withdrawal cash flow
@@ -825,7 +902,7 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: Partial implementation in budget.py
+  notes: Cash flow revaluation; requires cash_flow module and daily halt logic
 - id: CAP-013
   category: Hierarchical budgets, shared backing and reservations
   title: Deposit loss halt
@@ -834,7 +911,7 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: Partial implementation in budget.py
+  notes: Cash flow revaluation; requires cash_flow module and daily halt logic
 - id: CAP-014
   category: Hierarchical budgets, shared backing and reservations
   title: Manual collateral
@@ -843,7 +920,7 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: Partial implementation in budget.py
+  notes: Manual collateral reservation; requires manual_position tracking in portfolio
 - id: CAP-015
   category: Hierarchical budgets, shared backing and reservations
   title: Same-underlying multiple assets
@@ -852,7 +929,8 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: Partial implementation in budget.py
+  notes: Consolidated underlying limits; requires cross-asset cluster analysis in
+    budget.py
 - id: CAP-016
   category: Hierarchical budgets, shared backing and reservations
   title: Credit proceeds liability
@@ -861,7 +939,7 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: Partial implementation in budget.py
+  notes: Credit proceeds liability; requires short_option combo position tracking
 - id: CAP-017
   category: Hierarchical budgets, shared backing and reservations
   title: Minimum lot cannot fit
@@ -881,7 +959,8 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: Partial implementation in budget.py
+  notes: Multiple binding constraints explanation; requires constraint ranking in
+    sizing
 - id: SIZ-001
   category: Financial validation and exact sizing
   title: Reference stock sizing
@@ -934,7 +1013,8 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: Partial implementation in sizing.py
+  notes: Stop fallback resolution; requires stop validation and fallback policy in
+    sizing.py
 - id: SIZ-006
   category: Financial validation and exact sizing
   title: Stop tick rounding
@@ -943,7 +1023,8 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: Partial implementation in sizing.py
+  notes: Stop tick rounding; requires normalize_quantity with tick-based rounding
+    in app/risk.py
 - id: SIZ-007
   category: Financial validation and exact sizing
   title: Tight stop huge position
@@ -952,7 +1033,7 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: Partial implementation in sizing.py
+  notes: Tight stop huge position; requires margin/liquidity checks at each size candidate
 - id: SIZ-008
   category: Financial validation and exact sizing
   title: Option full debit
@@ -970,7 +1051,8 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: Partial implementation in sizing.py
+  notes: Nonlinear margin tier recomputation; requires tiered margin lookup in broker
+    adapter
 - id: SIZ-010
   category: Financial validation and exact sizing
   title: Fee currency
@@ -988,7 +1070,8 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: Partial implementation in sizing.py
+  notes: Negative cost rejection; requires cost validation in sizing.py (ValueError
+    on negative)
 - id: SIZ-012
   category: Financial validation and exact sizing
   title: Zero-risk misleading break-even
@@ -997,7 +1080,7 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: Partial implementation in sizing.py
+  notes: Zero-risk docstring exists; stop-equals-entry preserved in calculations
 - id: SIZ-013
   category: Financial validation and exact sizing
   title: Cap decreases
@@ -1006,7 +1089,7 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: Partial implementation in sizing.py
+  notes: Cap decreases; requires quantity monotonicity check in sizing
 - id: SIZ-014
   category: Financial validation and exact sizing
   title: Worse partial fill
@@ -1015,7 +1098,7 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: Partial implementation in sizing.py
+  notes: Worse partial fill protection; requires post-trade cancellation logic
 - id: KEL-001
   category: Kelly, profile evidence and adaptive allocation
   title: Binary Kelly arithmetic
