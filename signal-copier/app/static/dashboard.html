@@ -601,6 +601,17 @@ function fmtNum(n) {
   return Number(n).toLocaleString(undefined, { maximumFractionDigits: 6 });
 }
 
+// WC-21: integer-cents money fields (budget_reservations.needed_*_cents)
+// rendered as a currency amount with exactly two decimals. null/undefined
+// is shown as "—" (not tracked), never as 0.00 -- same honesty rule as
+// fmtNum above.
+function fmtCents(cents) {
+  if (cents === null || cents === undefined) return "—";
+  const n = Number(cents);
+  if (!Number.isFinite(n)) return "—";
+  return (n / 100).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
 function table(headers, rows, emptyMessage) {
   if (!rows.length) return `<div class="empty">${emptyMessage}</div>`;
   const head = headers.map((h) => `<th>${h}</th>`).join("");

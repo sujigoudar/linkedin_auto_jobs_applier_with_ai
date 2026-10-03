@@ -10110,6 +10110,22 @@ class SignalStore:
             ).fetchone()
         return row is not None
 
+    def get_active_reservation_for_opportunity(self, opportunity_id: str) -> BudgetReservationRow | None:
+        """WC-30/ALLOC-07: the one non-RELEASED reservation claiming this exact
+        opportunity id, or None. Exact match only (never the replicate-scoped
+        "<signal_id>:<account>" rows of a sibling), so a crashed-then-redelivered
+        signal can be resumed on the account that already holds its reservation
+        and refused on any other."""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT reservation_id FROM budget_reservations WHERE opportunity_id = ? AND state != 'RELEASED' "
+                "ORDER BY created_at ASC LIMIT 1",
+                (opportunity_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return self.get_reservation(row[0])
+
     def create_hierarchical_reservation(
         self,
         *,
@@ -10666,8 +10682,10 @@ class SignalStore:
         params: list = []
 
         if opportunity_id is not None:
-            query += " AND opportunity_id = ?"
-            params.append(opportunity_id)
+            # A signal's own id, or a replicate-scoped "<signal_id>:<account>"
+            # (see SignalCopierEngine._opportunity_id_for).
+            query += " AND (opportunity_id = ? OR substr(opportunity_id, 1, length(?) + 1) = ? || ':')"
+            params.extend([opportunity_id, opportunity_id, opportunity_id])
         if state is not None:
             query += " AND state = ?"
             params.append(state)
@@ -10714,8 +10732,10 @@ class SignalStore:
         params: list = []
 
         if opportunity_id is not None:
-            query += " AND opportunity_id = ?"
-            params.append(opportunity_id)
+            # A signal's own id, or a replicate-scoped "<signal_id>:<account>"
+            # (see SignalCopierEngine._opportunity_id_for).
+            query += " AND (opportunity_id = ? OR substr(opportunity_id, 1, length(?) + 1) = ? || ':')"
+            params.extend([opportunity_id, opportunity_id, opportunity_id])
 
         query += f" ORDER BY created_at DESC LIMIT {limit}"
 

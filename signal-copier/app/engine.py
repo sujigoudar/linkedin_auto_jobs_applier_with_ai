@@ -386,6 +386,21 @@ class SignalCopierEngine:
                 seq = paper_broker.get_order_id_sequence(account.account_id)
                 self.store.update_account_paper_order_id_sequence(account.account_id, seq)
 
+    @staticmethod
+    def _opportunity_id_for(signal: Signal, account: DestinationAccount, single_ids: set[str]) -> str:
+        """WC-33/WC-31 opportunity identity for budget reservations and order intents.
+
+        ALLOC-01: a canonical signal selects ONE eligible account, so for the
+        single-selection pool the signal id itself is the opportunity and the
+        unique opportunity claim is exactly the "never two intents for one
+        signal" guarantee. An explicit `delivery_mode="replicate"` destination
+        is a deliberate, configured fan-out: each replica account is its own
+        opportunity (`<signal_id>:<account_id>`), otherwise the second replica
+        would be rejected as a DUPLICATE of the first."""
+        if account.account_id in single_ids:
+            return signal.id
+        return f"{signal.id}:{account.account_id}"
+
     async def _check_and_reserve_resources(
         self,
         signal_id: str,
@@ -411,7 +426,9 @@ class SignalCopierEngine:
         - Call check_and_reserve atomically
 
         Args:
-            signal_id: The signal ID (used as opportunity_id for deduplication)
+            signal_id: The opportunity id claimed for deduplication: the signal id for the
+                single-selection pool, "<signal_id>:<account_id>" for an explicit replica
+                (see `_opportunity_id_for`).
             account: The destination account
             quantity: The calculated order quantity (float)
             signal: The signal being routed
@@ -516,6 +533,24 @@ class SignalCopierEngine:
                 close_quantity=0,  # TODO: track closeable inventory
                 slots=1,  # One order slot required
             )
+
+            # ALLOC-07 crash boundaries: a redelivery of the SAME opportunity
+            # on the SAME physical account (a restart after a crash between
+            # this reservation and the durable command-ledger intent, or a
+            # replayed delivery) resumes the reservation it already holds;
+            # the command ledger downstream decides whether a broker call may
+            # still happen. The budget layer itself stays strict (any second
+            # claim is DUPLICATE), so a different account is still refused.
+            existing = self.store.get_active_reservation_for_opportunity(signal_id)
+            if existing is not None and existing.physical_account_id == account.account_id:
+                logger.info(
+                    "resource_reservation resumed signal=%s account=%s reservation_id=%s state=%s",
+                    signal_id,
+                    account.account_id,
+                    existing.reservation_id,
+                    existing.state,
+                )
+                return True, None, existing.reservation_id
 
             # Call check_and_reserve
             reservation_result = self.hierarchical_budget.check_and_reserve(
@@ -1663,7 +1698,13 @@ class SignalCopierEngine:
                         logger.info("allocation intent for signal=%s is bound elsewhere; skipping account=%s", signal.id, account.account_id)
                         continue
                     managed_bound = True
-                managed_outcome = await self._handle_managed_signal(working_signal, account, symbol, dry_run=dry_run)
+                managed_outcome = await self._handle_managed_signal(
+                    working_signal,
+                    account,
+                    symbol,
+                    dry_run=dry_run,
+                    opportunity_id=self._opportunity_id_for(signal, account, single_ids),
+                )
                 result = managed_outcome.result
                 if managed_bound:
                     if managed_outcome.submitted_at is None:
@@ -1914,8 +1955,9 @@ class SignalCopierEngine:
             # WC-33 STEP B: Check and reserve hierarchical resources before
             # command ledger entry. This ensures all budget levels are checked
             # atomically before any broker effect occurs.
+            opportunity_id = self._opportunity_id_for(signal, account, single_ids)
             resources_ok, resource_error, reservation_id = await self._check_and_reserve_resources(
-                signal_id=signal.id,
+                signal_id=opportunity_id,
                 account=account,
                 quantity=quantity,
                 signal=order_signal,
@@ -2071,7 +2113,7 @@ class SignalCopierEngine:
 
             # Create OrderIntent (WC-33 STEP C)
             intent = OrderIntent.create(
-                opportunity_id=signal.id,
+                opportunity_id=opportunity_id,
                 physical_account_id=account.account_id,  # Using account_id as physical_account_id for now
                 binding_id=account.account_id,  # Using account_id as binding_id for now
                 client_correlation_id=ledger_key,
@@ -4126,7 +4168,14 @@ class SignalCopierEngine:
                 self.store.release_close(account.account_id, symbol)
 
     async def _handle_managed_signal(
-        self, signal: Signal, account: DestinationAccount, symbol: str, *, enforce_provider_ownership: bool = True, dry_run: bool = False
+        self,
+        signal: Signal,
+        account: DestinationAccount,
+        symbol: str,
+        *,
+        enforce_provider_ownership: bool = True,
+        dry_run: bool = False,
+        opportunity_id: str | None = None,
     ) -> _ManagedOrderOutcome:
         """Route a BUY/SELL/CLOSE signal for a `managed_lifecycle` account through
         `PositionLifecycleManager` instead of the plain broker.place_order path.
@@ -4147,7 +4196,7 @@ class SignalCopierEngine:
             return await self._handle_managed_close(
                 signal, account, symbol, enforce_provider_ownership=enforce_provider_ownership, dry_run=dry_run
             )
-        return await self._handle_managed_entry(signal, account, symbol, dry_run=dry_run)
+        return await self._handle_managed_entry(signal, account, symbol, dry_run=dry_run, opportunity_id=opportunity_id)
 
     def _compute_default_target_fractions(self, targets: list[ProfitTarget]) -> list[float | None]:
         """Compute equal-split default fractions for targets that don't have them.
@@ -4188,8 +4237,16 @@ class SignalCopierEngine:
         return fractions
 
     async def _handle_managed_entry(
-        self, signal: Signal, account: DestinationAccount, symbol: str, dry_run: bool = False
+        self,
+        signal: Signal,
+        account: DestinationAccount,
+        symbol: str,
+        dry_run: bool = False,
+        opportunity_id: str | None = None,
     ) -> _ManagedOrderOutcome:
+        # WC-33/WC-31: see `_opportunity_id_for` -- the caller passes the
+        # replicate-scoped id when this account is an explicit replica.
+        opportunity_id = opportunity_id or signal.id
         broker = self.brokers.get(account.broker)
         if broker is None:
             # TRK-22: a pre-submission rejection inside this method itself --
@@ -4397,7 +4454,7 @@ class SignalCopierEngine:
         # lifecycle plan starts. This ensures all budget levels are checked
         # atomically before any broker effect occurs.
         resources_ok, resource_error, reservation_id = await self._check_and_reserve_resources(
-            signal_id=signal.id,
+            signal_id=opportunity_id,
             account=account,
             quantity=quantity,
             signal=signal,  # Use original signal which has stop_loss/take_profit
@@ -4468,7 +4525,7 @@ class SignalCopierEngine:
 
         # Create OrderIntent
         intent = OrderIntent.create(
-            opportunity_id=signal.id,
+            opportunity_id=opportunity_id,
             physical_account_id=account.account_id,
             binding_id=account.account_id,
             client_correlation_id=ledger_key,
