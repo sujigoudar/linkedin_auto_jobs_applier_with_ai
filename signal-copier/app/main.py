@@ -22,7 +22,7 @@ from collections import defaultdict
 from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable, Literal
+from typing import Any, Callable, Literal, Optional
 
 import httpx
 from fastapi import Body, Cookie, Depends, FastAPI, Form, Header, HTTPException, Query, Request, Response
@@ -120,6 +120,8 @@ from app.sources.telegram_user import TelegramUserSource
 from app.telegram_collectors import ConnectionMode, TelegramCollectorError
 from app.sources.email_source import EmailSource
 from app.email_collectors import EmailCollectorError
+from app.transports.agentmail import AgentMailTransport, AgentMailConfig, InboxRole
+from app.transports.webhook import create_agentmail_webhook_handler
 from app.notification_bridge import (
     ContentCompleteness,
     NotificationBridgeError,
@@ -272,6 +274,33 @@ webhook_source = WebhookSource(on_signal=engine.handle_signal, on_source_event=e
 sms_source = TwilioSMSSource(on_signal=engine.handle_signal)
 whatsapp_source = WhatsAppSource(on_signal=engine.handle_signal)
 ninjatrader_source = NinjaTraderSource(on_signal=engine.handle_signal)
+
+# AgentMail email transport (optional, event-driven webhook-based).
+# Initialized only if fully configured via env vars.
+agentmail_transport: Optional[AgentMailTransport] = None
+agentmail_webhook_handler: Optional[Any] = None
+if config.AGENTMAIL_API_KEY and config.AGENTMAIL_WEBHOOK_SECRET and config.AGENTMAIL_INBOXES:
+    from app.transports.agentmail import AgentMailConfig
+    agentmail_config = AgentMailConfig(
+        api_key=config.AGENTMAIL_API_KEY,
+        webhook_secret=config.AGENTMAIL_WEBHOOK_SECRET,
+        webhook_url=config.AGENTMAIL_WEBHOOK_URL,
+        inboxes={
+            InboxRole(role): addr
+            for role, addr in config.AGENTMAIL_INBOXES.items()
+        },
+    )
+    agentmail_transport = AgentMailTransport(
+        config=agentmail_config,
+        on_receipt=engine.handle_signal,  # type: ignore[arg-type]
+    )
+    agentmail_webhook_handler = create_agentmail_webhook_handler(
+        transport=agentmail_transport,
+        store=store,
+    )
+else:
+    logger.info("AgentMail not configured -- email transport disabled")
+
 reconciler = OrderReconciler(
     store=store,
     brokers=brokers,
@@ -533,6 +562,8 @@ async def lifespan(app: FastAPI):
     await lifecycle_manager.restore_from_store()
 
     await webhook_source.start()
+    if agentmail_transport:
+        await agentmail_transport.start()
     for source in _background_sources:
         try:
             await source.start()
@@ -594,6 +625,8 @@ async def lifespan(app: FastAPI):
     await provider_scout.stop()
     await price_monitor.stop()
     await reconciler.stop()
+    if agentmail_transport:
+        await agentmail_transport.stop()
     for source in _background_sources:
         await source.stop()
     # Every registered broker, not a hand-maintained subset: BrokerAdapter.close()
@@ -1552,6 +1585,21 @@ async def receive_webhook(
     if cache_key:
         store.save_idempotent_response(cache_key, response)
     return response
+
+
+@app.post("/api/webhooks/agentmail")
+async def agentmail_webhook(request: Request) -> Response:
+    """AgentMail webhook endpoint for message.received events.
+
+    AgentMail sends HMAC-SHA256 signed webhooks with:
+    - X-AgentMail-Signature header for integrity verification
+    - Event ID deduplication for idempotency
+    - Immediate 200 ACK response (<5s)
+    - Asynchronous processing of heavy work
+    """
+    if not agentmail_webhook_handler:
+        return Response(status_code=503, content="AgentMail webhook ingress is not configured")
+    return await agentmail_webhook_handler(request)
 
 
 @app.post("/sms/twilio")
