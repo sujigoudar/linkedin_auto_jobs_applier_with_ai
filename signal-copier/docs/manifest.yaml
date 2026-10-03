@@ -358,3 +358,73 @@ documents:
       - externally observable behavior changes (new endpoint, changed
         response shape, new broker/source support, a fixed bug that
         affected live trading behavior)
+
+  # Added by the full-test-pass audit: real files that existed but were not indexed.
+  unindexed_additions:
+    path: docs/adr/0012-single-destination-allocation.md
+    paths:
+      - docs/adr/0012-single-destination-allocation.md
+      - docs/adr/0016-opportunity-identity.md
+      - docs/audit/SOLUTION_GAP_ANALYSIS.md
+      - docs/audit/raw/A_signal_interpretation.md
+      - docs/audit/raw/B_sizing_and_risk.md
+      - docs/audit/raw/C_broker_adapters.md
+      - docs/audit/raw/D_lifecycle_protection_reconciliation.md
+      - docs/audit/raw/E_accounting_analytics_export.md
+      - docs/audit/raw/F_operations_config_security_ui.md
+      - docs/audit/raw/G_commercial_platform.md
+      - docs/audit/raw/probes/probe_accounting.py
+      - docs/audit/raw/probes/probe_engine.py
+      - docs/audit/raw/probes/probe_parser.py
+      - docs/audit/raw/probes/probe_parser2.py
+      - docs/design/ALLOCATION_DECISION_LEDGER.md
+      - docs/design/PORTFOLIO_ALLOCATION.md
+      - docs/design/REMEDIATION_PLAN.md
+      - docs/security/EMAIL_COLLECTOR.md
+      - docs/security/SLACK_USER_TOKEN.md
+      - docs/security/TWITTER_USER_CONTEXT.md
+      - docs/testing/ALLOCATION_TRACEABILITY.md
+      - docs/testing/ALLOCATION_TRACEABILITY.yaml
+      - docs/testing/VENUE_QUALIFICATION.md
+      - docs/workflow-contract/CLAUDE_CODE_START_PROMPT.md
+      - docs/workflow-contract/EFFECTIVE_POLICY.md
+      - docs/workflow-contract/IMPLEMENTATION_PLAN.md
+      - docs/workflow-contract/INVENTORY.md
+      - docs/workflow-contract/PACKAGE_CHECK_RESULTS.json
+      - docs/workflow-contract/PACKAGE_HELPER_TEST_OUTPUT.txt
+      - docs/workflow-contract/README.md
+      - docs/workflow-contract/RELEASE_EVIDENCE.md
+      - docs/workflow-contract/SCENARIO_CATALOG.json
+      - docs/workflow-contract/SCENARIO_CATALOG.md
+      - docs/workflow-contract/SHA256SUMS.txt
+      - docs/workflow-contract/WORKFLOW_SPECIFICATION.md
+      - docs/workflow-contract/__pycache__/build_traceability.cpython-311.pyc
+      - docs/workflow-contract/__pycache__/generate_cases.cpython-311.pyc
+      - docs/workflow-contract/__pycache__/make_release_evidence.cpython-311.pyc
+      - docs/workflow-contract/__pycache__/run_contracts.cpython-311.pyc
+      - docs/workflow-contract/__pycache__/test_package_helpers.cpython-311-pytest-9.1.1.pyc
+      - docs/workflow-contract/__pycache__/validate_evidence.cpython-311.pyc
+      - docs/workflow-contract/build_catalog.py
+      - docs/workflow-contract/build_traceability.py
+      - docs/workflow-contract/evidence/APPLICATION_RESULTS.json
+      - docs/workflow-contract/evidence/APPLICATION_RESULTS_admission.json
+      - docs/workflow-contract/evidence/APPLICATION_RESULTS_sizing.json
+      - docs/workflow-contract/evidence/README.md
+      - docs/workflow-contract/evidence/executed_tests.json
+      - docs/workflow-contract/evidence/mutation_report.json
+      - docs/workflow-contract/evidence/release_notes.yaml
+      - docs/workflow-contract/generate_cases.py
+      - docs/workflow-contract/generated/admission.jsonl
+      - docs/workflow-contract/generated/linear_sizing.jsonl
+      - docs/workflow-contract/generated/manifest.json
+      - docs/workflow-contract/generated/race_sequences.jsonl
+      - docs/workflow-contract/make_release_evidence.py
+      - docs/workflow-contract/requirements_traceability.json
+      - docs/workflow-contract/run_contracts.py
+      - docs/workflow-contract/test_package_helpers.py
+      - docs/workflow-contract/traceability_map.yaml
+      - docs/workflow-contract/validate_evidence.py
+    read_when:
+      - auditing the design/audit/ADR/security history of the allocation and remediation work
+    update_when:
+      - any of the listed files is added, renamed or removed

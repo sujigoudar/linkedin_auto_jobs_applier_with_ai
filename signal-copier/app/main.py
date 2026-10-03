@@ -1741,9 +1741,9 @@ async def get_agentmail_statistics(_owner: dict = Depends(require_owner)) -> dic
         ) if hasattr(store, 'list_broker_operations_incidents') else []
 
         # Build statistics
-        by_severity = defaultdict(int)
-        by_action = defaultdict(int)
-        by_event_type = defaultdict(int)
+        by_severity: defaultdict[str, int] = defaultdict(int)
+        by_action: defaultdict[str, int] = defaultdict(int)
+        by_event_type: defaultdict[str, int] = defaultdict(int)
         duplicate_count = 0
 
         for incident in incidents:
