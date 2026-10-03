@@ -326,6 +326,232 @@ configured explicitly with `delivery_mode: replicate` on that rule — it is
 never inferred from the number of accounts listed. See
 `docs/design/PORTFOLIO_ALLOCATION.md`.
 
+## Routing precedence
+
+Routing rules are evaluated in order of specificity (WP-07):
+
+1. Rules whose `symbol_filter` names the signal's symbol come first
+   (in insertion order).
+2. Rules with no symbol filter (catch-all) come second (in insertion order).
+
+Within each group, the first rule whose conditions match is used. The `GET
+/routing-rules/simulate` endpoint shows which rule would be selected for a
+given symbol and account, including its precedence rank.
+
+Example: if you have a catch-all rule that routes to Account A, and later add
+a symbol-specific rule for AAPL that routes to Account B, then AAPL signals go
+to B and everything else goes to A. The order matters — a catch-all listed
+first would win for all symbols, shadowing later specific rules.
+
+## Signal intent interpretation
+
+Every signal carries an explicit **intent** describing what it means to do
+(WP-08, WP-09, WP-13):
+
+- **`entry_long`** — open a new long position or add to an existing one.
+- **`entry_short`** — open a new short position (requires `allow_short=true`
+  on the account).
+- **`sell`** — ambiguous; resolved by the engine based on the account's book:
+  - If the account holds a same-symbol long position → **EXIT** (reduce or
+    flatten the long).
+  - If the account is flat and `allow_short=false` → **REJECTED**.
+  - If the account is flat and `allow_short=true` → **ENTRY_SHORT**.
+  - Explicit ENTRY_SHORT on an account with `allow_short=false` → **REJECTED**.
+- **`exit`** — close the position (reduce by quantity/fraction if given, else
+  flatten).
+- **`reduce`** — close a fraction of the position (e.g., "take profit on half").
+  Must carry `reduce_fraction` (0 < x ≤ 1).
+- **`stop_update`** — change the stop-loss price on an open managed lifecycle
+  (rejected for plain accounts).
+- **`target_update`** — add or amend take-profit targets on an open managed
+  lifecycle.
+- **`cancel`** — cancel a pending order (order id required).
+
+**Derivation**: when not explicit, intent is derived from `side` in
+`Signal.__post_init__`:
+- BUY → ENTRY_LONG
+- SELL → SELL (resolved by engine per account)
+- CLOSE → EXIT
+
+**Parser inputs** (from text signals):
+- "BUY AAPL 100" → ENTRY_LONG
+- "SHORT AAPL 100" or "SELL SHORT AAPL 100" → ENTRY_SHORT
+- "SELL AAPL 100" → SELL (resolved at engine)
+- "CLOSE AAPL" or "FLATTEN AAPL" → EXIT
+- "TRIM AAPL" or "TAKE PROFIT ON AAPL" → REDUCE (with `reduce_fraction`
+  parsed from "half", "all", or "N%")
+- "UPDATE STOP 95" → STOP_UPDATE
+- Numbers like "150C" with strike and expiry → OPTION asset class with full contract spec
+
+Webhook endpoints accept an explicit `intent` field (JSON string) validated
+against this enum.
+
+## Sizing modes
+
+Each destination account can size entries using one of three modes (WP-16):
+
+### Fixed quantity
+`sizing_mode: "fixed"` with `fixed_quantity: N`
+
+The account ignores the signal's quantity and always trades `N` units.
+
+### Multiplier (default)
+`sizing_mode: "multiplier"`
+
+The engine submits the signal's quantity directly, gated by
+`max_notional_exposure` (if set). Notional = `|quantity| × |price|` ×
+`contract_multiplier`, where multiplier is:
+- Options: 100 (US standard)
+- Futures: contract-specific (ES: 50, MES: 5, crude: 1000, etc.)
+- Forex: lot size (standard 100k, mini 10k, micro 1k, units 1)
+- Equities/crypto: 1.0
+
+A signal without a contract spec for options/futures is **rejected**.
+
+### Risk-fraction sizing
+`sizing_mode: "risk_fraction"` with `risk_fraction: 0.01` (example: 1%)
+
+The engine calculates: `qty = floor(equity × risk_fraction / (|price - stop| × multiplier))`
+
+**All inputs required:**
+- `broker.get_account_balance().equity` — if unavailable → REJECTED
+- `signal.price` — if missing → REJECTED
+- `signal.stop_loss` — if missing → REJECTED
+- Result must be > 0, else REJECTED
+
+Never guesses or defaults these values.
+
+## Loss limits and risk controls
+
+### Daily loss limit (WP-30)
+
+Set `daily_loss_limit_percent` on an account (e.g., 5%) to halt new entries
+when realized losses for the day exceed that percentage of starting equity.
+
+Daily loss = `realized P&L today` + `mark-to-market on open positions` (when
+broker balance is available).
+
+When breached, an `entries:risk_halt` alert is raised and new entries are
+**REJECTED** with reason "account has an active risk halt". Halts are
+persisted in the `risk_halts` table and can be cleared by an operator via
+`POST /risk-halts/{account_id}/clear` with an evidence message (required,
+≥3 characters, logged for audit).
+
+### Margin call detection (WP-31)
+
+`app/margin_call_detector.py` reads from `broker.get_account_balance()` each
+reconciliation pass and compares `maintenance_margin` against available
+`excess`. When exceeded, a `margin_call_alerts` row is created and entries
+are rejected while unresolved.
+
+### Buying power and leverage (WP-32)
+
+The capital allocator gates entries by:
+- **Buying power** — if the broker reports it, entries requiring more than
+  available are rejected with "insufficient buying power". If the broker
+  cannot report it and no ceiling is configured → entry is rejected as a
+  precaution ("buying power unknown and no ceiling configured").
+- **Leverage cap** — `max_gross_leverage` (default 1.0, meaning no leverage)
+  multiplied by `(equity - maintenance_margin)`. The paper broker enforces
+  this on its own cash account.
+
+Both fail closed: missing data → reject.
+
+## Alerts and operations (WP-34, WP-42)
+
+### Alerts
+
+New alerts are raised for:
+- **Loss halt triggered** — daily loss limit exceeded
+- **Margin call** — maintenance margin exceeded
+- **Unknown submission** — order status returned ERROR and was never confirmed
+- **Protection deficit** — a managed position's stop-loss was lost (detected
+  during reconciliation)
+- **Stale allocation** — an allocation intent left in `claimed`/`selected`
+  after a restart, automatically marked skipped
+
+All alerts are stored in the `alerts` table with `kind`, `account_id`,
+`message`, `payload`, and `created_at`. Unacknowledged alerts can be listed
+via `GET /alerts?unacknowledged=1` and acknowledged via `POST /alerts/{id}/ack`.
+
+Alerts can optionally be forwarded to an external webhook
+(`config.ALERT_WEBHOOK_URL`, posted as JSON, failures logged never raised).
+
+### Operations center (TR-20)
+
+Single dashboard screen with four panels, each polling every 15 seconds:
+
+1. **Alerts** — kind/account/message/time, acknowledge button
+2. **Risk halts** — account/reason/triggered_at, clear button (requires
+   operator evidence ≥3 chars)
+3. **Unresolved commands** — submission ledger rows with ERROR status, mark
+   as "not placed" button (requires evidence)
+4. **Allocation intents and strategy budgets** — recent intents with state and
+   selected account; budgets editable inline
+
+Navigation badge shows count of unacknowledged alerts + open halts +
+unresolved commands (cached 15 s).
+
+## Readiness checklist (WP-45)
+
+Before autonomous operation, `GET /readiness` per account checks:
+
+- [ ] Sizing configured (mode + parameters)
+- [ ] Loss limit configured
+- [ ] Adapter can route entries (can_route_entries=true per adapter)
+- [ ] Venue environment known (paper/live/sandbox)
+- [ ] Route qualification approved for this (source, asset_class)
+- [ ] Alerts path configured
+- [ ] Writer lease active (single-writer fencing)
+
+When any item is blocked, TR-16 shows a "Not ready" state with a "Fix" link
+to the relevant screen (account editor for sizing/limits, routing for
+qualification, operations center for leases).
+
+## Adapter capabilities
+
+Every broker adapter declares what it can actually do. These declarations are
+checked at admission time (WP-36, WP-48, WP-49):
+
+| Adapter | Entry types | Can cancel | Can update stop | Can readback position | Can readback order status | Bracket children | Notes |
+|---|---|---|---|---|---|---|---|
+| **Paper** | Market | ✓ | ✓ | ✓ | ✓ | ✓ | Simulated; all orders fill; children tracked |
+| **Alpaca** | Market, Limit | ✓ | ✗ | ✓ | ✓ | ✓ | US equities; bracket legs returned as child_order_ids |
+| **CCXT** | Market | ✓ (varies) | ✗ | ✓ (spot only) | ✓ | ✗ | Crypto; cancel support varies by exchange |
+| **IBKR** | Market | ✓ (status lag) | ~ | ✗ (in-memory) | ~ | ~ | Status lookup in-memory only (C-14); real account code needed (C-18) |
+| **Tastytrade** | Market | ✓ | ✗ | ✗ | ✗ | ✗ | US options/equities/futures; status via separate polling (unreliable) |
+| **Tradovate** | Market | ✓ | ✗ | ✗ | ✗ | ✗ | Futures; status from polling only |
+| **TradeStation** | Market | ✓ | ✗ | ✗ | ✗ | ✗ | Equities/options/futures; options unverified |
+| **Schwab** | Market | ✓ (live-only) | ✗ | ✗ | ✗ | ✗ | Live-only; paper not supported |
+| **Robinhood** | Market | ✓ | ✗ | ✗ | ✗ | ✗ | Unofficial API; live-only |
+| **MT5 (local)** | Market | ✓ | ✓ | ✓ | ~ | ✗ | Same-host Windows MT5; position tracking via ticket persistence |
+| **MetaApi (cloud)** | Market | ✓ | ~ | ✓ | ~ | ✗ | Cloud-hosted MT5/MT4; status from polling |
+| **NinjaTrader** | Market | ✗ | ✗ | ✗ | ✗ | ✗ | Execution only (relay); no readback |
+| **Rithmic** | Market | ✗ | ✗ | ✗ | ✗ | ✗ | Execution only (relay) |
+| **SignalStack** | Market | ✗ | ✗ | ✗ | ✗ | ✗ | Execution only (relay) |
+| **OANDA** | Market | ✓ | ✗ | ✓ | ✓ | ✗ | Forex; status via API |
+
+**Legend:**
+- **Entry types**: market (all adapters support); limit, stop, bracket (where declared)
+- **Can cancel**: immediately + reliably (✓), with status lag (~), or not (✗)
+- **Can update stop**: amend a resting stop price on an open order (~=partial support)
+- **Can readback position**: query live position via API (✓), not available (✗), in-memory cache only (~)
+- **Can readback order status**: query recent fills and rejections (~=polling only, unreliable)
+- **Bracket children**: native bracket orders return child leg ids for tracking
+- **Notes**: adapter-specific caveats and limitations
+
+### Adapter qualification per asset class
+
+Some adapters don't implement every asset class despite what the code might
+suggest:
+
+- **Tastytrade, TradeStation**: OPTION declared but legs not built; options
+  routes rejected
+- **NinjaTrader, Rithmic, SignalStack, MT5, MetaApi**: relay only, no entry
+  routing capability; routes rejected
+
+See individual adapter docstrings (e.g., `app/brokers/alpaca.py`) for details.
+
 ## Close signals
 
 A `close` signal doesn't carry a size — closing means flattening whatever
@@ -1139,6 +1365,11 @@ GET /positions               # every non-flat tracked position, across all accou
 GET /signals?limit=50        # most recently received signals, newest first
 GET /orders?limit=50&account_id=...   # most recent order results, optionally filtered to one account
 GET /brokers                 # every registered broker's actual, code-verified capability matrix
+GET /signals/{id}/decision   # (WC-21) full admission decision trace for one signal
+GET /operations/reservation-health   # (WC-21) hierarchical resource reservation state
+GET /operations/intent-health        # (WC-21) order intent queue and delivery status
+GET /risk-halts              # (WC-32) all active and recently cleared halts
+POST /risk-halts/{account_id}/clear  # (WC-32) clear an account halt with operator evidence
 GET /providers               # configured provider/analyst overrides and their effective settings per account
 POST /positions/{account_id}/{symbol}/close   # immediately exit one open position at market
 POST /accounts/{account_id}/flatten           # exit every open position on that account, one at a time

@@ -298,3 +298,104 @@ from the lifecycle itself (`PositionLifecycle.exit_side` /
 `orders.side` (see `app/engine.py`'s managed branch, which stores
 `signal.side` as-is) — `build_execution_applied_envelope` raises rather
 than silently mis-exporting a close as `"close"`.
+
+## `budget_reservations`: hierarchical resource tracking (WC-30)
+
+WC-30 divides the capital-allocation layer into two: signal-copier's own
+`app/capital_allocator.py` (flat per-account notional ceilings, kept in
+memory) and the workflow-contract layer's `app/workflow/budgets.py`
+(hierarchical, multi-level budgets with atomic reservation/release cycles,
+persisted durably for crash recovery and audit trails).
+
+- **`opportunity_id`** — the canonical signal/account pair for this
+  entry: the signal's own `Signal.id` for a single-selection entry
+  (where one signal routes to exactly one account), or
+  `<signal_id>:<account_id>` for an explicit replicate destination. This
+  deduplication key ensures "never admit the same signal twice on the
+  same physical account" atomically via the UNIQUE constraint.
+
+- **`state`** — the reservation lifecycle:
+  - `CLAIMED`: resource hold placed; budget checks passed
+  - `COMMITTED`: broker call succeeded; resources now real
+  - `RELEASED`: position closed or allocation reversed; resources freed
+  - Transitions are **never** reversed (monotonic); re-admitting a signal
+    on a crashed restart reuses the existing reservation (`ALLOC-07`).
+
+- **`needed_*_cents`** (cash, margin, notional, planned_risk,
+  stress_risk) — resource vector components in integer cents, computed
+  from the sized order at admission time (`app/engine.py`'s
+  `_check_and_reserve_resources`). Used to check every hierarchical
+  budget level (owner, account, portfolio, sleeve, provider, analyst,
+  underlying, cluster) before any broker effect.
+
+## `order_intents`: workflow state machine (WC-06/WC-31)
+
+Intents map signal intents (BUY → ENTRY_LONG, SELL → ENTRY_SHORT or
+SELL, CLOSE → EXIT) to workflow-layer intents (allocate capital,
+rebalance, reduce risk, etc.). Written atomically with an `outbox` row
+in the same transaction, enforced by UNIQUE on `opportunity_id`.
+
+- **`client_correlation_id`** — request idempotency key supplied by the
+  client (or a deterministic hash of the signal). Prevents silent
+  duplicate executions if the same signal is redelievered after a crash
+  or network timeout.
+
+- **`policy_hash`** — SHA-256 of the admission decision, account
+  configuration, and market snapshot at the moment the intent was
+  created. Used to detect if the admission context has changed
+  (a different price, a different account state, a different budget
+  state) between intent creation and outbox delivery. Prevents stale
+  intents from executing under new conditions without re-evaluation.
+
+- **`reservation_id`** — FK to `budget_reservations.reservation_id`,
+  linking this intent to its resource hold. If the reservation is
+  released before the intent is delivered, the intent's dispatch fails
+  with a "resources no longer available" error.
+
+## `outbox`: crash-recovery delivery queue (WC-06/WC-31)
+
+Transactional outbox pattern: every workflow intent gets a paired outbox
+row in the same sqlite3 transaction it's created. A separate delivery
+worker polls the outbox, claims items atomically, dispatches them to
+brokers, and records responses. Unacknowledged items survive process
+crashes — `recover_outbox_on_restart` re-polls them on restart.
+
+- **`state`** — delivery lifecycle:
+  - `outboxed`: ready for dispatch; no worker has claimed it yet
+  - `dispatching`: claimed by a worker; broker call in flight
+  - `delivered`: received a response (success or failure)
+  - `failed`: permanently unable to deliver (e.g., broker disabled)
+  - State transitions are monotonic; no reversal from `delivered`.
+
+- **`claimed_by`** — the worker's lease id (from `app/writer_lease.py`)
+  who claimed this item. Used to detect stale claims (if the worker dies
+  without releasing the claim, a timeout mechanism reclaims it).
+
+- **`response`** — JSON response from the broker (order id, fill price,
+  rejection reason, error message). Recorded once per item, never
+  updated; multiple reattempts of the same item record their response
+  only the first time (`claim_next_outbox_item` returns `None` if
+  already claimed).
+
+## `trading_halts`: risk-halt records (WC-32)
+
+Halts block new entry admissions for a specific scope (account, portfolio,
+or owner). Triggered by: daily loss limit breach, margin call detected,
+or manual operator intervention. Cleared only by explicit operator
+action via `POST /risk-halts/{account_id}/clear` with an evidence message.
+
+- **`scope`** — one of:
+  - `account`: blocks new entries on this account only
+  - `portfolio`: blocks new entries on all accounts in this portfolio
+  - `owner`: blocks new entries across the entire fund (all portfolios)
+
+- **`source`** — what triggered the halt:
+  - `loss_limit_breach`: daily realized + MTM loss exceeded limit
+  - `margin_call`: broker-reported maintenance margin exceeded available
+  - `manual_operator`: operator-initiated halt (rare, for emergency stops)
+
+- **`cleared_at`** / **`cleared_by`** — when and by whom the halt was
+  cleared. `NULL` means the halt is still active. Once cleared, the halt
+  row stays in the database for audit trail and analytics, but is never
+  checked again (queries use partial index on active halts where
+  `cleared_at IS NULL`).

@@ -44,8 +44,44 @@ python validate_evidence.py SCENARIO_CATALOG.json --evidence-root .
 
 For actual release evidence, fill code/test/evidence references and hashes only from executed application tests. Evidence validation checks structure and file presence, not the truth of broker behavior. The complete release gate also requires domain coverage, real test results, reviewed applicability, invariant/mutation evidence and exact route qualification.
 
+## Evidence flow and regeneration
+
+Evidence is collected from executed application tests (WC-22) via markers and
+test-path tracking. To regenerate evidence:
+
+```bash
+# Mark application tests with scenario evidence collection
+@pytest.mark.scenario(scenario_id="SCN-A", category="admission")
+def test_wc30_simple_admission():
+    ...
+
+# Run tests with scenario evidence collection
+pytest tests/test_wc*.py --scenario-evidence=/path/to/evidence
+
+# Build traceability map from executed tests (nodeid test_paths)
+python docs/workflow-contract/build_traceability.py --executed \
+    --test-paths "tests/test_wc03_*.py::Test*::test_*" \
+    tests/test_wc03_hierarchical_budgets.py \
+    tests/test_wc05_admission_and_selection.py
+
+# Validate evidence structure and presence
+python docs/workflow-contract/validate_evidence.py SCENARIO_CATALOG.json \
+    --evidence-root .
+
+# Generate release evidence (hashes and test references from executed runs)
+python docs/workflow-contract/make_release_evidence.py \
+    --test-output pytest-results.json \
+    --evidence-dir evidence/ \
+    SCENARIO_CATALOG.json
+```
+
+The `--executed` flag to `build_traceability.py` marks scenario statuses
+based on real test execution, never hand-set. Nodeid test paths use
+standard pytest format: `file::Class::fn` — the function must exist
+and be executable in isolation.
+
 ## Evidence in this package
 
 `PACKAGE_CHECK_RESULTS.json` and `PACKAGE_HELPER_TEST_OUTPUT.txt` report only local generator/catalog/helper checks and negative controls. They explicitly leave all application scenarios NOT_RUN. No current code checkout, account, live fill, deployed configuration, or profitability was validated by this package.
 
-Current live limits, account identity and deployed wiring must be read and reconciled in Claude Code. Historical v3.4 numerical defaults are references, not automatic live settings. The latest October 2 SQLite/private HTML-JS/direct-adapter decisions take precedence over older Supabase/Dash/SignalStack architecture language.
+Current live limits, account identity and deployed wiring must be read and reconciled in Claude Code. Historical v3.4 numerical defaults are references, not automatic live settings. The latest October 3 SQLite/private HTML-JS/direct-adapter decisions take precedence over older Supabase/Dash/SignalStack architecture language.
