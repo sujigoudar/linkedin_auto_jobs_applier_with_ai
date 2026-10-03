@@ -59,6 +59,7 @@ from typing import Any, Callable, Optional
 
 import httpx
 
+from app.transports.broker_operations_classifier import BrokerOperationsClassifier
 from app.transports.email import (
     EmailAttachmentMetadata,
     EmailMessageContent,
@@ -226,6 +227,9 @@ class AgentMailTransport(EmailTransport):
         else:
             self.provider_identity_resolver = ProviderIdentityResolver(configs=provider_configs)
 
+        # Initialize broker operations classifier for operations inbox
+        self.broker_operations_classifier = BrokerOperationsClassifier()
+
         # Track received event IDs for deduplication (in-memory; should be
         # backed by persistent storage in production)
         self._seen_event_ids: set[str] = set()
@@ -381,7 +385,7 @@ class AgentMailTransport(EmailTransport):
         self,
         sender: str,
         inbox_id: str,
-    ) -> dict:
+    ) -> dict[str, Any]:
         """Resolve sender email to a provider identity.
 
         Maps (sender, inbox_role) deterministically to a provider identifier.
@@ -424,13 +428,59 @@ class AgentMailTransport(EmailTransport):
                     receipt.message_id
                 )
 
-            # Emit to signal pipeline
-            await self.on_receipt(receipt)
+            # If this is an operations inbox, classify as broker operations event
+            if self._is_operations_inbox(receipt.inbox_id):
+                await self._process_broker_operations(receipt)
+            else:
+                # Emit signal receipts to signal pipeline
+                await self.on_receipt(receipt)
 
         except Exception as e:
             self._last_error = str(e)
             self._error_count += 1
             logger.exception(f"Error processing receipt {receipt.message_id}: {e}")
+
+    def _is_operations_inbox(self, inbox_id: str) -> bool:
+        """Check if inbox is the operations inbox.
+
+        Inbox ID format: "agentmail:operations" or similar.
+        """
+        return "operations" in inbox_id
+
+    async def _process_broker_operations(
+        self,
+        receipt: SourceReceipt
+    ) -> None:
+        """Process broker operations email and classify event.
+
+        Classifies operational emails from brokers into event types
+        (margin calls, trading restrictions, position adjustments, etc.)
+        for incident escalation and human notification.
+
+        Args:
+            receipt: The source email receipt to process
+        """
+        try:
+            # Classify the email
+            event = self.broker_operations_classifier.classify(
+                subject=receipt.subject,
+                sender=receipt.sender,
+                body_excerpt=receipt.body_representation,
+            )
+
+            # Log the classified event
+            logger.info(
+                f"Broker operations event classified: {event.event_type} | "
+                f"Severity: {event.severity} | From: {event.sender} | "
+                f"Subject: {event.subject[:50]}"
+            )
+
+            # TODO: Send to incident escalation system (Task #194)
+            # For now, events are logged for manual review and
+            # incident tracking in Task #194
+
+        except Exception as e:
+            logger.exception(f"Error classifying broker operations email: {e}")
 
     async def get_receipt(
         self,
