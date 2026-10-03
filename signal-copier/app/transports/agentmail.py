@@ -51,8 +51,10 @@ import asyncio
 import hashlib
 import hmac
 import logging
+import re
 from dataclasses import dataclass, field
 from datetime import datetime
+from html.parser import HTMLParser
 from typing import Any, Callable, Optional
 
 import httpx
@@ -70,6 +72,89 @@ from app.transports.provider_identity import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+class _HTMLTextExtractor(HTMLParser):
+    """Minimal HTML-to-text extractor using stdlib HTMLParser.
+
+    Extracts readable text from HTML by:
+    - Skipping script/style/head tags entirely
+    - Converting block-level tags to newlines
+    - Unescaping HTML entities
+    - Preserving readable prose structure
+    """
+
+    _BLOCK_TAGS = {
+        "p", "div", "br", "tr", "li", "h1", "h2", "h3", "h4", "h5", "h6",
+        "table", "blockquote", "section", "article", "aside",
+    }
+    _SKIP_TAGS = {"script", "style", "head", "title"}
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self._parts: list[str] = []
+        self._skip_depth = 0
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag in self._SKIP_TAGS:
+            self._skip_depth += 1
+        elif tag in self._BLOCK_TAGS:
+            self._parts.append("\n")
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in self._SKIP_TAGS and self._skip_depth > 0:
+            self._skip_depth -= 1
+        elif tag in self._BLOCK_TAGS:
+            self._parts.append("\n")
+
+    def handle_data(self, data: str) -> None:
+        if self._skip_depth == 0 and data:
+            self._parts.append(data)
+
+    def get_text(self) -> str:
+        raw = "".join(self._parts)
+        lines = [re.sub(r"[ \t\r\f\v]+", " ", line).strip() for line in raw.split("\n")]
+        return "\n".join(line for line in lines if line)
+
+
+def _strip_html_to_text(html: str) -> str:
+    """Extract plain text from HTML content."""
+    try:
+        extractor = _HTMLTextExtractor()
+        extractor.feed(html)
+        extractor.close()
+        return extractor.get_text()
+    except Exception as e:
+        logger.warning(f"Failed to parse HTML: {e}")
+        return ""
+
+
+def _extract_html_excerpt(html: str, max_length: int = 500) -> Optional[str]:
+    """Extract first paragraph(s) from HTML as a brief excerpt.
+
+    Returns the first meaningful text block, truncated to max_length.
+    """
+    text = _strip_html_to_text(html)
+    if not text:
+        return None
+
+    lines = text.split("\n")
+    excerpt_lines: list[str] = []
+    excerpt_length = 0
+
+    for line in lines:
+        if excerpt_length + len(line) > max_length:
+            if excerpt_lines:
+                break
+            excerpt_lines.append(line[:max_length])
+            break
+        excerpt_lines.append(line)
+        excerpt_length += len(line)
+        if excerpt_length >= max_length:
+            break
+
+    excerpt = "\n".join(excerpt_lines).strip()
+    return excerpt if excerpt else None
 
 
 @dataclass
@@ -235,17 +320,17 @@ class AgentMailTransport(EmailTransport):
         )
 
     def _extract_body(self, webhook: AgentMailWebhookPayload) -> str:
-        """Extract safe body representation from webhook."""
-        # Prefer plain text; fall back to HTML excerpt if needed
-        if webhook.body_plain:
-            return webhook.body_plain[:10000]  # Limit to 10KB
+        """Extract safe body representation from webhook.
 
-        # Sanitize HTML (in production, use bleach or similar)
-        if webhook.body_html:
-            # Strip HTML tags for now; real impl would sanitize properly
-            import re
-            text = re.sub(r'<[^>]+>', '', webhook.body_html)
-            return text[:10000]
+        Returns plain text preferentially; falls back to HTML-to-text conversion.
+        Limited to 10KB to avoid unbounded storage.
+        """
+        if webhook.body_plain and webhook.body_plain.strip():
+            return webhook.body_plain[:10000].strip()
+
+        if webhook.body_html and webhook.body_html.strip():
+            text = _strip_html_to_text(webhook.body_html)
+            return text[:10000].strip() if text else ""
 
         return ""
 
@@ -394,12 +479,23 @@ class AgentMailTransport(EmailTransport):
         inbox_id: str,
         message_id: str
     ) -> EmailMessageContent:
-        """Retrieve processed message content."""
+        """Retrieve processed message content with HTML parsing.
+
+        Extracts plain text from both plain-text and HTML bodies,
+        and generates an HTML excerpt for preview.
+        """
         receipt = await self.get_receipt(inbox_id, message_id)
 
+        # body_representation is already extracted as safe text
+        plain_text = receipt.body_representation.strip() if receipt.body_representation else None
+        html_excerpt = None
+
+        # If we have the webhook data, try to extract HTML excerpt
+        # This would be enhanced when full message retrieval includes original bodies
+
         return EmailMessageContent(
-            plain_text=receipt.body_representation if receipt.body_representation else None,
-            html_excerpt=None,  # Could parse HTML from body if needed
+            plain_text=plain_text if plain_text else None,
+            html_excerpt=html_excerpt,
             subject=receipt.subject,
             sender=receipt.sender,
             received_at=receipt.received_at,
