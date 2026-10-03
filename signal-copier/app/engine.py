@@ -1576,6 +1576,20 @@ class SignalCopierEngine:
                     account.account_id
                 )
                 if unresolved_alerts:
+                    # An alert must not latch forever: if the live balance now shows
+                    # margin comfortably recovered, resolve it. Anything unreadable
+                    # leaves the alerts open and the entry blocked.
+                    try:
+                        recovery_balance = await broker.get_account_balance(account)
+                    except Exception:
+                        recovery_balance = None
+                    if recovery_balance is not None and self.margin_call_detector.resolve_recovered_margin_calls(
+                        account.account_id, recovery_balance.equity, recovery_balance.maintenance_margin
+                    ):
+                        unresolved_alerts = self.margin_call_detector.get_unresolved_margin_calls(
+                            account.account_id
+                        )
+                if unresolved_alerts:
                     alert_ids = [a["id"] for a in unresolved_alerts]
                     result = OrderResult(
                         account_id=account.account_id,

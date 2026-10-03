@@ -104,6 +104,31 @@ class MarginCallDetector:
         """Get all unresolved margin call alerts for an account."""
         return self.store.get_unresolved_margin_calls(account_id)
 
+    def resolve_recovered_margin_calls(
+        self,
+        account_id: str,
+        current_equity: Optional[float],
+        maintenance_requirement: Optional[float],
+    ) -> int:
+        """Resolve this account's open margin-call alerts once margin has recovered.
+
+        Recovery means excess margin above the same 10% warning buffer used for
+        warnings, so an account hovering at the edge does not flap between blocked
+        and unblocked. Unknown equity or maintenance never counts as recovered
+        (fail closed). Returns the number of alerts resolved.
+        """
+        if current_equity is None or maintenance_requirement is None:
+            return 0
+        if current_equity - maintenance_requirement <= maintenance_requirement * 0.10:
+            return 0
+        resolved = 0
+        for alert in self.store.get_unresolved_margin_calls(account_id):
+            if self.resolve_margin_call(alert["id"]):
+                resolved += 1
+        if resolved:
+            logger.info("Margin recovered for %s: resolved %d margin call alert(s)", account_id, resolved)
+        return resolved
+
     def resolve_margin_call(self, alert_id: int) -> bool:
         """Mark a margin call alert as resolved."""
         try:

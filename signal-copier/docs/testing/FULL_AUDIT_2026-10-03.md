@@ -57,17 +57,26 @@ the real exit status.
 
 ## 4. Open product defects and missing features (decisions needed)
 
-Verified by reproduction in this audit:
+Verified by reproduction in this audit and now FIXED (tests added; see section 3 table for
+earlier ones):
 
-1. **Daily-loss limit is unusable.** Configuring `daily_loss_limit_percent` rejects every
-   entry and persists a halt; `daily_loss_limiter.py` calls a store method that does not exist.
-   (The only test mocks the limiter.)
+- **Daily-loss limit was unusable** (called a nonexistent store method; `abs(daily_pnl)` tripped on
+  profits). Fixed: `SignalStore.get_daily_pnl` from equity snapshots; only losses count
+  (`tests/test_daily_loss_limit_real_pnl.py`, 8 tests).
+- **`DEFAULT_MIN_EQUITY_THRESHOLD` was a dead setting.** Fixed: engine falls back to it
+  (`tests/test_default_min_equity_threshold.py`).
+- **README quickstart failed as written; `.env.example` omitted 30 settings and did not load.**
+  Fixed: quickstart sends `X-Webhook-Secret`; `.env.example` lists all 84 settings and is guarded by
+  `tests/test_env_example_matches_settings.py`.
+- **Margin-call alert latch** (open alert blocked entries forever). Fixed: the engine clears an alert
+  once the broker reports recovered margin (`resolve_recovered_margin_calls`,
+  `tests/test_margin_call_recovery.py`, 7 tests); an unreadable or still-breached balance keeps it open.
 
-Reported by the matrices (MATRIX; evidence in the linked files):
+Reported by the matrices (MATRIX; evidence in the linked files) and still open:
 
 2. Margin is never reserved: `initial_margin_cents = 0` for every account (`app/engine.py`, ~L517). Account type is ignored.
 3. Scale-in (`Intent.ADD`) has no test and `app/workflow/scaling.py` has no production caller; `identity.py`, `kelly.py`, `selection.py` likewise. `PRODUCTION_READINESS.md` still claims Kelly/pyramiding.
-4. Margin-call alerts can never be cleared in production (`resolve_margin_call` has no caller) while an open alert blocks all entries.
+4. (fixed - see above) Margin-call alert latch.
 5. Operator alerting is effectively absent: the alert sink's webhook push is never wired; protection-deficit and adoption alerts are TODOs.
 6. Commercial billing: nothing sets `Subscription.state`; trial, trial-expiry, upgrade, downgrade, reactivation and failed-payment handling do not exist; `portfolio_limit` and feature entitlements are stored but not enforced.
 7. No customer data export or account deletion.
@@ -77,7 +86,7 @@ Reported by the matrices (MATRIX; evidence in the linked files):
 11. No real historical signal corpora (KamdenAI/Telegram/Discord) are replayed anywhere.
 12. No coverage gate, no random-order or flake tooling; `pytest-xdist` is not in requirements/CI; mutation tests never run in CI; no backup/restore/RTO/RPO/performance/load checks.
 13. Only 59 of 292 workflow-contract scenarios carry a test marker; several `test_scn_*`/`test_wc06` tests are `pass`-bodied placeholders that traceability counts as tested; the 120 race vectors never touch the engine.
-14. Docs: README quickstart fails as written (missing webhook-secret header; `.env.example` ships it blank); 30 settings missing from `.env.example`; ~43 backticked paths point at files that do not exist; no user/admin/incident/onboarding guides.
+14. Docs: ~43 backticked paths point at files that do not exist; no user/admin/incident/onboarding guides.
 
 ## 5. Taxonomy classification (sections 46-69, 491 items)
 
