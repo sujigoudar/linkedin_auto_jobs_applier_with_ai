@@ -3767,29 +3767,36 @@ async def simulate_routing_rules(request: RoutingSimulateRequest, _owner: dict =
                 "reason": "no capital/risk exposure gate (max_notional_exposure, risk_percent_of_equity, or an owner-wide ceiling) is configured for this account -- the real engine's own _try_reserve_capital is a no-op the exact same way (see app/capital_allocator.py).",
             }
         else:
-            quantity = account.fixed_quantity if account.fixed_quantity is not None else (
-                (request.quantity if request.quantity is not None else 1.0) * account.multiplier
-            )
-            # A gate IS configured, so a missing price is now a real
-            # rejection (fail-closed), not a skip -- `_try_reserve_capital`
-            # itself makes that call; this dry run just reports whatever it
-            # genuinely decides, never a separately reimplemented "skip".
-            admitted, notional, rejection = await engine._try_reserve_capital(account, synthetic_signal, quantity)
-            if admitted:
-                # Real admit() really reserved `notional` against the real
-                # shared CapitalAllocator -- release it immediately so this
-                # dry run leaves the real in-memory ledger exactly as it
-                # found it (see this endpoint's own docstring).
-                engine.capital_allocator.release(account.account_id, notional, signal_id=synthetic_signal.id)
-            capital_admitted = admitted
-            capital_check = {
-                "status": "would_admit" if admitted else "would_reject",
-                "requested_notional": notional,
-                "deployed_notional": confirmed_open_notional(store, account.account_id).notional,
-                "reserved_notional": engine.capital_allocator.pending_reservation(account.account_id),
-                "max_notional_exposure": account.max_notional_exposure,
-                "reason": None if admitted else rejection.message if rejection else None,
-            }
+            if request.quantity is None and account.fixed_quantity is None:
+                capital_check = {
+                    "status": "rejected",
+                    "reason": "signal has no quantity and account has no fixed_quantity configured",
+                }
+                capital_admitted = False
+            else:
+                quantity = account.fixed_quantity if account.fixed_quantity is not None else (
+                    request.quantity * account.multiplier
+                )
+                # A gate IS configured, so a missing price is now a real
+                # rejection (fail-closed), not a skip -- `_try_reserve_capital`
+                # itself makes that call; this dry run just reports whatever it
+                # genuinely decides, never a separately reimplemented "skip".
+                admitted, notional, rejection = await engine._try_reserve_capital(account, synthetic_signal, quantity)
+                if admitted:
+                    # Real admit() really reserved `notional` against the real
+                    # shared CapitalAllocator -- release it immediately so this
+                    # dry run leaves the real in-memory ledger exactly as it
+                    # found it (see this endpoint's own docstring).
+                    engine.capital_allocator.release(account.account_id, notional, signal_id=synthetic_signal.id)
+                capital_admitted = admitted
+                capital_check = {
+                    "status": "would_admit" if admitted else "would_reject",
+                    "requested_notional": notional,
+                    "deployed_notional": confirmed_open_notional(store, account.account_id).notional,
+                    "reserved_notional": engine.capital_allocator.pending_reservation(account.account_id),
+                    "max_notional_exposure": account.max_notional_exposure,
+                    "reason": None if admitted else rejection.message if rejection else None,
+                }
 
         eligible = entry_allowed and broker_registered and asset_class_ok and capital_admitted
         would_receive = eligible
