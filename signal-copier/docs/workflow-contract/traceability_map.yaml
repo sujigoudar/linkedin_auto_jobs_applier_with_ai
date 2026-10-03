@@ -1583,7 +1583,7 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: 'WC-01 baseline: Broker order states, effects, deduplication and corrections'
+  notes: 'No test proves accepted-is-not-filled: PaperBroker fills immediately, so a real test needs a broker fixture that acknowledges with an order id without filling, then asserts the lifecycle keeps the commitment with no confirmed quantity and no protection'
 - id: ORD-002
   category: Broker order states, effects, deduplication and corrections
   title: HTTP success business rejection

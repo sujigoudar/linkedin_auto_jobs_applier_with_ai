@@ -59,30 +59,6 @@ async def _enter(manager, broker, account, plan, filled_quantity):
     return await manager.on_entry_fill(account, plan.symbol, filled_quantity)
 
 
-# ORD-001: Accepted acknowledgment
-@pytest.mark.asyncio
-@pytest.mark.scenario("ORD-001")
-async def test_ord_001_accepted_acknowledgment(manager, account, broker):
-    """Accepted acknowledgment: broker returns accepted with order ID.
-
-    Then: Persist ID/raw state and keep exposure commitment; accepted is not
-    filled/protected.
-    """
-    plan = _plan(planned_quantity=100.0, initial_stop=48.50)
-    manager.start_plan(plan)
-
-    # Simulate entry signal
-    entry_signal = Signal(source="test", symbol="AAPL", side=Side.BUY)
-    result = await broker.place_order(entry_signal, account, 100.0, "AAPL")
-
-    # Verify: order should have broker_order_id (accepted)
-    assert result.broker_order_id is not None
-    assert result.status in [OrderStatus.FILLED, OrderStatus.PENDING]
-
-    # Verify: lifecycle should be created
-    lifecycle = manager.get_lifecycle("acct1", "AAPL")
-    assert lifecycle is not None
-    assert lifecycle.plan.planned_quantity == 100.0
 
 
 # ORD-006: Duplicate fill
