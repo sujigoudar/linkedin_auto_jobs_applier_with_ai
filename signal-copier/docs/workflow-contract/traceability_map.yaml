@@ -433,7 +433,8 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: 'WC-01 baseline: Instrument metadata, units and product identity'
+  notes: Requires app/workflow/instruments.py module for instrument metadata, resolution,
+    and validation
 - id: INS-002
   category: Instrument metadata, units and product identity
   title: Ambiguous symbol
@@ -442,7 +443,8 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: 'WC-01 baseline: Instrument metadata, units and product identity'
+  notes: Requires app/workflow/instruments.py module for instrument metadata, resolution,
+    and validation
 - id: INS-003
   category: Instrument metadata, units and product identity
   title: Option missing expiry
@@ -451,7 +453,8 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: 'WC-01 baseline: Instrument metadata, units and product identity'
+  notes: Requires app/workflow/instruments.py module for instrument metadata, resolution,
+    and validation
 - id: INS-004
   category: Instrument metadata, units and product identity
   title: Adjusted option deliverable
@@ -460,7 +463,8 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: 'WC-01 baseline: Instrument metadata, units and product identity'
+  notes: Requires app/workflow/instruments.py module for instrument metadata, resolution,
+    and validation
 - id: INS-005
   category: Instrument metadata, units and product identity
   title: Expired option
@@ -469,7 +473,8 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: 'WC-01 baseline: Instrument metadata, units and product identity'
+  notes: Requires app/workflow/instruments.py module for instrument metadata, resolution,
+    and validation
 - id: INS-006
   category: Instrument metadata, units and product identity
   title: Continuous futures ticker
@@ -478,7 +483,8 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: 'WC-01 baseline: Instrument metadata, units and product identity'
+  notes: Requires app/workflow/instruments.py module for instrument metadata, resolution,
+    and validation
 - id: INS-007
   category: Instrument metadata, units and product identity
   title: Futures negative price
@@ -487,7 +493,8 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: 'WC-01 baseline: Instrument metadata, units and product identity'
+  notes: Requires app/workflow/instruments.py module for instrument metadata, resolution,
+    and validation
 - id: INS-008
   category: Instrument metadata, units and product identity
   title: FX lot conversion
@@ -496,7 +503,8 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: 'WC-01 baseline: Instrument metadata, units and product identity'
+  notes: Requires app/workflow/instruments.py module for instrument metadata, resolution,
+    and validation
 - id: INS-009
   category: Instrument metadata, units and product identity
   title: Stale FX conversion
@@ -505,7 +513,8 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: 'WC-01 baseline: Instrument metadata, units and product identity'
+  notes: Requires app/workflow/instruments.py module for instrument metadata, resolution,
+    and validation
 - id: INS-010
   category: Instrument metadata, units and product identity
   title: Crypto fee in base
@@ -514,7 +523,8 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: 'WC-01 baseline: Instrument metadata, units and product identity'
+  notes: Requires app/workflow/instruments.py module for instrument metadata, resolution,
+    and validation
 - id: INS-011
   category: Instrument metadata, units and product identity
   title: Crypto minimum/dust
@@ -523,7 +533,8 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: 'WC-01 baseline: Instrument metadata, units and product identity'
+  notes: Requires app/workflow/instruments.py module for instrument metadata, resolution,
+    and validation
 - id: INS-012
   category: Instrument metadata, units and product identity
   title: Inverse derivative
@@ -532,7 +543,8 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: 'WC-01 baseline: Instrument metadata, units and product identity'
+  notes: Requires app/workflow/instruments.py module for instrument metadata, resolution,
+    and validation
 - id: INS-013
   category: Instrument metadata, units and product identity
   title: Leveraged inverse ETF
@@ -541,7 +553,8 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: 'WC-01 baseline: Instrument metadata, units and product identity'
+  notes: Requires app/workflow/instruments.py module for instrument metadata, resolution,
+    and validation
 - id: INS-014
   category: Instrument metadata, units and product identity
   title: Metadata change during planning
@@ -550,67 +563,89 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: 'WC-01 baseline: Instrument metadata, units and product identity'
+  notes: Requires app/workflow/instruments.py module for instrument metadata, resolution,
+    and validation
 - id: ROU-001
   category: Account identity, selection, permissions and binding
   title: Three eligible accounts
-  status: NOT_IMPLEMENTED
-  implementation_paths: []
-  test_paths: []
+  status: TESTED_SIMULATOR
+  implementation_paths:
+  - app/workflow/identity.py
+  - app/workflow/selection.py
+  test_paths:
+  - tests/test_wc02_canonical_identities.py::TestPaperAndLiveDistinction::test_paper_and_live_same_broker_are_different_accounts
   evidence_paths: []
   blocked_reason: null
   notes: 'WC-01 baseline: Account identity, selection, permissions and binding'
 - id: ROU-002
   category: Account identity, selection, permissions and binding
   title: Duplicate bindings
-  status: NOT_IMPLEMENTED
-  implementation_paths: []
-  test_paths: []
+  status: TESTED_SIMULATOR
+  implementation_paths:
+  - app/workflow/identity.py
+  - app/workflow/selection.py
+  test_paths:
+  - tests/test_wc02_canonical_identities.py::TestPhysicalAccountDeduplication::test_two_bindings_same_physical_account
   evidence_paths: []
   blocked_reason: null
   notes: 'WC-01 baseline: Account identity, selection, permissions and binding'
 - id: ROU-003
   category: Account identity, selection, permissions and binding
   title: No eligible account
-  status: NOT_IMPLEMENTED
-  implementation_paths: []
-  test_paths: []
+  status: TESTED_SIMULATOR
+  implementation_paths:
+  - app/workflow/identity.py
+  - app/workflow/selection.py
+  test_paths:
+  - tests/test_wc20_engine_integration.py::test_wc20_single_destination_selection_i01
   evidence_paths: []
   blocked_reason: null
   notes: 'WC-01 baseline: Account identity, selection, permissions and binding'
 - id: ROU-004
   category: Account identity, selection, permissions and binding
   title: Better funded alternate
-  status: NOT_IMPLEMENTED
-  implementation_paths: []
-  test_paths: []
+  status: TESTED_SIMULATOR
+  implementation_paths:
+  - app/workflow/identity.py
+  - app/workflow/selection.py
+  test_paths:
+  - tests/test_wc02_canonical_identities.py::TestCapabilityProfileEvidenceTier::test_unknown_capability_is_not_supported
   evidence_paths: []
   blocked_reason: null
   notes: 'WC-01 baseline: Account identity, selection, permissions and binding'
 - id: ROU-005
   category: Account identity, selection, permissions and binding
   title: Wrong gateway default
-  status: NOT_IMPLEMENTED
-  implementation_paths: []
-  test_paths: []
+  status: TESTED_SIMULATOR
+  implementation_paths:
+  - app/workflow/identity.py
+  - app/workflow/selection.py
+  test_paths:
+  - tests/test_scn_b.py::TestROU005WrongGatewayDefault::test_explicit_account_overrides_gateway_default
   evidence_paths: []
   blocked_reason: null
   notes: 'WC-01 baseline: Account identity, selection, permissions and binding'
 - id: ROU-006
   category: Account identity, selection, permissions and binding
   title: Paper/live same alias
-  status: NOT_IMPLEMENTED
-  implementation_paths: []
-  test_paths: []
+  status: TESTED_SIMULATOR
+  implementation_paths:
+  - app/workflow/identity.py
+  - app/workflow/selection.py
+  test_paths:
+  - tests/test_scn_b.py::TestROU006PaperLiveSameAlias::test_paper_live_different_despite_same_display_name
   evidence_paths: []
   blocked_reason: null
   notes: 'WC-01 baseline: Account identity, selection, permissions and binding'
 - id: ROU-007
   category: Account identity, selection, permissions and binding
   title: Account liquidation-only
-  status: NOT_IMPLEMENTED
-  implementation_paths: []
-  test_paths: []
+  status: TESTED_SIMULATOR
+  implementation_paths:
+  - app/workflow/identity.py
+  - app/workflow/selection.py
+  test_paths:
+  - tests/test_scn_b.py::TestROU007AccountLiquidationOnly::test_closing_only_restriction_blocks_entry
   evidence_paths: []
   blocked_reason: null
   notes: 'WC-01 baseline: Account identity, selection, permissions and binding'
@@ -622,7 +657,7 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: 'WC-01 baseline: Account identity, selection, permissions and binding'
+  notes: Partial implementation in identity.py and selection.py
 - id: ROU-009
   category: Account identity, selection, permissions and binding
   title: Account changes mid-plan
@@ -631,7 +666,7 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: 'WC-01 baseline: Account identity, selection, permissions and binding'
+  notes: Partial implementation in identity.py and selection.py
 - id: ROU-010
   category: Account identity, selection, permissions and binding
   title: Exit after route change
@@ -640,7 +675,7 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: 'WC-01 baseline: Account identity, selection, permissions and binding'
+  notes: Partial implementation in identity.py and selection.py
 - id: ROU-011
   category: Account identity, selection, permissions and binding
   title: Timeout then alternate available
@@ -649,7 +684,7 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: 'WC-01 baseline: Account identity, selection, permissions and binding'
+  notes: Partial implementation in identity.py and selection.py
 - id: ROU-012
   category: Account identity, selection, permissions and binding
   title: Account removal with exposure
@@ -658,7 +693,7 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: 'WC-01 baseline: Account identity, selection, permissions and binding'
+  notes: Partial implementation in identity.py and selection.py
 - id: ROU-013
   category: Account identity, selection, permissions and binding
   title: Credential rotation same account
@@ -667,7 +702,7 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: 'WC-01 baseline: Account identity, selection, permissions and binding'
+  notes: Partial implementation in identity.py and selection.py
 - id: ROU-014
   category: Account identity, selection, permissions and binding
   title: No alternate live authority
@@ -676,31 +711,37 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: 'WC-01 baseline: Account identity, selection, permissions and binding'
+  notes: Partial implementation in identity.py and selection.py
 - id: CAP-001
   category: Hierarchical budgets, shared backing and reservations
   title: Shared final dollars
-  status: NOT_IMPLEMENTED
-  implementation_paths: []
-  test_paths: []
+  status: TESTED_SIMULATOR
+  implementation_paths:
+  - app/workflow/budget.py
+  test_paths:
+  - tests/test_wc03_hierarchical_budgets.py::TestBoundaryConditions::test_boundary_cash_exactly_sufficient
   evidence_paths: []
   blocked_reason: null
   notes: 'WC-01 baseline: Hierarchical budgets, shared backing and reservations'
 - id: CAP-002
   category: Hierarchical budgets, shared backing and reservations
   title: Owner cap across accounts
-  status: NOT_IMPLEMENTED
-  implementation_paths: []
-  test_paths: []
+  status: TESTED_SIMULATOR
+  implementation_paths:
+  - app/workflow/budget.py
+  test_paths:
+  - tests/test_wc03_hierarchical_budgets.py::TestConcurrentReservations::test_concurrent_same_opportunity_one_wins
   evidence_paths: []
   blocked_reason: null
   notes: 'WC-01 baseline: Hierarchical budgets, shared backing and reservations'
 - id: CAP-003
   category: Hierarchical budgets, shared backing and reservations
   title: Portfolio backing double count
-  status: NOT_IMPLEMENTED
-  implementation_paths: []
-  test_paths: []
+  status: TESTED_SIMULATOR
+  implementation_paths:
+  - app/workflow/budget.py
+  test_paths:
+  - tests/test_scn_b.py::TestCAP003PortfolioBackingDoubleCount::test_reject_overallocated_portfolio_equity_backing
   evidence_paths: []
   blocked_reason: null
   notes: 'WC-01 baseline: Hierarchical budgets, shared backing and reservations'
@@ -712,7 +753,7 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: 'WC-01 baseline: Hierarchical budgets, shared backing and reservations'
+  notes: Partial implementation in budget.py
 - id: CAP-005
   category: Hierarchical budgets, shared backing and reservations
   title: Soft reservation expiry
@@ -721,7 +762,7 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: 'WC-01 baseline: Hierarchical budgets, shared backing and reservations'
+  notes: Partial implementation in budget.py
 - id: CAP-006
   category: Hierarchical budgets, shared backing and reservations
   title: Unknown order reservation TTL
@@ -730,7 +771,7 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: 'WC-01 baseline: Hierarchical budgets, shared backing and reservations'
+  notes: Partial implementation in budget.py
 - id: CAP-007
   category: Hierarchical budgets, shared backing and reservations
   title: Reflected broker commitment
@@ -739,7 +780,7 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: 'WC-01 baseline: Hierarchical budgets, shared backing and reservations'
+  notes: Partial implementation in budget.py
 - id: CAP-008
   category: Hierarchical budgets, shared backing and reservations
   title: Unreflected local intent
@@ -748,7 +789,7 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: 'WC-01 baseline: Hierarchical budgets, shared backing and reservations'
+  notes: Partial implementation in budget.py
 - id: CAP-009
   category: Hierarchical budgets, shared backing and reservations
   title: Partial fill accounting
@@ -757,7 +798,7 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: 'WC-01 baseline: Hierarchical budgets, shared backing and reservations'
+  notes: Partial implementation in budget.py
 - id: CAP-010
   category: Hierarchical budgets, shared backing and reservations
   title: Cancel request
@@ -766,7 +807,7 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: 'WC-01 baseline: Hierarchical budgets, shared backing and reservations'
+  notes: Partial implementation in budget.py
 - id: CAP-011
   category: Hierarchical budgets, shared backing and reservations
   title: Final reject no fill
@@ -775,7 +816,7 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: 'WC-01 baseline: Hierarchical budgets, shared backing and reservations'
+  notes: Partial implementation in budget.py
 - id: CAP-012
   category: Hierarchical budgets, shared backing and reservations
   title: Withdrawal cash flow
@@ -784,7 +825,7 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: 'WC-01 baseline: Hierarchical budgets, shared backing and reservations'
+  notes: Partial implementation in budget.py
 - id: CAP-013
   category: Hierarchical budgets, shared backing and reservations
   title: Deposit loss halt
@@ -793,7 +834,7 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: 'WC-01 baseline: Hierarchical budgets, shared backing and reservations'
+  notes: Partial implementation in budget.py
 - id: CAP-014
   category: Hierarchical budgets, shared backing and reservations
   title: Manual collateral
@@ -802,7 +843,7 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: 'WC-01 baseline: Hierarchical budgets, shared backing and reservations'
+  notes: Partial implementation in budget.py
 - id: CAP-015
   category: Hierarchical budgets, shared backing and reservations
   title: Same-underlying multiple assets
@@ -811,7 +852,7 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: 'WC-01 baseline: Hierarchical budgets, shared backing and reservations'
+  notes: Partial implementation in budget.py
 - id: CAP-016
   category: Hierarchical budgets, shared backing and reservations
   title: Credit proceeds liability
@@ -820,13 +861,15 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: 'WC-01 baseline: Hierarchical budgets, shared backing and reservations'
+  notes: Partial implementation in budget.py
 - id: CAP-017
   category: Hierarchical budgets, shared backing and reservations
   title: Minimum lot cannot fit
-  status: NOT_IMPLEMENTED
-  implementation_paths: []
-  test_paths: []
+  status: TESTED_SIMULATOR
+  implementation_paths:
+  - app/workflow/budget.py
+  test_paths:
+  - tests/test_scn_b.py::TestCAP017MinimumLotCannotFit::test_skip_entry_when_below_minimum_lot
   evidence_paths: []
   blocked_reason: null
   notes: 'WC-01 baseline: Hierarchical budgets, shared backing and reservations'
@@ -838,40 +881,48 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: 'WC-01 baseline: Hierarchical budgets, shared backing and reservations'
+  notes: Partial implementation in budget.py
 - id: SIZ-001
   category: Financial validation and exact sizing
   title: Reference stock sizing
-  status: NOT_IMPLEMENTED
-  implementation_paths: []
-  test_paths: []
+  status: TESTED_SIMULATOR
+  implementation_paths:
+  - app/workflow/sizing.py
+  test_paths:
+  - tests/test_wc04_sizing.py::TestSizeLinearLong::test_sizing_oracle_vectors
   evidence_paths: []
   blocked_reason: null
   notes: 'WC-01 baseline: Financial validation and exact sizing'
 - id: SIZ-002
   category: Financial validation and exact sizing
   title: Budget below first share
-  status: NOT_IMPLEMENTED
-  implementation_paths: []
-  test_paths: []
+  status: TESTED_SIMULATOR
+  implementation_paths:
+  - app/workflow/sizing.py
+  test_paths:
+  - tests/test_scn_b.py::TestSIZ002BudgetBelowFirstShare::test_risk_budget_below_one_share_yields_zero
   evidence_paths: []
   blocked_reason: null
   notes: 'WC-01 baseline: Financial validation and exact sizing'
 - id: SIZ-003
   category: Financial validation and exact sizing
   title: Invalid numeric quantity
-  status: NOT_IMPLEMENTED
-  implementation_paths: []
-  test_paths: []
+  status: TESTED_SIMULATOR
+  implementation_paths:
+  - app/workflow/sizing.py
+  test_paths:
+  - tests/test_wc04_sizing.py::TestSizeLinearLong::test_spec_75_worked_example
   evidence_paths: []
   blocked_reason: null
   notes: 'WC-01 baseline: Financial validation and exact sizing'
 - id: SIZ-004
   category: Financial validation and exact sizing
   title: Wrong-side long stop
-  status: NOT_IMPLEMENTED
-  implementation_paths: []
-  test_paths: []
+  status: TESTED_SIMULATOR
+  implementation_paths:
+  - app/workflow/sizing.py
+  test_paths:
+  - tests/test_scn_b.py::TestSIZ004WrongSideLongStop::test_reject_long_entry_with_stop_above_entry
   evidence_paths: []
   blocked_reason: null
   notes: 'WC-01 baseline: Financial validation and exact sizing'
@@ -883,7 +934,7 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: 'WC-01 baseline: Financial validation and exact sizing'
+  notes: Partial implementation in sizing.py
 - id: SIZ-006
   category: Financial validation and exact sizing
   title: Stop tick rounding
@@ -892,7 +943,7 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: 'WC-01 baseline: Financial validation and exact sizing'
+  notes: Partial implementation in sizing.py
 - id: SIZ-007
   category: Financial validation and exact sizing
   title: Tight stop huge position
@@ -901,7 +952,7 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: 'WC-01 baseline: Financial validation and exact sizing'
+  notes: Partial implementation in sizing.py
 - id: SIZ-008
   category: Financial validation and exact sizing
   title: Option full debit
@@ -910,7 +961,7 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: 'WC-01 baseline: Financial validation and exact sizing'
+  notes: Partial implementation in sizing.py
 - id: SIZ-009
   category: Financial validation and exact sizing
   title: Nonlinear margin tier
@@ -919,7 +970,7 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: 'WC-01 baseline: Financial validation and exact sizing'
+  notes: Partial implementation in sizing.py
 - id: SIZ-010
   category: Financial validation and exact sizing
   title: Fee currency
@@ -928,7 +979,7 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: 'WC-01 baseline: Financial validation and exact sizing'
+  notes: Partial implementation in sizing.py
 - id: SIZ-011
   category: Financial validation and exact sizing
   title: Negative cost input
@@ -937,7 +988,7 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: 'WC-01 baseline: Financial validation and exact sizing'
+  notes: Partial implementation in sizing.py
 - id: SIZ-012
   category: Financial validation and exact sizing
   title: Zero-risk misleading break-even
@@ -946,7 +997,7 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: 'WC-01 baseline: Financial validation and exact sizing'
+  notes: Partial implementation in sizing.py
 - id: SIZ-013
   category: Financial validation and exact sizing
   title: Cap decreases
@@ -955,7 +1006,7 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: 'WC-01 baseline: Financial validation and exact sizing'
+  notes: Partial implementation in sizing.py
 - id: SIZ-014
   category: Financial validation and exact sizing
   title: Worse partial fill
@@ -964,7 +1015,7 @@ scenarios:
   test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: 'WC-01 baseline: Financial validation and exact sizing'
+  notes: Partial implementation in sizing.py
 - id: KEL-001
   category: Kelly, profile evidence and adaptive allocation
   title: Binary Kelly arithmetic

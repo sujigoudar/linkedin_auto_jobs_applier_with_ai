@@ -1,15 +1,71 @@
 {
-  "generated_at": "2026-10-02T23:25:47.112141+00:00",
-  "git_commit": "c775d9bd951b02801b9187c62557bef219998e72",
-  "code_hash": "5ef796fcaba56edcf76e8bf6912a5153ec88d7228aeedab6d1e518f038775768",
+  "generated_at": "2026-10-03T00:00:57.335722+00:00",
+  "git_commit": "d9b87131706b614b1d9abe6c292390a4bbc67e47",
+  "code_hash": "0b62036245bbf0a76ce6cc4169b2357bdb453bdb8fdaa75eeb1179e25a44382b",
   "config_hash": "cb358f0f957101699f7df3b03e1619b28636fa813e93791eefb5a543f8d981a0",
   "data_hash": "b1887cd16afd1c4e80bd1aa5f4f3c6992d672a7f9f9a798c609657df24c9f590",
   "environment": "isolated_non_live_pytest",
   "tests": [
     {
+      "nodeid": "tests/test_scn_b.py::TestROU005WrongGatewayDefault::test_explicit_account_overrides_gateway_default",
+      "outcome": "passed",
+      "duration_s": 0.8232542880000437,
+      "scenarios": [
+        "ROU-005"
+      ]
+    },
+    {
+      "nodeid": "tests/test_scn_b.py::TestROU006PaperLiveSameAlias::test_paper_live_different_despite_same_display_name",
+      "outcome": "passed",
+      "duration_s": 0.5172656599997936,
+      "scenarios": [
+        "ROU-006"
+      ]
+    },
+    {
+      "nodeid": "tests/test_scn_b.py::TestROU007AccountLiquidationOnly::test_closing_only_restriction_blocks_entry",
+      "outcome": "passed",
+      "duration_s": 0.519412353000007,
+      "scenarios": [
+        "ROU-007"
+      ]
+    },
+    {
+      "nodeid": "tests/test_scn_b.py::TestCAP003PortfolioBackingDoubleCount::test_reject_overallocated_portfolio_equity_backing",
+      "outcome": "passed",
+      "duration_s": 0.45806953900000735,
+      "scenarios": [
+        "CAP-003"
+      ]
+    },
+    {
+      "nodeid": "tests/test_scn_b.py::TestCAP017MinimumLotCannotFit::test_skip_entry_when_below_minimum_lot",
+      "outcome": "passed",
+      "duration_s": 0.0003932690001420269,
+      "scenarios": [
+        "CAP-017"
+      ]
+    },
+    {
+      "nodeid": "tests/test_scn_b.py::TestSIZ002BudgetBelowFirstShare::test_risk_budget_below_one_share_yields_zero",
+      "outcome": "passed",
+      "duration_s": 0.00017988699983106926,
+      "scenarios": [
+        "SIZ-002"
+      ]
+    },
+    {
+      "nodeid": "tests/test_scn_b.py::TestSIZ004WrongSideLongStop::test_reject_long_entry_with_stop_above_entry",
+      "outcome": "passed",
+      "duration_s": 0.00024340899972230545,
+      "scenarios": [
+        "SIZ-004"
+      ]
+    },
+    {
       "nodeid": "tests/test_wc02_canonical_identities.py::TestPhysicalAccountDeduplication::test_two_bindings_same_physical_account",
       "outcome": "passed",
-      "duration_s": 0.8834376189988689,
+      "duration_s": 0.43115867899996374,
       "scenarios": [
         "ROU-002"
       ]
@@ -17,7 +73,7 @@
     {
       "nodeid": "tests/test_wc02_canonical_identities.py::TestCapabilityProfileEvidenceTier::test_unknown_capability_is_not_supported",
       "outcome": "passed",
-      "duration_s": 0.6318940500004828,
+      "duration_s": 0.527802857000097,
       "scenarios": [
         "ROU-004"
       ]
@@ -25,7 +81,7 @@
     {
       "nodeid": "tests/test_wc02_canonical_identities.py::TestPaperAndLiveDistinction::test_paper_and_live_same_broker_are_different_accounts",
       "outcome": "passed",
-      "duration_s": 0.5705952359985531,
+      "duration_s": 0.453636940999786,
       "scenarios": [
         "ROU-001"
       ]
@@ -33,7 +89,7 @@
     {
       "nodeid": "tests/test_wc03_hierarchical_budgets.py::TestBoundaryConditions::test_boundary_cash_exactly_sufficient",
       "outcome": "passed",
-      "duration_s": 0.00019351000082679093,
+      "duration_s": 0.00020026299989694962,
       "scenarios": [
         "CAP-001"
       ]
@@ -41,7 +97,7 @@
     {
       "nodeid": "tests/test_wc03_hierarchical_budgets.py::TestConcurrentReservations::test_concurrent_same_opportunity_one_wins",
       "outcome": "passed",
-      "duration_s": 0.6042427249994944,
+      "duration_s": 0.433297293999658,
       "scenarios": [
         "CAP-002"
       ]
@@ -49,7 +105,7 @@
     {
       "nodeid": "tests/test_wc04_sizing.py::TestSizeLinearLong::test_sizing_oracle_vectors",
       "outcome": "passed",
-      "duration_s": 0.024751282999204705,
+      "duration_s": 0.022300792999885743,
       "scenarios": [
         "SIZ-001"
       ]
@@ -57,61 +113,63 @@
     {
       "nodeid": "tests/test_wc04_sizing.py::TestSizeLinearLong::test_spec_75_worked_example",
       "outcome": "passed",
-      "duration_s": 0.00017761999879439827,
+      "duration_s": 0.0001553920001242659,
       "scenarios": [
         "SIZ-003"
       ]
     },
     {
-      "nodeid": "tests/test_wc06_intents_and_outbox.py::TestIntentStateMachine::test_state_sequence_success_path",
-      "outcome": "passed",
-      "duration_s": 0.00049551799929759,
-      "scenarios": [
-        "ORD-001"
-      ]
-    },
-    {
-      "nodeid": "tests/test_wc06_intents_and_outbox.py::TestIntentStateMachine::test_state_sequence_failure_path",
-      "outcome": "passed",
-      "duration_s": 0.00022029800129530486,
-      "scenarios": [
-        "ORD-002"
-      ]
-    },
-    {
-      "nodeid": "tests/test_wc06_intents_and_outbox.py::TestCrashRecoveryScenarios::test_crash_after_dispatch_mark_before_response_blocks_new_exposure",
-      "outcome": "passed",
-      "duration_s": 0.0002938230009021936,
-      "scenarios": [
-        "OPS-001"
-      ]
-    },
-    {
-      "nodeid": "tests/test_wc12_mutation_harness.py::test_mutant_m1_remove_owner_wide_cap",
-      "outcome": "passed",
-      "duration_s": 0.7834580310009187,
-      "scenarios": [
-        "TST-001"
-      ]
-    },
-    {
       "nodeid": "tests/test_wc20_engine_integration.py::test_wc20_single_destination_selection_i01",
       "outcome": "passed",
-      "duration_s": 0.08023779300128808,
+      "duration_s": 0.11070399299978817,
       "scenarios": [
         "ROU-003"
-      ]
-    },
-    {
-      "nodeid": "tests/test_wc22_evidence_tooling.py::test_plugin_writes_executed_tests_json",
-      "outcome": "passed",
-      "duration_s": 0.0001853200010373257,
-      "scenarios": [
-        "TST-001"
       ]
     }
   ],
   "scenarios": {
+    "ROU-005": {
+      "result": "PASS",
+      "tests": [
+        "tests/test_scn_b.py::TestROU005WrongGatewayDefault::test_explicit_account_overrides_gateway_default"
+      ]
+    },
+    "ROU-006": {
+      "result": "PASS",
+      "tests": [
+        "tests/test_scn_b.py::TestROU006PaperLiveSameAlias::test_paper_live_different_despite_same_display_name"
+      ]
+    },
+    "ROU-007": {
+      "result": "PASS",
+      "tests": [
+        "tests/test_scn_b.py::TestROU007AccountLiquidationOnly::test_closing_only_restriction_blocks_entry"
+      ]
+    },
+    "CAP-003": {
+      "result": "PASS",
+      "tests": [
+        "tests/test_scn_b.py::TestCAP003PortfolioBackingDoubleCount::test_reject_overallocated_portfolio_equity_backing"
+      ]
+    },
+    "CAP-017": {
+      "result": "PASS",
+      "tests": [
+        "tests/test_scn_b.py::TestCAP017MinimumLotCannotFit::test_skip_entry_when_below_minimum_lot"
+      ]
+    },
+    "SIZ-002": {
+      "result": "PASS",
+      "tests": [
+        "tests/test_scn_b.py::TestSIZ002BudgetBelowFirstShare::test_risk_budget_below_one_share_yields_zero"
+      ]
+    },
+    "SIZ-004": {
+      "result": "PASS",
+      "tests": [
+        "tests/test_scn_b.py::TestSIZ004WrongSideLongStop::test_reject_long_entry_with_stop_above_entry"
+      ]
+    },
     "ROU-002": {
       "result": "PASS",
       "tests": [
@@ -152,31 +210,6 @@
       "result": "PASS",
       "tests": [
         "tests/test_wc04_sizing.py::TestSizeLinearLong::test_spec_75_worked_example"
-      ]
-    },
-    "ORD-001": {
-      "result": "PASS",
-      "tests": [
-        "tests/test_wc06_intents_and_outbox.py::TestIntentStateMachine::test_state_sequence_success_path"
-      ]
-    },
-    "ORD-002": {
-      "result": "PASS",
-      "tests": [
-        "tests/test_wc06_intents_and_outbox.py::TestIntentStateMachine::test_state_sequence_failure_path"
-      ]
-    },
-    "OPS-001": {
-      "result": "PASS",
-      "tests": [
-        "tests/test_wc06_intents_and_outbox.py::TestCrashRecoveryScenarios::test_crash_after_dispatch_mark_before_response_blocks_new_exposure"
-      ]
-    },
-    "TST-001": {
-      "result": "PASS",
-      "tests": [
-        "tests/test_wc12_mutation_harness.py::test_mutant_m1_remove_owner_wide_cap",
-        "tests/test_wc22_evidence_tooling.py::test_plugin_writes_executed_tests_json"
       ]
     },
     "ROU-003": {
