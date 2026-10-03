@@ -27,7 +27,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '18'
-          cache: 'npm'
 
       - name: Install stylelint
         run: npm install --save-dev stylelint stylelint-config-standard
@@ -102,7 +101,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '18'
-          cache: 'npm'
 
       - name: Install axe-core
         run: npm install --save-dev axe-core
