@@ -30,7 +30,7 @@ scenarios:
   status: IMPLEMENTED_NOT_WIRED
   implementation_paths:
   - app/main.py
-  - app/sources/sms.py
+  - app/sources/sms_twilio.py
   test_paths:
   - tests/test_sms_twilio_sender_authorization.py
   - tests/test_whatsapp_webhook.py
@@ -168,13 +168,10 @@ scenarios:
   - app/sources/telegram.py
   - app/sources/discord.py
   - app/sources/slack.py
-  test_paths:
-  - tests/test_sig05_collector_cursor_tracking.py
-  - tests/test_track5_collector_cursor_pagination.py
+  test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: Cursor gap recovery via pagination in collector source adapters | Requires
-    tagging existing test
+  notes: 'Cursor gap recovery via pagination in collector source adapters: no existing test proves the then-clause (the two files previously listed here did not exist); needs a real test against the collector cursor logic'
 - id: ING-015
   category: Intake, authority, identity and durability
   title: Prompt injection
@@ -515,12 +512,10 @@ scenarios:
   implementation_paths:
   - app/models.py
   - app/sources/
-  test_paths:
-  - tests/test_track30_source_event_reply_handling.py
+  test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: Reply parent matching via SourceEventKind.REPLY with missing context handling
-    | Requires tagging existing test
+  notes: 'Reply parent matching via SourceEventKind.REPLY with missing-context handling: no existing test proves it (the file previously listed here did not exist); needs a real test'
 - id: REV-012
   category: Revisions, lifecycle matching and temporal order
   title: Future timestamp
@@ -1484,24 +1479,20 @@ scenarios:
   implementation_paths:
   - app/engine.py
   - app/models.py
-  test_paths:
-  - tests/test_wp13_entry_order_type_and_price.py
+  test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: Explicit price limit preserved via Signal.entry_order_type validation | Requires
-    tagging existing test
+  notes: 'Explicit price limit preserved via Signal.entry_order_type validation: no existing test proves it (the file previously listed here did not exist); needs a real test'
 - id: ENT-002
   category: Entry conditions, pricing, sessions and deadlines
   title: Trigger versus limit
   status: IMPLEMENTED_NOT_WIRED
   implementation_paths:
   - app/engine.py
-  test_paths:
-  - tests/test_wp13_entry_order_type_and_price.py
+  test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: Trigger not permitted to breach limit via separate entry plan validation
-    | Requires tagging existing test
+  notes: 'Trigger not permitted to breach limit: no existing test proves it (the file previously listed here did not exist); needs a real test'
 - id: ENT-003
   category: Entry conditions, pricing, sessions and deadlines
   title: Stale quote
@@ -1520,12 +1511,10 @@ scenarios:
   status: IMPLEMENTED_NOT_WIRED
   implementation_paths:
   - app/engine.py
-  test_paths:
-  - tests/test_wp13_entry_price_ranges.py
+  test_paths: []
   evidence_paths: []
   blocked_reason: null
-  notes: Wide spread rejected via bid-ask spread validation gate | Requires tagging
-    existing test
+  notes: 'Wide spread rejected via bid-ask spread validation: no existing test proves it (the file previously listed here did not exist); needs a real test'
 - id: ENT-005
   category: Entry conditions, pricing, sessions and deadlines
   title: Target already passed

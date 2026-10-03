@@ -95,11 +95,24 @@ def validate_implementation_paths(paths: list[str], repo_root: Path) -> bool:
 
 
 def validate_test_paths(paths: list[str], repo_root: Path) -> bool:
-    """Check if test paths exist."""
+    """Check if test paths exist.
+
+    A path is a test file or a pytest nodeid (``file.py::Class::test_fn``);
+    for a nodeid the file must exist and define the named function.
+    """
     for path in paths:
-        if path and not (repo_root / path).exists():
+        if not path:
+            continue
+        file_part, _, node_part = path.partition("::")
+        file_path = repo_root / file_part
+        if not file_path.exists():
             print(f"WARNING: test_path does not exist: {path}")
             return False
+        if node_part:
+            func_name = node_part.split("::")[-1].split("[")[0]
+            if f"def {func_name}(" not in file_path.read_text():
+                print(f"WARNING: test_path names an undefined test function: {path}")
+                return False
     return True
 
 

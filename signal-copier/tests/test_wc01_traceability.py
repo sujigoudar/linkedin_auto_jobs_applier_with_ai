@@ -204,15 +204,31 @@ class TestTraceabilityMap:
                     )
 
     def test_test_paths_exist(self, traceability_map, repo_root):
-        """Every test_path exists in repo."""
+        """Every test_path exists in repo.
+
+        A test_path is either a test file or a pytest nodeid
+        (``tests/test_x.py::TestClass::test_fn``). For a nodeid the file
+        must exist AND the named test function must be defined in it --
+        a nodeid naming a function that is not there is exactly the
+        fabricated-evidence case this check exists to catch.
+        """
         scenarios = traceability_map["scenarios"]
         for scenario in scenarios:
             paths = scenario.get("test_paths", [])
             for path in paths:
-                if path:  # Skip empty strings
-                    full_path = repo_root / path
-                    assert full_path.exists(), (
-                        f"Scenario {scenario['id']}: test_path {path} does not exist"
+                if not path:  # Skip empty strings
+                    continue
+                file_part, _, node_part = path.partition("::")
+                full_path = repo_root / file_part
+                assert full_path.exists(), (
+                    f"Scenario {scenario['id']}: test_path {path} does not exist"
+                )
+                if node_part:
+                    func_name = node_part.split("::")[-1].split("[")[0]
+                    source = full_path.read_text()
+                    assert f"def {func_name}(" in source, (
+                        f"Scenario {scenario['id']}: test_path {path} names a test "
+                        f"function that is not defined in {file_part}"
                     )
 
     def test_no_stray_scenarios(self, scenario_catalog, traceability_map):
